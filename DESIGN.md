@@ -289,3 +289,17 @@ swap モードでは gateway がリクエストを直列化（`asyncio.Lock`）�
 - 分散マルチノード
 - GUI（CLI + OpenAI互換APIのみ）
 - 未検証モデルのカタログ自動生成
+
+## 13. 実測フィードバック (telemetry)
+
+- gateway の実トラフィックを `~/.nmesh/telemetry.json` に記録する。キーは `nmesh bench` と同じ `(model_id, quant, backend, gpu_name, n_gpu_layers)`。
+- ストリーム要求: 観測した SSE `data:` 行数を completion_tokens とし、最初の行までを `ttft_s`、行数が 16 以上で区間が正のときのみ `decode_tps = (tokens - 1) / (last - first)` を記録する。
+- 非ストリーム要求: `total_s` と上流 `usage.completion_tokens` のみ。全体待時間には prefill が含まれるため、decode tok/s は記録しない。embeddings は decode を持たないので記録しない。
+- `telemetry.bench_overlay(min_samples=5)` はキーごとに decode 測定値が `min_samples` 以上ある場合の中央値を返す。`nmesh plan` は `{**load_cache(), **bench_overlay()}` を `build_plan` に渡す。overlay はメモリ上だけで、`~/.nmesh/bench.json` には書き込まない。
+- `GET /metrics` と `nmesh status` がサービス別のサンプル数・decode tok/s 中央値・TTFT 中央値/p95・全体待時間中央値を返す。
+
+## 14. ルーティングの明示 ID 優先
+
+`/v1/models` が広告する `nmesh-<service>` などの明示 ID はすべてのヒューリスティクより優先される。順序は
+明示 ID → `tools` → コード判定 → context 超過 → chat。`nmesh-code` のような役割名は `role_to_service` 経由で解決される。
+空文字列・`nmesh-auto`・未知の ID は従来と同じくヒューリスティクにフォールスルーする。

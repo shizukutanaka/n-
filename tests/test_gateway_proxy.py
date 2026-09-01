@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from nmesh.bench import measure
 from nmesh.catalog import ModelSpec
-from nmesh.gateway import create_app
+from nmesh.gateway import create_app, route
 from nmesh.planner import Policy, build_plan
 
 from .test_planner import profile
@@ -72,3 +72,32 @@ def test_bench_runner_uses_streaming_endpoint() -> None:
     finally:
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_explicit_service_model_wins_over_code_heuristic() -> None:
+    model = ModelSpec("chat-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    assert route({
+        "model": "nmesh-chat",
+        "messages": [{"role": "user", "content": "```python\nprint(1)\n```"}],
+    }, plan) == "chat"
+    assert route({
+        "model": f"nmesh-{plan.services[0].name}",
+        "messages": [{"role": "user", "content": "```python\nprint(1)\n```"}],
+    }, plan) == plan.services[0].name
+
+
+def test_auto_and_unknown_model_use_heuristics() -> None:
+    chat_model = ModelSpec("chat-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                           4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    code_model = ModelSpec("code-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                           4096, ["code"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [chat_model, code_model],
+                      Policy(roles=["chat", "code"]))
+    request = {"messages": [{"role": "user", "content": "```python\nprint(1)\n```"}]}
+    assert route({**request, "model": "nmesh-auto"}, plan) == plan.routing.role_to_service["code"]
+    assert route({**request, "model": "nmesh-unknown"}, plan) == plan.routing.role_to_service["code"]
+    assert route({"model": "nmesh-auto", "tools": [{"type": "function"}]}, plan) == (
+        plan.routing.role_to_service["chat"]
+    )

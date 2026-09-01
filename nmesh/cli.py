@@ -19,6 +19,8 @@ from nmesh.runtime import RuntimeStatus
 from nmesh.runtime import down as runtime_down
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime import up as runtime_up
+from nmesh.telemetry import bench_overlay
+from nmesh.telemetry import summary as telemetry_summary
 
 
 def _bytes(value: float) -> str:
@@ -65,7 +67,10 @@ def _make_plan(args: argparse.Namespace) -> object:
     roles = [role.strip() for role in args.roles.split(",") if role.strip()]
     policy = Policy(roles=roles or ["chat", "code", "embed"], prefer=args.prefer,
                     max_context=args.context)
-    return build_plan(profile, load_catalog(), policy, load_cache())
+    live = bench_overlay()
+    args._telemetry_keys = len(live)
+    cache = {**load_cache(), **live}
+    return build_plan(profile, load_catalog(), policy, cache)
 
 
 def _plan(args: argparse.Namespace) -> int:
@@ -82,6 +87,10 @@ def _plan(args: argparse.Namespace) -> int:
                       str(service.context), str(service.n_gpu_layers), f"{service.decode_tps:.1f}")
     Console().print(table)
     Console().print(f"Saved to: {path}")
+    if getattr(args, "_telemetry_keys", 0):
+        Console().print(
+            f"Live telemetry overlay: {args._telemetry_keys} benchmark key(s)"
+        )
     for hint in result.install_hints:
         Console().print(f"[yellow]Install: {hint}[/yellow]")
     for warning in result.warnings:
@@ -99,6 +108,13 @@ def _plan(args: argparse.Namespace) -> int:
 
 
 def _runtime(args: argparse.Namespace) -> int:
+    if args.command == "serve":
+        command = [sys.executable, "-m", "nmesh.gateway.server", "--port", str(args.port)]
+        try:
+            subprocess.run(command, check=False)
+        except KeyboardInterrupt:
+            runtime_down()
+        return 0
     if args.command == "up":
         plan = load_plan()
         if plan is None:
@@ -127,8 +143,13 @@ def _runtime(args: argparse.Namespace) -> int:
                 result.running = True
         except OSError:
             result.services.append({"service": "gateway", "port": 18000, "running": False})
+    if args.command == "status":
+        status_data = asdict(result)
+        status_data["telemetry"] = telemetry_summary()
+    else:
+        status_data = asdict(result)
     if args.json:
-        _print_json(asdict(result))
+        _print_json(status_data)
     elif args.command == "up" and args.dry_run:
         for item in result.services:
             Console().print(
@@ -138,6 +159,25 @@ def _runtime(args: argparse.Namespace) -> int:
             )
     else:
         Console().print(result)
+        if args.command == "status":
+            telemetry = telemetry_summary()
+            table = Table(title="Telemetry")
+            table.add_column("Service")
+            table.add_column("Samples")
+            table.add_column("Decode median")
+            table.add_column("TTFT median")
+            table.add_column("TTFT p95")
+            table.add_column("Total median")
+            for service, metrics in telemetry.items():
+                table.add_row(
+                    service,
+                    str(int(metrics["samples"])),
+                    f"{metrics.get('decode_tps_median', 0):.2f}",
+                    f"{metrics.get('ttft_s_median', 0):.3f}",
+                    f"{metrics.get('ttft_s_p95', 0):.3f}",
+                    f"{metrics.get('total_s_median', 0):.3f}",
+                )
+            Console().print(table)
     return 0
 
 
@@ -240,6 +280,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--no-download", action="store_true")
     up_parser.add_argument("--detach", action="store_true")
     up_parser.add_argument("--port", type=int, default=18000)
+    serve_parser = sub.add_parser("serve")
+    serve_parser.add_argument("--port", type=int, default=18000)
     for name in ("status", "down"):
         item = sub.add_parser(name)
         item.add_argument("--json", action="store_true")
@@ -263,7 +305,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _doctor(args.json)
     if args.command == "plan":
         return _plan(args)
-    if args.command in {"up", "down", "status"}:
+    if args.command in {"up", "down", "status", "serve"}:
         if args.command == "up":
             args.dry_run = args.dry_run or args.global_dry_run
         return _runtime(args)

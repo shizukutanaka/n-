@@ -37,3 +37,10 @@ Ollama、llama.cpp、vLLM、MLX-LM をサポートします。未インストー
 
 GitHub の権限がある利用者は `ci/github-workflow-ci.yml` を
 `.github/workflows/ci.yml` にコピーして使用してください。
+
+## Gateway service
+
+`nmesh serve --port 18000` runs only the OpenAI-compatible gateway in the
+foreground when backend services are already running. The gateway exposes
+`GET http://127.0.0.1:18000/metrics`, which returns per-service live telemetry
+including sample count, median decode throughput, TTFT, and total latency.

@@ -3,12 +3,17 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict
 
+from nmesh.bench import benchmark_key
 from nmesh.planner import Plan, PlannedService, load_plan
 from nmesh.runtime import ensure_running
 from nmesh.runtime import status as runtime_status
+from nmesh.telemetry import Sample
+from nmesh.telemetry import record as record_telemetry
+from nmesh.telemetry import summary as telemetry_summary
 
 try:
     import httpx
@@ -36,13 +41,11 @@ def _content(request: Mapping[str, object]) -> str:
 
 
 def route(request: Mapping[str, object], plan: Plan) -> str:
+    explicit = _explicit(_get(request, "model"), plan)
+    if explicit is not None:
+        return explicit
     if _get(request, "tools"):
         return plan.routing.role_to_service.get("tools", plan.routing.role_to_service.get("chat", ""))
-    model = _get(request, "model")
-    if isinstance(model, str) and model.startswith("nmesh-code"):
-        return plan.routing.role_to_service.get("code", plan.routing.role_to_service.get("chat", ""))
-    if isinstance(model, str) and model.startswith("nmesh-embed"):
-        return plan.routing.role_to_service.get("embed", "")
     content = _content(request)
     if re.search(r"(?:```|^\s*(?:def |class |function |SELECT |import ))", content, re.MULTILINE):
         return plan.routing.role_to_service.get("code", plan.routing.role_to_service.get("chat", ""))
@@ -51,6 +54,15 @@ def route(request: Mapping[str, object], plan: Plan) -> str:
     if chat and len(content) // 4 > chat.context * 0.8:
         return max(plan.services, key=lambda item: item.context, default=chat).name
     return chat_name or (plan.services[0].name if plan.services else "")
+
+
+def _explicit(model: object, plan: Plan) -> str | None:
+    if not isinstance(model, str) or model in {"", "nmesh-auto"}:
+        return None
+    name = model.removeprefix("nmesh-")
+    if any(item.name == name for item in plan.services):
+        return name
+    return plan.routing.role_to_service.get(name) or None
 
 
 def _service(plan: Plan, name: str) -> PlannedService:
@@ -82,9 +94,16 @@ def create_app(plan: Plan | None = None) -> object:
         raise FileNotFoundError("No plan found")
     app = FastAPI(title="nmesh gateway")
     swap_lock = asyncio.Lock()
+    gpu = selected.profile.gpus[0].name if selected.profile.gpus else "cpu"
+    telemetry_keys = {
+        service.name: benchmark_key(service.model_id, service.quant, service.backend,
+                                    gpu, service.n_gpu_layers)
+        for service in selected.services
+    }
 
     async def proxy(request: dict[str, object], service: PlannedService,
-                    path: str) -> object:
+                    path: str, instrument: bool = True) -> object:
+        started = time.perf_counter()
         locked = service.name in selected.swap_group
         if locked:
             try:
@@ -119,9 +138,22 @@ def create_app(plan: Plan | None = None) -> object:
                                 media_type=upstream.headers.get("content-type"))
 
             async def stream() -> AsyncIterator[bytes]:
+                buffer = b""
+                tokens = 0
+                first_line_time: float | None = None
+                last_line_time: float | None = None
                 try:
                     async for chunk in upstream.aiter_bytes():
                         yield chunk
+                        buffer += chunk
+                        while b"\n" in buffer:
+                            line, buffer = buffer.split(b"\n", 1)
+                            line = line.rstrip(b"\r")
+                            if line.startswith(b"data: ") and line != b"data: [DONE]":
+                                now = time.perf_counter()
+                                tokens += 1
+                                first_line_time = first_line_time or now
+                                last_line_time = now
                 except httpx.HTTPError as error:
                     raise HTTPException(status_code=502, detail=str(error)) from error
                 finally:
@@ -129,6 +161,19 @@ def create_app(plan: Plan | None = None) -> object:
                     await client.aclose()
                     if locked:
                         swap_lock.release()
+                    if instrument:
+                        span = (last_line_time - first_line_time
+                                if first_line_time is not None and last_line_time is not None
+                                else 0.0)
+                        decode = (tokens - 1) / span if tokens >= 16 and span > 0 else None
+                        try:
+                            record_telemetry(Sample(
+                                service.name, telemetry_keys[service.name], decode,
+                                first_line_time - started if first_line_time is not None else None,
+                                time.perf_counter() - started, tokens, time.time(),
+                            ))
+                        except Exception:  # noqa: BLE001, S110
+                            pass
             return StreamingResponse(stream(), media_type="text/event-stream")
         try:
             response = await client.post(url, json=body)
@@ -147,6 +192,19 @@ def create_app(plan: Plan | None = None) -> object:
         await client.aclose()
         if isinstance(data, dict) and "model" in data:
             data["model"] = request.get("model", data["model"])
+        if instrument:
+            usage = data.get("usage") if isinstance(data, dict) else None
+            completion_tokens = (
+                int(usage.get("completion_tokens", 0))
+                if isinstance(usage, dict) else 0
+            )
+            try:
+                record_telemetry(Sample(
+                    service.name, telemetry_keys[service.name], None, None,
+                    time.perf_counter() - started, completion_tokens, time.time(),
+                ))
+            except Exception:  # noqa: BLE001, S110
+                pass
         return data
 
     @app.get("/health")
@@ -164,6 +222,10 @@ def create_app(plan: Plan | None = None) -> object:
             {"id": item, "object": "model", "owned_by": "nmesh"} for item in ids
         ]}
 
+    @app.get("/metrics")
+    async def metrics() -> dict[str, object]:
+        return {"services": telemetry_summary()}
+
     @app.post("/v1/chat/completions")
     async def completions(request: dict[str, object]) -> object:
         return await proxy(request, _service(selected, route(request, selected)),
@@ -172,7 +234,7 @@ def create_app(plan: Plan | None = None) -> object:
     @app.post("/v1/embeddings")
     async def embeddings(request: dict[str, object]) -> object:
         service = _service(selected, selected.routing.role_to_service.get("embed", ""))
-        return await proxy(request, service, "/v1/embeddings")
+        return await proxy(request, service, "/v1/embeddings", instrument=False)
 
     return app
 
