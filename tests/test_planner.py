@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
+from pathlib import Path
 
 import pytest
 
@@ -9,7 +10,8 @@ import nmesh.planner.core as planner_core
 from nmesh import i18n
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.planner import Policy, build_plan, estimate_memory, free_budgets, load_plan, save_plan
-from nmesh.probe import GPUInfo, HardwareProfile, Tier, classify_tier
+from nmesh.planner.core import _gpu_budget
+from nmesh.probe import GPUInfo, HardwareProfile, Tier, classify_tier, profile_from_dict
 
 GIB = 1024**3
 
@@ -242,6 +244,45 @@ def test_embedding_has_activation_memory_not_kv(catalog: list[ModelSpec]) -> Non
 def test_cpu_quality_preference_avoids_tiny_model(catalog: list[ModelSpec]) -> None:
     result = build_plan(profile(32), catalog, Policy(roles=["chat"]))
     assert result.services[0].model_id != "qwen2.5-0.5b-instruct"
+
+
+def test_sequential_selection_reserves_prior_service_capacity(tmp_path) -> None:
+    profile_path = Path(__file__).parents[1] / "profiles" / "t3-rtx4090-24gb.json"
+    hardware = profile_from_dict(
+        json.loads(profile_path.read_text(encoding="utf-8"))
+    )
+    catalog = load_catalog(user_path=tmp_path / "models.yaml")
+    result = build_plan(
+        hardware, catalog, Policy(roles=["chat", "embed"], min_decode_tps=0)
+    )
+    chat = next(service for service in result.services if service.name == "chat")
+    embed = next(service for service in result.services if service.name == "embed")
+
+    assert embed.memory.gpu_bytes <= max(
+        _gpu_budget(hardware.gpus[0]) - chat.memory.gpu_bytes, 0.0
+    ) + 1
+    assert embed.quant != "f16" or embed.n_gpu_layers == 0
+    assert any("capacity-forced tradeoff" in warning for warning in result.warnings)
+
+
+def test_zero_selection_reservation_is_a_noop(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    hardware = profile(32, (12,))
+    policy = Policy(roles=["chat"], min_decode_tps=0)
+    first = build_plan(hardware, [model], policy)
+    second = build_plan(hardware, [model], policy)
+    first_data = asdict(first)
+    second_data = asdict(second)
+    first_data.pop("created_at")
+    second_data.pop("created_at")
+    assert first_data == second_data
+
+    default = planner_core._candidate_for(model, hardware, policy, None)
+    explicit_zero = planner_core._candidate_for(
+        model, hardware, policy, None,
+        reserved_vram_bytes=0.0, reserved_ram_bytes=0.0,
+    )
+    assert default == explicit_zero
 
 
 def test_oversized_model_uses_tensor_parallel() -> None:
@@ -581,8 +622,12 @@ def test_swap_group_reserves_only_largest_member() -> None:
         [service.name for service in services], [],
     )
     assert all(service.gpu_indices == [0] for service in services)
-    largest = max(service.memory.gpu_bytes for service in services)
-    assert largest == max(service.memory.gpu_bytes for service in services)
+    reserved_vram, reserved_ram = planner_core._reserved_memory(
+        services, [service.name for service in services]
+    )
+    assert reserved_vram == max(service.memory.gpu_bytes for service in services)
+    assert reserved_ram == max(service.memory.cpu_bytes for service in services)
+    assert reserved_vram < sum(service.memory.gpu_bytes for service in services)
 
 
 def test_llamacpp_layers_are_resolved_against_assigned_card() -> None:

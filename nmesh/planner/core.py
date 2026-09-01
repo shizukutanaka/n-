@@ -332,8 +332,12 @@ def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: 
     return None
 
 
-def _candidate_for(model: ModelSpec, profile: HardwareProfile, policy: Policy,
-                   cache: Mapping[object, float] | None) -> list[_Candidate]:
+def _candidate_for(
+    model: ModelSpec, profile: HardwareProfile, policy: Policy,
+    cache: Mapping[object, float] | None,
+    reserved_vram_bytes: float = 0.0,
+    reserved_ram_bytes: float = 0.0,
+) -> list[_Candidate]:
     initial = min(model.max_context, policy.max_context or 8192)
     contexts = list(dict.fromkeys(context for context in (initial, 4096, 2048) if context <= initial))
     candidates: list[_Candidate] = []
@@ -353,6 +357,11 @@ def _candidate_for(model: ModelSpec, profile: HardwareProfile, policy: Policy,
                     compute_overhead=overhead,
                     total_bytes=base.weight_bytes + overhead,
                 )
+            base = replace(
+                base,
+                vram_budget=max(base.vram_budget - reserved_vram_bytes, 0.0),
+                ram_budget=max(base.ram_budget - reserved_ram_bytes, 0.0),
+            )
             layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
             if profile.tier == Tier.T0_CPU:
                 layers = 0
@@ -413,6 +422,20 @@ def _plan_group(group: list[str], pools: dict[str, list[_Candidate]]) -> _Candid
     for role in group[1:]:
         ids &= {candidate.model.id for candidate in pools.get(role, [])}
     return next((candidate for candidate in pools[group[0]] if candidate.model.id in ids), None)
+
+
+def _reserved_memory(
+    services: Sequence[PlannedService], swap_group: Sequence[str],
+) -> tuple[float, float]:
+    swap_names = set(swap_group)
+    resident = [service for service in services if service.name not in swap_names]
+    swapped = [service for service in services if service.name in swap_names]
+    return (
+        sum(service.memory.gpu_bytes for service in resident)
+        + max((service.memory.gpu_bytes for service in swapped), default=0.0),
+        sum(service.memory.cpu_bytes for service in resident)
+        + max((service.memory.cpu_bytes for service in swapped), default=0.0),
+    )
 
 
 def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfile,
@@ -589,9 +612,29 @@ def _place_services(
         key=lambda item: (item.name in swap_names, -item.memory.gpu_bytes),
     )
     placed: dict[str, PlannedService] = {}
+    cpu_fallback_warned: set[str] = set()
+
+    def warn_cpu_fallback(service: PlannedService) -> None:
+        if (
+            profile.gpus
+            and service.n_gpu_layers is not None
+            and service.backend not in {"ollama", "vllm", "mlx"}
+            and (service.n_gpu_layers == 0 or not service.gpu_indices)
+            and service.name not in cpu_fallback_warned
+        ):
+            warnings.append(
+                t(
+                    "warn.gpu_layers_cpu_fallback",
+                    policy.lang,
+                    service=service.name,
+                )
+            )
+            cpu_fallback_warned.add(service.name)
+
     for service in ordered:
         original_layers = service.n_gpu_layers
         if service.memory.gpu_bytes <= 0:
+            warn_cpu_fallback(service)
             placed[service.name] = service
             ram_used += service.memory.cpu_bytes
             continue
@@ -773,18 +816,7 @@ def _place_services(
                     language=policy.lang,
                 ),
             )
-        if (
-            current.n_gpu_layers is not None
-            and current.backend not in {"ollama", "vllm", "mlx"}
-            and (current.n_gpu_layers == 0 or not current.gpu_indices)
-        ):
-            warnings.append(
-                t(
-                    "warn.gpu_layers_cpu_fallback",
-                    policy.lang,
-                    service=current.name,
-                )
-            )
+        warn_cpu_fallback(current)
         placed[service.name] = current
         ram_used += current.memory.cpu_bytes
     return [placed[service.name] for service in services]
@@ -1029,11 +1061,6 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             warnings.append(
                 t("warn.no_source", selected.lang, model=model.id)
             )
-    pools = {role: sorted(
-        (candidate for model in catalog if role in model.roles
-         for candidate in _candidate_for(model, profile, selected, bench_cache)),
-        key=lambda item: item.score, reverse=True,
-    ) for role in roles}
     if profile.tier in {Tier.T0_CPU, Tier.T1_LOW, Tier.T2_MID, Tier.T3_HIGH}:
         groups = [[role for role in roles if role in {"chat", "code"}]]
         groups += [[role] for role in roles if role == "embed"]
@@ -1044,23 +1071,76 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     role_to_service: dict[str, str] = {}
     total_download = 0
     for group in [item for item in groups if item]:
+        reserved_vram, reserved_ram = _reserved_memory(services, swap_group)
+        pools = {role: sorted(
+            (candidate for model in catalog if role in model.roles
+             for candidate in _candidate_for(
+                 model, profile, selected, bench_cache,
+                 reserved_vram_bytes=reserved_vram,
+                 reserved_ram_bytes=reserved_ram,
+             )),
+            key=lambda item: item.score, reverse=True,
+        ) for role in group}
+        empty_pools = None
+        if reserved_vram or reserved_ram:
+            empty_pools = {role: sorted(
+                (candidate for model in catalog if role in model.roles
+                 for candidate in _candidate_for(model, profile, selected, bench_cache)),
+                key=lambda item: item.score, reverse=True,
+            ) for role in group}
+
+        def warn_capacity_tradeoff(
+            role: str, chosen: _Candidate, empty: _Candidate | None,
+            committed_vram: float = reserved_vram,
+            committed_ram: float = reserved_ram,
+        ) -> None:
+            if (
+                empty is not None
+                and (
+                    chosen.model.id != empty.model.id
+                    or chosen.quant != empty.quant
+                )
+            ):
+                warnings.append(
+                    t(
+                        "warn.selection_capacity_tradeoff",
+                        selected.lang,
+                        role=role,
+                        chosen_model=chosen.model.id,
+                        chosen_quant=chosen.quant,
+                        empty_model=empty.model.id,
+                        empty_quant=empty.quant,
+                        reserved_vram_gib=committed_vram / GIB,
+                        reserved_ram_gib=committed_ram / GIB,
+                    )
+                )
+
         candidate = _plan_group(group, pools)
         if candidate is None and len(group) > 1:
             for role in group:
                 role_candidate = pools.get(role, [])
                 if role_candidate:
+                    role_candidate = role_candidate[0]
+                    empty_candidate = (
+                        empty_pools.get(role, [None])[0] if empty_pools else None
+                    )
+                    warn_capacity_tradeoff(role, role_candidate, empty_candidate)
                     _add_service(
-                        [role], role_candidate[0], profile, services, swap_group,
+                        [role], role_candidate, profile, services, swap_group,
                         role_to_service, hints, selected.budget_source, warnings,
                         selected.lang,
                     )
-                    total_download += int(role_candidate[0].memory.disk_needed)
+                    total_download += int(role_candidate.memory.disk_needed)
                 else:
                     warnings.append(t("warn.no_candidate", selected.lang, role=role))
             continue
         if candidate is None:
             warnings.append(t("warn.no_candidate", selected.lang, role=group[0]))
             continue
+        empty_candidate = (
+            _plan_group(group, empty_pools) if empty_pools is not None else None
+        )
+        warn_capacity_tradeoff(group[0], candidate, empty_candidate)
         _add_service(
             group, candidate, profile, services, swap_group, role_to_service, hints,
             selected.budget_source, warnings, selected.lang,
