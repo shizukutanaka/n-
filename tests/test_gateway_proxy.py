@@ -244,3 +244,37 @@ def test_gateway_request_keeps_plan_snapshot_during_reload(tmp_path, monkeypatch
         _ReloadHandler.release.set()
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_gateway_watchdog_runs_and_cancels(monkeypatch) -> None:
+    model = ModelSpec("watchdog-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    called = threading.Event()
+
+    def fake_heartbeat() -> None:
+        called.set()
+
+    monkeypatch.setattr(gateway_module, "heartbeat", fake_heartbeat)
+    with TestClient(create_app(plan, watchdog=True, watchdog_interval=0.01)):
+        assert called.wait(timeout=2)
+
+
+def test_gateway_retries_once_after_connect_error(monkeypatch) -> None:
+    model = ModelSpec("retry-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = plan.services[0]
+    calls: list[tuple[str, Plan]] = []
+
+    def fake_ensure(name: str, snapshot: Plan) -> None:
+        calls.append((name, snapshot))
+
+    monkeypatch.setattr(gateway_module, "ensure_running", fake_ensure)
+    client = TestClient(create_app(plan))
+    response = client.post("/v1/chat/completions", json={
+        "model": "nmesh-auto", "messages": [{"role": "user", "content": "hello"}],
+    })
+    assert response.status_code == 502
+    assert len(calls) == 1
+    assert calls[0] == (service.name, plan)

@@ -340,3 +340,19 @@ swap-group service becomes an exclusive swapper, waits for all readers to
 drain, then calls `ensure_running`; no new reader can enter during that drain
 or swap. Plan reload invalidates the loaded-service marker so the next
 swap-group request revalidates the service.
+
+## 17. Runtime crash recovery
+
+The runtime heartbeat checks services in the active plan and revives managed
+processes that have exited. It skips swap-group members that were never loaded,
+uses a three-restart budget within a five-minute window, and records services
+that exhaust that budget as failed instead of restarting them forever. A
+service whose health endpoint already answers can be adopted by a Supervisor
+instance that did not launch it; adopted services are marked external and are
+never signalled by `down()`.
+
+The gateway server enables a 15-second watchdog by default. It runs the
+runtime heartbeat in a worker thread, continues after heartbeat exceptions,
+and cancels the task cleanly during shutdown. A request that encounters an
+upstream connection failure invokes `ensure_running` once and retries once
+before returning the existing 502 error.

@@ -46,6 +46,8 @@ foreground when backend services are already running. The gateway exposes
 including sample count, median decode throughput, TTFT, and total latency.
 `nmesh reload --port 18000` asks a running gateway to reload the latest
 `~/.nmesh/plan.json` without restarting it.
+The gateway server enables a 15-second watchdog that revives failed services;
+use `create_app(..., watchdog=False)` when embedding it without supervision.
 
 ## Memory budget controls
 

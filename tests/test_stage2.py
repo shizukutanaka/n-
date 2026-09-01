@@ -103,6 +103,145 @@ class _AdmissionProcess:
         return 0
 
 
+class _RecoverProcess:
+    _next_pid = 1000
+
+    def __init__(self) -> None:
+        self.pid = self._next_pid
+        type(self)._next_pid += 1
+        self.exit_code: int | None = None
+
+    def poll(self) -> int | None:
+        return self.exit_code
+
+    def terminate(self) -> None:
+        self.exit_code = 0
+
+    def kill(self) -> None:
+        self.exit_code = -9
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.exit_code or 0
+
+
+def _recovery_plan(catalog: list[ModelSpec]):
+    plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
+    service = replace(plan.services[0], launch=replace(plan.services[0].launch, health_url=None))
+    return replace(plan, services=[service])
+
+
+def test_supervisor_heartbeat_revives_dead_process(tmp_path, catalog: list[ModelSpec]) -> None:
+    plan = _recovery_plan(catalog)
+    processes: list[_RecoverProcess] = []
+    supervisor = Supervisor(
+        lambda _service: processes.append(_RecoverProcess()) or processes[-1],
+        tmp_path / "heartbeat.json",
+        health_timeout=0.01,
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    supervisor.up(plan, no_download=True, admit=False)
+    processes[0].exit_code = 137
+    result = supervisor.heartbeat()
+    assert len(processes) == 2
+    assert result.services[0]["restarts"] == 1
+    supervisor.down()
+
+
+def test_supervisor_heartbeat_restart_budget_marks_failure(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    plan = _recovery_plan(catalog)
+    processes: list[_RecoverProcess] = []
+    supervisor = Supervisor(
+        lambda _service: processes.append(_RecoverProcess()) or processes[-1],
+        tmp_path / "budget.json",
+        health_timeout=0.01,
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    supervisor.up(plan, no_download=True, admit=False)
+    for _ in range(4):
+        processes[-1].exit_code = 137
+        supervisor.heartbeat()
+    assert len(processes) == 4
+    failed = next(item for item in supervisor.status().services if item["service"] == "chat")
+    assert failed["running"] is False
+    assert "failed" in failed
+    supervisor.down()
+
+
+def test_supervisor_heartbeat_skips_unloaded_swap_member(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    plan = _recovery_plan(catalog)
+    plan = replace(plan, swap_group=["chat"])
+    calls: list[str] = []
+    supervisor = Supervisor(
+        lambda service: calls.append(service.name) or _AdmissionProcess(),
+        tmp_path / "swap-heartbeat.json",
+        health_timeout=0.01,
+    )
+    supervisor.active_plan = plan
+    supervisor.heartbeat()
+    assert calls == []
+    supervisor.down()
+
+
+def test_supervisor_ensure_running_revives_dead_process(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    plan = _recovery_plan(catalog)
+    processes: list[_RecoverProcess] = []
+    supervisor = Supervisor(
+        lambda _service: processes.append(_RecoverProcess()) or processes[-1],
+        tmp_path / "ensure.json",
+        health_timeout=0.01,
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    supervisor.up(plan, no_download=True, admit=False)
+    processes[0].exit_code = 1
+    supervisor.ensure_running("chat", plan)
+    assert len(processes) == 2
+    assert supervisor.restarts["chat"]
+    supervisor.down()
+
+
+def test_supervisor_adopts_healthy_external_service(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    plan = replace(plan, services=[service])
+    calls: list[str] = []
+    process = _AdmissionProcess()
+    supervisor = Supervisor(
+        lambda item: calls.append(item.name) or process,
+        tmp_path / "adopt.json",
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+    supervisor.ensure_running("chat", plan)
+    assert calls == []
+    assert supervisor.external_shared == {"chat"}
+    result = supervisor.status()
+    assert result.services[0]["external"] is True
+    supervisor.down()
+    assert process.poll() is None
+
+
+def test_supervisor_status_state_fallback_is_running(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        '{"services": [{"service": "chat", "pid": 123, "port": 18010}]}',
+        encoding="utf-8",
+    )
+    result = Supervisor(state_path=state_path).status()
+    assert result.running is True
+    assert result.services[0]["service"] == "chat"
+
+
 def test_supervisor_admission_replans_against_free_memory(
     tmp_path, catalog: list[ModelSpec]
 ) -> None:

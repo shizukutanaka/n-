@@ -21,6 +21,8 @@ from .acquisition import acquire
 
 STATE_PATH = Path.home() / ".nmesh" / "state.json"
 HEALTH_TIMEOUT = 120.0
+MAX_RESTARTS = 3
+RESTART_WINDOW = 300.0
 GIB = 1024**3
 
 
@@ -56,19 +58,46 @@ class Supervisor:
         self.processes: dict[str, ProcessLike] = {}
         self.shared_services: set[str] = set()
         self.external_shared: set[str] = set()
+        self.restarts: dict[str, list[float]] = {}
+        self.failed: dict[str, str] = {}
         self.active_plan: Plan | None = None
         self._lock = RLock()
         atexit.register(self.down)
 
     def _already_up(self, service: PlannedService) -> bool:
+        if service.name in self.processes:
+            return self._alive(service.name)
+        if service.name in self.external_shared:
+            if service.launch.health_url is not None and self._healthy(service):
+                return True
+            self.external_shared.discard(service.name)
         return (
-            service.name in self.processes
-            or (
-                service.launch.shared_daemon
-                and service.launch.health_url is not None
-                and self._healthy(service)
-            )
+            service.launch.shared_daemon
+            and service.launch.health_url is not None
+            and self._healthy(service)
         )
+
+    def _alive(self, name: str) -> bool:
+        process = self.processes.get(name)
+        return process is not None and process.poll() is None
+
+    def _adopt(self, service: PlannedService) -> bool:
+        if service.name in self.processes or service.launch.health_url is None:
+            return False
+        if self._healthy(service):
+            self.external_shared.add(service.name)
+            return True
+        self.external_shared.discard(service.name)
+        return False
+
+    def _restart_budget(self, name: str) -> bool:
+        cutoff = time.monotonic() - RESTART_WINDOW
+        timestamps = [stamp for stamp in self.restarts.get(name, []) if stamp >= cutoff]
+        self.restarts[name] = timestamps
+        return len(timestamps) < MAX_RESTARTS
+
+    def _record_restart(self, name: str) -> None:
+        self.restarts.setdefault(name, []).append(time.monotonic())
 
     def _admit(self, plan: Plan,
                bench_cache: Mapping[object, float] | None = None) -> Plan:
@@ -148,6 +177,13 @@ class Supervisor:
             ), "started_at": time.time(), "shared": True}
             for name in self.shared_services if name not in self.processes
         )
+        entries.extend(
+            {"service": name, "pid": None, "port": next(
+                (item.port for item in plan.services if item.name == name), 0
+            ), "started_at": time.time(), "shared": True, "external": True}
+            for name in self.external_shared
+            if name not in self.processes and name not in self.shared_services
+        )
         payload = {
             "services": entries,
         }
@@ -211,13 +247,26 @@ class Supervisor:
             for attempt in range(1, 4):
                 try:
                     for service in current.services:
+                        dead = service.name in self.processes and not self._alive(service.name)
+                        if dead:
+                            self.processes.pop(service.name, None)
+                        if service.name not in self.processes and self._adopt(service):
+                            continue
                         if self._already_up(service):
                             if service.launch.shared_daemon:
                                 self.shared_services.add(service.name)
                             continue
+                        if dead:
+                            if not self._restart_budget(service.name):
+                                self.failed[service.name] = "Restart budget exhausted"
+                                raise RuntimeError(
+                                    f"Restart budget exhausted: {service.name}"
+                                )
+                            self._record_restart(service.name)
                         if not no_download:
                             acquire(service)
                         self.processes[service.name] = self.launcher(service)
+                        self.failed.pop(service.name, None)
                         if not self._wait_health(service):
                             raise RuntimeError(f"Service did not become healthy: {service.name}")
                     if current is plan:
@@ -256,6 +305,8 @@ class Supervisor:
             self.processes.clear()
             self.shared_services.clear()
             self.external_shared.clear()
+            self.restarts.clear()
+            self.failed.clear()
             self.active_plan = None
             try:
                 self.state_path.unlink()
@@ -276,14 +327,26 @@ class Supervisor:
                 for name in list(self.processes):
                     if name != service_name and name in selected.swap_group:
                         self._stop_process(name)
-            if (target.launch.shared_daemon and target.launch.health_url is not None
-                    and self._healthy(target)):
-                self.shared_services.add(service_name)
-            elif service_name not in self.processes:
+            dead = service_name in self.processes and not self._alive(service_name)
+            if dead:
+                self.processes.pop(service_name, None)
+            if service_name not in self.processes and self._adopt(target):
+                pass
+            elif self._already_up(target):
+                if target.launch.shared_daemon:
+                    self.shared_services.add(service_name)
+            else:
+                if dead:
+                    if not self._restart_budget(service_name):
+                        self.failed[service_name] = "Restart budget exhausted"
+                        self._persist(selected)
+                        raise RuntimeError(f"Restart budget exhausted: {service_name}")
+                    self._record_restart(service_name)
                 self.processes[service_name] = self.launcher(target)
                 if not self._wait_health(target):
                     self._stop_process(service_name)
                     raise RuntimeError(f"Service did not become healthy: {service_name}")
+                self.failed.pop(service_name, None)
             self._persist(selected)
             return self.status()
 
@@ -311,17 +374,82 @@ class Supervisor:
                     process.kill()
 
     def status(self) -> RuntimeStatus:
-        entries = [{"service": name, "pid": process.pid, "running": process.poll() is None}
-                   for name, process in self.processes.items()]
+        entries = [{
+            "service": name,
+            "pid": process.pid,
+            "running": process.poll() is None,
+            "restarts": len(self.restarts.get(name, [])),
+        } for name, process in self.processes.items()]
         entries.extend({"service": name, "pid": None, "running": True, "shared": True}
                        for name in self.shared_services if name not in self.processes)
+        entries.extend({
+            "service": name,
+            "pid": None,
+            "running": True,
+            "shared": True,
+            "external": True,
+        } for name in self.external_shared if name not in self.processes)
+        from_state = False
         if not entries and self.state_path.exists():
             try:
                 payload = json.loads(self.state_path.read_text(encoding="utf-8"))
                 entries = list(payload.get("services", []))
+                from_state = True
             except (OSError, json.JSONDecodeError):
                 entries = []
-        return RuntimeStatus(any(bool(item.get("running", True)) for item in entries), entries)
+        names = {str(item.get("service")) for item in entries}
+        entries.extend({
+            "service": name,
+            "pid": None,
+            "running": False,
+            "failed": reason,
+            "restarts": len(self.restarts.get(name, [])),
+        } for name, reason in self.failed.items() if name not in names)
+        default_running = bool(from_state)
+        return RuntimeStatus(
+            any(bool(item.get("running", default_running)) for item in entries), entries
+        )
+
+    def heartbeat(self) -> RuntimeStatus:
+        with self._lock:
+            if self.active_plan is None:
+                return self.status()
+            changed = False
+            for service in self.active_plan.services:
+                if (
+                    service.name in self.active_plan.swap_group
+                    and service.name not in self.processes
+                    and service.name not in self.external_shared
+                ):
+                    continue
+                if self._already_up(service) or service.name in self.failed:
+                    continue
+                if service.name in self.processes:
+                    self.processes.pop(service.name, None)
+                if not self._restart_budget(service.name):
+                    self.failed[service.name] = "Restart budget exhausted"
+                    changed = True
+                    continue
+                if self._adopt(service):
+                    changed = True
+                    continue
+                self._record_restart(service.name)
+                changed = True
+                try:
+                    self.processes[service.name] = self.launcher(service)
+                    if not self._wait_health(service, timeout=min(self.health_timeout, 30.0)):
+                        self._stop_process(service.name)
+                        if not self._restart_budget(service.name):
+                            self.failed[service.name] = (
+                                f"Service failed health check: {service.name}"
+                            )
+                except Exception as error:  # noqa: BLE001
+                    self.processes.pop(service.name, None)
+                    if not self._restart_budget(service.name):
+                        self.failed[service.name] = str(error)
+            if changed:
+                self._persist(self.active_plan)
+            return self.status()
 
 
 _default = Supervisor()
@@ -349,3 +477,7 @@ def status() -> RuntimeStatus:
 
 def ensure_running(service_name: str, plan: Plan | None = None) -> RuntimeStatus:
     return _default.ensure_running(service_name, plan)
+
+
+def heartbeat() -> RuntimeStatus:
+    return _default.heartbeat()
