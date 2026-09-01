@@ -36,6 +36,10 @@ from nmesh.telemetry import bench_overlay
 from nmesh.telemetry import summary as telemetry_summary
 
 
+def _console() -> Console:
+    return Console(legacy_windows=False)
+
+
 def _configure_output() -> None:
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -117,7 +121,7 @@ def _doctor(as_json: bool) -> int:
         )
     table.add_row("Free budget VRAM", _bytes(free_vram))
     table.add_row("Free budget RAM", _bytes(free_ram))
-    Console(legacy_windows=False).print(table)
+    _console().print(table)
     backend = Table(title=i18n.t("label.backends", language))
     backend.add_column(i18n.t("label.backend", language))
     backend.add_column(i18n.t("label.binary", language))
@@ -131,9 +135,9 @@ def _doctor(as_json: bool) -> int:
             version or i18n.t("label.not_found", language),
             str(len(flags)) if flags is not None else i18n.t("label.unknown", language),
         )
-    Console(legacy_windows=False).print(backend)
+    _console().print(backend)
     for warning in localized_warnings:
-        Console(legacy_windows=False).print(f"[yellow]- {warning}[/yellow]")
+        _console().print(f"[yellow]- {warning}[/yellow]")
     if selected_models:
         models = Table(title=i18n.t("label.selected_models", language))
         models.add_column(i18n.t("label.service", language))
@@ -141,7 +145,7 @@ def _doctor(as_json: bool) -> int:
         models.add_column(i18n.t("label.languages", language))
         for item in selected_models:
             models.add_row(item["service"], item["model"], ",".join(item["languages"]))
-        Console(legacy_windows=False).print(models)
+        _console().print(models)
     return 0
 
 
@@ -193,20 +197,20 @@ def _plan(args: argparse.Namespace) -> int:
                       str(service.context), str(service.memory.parallel_slots),
                       str(service.n_gpu_layers), ",".join(service.languages),
                       f"{service.decode_tps:.1f}")
-    Console(legacy_windows=False).print(table)
-    Console(legacy_windows=False).print(i18n.t("label.saved_to", language, path=path))
+    _console().print(table)
+    _console().print(i18n.t("label.saved_to", language, path=path))
     if result.policy.budget_source == "free":
-        Console(legacy_windows=False).print(i18n.t("label.free_budgets", language))
+        _console().print(i18n.t("label.free_budgets", language))
     if getattr(args, "_telemetry_keys", 0):
-        Console(legacy_windows=False).print(
+        _console().print(
             i18n.t("label.telemetry_overlay", language, count=args._telemetry_keys)
         )
     for hint in result.install_hints:
-        Console(legacy_windows=False).print(f"[yellow]{i18n.t('label.install', language, hint=hint)}[/yellow]")
+        _console().print(f"[yellow]{i18n.t('label.install', language, hint=hint)}[/yellow]")
     for warning in result.warnings:
-        Console(legacy_windows=False).print(f"[yellow]{i18n.t('label.warning', language, warning=warning)}[/yellow]")
+        _console().print(f"[yellow]{i18n.t('label.warning', language, warning=warning)}[/yellow]")
     if not getattr(args, "lang", None) and language != "en":
-        Console(legacy_windows=False).print(i18n.t("hint.language", language, locale=language, language=language))
+        _console().print(i18n.t("hint.language", language, language=language))
     if args.explain:
         memory = Table(title=i18n.t("label.memory", language))
         for column in (i18n.t("label.service", language),
@@ -218,7 +222,7 @@ def _plan(args: argparse.Namespace) -> int:
             item = service.memory
             memory.add_row(service.name, _bytes(item.weight_bytes), _bytes(item.kv_cache_bytes),
                            f"{_bytes(item.gpu_bytes)} / {_bytes(item.cpu_bytes)}")
-        Console(legacy_windows=False).print(memory)
+        _console().print(memory)
     return 0
 
 
@@ -335,7 +339,7 @@ def _runtime(args: argparse.Namespace) -> int:
         _print_json(status_data)
     elif args.command == "up" and args.dry_run:
         for item in result.services:
-            Console(legacy_windows=False).print(
+            _console().print(
                 i18n.t("label.backend_detail", language, service=item["service"],
                        backend=item["backend"], model_ref=item["model_ref"],
                        port=item["port"], context=item["context"],
@@ -343,15 +347,15 @@ def _runtime(args: argparse.Namespace) -> int:
                        argv=" ".join(str(x) for x in item["argv"]))
             )
     else:
-        Console(legacy_windows=False).print(result)
+        _console().print(result)
         if args.command == "up" and args.detach and gateway_log is not None:
-            Console(legacy_windows=False).print(
+            _console().print(
                 i18n.t("label.gateway_log", language, path=gateway_log)
             )
         if args.command == "status":
             for item in result.services:
                 if item.get("note"):
-                    Console(legacy_windows=False).print(
+                    _console().print(
                         i18n.t("label.acquisition_note", language,
                                service=item.get("service"), note=item["note"])
                     )
@@ -372,7 +376,7 @@ def _runtime(args: argparse.Namespace) -> int:
                     f"{metrics.get('ttft_s_p95', 0):.3f}",
                     f"{metrics.get('total_s_median', 0):.3f}",
                 )
-            Console(legacy_windows=False).print(table)
+            _console().print(table)
     return 0 if exit_code == 0 else 1
 
 
@@ -450,7 +454,7 @@ def _models(args: argparse.Namespace) -> int:
     for model in models:
         table.add_row(model.id, model.family, str(model.params), ",".join(model.roles),
                       str(model.max_context), ",".join(model.languages))
-    Console(legacy_windows=False).print(table)
+    _console().print(table)
     return 0
 
 
@@ -504,7 +508,7 @@ def _bench(args: argparse.Namespace) -> int:
     else:
         marker = "~" if measurement.approximate else ""
         language = i18n.lang()
-        Console(legacy_windows=False).print("\n".join((
+        _console().print("\n".join((
             i18n.t("label.median_decode", language, marker=marker,
                    value=measurement.decode_tps),
             i18n.t("label.prefill", language, marker=marker,
@@ -680,7 +684,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         result = {"service": service.name, "context": best[0], "n_gpu_layers": best[1],
                   "decode_tps": best[2]}
-        _print_json(result) if args.json else Console(legacy_windows=False).print(result)
+        _print_json(result) if args.json else _console().print(result)
         return 0
     if args.command == "autostart":
         filename, text, install_command = service_unit(args.port)
