@@ -161,7 +161,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 except KeyboardInterrupt:
                     runtime_down()
     elif args.command == "down":
-        result = runtime_down()
+        result = runtime_down(foreign=True)
     else:
         result = runtime_status()
         try:
