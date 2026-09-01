@@ -14,6 +14,17 @@ from .generic_gpu import detect_generic
 from .models import GPUInfo, HardwareProfile, OperatingSystem, classify_tier
 
 
+def _append_warning(
+    warnings: list[str],
+    warning_params: list[dict[str, str]] | None,
+    key: str,
+    **params: object,
+) -> None:
+    warnings.append(key)
+    if warning_params is not None:
+        warning_params.append({name: str(value) for name, value in params.items()})
+
+
 def _run(command: list[str]) -> tuple[str | None, str | None]:
     try:
         result = subprocess.run(
@@ -127,7 +138,9 @@ def parse_rocm_smi(text: str) -> list[GPUInfo]:
     return sorted(gpus, key=lambda gpu: gpu.index)
 
 
-def _detect_nvidia(warnings: list[str]) -> list[GPUInfo]:
+def _detect_nvidia(
+    warnings: list[str], warning_params: list[dict[str, str]] | None = None
+) -> list[GPUInfo]:
     try:
         import pynvml  # type: ignore[import-not-found]
 
@@ -165,22 +178,25 @@ def _detect_nvidia(warnings: list[str]) -> list[GPUInfo]:
         )
         if output:
             return parse_nvidia_smi(output)
-        warnings.append("NVIDIA detection unavailable")
+        _append_warning(warnings, warning_params, "warn.nvidia_unavailable")
         return []
 
 
-def _detect_rocm(warnings: list[str]) -> list[GPUInfo]:
+def _detect_rocm(
+    warnings: list[str], warning_params: list[dict[str, str]] | None = None
+) -> list[GPUInfo]:
     output, _ = _run(["rocm-smi", "--showmeminfo", "vram", "--json"])
     if not output:
         return []
     gpus = parse_rocm_smi(output)
     if not gpus:
-        warnings.append("Unable to parse rocm-smi output")
+        _append_warning(warnings, warning_params, "warn.rocm_parse")
     return gpus
 
 
 def _detect_backends(
     warnings: list[str],
+    warning_params: list[dict[str, str]] | None = None,
 ) -> tuple[
     dict[str, str | None],
     dict[str, tuple[str, ...]],
@@ -222,7 +238,7 @@ def _detect_backends(
         if output and "installed" in output:
             backends["mlx"] = "installed"
         elif error and "No module named" not in error:
-            warnings.append("Unable to check mlx_lm")
+            _append_warning(warnings, warning_params, "warn.mlx_check")
     return backends, flags, paths, gpu_devices
 
 
@@ -260,6 +276,7 @@ def _mark_display(gpus: list[GPUInfo], os_name: OperatingSystem) -> list[GPUInfo
 
 def detect_hardware() -> HardwareProfile:
     warnings: list[str] = []
+    warning_params: list[dict[str, str]] = []
     os_name = _os_name()
     try:
         cpu_name = platform.processor() or platform.machine() or "Unknown CPU"
@@ -271,7 +288,9 @@ def detect_hardware() -> HardwareProfile:
         root = Path.home().anchor or Path.cwd().anchor or "."
         free_disk = int(psutil.disk_usage(root).free)
     except Exception as error:  # noqa: BLE001
-        warnings.append(f"System probe failed: {error}")
+        _append_warning(
+            warnings, warning_params, "warn.system_probe", error=error
+        )
         cpu_name = platform.machine() or "Unknown CPU"
         physical_cores = logical_cores = 1
         total_ram = available_ram = free_disk = 0
@@ -282,19 +301,20 @@ def detect_hardware() -> HardwareProfile:
         total = int(total_ram * 0.70)
         gpus = [GPUInfo(0, "Apple Silicon", "apple", total, total, None, True, "unknown")]
     else:
-        gpus = _detect_nvidia(warnings)
+        gpus = _detect_nvidia(warnings, warning_params)
         if not gpus:
-            gpus = _detect_rocm(warnings)
+            gpus = _detect_rocm(warnings, warning_params)
         if not gpus:
             gpus = detect_generic(os_name)
             for gpu in gpus:
                 if gpu.total_vram_bytes < 2 * 1024**3:
-                    warnings.append(
-                        f"{gpu.name} has less than 2 GiB dedicated VRAM; it remains visible "
-                        "but is not used for GPU placement"
+                    _append_warning(
+                        warnings, warning_params, "warn.low_vram", gpu=gpu.name
                     )
     gpus = _mark_display(gpus, os_name)
-    backends, backend_flags, backend_paths, backend_gpu_devices = _detect_backends(warnings)
+    backends, backend_flags, backend_paths, backend_gpu_devices = _detect_backends(
+        warnings, warning_params
+    )
     tier = classify_tier(gpus, unified, total_ram)
     return HardwareProfile(
         os_name,
@@ -312,4 +332,5 @@ def detect_hardware() -> HardwareProfile:
         backend_flags,
         backend_paths,
         backend_gpu_devices,
+        warning_params,
     )

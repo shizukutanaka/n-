@@ -673,7 +673,7 @@ class Supervisor:
             target = next((item for item in selected.services if item.name == service_name), None)
             if target is None:
                 raise KeyError(i18n.t(
-                    "err.unknown_service_key", i18n.lang(), service=service_name
+                    "err.unknown_service", i18n.lang(), service=service_name
                 ))
             actualized = False
             if service_name in selected.swap_group:
@@ -903,7 +903,7 @@ def up(plan: Plan | None = None, no_download: bool = False, dry_run: bool = Fals
        bench_cache: Mapping[object, float] | None = None) -> RuntimeStatus:
     selected = plan or load_plan()
     if selected is None:
-        raise FileNotFoundError(i18n.t("err.no_plan_found", i18n.lang()))
+        raise FileNotFoundError(i18n.t("err.no_plan", i18n.lang()))
     return _default.up(
         selected, no_download=no_download, dry_run=dry_run, admit=admit,
         bench_cache=bench_cache,

@@ -869,8 +869,7 @@ def _rewrite_launch(
             del argv[index:index + 2]
         if not parallel and warnings is not None and slots > 1:
             warnings.append(
-                t("warn.slots_clamped", language, service="llamacpp",
-                  requested=slots, slots=1)
+                t("warn.parallel_clamped", language, requested=slots)
             )
     elif service.backend == "vllm":
         if "--max-num-seqs" in argv:
@@ -891,7 +890,19 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                bench_cache: Mapping[object, float] | None = None) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
-    warnings = list(profile.warnings)
+    warning_params = profile.warning_params
+    warnings = [
+        t(
+            warning,
+            selected.lang,
+            **(
+                warning_params[index]
+                if index < len(warning_params)
+                else {}
+            ),
+        )
+        for index, warning in enumerate(profile.warnings)
+    ]
     if profile.backend_gpu_devices.get("llamacpp") == () and profile.gpus:
         warnings.append(
             "llama.cpp binary reports no GPU backend; using CPU placement. "
@@ -1002,6 +1013,12 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             )
             for name, devices in pd.get("backend_gpu_devices", {}).items()
         },
+        [
+            {str(key): str(value) for key, value in params.items()}
+            if isinstance(params, dict)
+            else {}
+            for params in pd.get("warning_params", [])
+        ],
     )
     pol = data["policy"]
     if not isinstance(pol, dict):
