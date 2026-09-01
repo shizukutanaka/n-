@@ -320,7 +320,9 @@ def create_app(
                                 )
                                 if isinstance(candidate_usage, dict):
                                     usage = candidate_usage
-                                    continue
+                                    choices = payload.get("choices")
+                                    if isinstance(choices, list) and not choices:
+                                        continue
                                 now = time.perf_counter()
                                 tokens += 1
                                 first_line_time = first_line_time or now
@@ -350,7 +352,7 @@ def create_app(
                         )
                         decode = (
                             max(completion_tokens - 1, 0) / span
-                            if completion_tokens > 0 and span > 0 else None
+                            if completion_tokens >= 16 and span > 0 else None
                         )
                         try:
                             await asyncio.to_thread(record_telemetry, Sample(

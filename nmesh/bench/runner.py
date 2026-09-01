@@ -55,7 +55,9 @@ def _measure_once(service: PlannedService, base_url: str, prefill_tokens: int,
             candidate_usage = payload.get("usage") if isinstance(payload, dict) else None
             if isinstance(candidate_usage, dict):
                 usage = candidate_usage
-                continue
+                choices = payload.get("choices")
+                if isinstance(choices, list) and not choices:
+                    continue
             now = time.perf_counter()
             chunks += 1
             first_time = now if first_time is None else first_time

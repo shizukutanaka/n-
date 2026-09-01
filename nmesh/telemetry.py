@@ -95,7 +95,12 @@ class Telemetry:
             if sample.decode_tps is not None:
                 groups = approximate if sample.approximate else exact
                 groups.setdefault(sample.key, []).append(sample.decode_tps)
-        selected = exact
+        selected: dict[str, list[float]] = {}
+        for key, values in exact.items():
+            if len(values) >= min_samples or key not in approximate:
+                selected[key] = values
+            else:
+                selected[key] = approximate[key]
         for key, values in approximate.items():
             selected.setdefault(key, values)
         return {

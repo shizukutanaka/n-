@@ -38,6 +38,7 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
 
 class _UsageHandler(BaseHTTPRequestHandler):
     request_body: ClassVar[dict[str, object]] = {}
+    usage_on_every_chunk: ClassVar[bool] = False
 
     def do_POST(self) -> None:
         length = int(self.headers["Content-Length"])
@@ -46,9 +47,15 @@ class _UsageHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         for index in range(20):
-            payload = json.dumps(
-                {"choices": [{"delta": {"content": str(index)}}]}
-            ).encode()
+            data: dict[str, object] = {
+                "choices": [{"delta": {"content": str(index)}}],
+            }
+            if self.__class__.usage_on_every_chunk:
+                data["usage"] = {
+                    "prompt_tokens": 23,
+                    "completion_tokens": index + 1,
+                }
+            payload = json.dumps(data).encode()
             self.wfile.write(b"data: " + payload + b"\n\n")
             self.wfile.flush()
         payload = json.dumps({
@@ -109,6 +116,7 @@ def test_bench_runner_uses_upstream_usage_counts() -> None:
     thread = threading.Thread(target=upstream.serve_forever, daemon=True)
     thread.start()
     try:
+        _UsageHandler.usage_on_every_chunk = True
         model = ModelSpec("usage-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
                           4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
         plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
@@ -122,6 +130,7 @@ def test_bench_runner_uses_upstream_usage_counts() -> None:
             "include_usage": True,
         }
     finally:
+        _UsageHandler.usage_on_every_chunk = False
         upstream.shutdown()
         upstream.server_close()
 
