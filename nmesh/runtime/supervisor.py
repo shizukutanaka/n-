@@ -102,6 +102,11 @@ class Supervisor:
             atexit.register(self.down)
             self._atexit_armed = True
 
+    def disarm_atexit(self) -> None:
+        if self._atexit_armed:
+            atexit.unregister(self.down)
+            self._atexit_armed = False
+
     @staticmethod
     def _terminate_pid(pid: int) -> None:
         try:
@@ -168,6 +173,69 @@ class Supervisor:
             except OSError:
                 pass
             raise
+
+    def record_gateway(self, pid: int, port: int) -> None:
+        with self._lock:
+            state = self._load_state() or {
+                "version": STATE_VERSION,
+                "owner_pid": os.getpid(),
+                "services": [],
+            }
+            state["version"] = STATE_VERSION
+            state["gateway"] = {
+                "pid": pid,
+                "create_time": self._create_time(pid),
+                "port": port,
+                "owner_pid": os.getpid(),
+            }
+            self._write_state(state)
+
+    def clear_gateway(self, pid: int | None = None) -> None:
+        with self._lock:
+            state = self._load_state()
+            if state is None:
+                return
+            gateway = state.get("gateway")
+            if isinstance(gateway, dict) and (
+                pid is None or gateway.get("pid") == pid
+            ):
+                state.pop("gateway", None)
+                if state.get("services"):
+                    self._write_state(state)
+                else:
+                    try:
+                        self.state_path.unlink()
+                    except FileNotFoundError:
+                        pass
+
+    def stop_gateway(self, foreign: bool = False) -> bool:
+        with self._lock:
+            state = self._load_state()
+            if state is None:
+                return False
+            gateway = state.get("gateway")
+            if not isinstance(gateway, dict):
+                return False
+            owner = gateway.get("owner_pid", state.get("owner_pid"))
+            if not foreign and owner != os.getpid():
+                return False
+            pid = gateway.get("pid")
+            live = False
+            try:
+                live = pid is not None and self._entry_alive(gateway)
+            except (TypeError, ValueError):
+                live = False
+            if live:
+                self._terminator(int(pid))
+            state.pop("gateway", None)
+            if state.get("services"):
+                self._write_state(state)
+            else:
+                try:
+                    self.state_path.unlink()
+                except FileNotFoundError:
+                    pass
+            return bool(live)
 
     def _already_up(self, service: PlannedService) -> bool:
         if service.name in self.processes:
@@ -405,11 +473,15 @@ class Supervisor:
                 entry.pop("create_time", None)
             if entry.get("service") in self.notes:
                 entry["note"] = self.notes[str(entry["service"])]
-        self._write_state({
+        payload: dict[str, object] = {
             "version": STATE_VERSION,
             "owner_pid": os.getpid(),
             "services": entries,
-        })
+        }
+        existing_gateway = existing.get("gateway")
+        if isinstance(existing_gateway, dict) and self._entry_alive(existing_gateway):
+            payload["gateway"] = existing_gateway
+        self._write_state(payload)
 
     def _fallback(self, plan: Plan, attempt: int) -> Plan:
         quant_order = tuple(BPW)
@@ -428,9 +500,13 @@ class Supervisor:
             if "--max-model-len" in argv:
                 argv[argv.index("--max-model-len") + 1] = str(context)
             if "-c" in argv:
-                argv[argv.index("-c") + 1] = str(context * service.memory.parallel_slots)
-            if "-ngl" in argv and layers is not None:
-                argv[argv.index("-ngl") + 1] = str(layers)
+                context_value = context
+                if "--parallel" in argv:
+                    context_value *= service.memory.parallel_slots
+                argv[argv.index("-c") + 1] = str(context_value)
+            for flag in ("-ngl", "--gpu-layers", "--n-gpu-layers"):
+                if flag in argv and layers is not None:
+                    argv[argv.index(flag) + 1] = str(layers)
             model_ref = service.model_ref
             if service.backend == "llamacpp":
                 model_ref = model_ref.replace(f"-{service.quant}.gguf", f"-{quant}.gguf")
@@ -547,7 +623,24 @@ class Supervisor:
                     if self._entry_alive(entry):
                         retained.append(entry)
                 state["services"] = retained
-                if retained:
+                gateway = state.get("gateway")
+                gateway_retained = False
+                if isinstance(gateway, dict):
+                    owner = gateway.get("owner_pid", state.get("owner_pid"))
+                    live = self._entry_alive(gateway)
+                    if owner == os.getpid() or foreign:
+                        if live and gateway.get("pid") is not None:
+                            self._terminator(int(gateway["pid"]))
+                        gateway = None
+                    else:
+                        gateway_retained = live
+                    if gateway is None:
+                        state.pop("gateway", None)
+                    elif gateway_retained:
+                        state["gateway"] = gateway
+                    else:
+                        state.pop("gateway", None)
+                if retained or gateway_retained:
                     self._write_state(state)
                 else:
                     try:
@@ -672,28 +765,54 @@ class Supervisor:
                 "backend": planned(name).backend} if planned(name) else {}),
             **({"note": self.notes[name]} if name in self.notes else {}),
         } for name in self.external_shared if name not in self.processes)
-        if not entries and self.state_path.exists():
-            payload = self._load_state()
-            if payload is not None:
-                entries = [
-                    dict(item) for item in payload.get("services", [])
-                    if isinstance(item, dict)
-                ]
-                live_entries = []
-                for item in entries:
-                    item["running"] = self._entry_alive(item)
-                    if item["running"]:
-                        live_entries.append(item)
-                had_dead_entries = len(live_entries) != len(entries)
-                if had_dead_entries:
-                    if live_entries:
-                        payload["services"] = live_entries
-                        self._write_state(payload)
+        payload = self._load_state() if self.state_path.exists() else None
+        gateway = payload.get("gateway") if payload else None
+        gateway_entry = None
+        gateway_running = False
+        if isinstance(gateway, dict):
+            gateway_entry = dict(gateway)
+            gateway_entry["service"] = "gateway"
+            gateway_running = self._entry_alive(gateway)
+            gateway_entry["running"] = gateway_running
+        if not entries and payload is not None:
+            state_services = [
+                dict(item) for item in payload.get("services", [])
+                if isinstance(item, dict)
+            ]
+            entries = state_services
+            live_services = []
+            for item in state_services:
+                item["running"] = self._entry_alive(item)
+                if item["running"]:
+                    live_services.append(item)
+            if gateway_entry is not None:
+                entries.append(gateway_entry)
+            if len(live_services) != len(state_services) or (
+                gateway_entry is not None and not gateway_running
+            ):
+                if live_services or gateway_running:
+                    payload["services"] = live_services
+                    if gateway_running:
+                        payload["gateway"] = gateway
                     else:
-                        try:
-                            self.state_path.unlink()
-                        except FileNotFoundError:
-                            pass
+                        payload.pop("gateway", None)
+                    self._write_state(payload)
+                else:
+                    try:
+                        self.state_path.unlink()
+                    except FileNotFoundError:
+                        pass
+        elif gateway_entry is not None:
+            entries.append(gateway_entry)
+            if not gateway_running:
+                payload.pop("gateway", None)
+                if payload.get("services"):
+                    self._write_state(payload)
+                else:
+                    try:
+                        self.state_path.unlink()
+                    except FileNotFoundError:
+                        pass
         names = {str(item.get("service")) for item in entries}
         entries.extend({
             "service": name,
@@ -773,6 +892,22 @@ def up(plan: Plan | None = None, no_download: bool = False, dry_run: bool = Fals
 
 def down(foreign: bool = False) -> RuntimeStatus:
     return _default.down(foreign=foreign)
+
+
+def record_gateway(pid: int, port: int) -> None:
+    _default.record_gateway(pid, port)
+
+
+def clear_gateway(pid: int | None = None) -> None:
+    _default.clear_gateway(pid)
+
+
+def disarm_atexit() -> None:
+    _default.disarm_atexit()
+
+
+def stop_gateway(foreign: bool = False) -> bool:
+    return _default.stop_gateway(foreign=foreign)
 
 
 def status() -> RuntimeStatus:

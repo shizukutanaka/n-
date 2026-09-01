@@ -1,7 +1,19 @@
 from .acquisition import Acquired
-from .supervisor import RuntimeStatus, Supervisor, down, ensure_running, heartbeat, status, up
+from .supervisor import (
+    RuntimeStatus,
+    Supervisor,
+    clear_gateway,
+    disarm_atexit,
+    down,
+    ensure_running,
+    heartbeat,
+    record_gateway,
+    status,
+    stop_gateway,
+    up,
+)
 
 __all__ = [
-    "Acquired", "RuntimeStatus", "Supervisor", "down", "ensure_running", "heartbeat",
-    "status", "up",
+    "Acquired", "RuntimeStatus", "Supervisor", "clear_gateway", "disarm_atexit", "down",
+    "ensure_running", "heartbeat", "record_gateway", "status", "stop_gateway", "up",
 ]
