@@ -22,7 +22,7 @@ from nmesh.planner import (
     load_plan,
     save_plan,
 )
-from nmesh.probe import detect_hardware
+from nmesh.probe import HardwareProfile, detect_hardware
 from nmesh.runtime import RuntimeStatus
 from nmesh.runtime import down as runtime_down
 from nmesh.runtime import status as runtime_status
@@ -63,20 +63,11 @@ def _print_json(value: object) -> None:
     print(json.dumps(value, indent=2, default=str))
 
 
-def _profile_warnings(profile: object, language: str) -> list[str]:
-    warnings = getattr(profile, "warnings", [])
-    params = getattr(profile, "warning_params", [])
+def _profile_warnings(profile: HardwareProfile, language: str) -> list[str]:
+    params = profile.warning_params
     return [
-        i18n.t(
-            warning,
-            language,
-            **(
-                params[index]
-                if index < len(params) and isinstance(params[index], dict)
-                else {}
-            ),
-        )
-        for index, warning in enumerate(warnings)
+        i18n.t(warning, language, **(params[index] if index < len(params) else {}))
+        for index, warning in enumerate(profile.warnings)
     ]
 
 

@@ -861,16 +861,12 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                bench_cache: Mapping[object, float] | None = None) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
-    warning_params = getattr(profile, "warning_params", [])
+    warning_params = profile.warning_params
     warnings = [
         t(
             warning,
             selected.lang,
-            **(
-                warning_params[index]
-                if index < len(warning_params) and isinstance(warning_params[index], dict)
-                else {}
-            ),
+            **(warning_params[index] if index < len(warning_params) else {}),
         )
         for index, warning in enumerate(profile.warnings)
     ]
