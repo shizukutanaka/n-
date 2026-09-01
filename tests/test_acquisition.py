@@ -1,8 +1,66 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from nmesh.runtime import acquisition
+
+
+def _ollama_service() -> SimpleNamespace:
+    return SimpleNamespace(
+        backend="ollama",
+        model_ref="qwen2.5:0.5b-instruct",
+        model_id="probe-model",
+        context=8192,
+        name="chat",
+    )
+
+
+def test_ollama_acquisition_creates_context_model(tmp_path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def run(argv, check):
+        assert check
+        calls.append(argv)
+
+    monkeypatch.setattr(acquisition, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(acquisition.subprocess, "run", run)
+
+    acquired = acquisition.acquire(_ollama_service())
+
+    modelfile = tmp_path / "ollama" / "nmesh-probe-model-c8192.Modelfile"
+    assert modelfile.read_text(encoding="utf-8") == (
+        "FROM qwen2.5:0.5b-instruct\n"
+        "PARAMETER num_ctx 8192\n"
+    )
+    assert calls == [
+        ["ollama", "pull", "qwen2.5:0.5b-instruct"],
+        ["ollama", "create", "nmesh-probe-model-c8192", "-f", str(modelfile)],
+    ]
+    assert acquired.model_ref == "nmesh-probe-model-c8192"
+    assert acquired.path is None
+
+
+def test_ollama_create_failure_returns_context_warning(tmp_path, monkeypatch) -> None:
+    calls = 0
+
+    def run(argv, check):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise acquisition.subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(acquisition, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(acquisition.subprocess, "run", run)
+
+    acquired = acquisition.acquire(_ollama_service())
+
+    assert acquired.model_ref == "qwen2.5:0.5b-instruct"
+    assert acquired.path is None
+    assert acquired.warning is not None
+    assert "default context" in acquired.warning
+    assert "8192" in acquired.warning
 
 
 def test_resolve_exact_quant(monkeypatch) -> None:

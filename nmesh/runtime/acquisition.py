@@ -5,6 +5,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from nmesh import i18n
+from nmesh.paths import nmesh_home
 from nmesh.planner import BPW, PlannedService
 
 QUANT_ALIASES = {
@@ -28,6 +30,8 @@ class Acquired:
     path: Path | None
     quant: str | None
     substituted: bool
+    model_ref: str | None = None
+    warning: str | None = None
 
 
 def _gguf_files(repo_id: str) -> list[str]:
@@ -108,7 +112,33 @@ def _resolve_gguf(repo_id: str, quant: str) -> tuple[str, list[str]]:
 def acquire(service: PlannedService) -> Acquired:
     if service.backend == "ollama":
         subprocess.run(["ollama", "pull", service.model_ref], check=True)
-        return Acquired(None, None, False)
+        name = f"nmesh-{service.model_id}-c{service.context}"
+        modelfile = nmesh_home() / "ollama" / f"{name}.Modelfile"
+        modelfile.parent.mkdir(parents=True, exist_ok=True)
+        modelfile.write_text(
+            f"FROM {service.model_ref}\n"
+            f"PARAMETER num_ctx {service.context}\n",
+            encoding="utf-8",
+        )
+        try:
+            subprocess.run(
+                ["ollama", "create", name, "-f", str(modelfile)],
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError):
+            return Acquired(
+                None,
+                None,
+                False,
+                model_ref=service.model_ref,
+                warning=i18n.t(
+                    "warn.ollama_context_default",
+                    i18n.lang(),
+                    service=service.name,
+                    context=service.context,
+                ),
+            )
+        return Acquired(None, None, False, model_ref=name)
     if service.backend in {"vllm", "mlx"}:
         from huggingface_hub import snapshot_download
 

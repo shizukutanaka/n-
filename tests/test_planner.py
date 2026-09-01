@@ -6,6 +6,7 @@ from dataclasses import replace
 import pytest
 
 import nmesh.planner.core as planner_core
+from nmesh import i18n
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.planner import Policy, build_plan, estimate_memory, free_budgets, load_plan, save_plan
 from nmesh.probe import GPUInfo, HardwareProfile, Tier, classify_tier
@@ -197,6 +198,20 @@ def test_ollama_only_model_never_uses_llamacpp(tmp_path, monkeypatch) -> None:
     assert result.services[0].backend == "ollama"
 
 
+def test_installed_lower_preference_backend_wins() -> None:
+    model = ModelSpec(
+        "both-sources", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache",
+        {"hf_gguf": "repo", "ollama": "test:model"},
+    )
+    available = profile(
+        8,
+        backends={"ollama": "installed", "llamacpp": None, "vllm": None, "mlx": None},
+    )
+
+    assert planner_core._backend(available, model, 14) == ("ollama", True)
+
+
 def test_hf_only_model_does_not_warn_about_missing_gguf_source() -> None:
     model = ModelSpec(
         "hf-only", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
@@ -242,8 +257,8 @@ def test_oversized_model_uses_tensor_parallel() -> None:
 
 def test_oversized_llamacpp_model_uses_tensor_split() -> None:
     model = ModelSpec(
-        "oversized-llamacpp", "test", 60_000_000_000, 80, 80, 100, 128,
-        12800, 4096, ["chat"], 99.0, "test", {"hf_gguf": "test.gguf"},
+        "oversized-llamacpp", "test", 40_000_000_000, 80, 32, 8, 128,
+        4096, 128, ["chat"], 99.0, "test", {"hf_gguf": "test.gguf"},
     )
     result = build_plan(
         profile(128, (24, 8)),
@@ -254,6 +269,65 @@ def test_oversized_llamacpp_model_uses_tensor_split() -> None:
     assert service.backend == "llamacpp"
     assert service.gpu_indices == [0, 1]
     assert "--tensor-split" in service.launch.argv
+
+
+def test_oversized_llamacpp_cpu_fallback_clears_split_and_warns() -> None:
+    model = ModelSpec(
+        "cpu-fallback-llamacpp", "test", 60_000_000_000, 80, 80, 100, 128,
+        12800, 4096, ["chat"], 99.0, "test", {"hf_gguf": "test.gguf"},
+    )
+    result = build_plan(
+        profile(128, (24, 8)),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert service.backend == "llamacpp"
+    assert service.n_gpu_layers == 0
+    assert service.gpu_indices == []
+    assert service.launch.argv[service.launch.argv.index("-ngl") + 1] == "0"
+    assert "--tensor-split" not in service.launch.argv
+    warning = i18n.t("warn.gpu_layers_cpu_fallback", "en", service=service.name)
+    assert result.warnings.count(warning) == 1
+
+
+def test_ollama_quantization_warning_is_emitted_for_placed_service() -> None:
+    model = ModelSpec(
+        "placed-ollama", "test", 500_000_000, 24, 14, 2, 64, 896,
+        4096, ["chat"], 90.0, "test", {"ollama": "test:model"},
+    )
+    result = build_plan(
+        profile(32, (24,)),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert service.backend == "ollama"
+    assert service.gpu_indices == [0]
+    assert sum("Ollama tag's own quantization" in warning for warning in result.warnings) == 1
+
+
+def test_single_gpu_cpu_fallback_warns() -> None:
+    models = [
+        ModelSpec(
+            "first", "first", 20_000_000_000, 80, 80, 100, 128,
+            12800, 4096, ["chat"], 99.0, "test", {"hf_gguf": "first.gguf"},
+        ),
+        ModelSpec(
+            "second", "second", 20_000_000_000, 80, 80, 100, 128,
+            12800, 4096, ["code"], 99.0, "test", {"hf_gguf": "second.gguf"},
+        ),
+    ]
+    result = build_plan(
+        profile(128, (24,)),
+        models,
+        Policy(roles=["chat", "code"], min_decode_tps=0),
+    )
+    service = next(item for item in result.services if item.name == "code")
+    assert service.n_gpu_layers == 0
+    assert service.gpu_indices == []
+    warning = i18n.t("warn.gpu_layers_cpu_fallback", "en", service=service.name)
+    assert result.warnings.count(warning) == 1
 
 
 def test_save_plan_replaces_atomically(tmp_path, catalog: list[ModelSpec], monkeypatch) -> None:

@@ -277,9 +277,17 @@ class Supervisor:
     def _apply_acquired(
         self, plan: Plan, service: PlannedService, acquired: Acquired
     ) -> tuple[Plan, PlannedService, bool]:
-        if acquired.path is None:
+        if acquired.warning is not None:
+            plan = replace(
+                plan,
+                warnings=[*plan.warnings, acquired.warning],
+            )
+            self.notes[service.name] = acquired.warning
+        model_ref = acquired.model_ref or (
+            str(acquired.path) if acquired.path is not None else None
+        )
+        if model_ref is None:
             return plan, service, False
-        model_ref = str(acquired.path)
         quant = acquired.quant or service.quant
         if model_ref == service.model_ref and quant == service.quant:
             return plan, service, False
@@ -577,6 +585,20 @@ class Supervisor:
                             )
                             actualized = actualized or changed
                             self.active_plan = current
+                        elif service.backend == "ollama":
+                            warning = i18n.t(
+                                "warn.ollama_context_default",
+                                i18n.lang(),
+                                service=service.name,
+                                context=service.context,
+                            )
+                            if warning not in current.warnings:
+                                current = replace(
+                                    current,
+                                    warnings=[*current.warnings, warning],
+                                )
+                                self.active_plan = current
+                            self.notes[service.name] = warning
                         self.processes[service.name] = self.launcher(service)
                         self._arm_atexit()
                         self.failed.pop(service.name, None)

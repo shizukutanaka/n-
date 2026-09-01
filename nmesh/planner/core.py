@@ -199,21 +199,23 @@ def _throughput(model: ModelSpec, memory: MemoryEstimate, layers: int,
 def _backend(profile: HardwareProfile, model: ModelSpec, layers: int) -> tuple[str, bool]:
     nvidia = any(gpu.vendor == "nvidia" for gpu in profile.gpus)
     full_gpu = layers >= model.n_layers
+    candidates: list[str] = []
     if profile.os == "linux" and nvidia and full_gpu and "hf" in model.sources:
-        name = "vllm"
-    elif profile.unified_memory and "hf" in model.sources:
-        name = "mlx"
-    elif "hf_gguf" in model.sources:
-        name = "llamacpp"
-    elif "ollama" in model.sources:
-        name = "ollama"
-    elif profile.os == "linux" and "hf" in model.sources:
-        name = "vllm"
-    elif profile.unified_memory and "hf" in model.sources:
-        name = "mlx"
-    else:
-        return "", False
-    return name, bool(profile.available_backends.get(name))
+        candidates.append("vllm")
+    if profile.unified_memory and "hf" in model.sources:
+        candidates.append("mlx")
+    if "hf_gguf" in model.sources:
+        candidates.append("llamacpp")
+    if "ollama" in model.sources:
+        candidates.append("ollama")
+    if profile.os == "linux" and "hf" in model.sources:
+        candidates.append("vllm")
+    if profile.unified_memory and "hf" in model.sources:
+        candidates.append("mlx")
+    for name in candidates:
+        if profile.available_backends.get(name):
+            return name, True
+    return (candidates[0], False) if candidates else ("", False)
 
 
 def _source_for(backend: str, model: ModelSpec, quant: str) -> str:
@@ -555,8 +557,6 @@ def _place_services(
     swap_group: Sequence[str],
     warnings: list[str],
 ) -> list[PlannedService]:
-    if not profile.gpus:
-        return services
     services = [
         _cpu_llamacpp_service(
             service, profile.backend_flags.get(service.backend), warnings,
@@ -564,6 +564,17 @@ def _place_services(
         )
         for service in services
     ]
+    for service in services:
+        if service.backend == "ollama":
+            warnings.append(
+                t(
+                    "warn.ollama_quant_estimate",
+                    policy.lang,
+                    service=service.name,
+                )
+            )
+    if not profile.gpus:
+        return services
     indices = [gpu.index for gpu in profile.gpus]
     budgets = {
         gpu.index: _gpu_budget(gpu, policy.budget_source) for gpu in profile.gpus
@@ -579,6 +590,7 @@ def _place_services(
     )
     placed: dict[str, PlannedService] = {}
     for service in ordered:
+        original_layers = service.n_gpu_layers
         if service.memory.gpu_bytes <= 0:
             placed[service.name] = service
             ram_used += service.memory.cpu_bytes
@@ -607,14 +619,48 @@ def _place_services(
         elif service.backend in {"llamacpp", "vllm"} and len(indices) > 1:
             assigned = indices
             tensor_parallel = len(indices)
-            committed = service.memory.gpu_bytes / tensor_parallel
-            for index in indices:
-                if is_swap:
-                    new_reserved = max(swap_reserved[index], committed)
-                    remaining[index] -= new_reserved - swap_reserved[index]
-                    swap_reserved[index] = new_reserved
-                else:
-                    remaining[index] -= committed
+            placement_budget = min(remaining[index] for index in indices) * tensor_parallel
+            reserve_split = True
+            if (
+                service.backend == "llamacpp"
+                and service.n_gpu_layers is not None
+                and service.memory.gpu_bytes > placement_budget + 1
+            ):
+                model_layers = max(
+                    1, round(
+                        service.memory.weight_bytes / service.memory.per_layer_bytes
+                    ),
+                )
+                adjusted = replace(service.memory, vram_budget=placement_budget)
+                layers = solve_gpu_layers(adjusted, model_layers)
+                gpu_bytes, cpu_bytes = _split_memory(
+                    adjusted, model_layers, layers
+                )
+                if cpu_bytes <= adjusted.ram_budget + 1:
+                    service = replace(
+                        service,
+                        n_gpu_layers=layers,
+                        memory=replace(
+                            adjusted,
+                            gpu_bytes=gpu_bytes,
+                            cpu_bytes=cpu_bytes,
+                        ),
+                    )
+                    if layers == 0:
+                        assigned = []
+                        tensor_parallel = 1
+                        reserve_split = False
+                    else:
+                        reserve_split = True
+            if reserve_split:
+                committed = service.memory.gpu_bytes / tensor_parallel
+                for index in indices:
+                    if is_swap:
+                        new_reserved = max(swap_reserved[index], committed)
+                        remaining[index] -= new_reserved - swap_reserved[index]
+                        swap_reserved[index] = new_reserved
+                    else:
+                        remaining[index] -= committed
         elif service.backend in {"ollama", "vllm", "mlx"}:
             total_bytes = service.memory.cpu_bytes + service.memory.gpu_bytes
             if ram_used + total_bytes <= ram_budget + 1:
@@ -694,6 +740,9 @@ def _place_services(
                         swap_reserved[assigned[0]] = committed
                     else:
                         remaining[assigned[0]] += old_bytes - gpu_bytes
+                    if layers == 0:
+                        assigned = []
+                        current = replace(current, gpu_indices=[])
                 else:
                     warnings.append(
                         t("warn.layers_reduced", policy.lang, service=service.name,
@@ -710,7 +759,11 @@ def _place_services(
                 current = replace(
                     current, memory=card_memory
                 )
-        if tensor_parallel != 1 or current.n_gpu_layers != service.n_gpu_layers:
+        if (
+            tensor_parallel != 1
+            or current.n_gpu_layers != original_layers
+            or (tensor_parallel == 1 and "--tensor-split" in current.launch.argv)
+        ):
             current = replace(
                 current,
                 launch=_rebuild_launch(
@@ -719,6 +772,18 @@ def _place_services(
                     gpu_devices=profile.backend_gpu_devices.get(current.backend),
                     language=policy.lang,
                 ),
+            )
+        if (
+            current.n_gpu_layers is not None
+            and current.backend not in {"ollama", "vllm", "mlx"}
+            and (current.n_gpu_layers == 0 or not current.gpu_indices)
+        ):
+            warnings.append(
+                t(
+                    "warn.gpu_layers_cpu_fallback",
+                    policy.lang,
+                    service=current.name,
+                )
             )
         placed[service.name] = current
         ram_used += current.memory.cpu_bytes

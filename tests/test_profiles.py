@@ -35,7 +35,12 @@ def test_bundled_profiles_round_trip_and_gpu_budgets() -> None:
                 assert service.n_gpu_layers == 0
             if service.backend in {"ollama", "vllm", "mlx"}:
                 assert service.n_gpu_layers is None
-            if known_devices and any(device.startswith("CUDA") for device in known_devices):
+            if (
+                known_devices
+                and service.gpu_indices
+                and service.memory.gpu_bytes > 0
+                and any(device.startswith("CUDA") for device in known_devices)
+            ):
                 assert service.n_gpu_layers is not None
                 assert 0 < service.n_gpu_layers <= layers[service.model_id]
             if not service.gpu_indices or service.memory.gpu_bytes <= 0:
