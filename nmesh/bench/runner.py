@@ -16,9 +16,12 @@ class BenchResult:
     ttft_s: float
 
 
+_FILLER = "benchmark filler text "
+
+
 def _prompt(tokens: int) -> str:
     """Create a prompt using approximately four characters per token."""
-    return "benchmark filler text " * max(1, tokens // 4)
+    return _FILLER * max(1, round(tokens * 4 / len(_FILLER)))
 
 
 def _measure_once(service: PlannedService, base_url: str, prefill_tokens: int,
