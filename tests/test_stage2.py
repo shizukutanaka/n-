@@ -16,6 +16,7 @@ from nmesh.planner import save_plan as planner_save_plan
 from nmesh.probe import HardwareProfile
 from nmesh.runtime import Supervisor
 from nmesh.runtime import supervisor as supervisor_module
+from nmesh.runtime.acquisition import Acquired
 
 from .test_planner import profile
 
@@ -89,6 +90,40 @@ def test_supervisor_dry_run_contains_argv(tmp_path, catalog: list[object]) -> No
     result = Supervisor(state_path=tmp_path / "state.json").up(plan, dry_run=True)
     assert result.services
     assert result.services[0]["argv"] == plan.services[0].launch.argv
+
+
+def test_supervisor_rewrites_acquired_model_and_records_note(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url=None),
+    )
+    plan = replace(plan, services=[service])
+    acquired_path = tmp_path / "actual-q2_k.gguf"
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service: Acquired(acquired_path, "q2_k", True),
+    )
+    supervisor = Supervisor(
+        lambda _service: _AdmissionProcess(),
+        tmp_path / "acquired-state.json",
+        health_timeout=0.01,
+    )
+    result = supervisor.up(plan, admit=False)
+    launched = supervisor.active_plan.services[0]
+    assert result.running
+    assert launched.model_ref == str(acquired_path)
+    assert launched.quant == "q2_k"
+    assert launched.launch.argv[launched.launch.argv.index("-m") + 1] == str(acquired_path)
+    assert result.services[0]["note"] == f"{service.quant} -> q2_k"
+    payload = json.loads((tmp_path / "acquired-state.json").read_text(encoding="utf-8"))
+    assert payload["services"][0]["model_ref"] == str(acquired_path)
+    assert payload["services"][0]["quant"] == "q2_k"
+    assert payload["services"][0]["note"] == f"{service.quant} -> q2_k"
+    supervisor.down()
 
 
 class _AdmissionProcess:

@@ -17,10 +17,10 @@ from typing import Protocol
 import psutil
 
 from nmesh.catalog import ModelSpec, load_catalog
-from nmesh.planner import Plan, PlannedService, build_plan, free_budgets, load_plan, save_plan
+from nmesh.planner import BPW, Plan, PlannedService, build_plan, free_budgets, load_plan, save_plan
 from nmesh.probe import HardwareProfile, detect_hardware
 
-from .acquisition import acquire
+from .acquisition import Acquired, acquire
 
 STATE_PATH = Path.home() / ".nmesh" / "state.json"
 HEALTH_TIMEOUT = 120.0
@@ -92,6 +92,7 @@ class Supervisor:
         self.restarts: dict[str, list[float]] = {}
         self.failed: dict[str, str] = {}
         self.active_plan: Plan | None = None
+        self.notes: dict[str, str] = {}
         self._lock = RLock()
         self._atexit_armed = False
         self._terminator = terminator or self._terminate_pid
@@ -203,6 +204,37 @@ class Supervisor:
     def _record_restart(self, name: str) -> None:
         self.restarts.setdefault(name, []).append(time.monotonic())
 
+    def _apply_acquired(
+        self, plan: Plan, service: PlannedService, acquired: Acquired
+    ) -> tuple[Plan, PlannedService, bool]:
+        if acquired.path is None:
+            return plan, service, False
+        model_ref = str(acquired.path)
+        quant = acquired.quant or service.quant
+        if model_ref == service.model_ref and quant == service.quant:
+            return plan, service, False
+        argv = list(service.launch.argv)
+        if "-m" in argv:
+            argv[argv.index("-m") + 1] = model_ref
+        elif "--model" in argv:
+            argv[argv.index("--model") + 1] = model_ref
+        elif service.backend == "vllm" and len(argv) > 2:
+            argv[2] = model_ref
+        updated = replace(
+            service,
+            model_ref=model_ref,
+            quant=quant,
+            launch=replace(service.launch, argv=argv),
+        )
+        self.notes[service.name] = (
+            f"{service.quant} -> {quant}" if quant != service.quant
+            else f"resolved GGUF: {Path(model_ref).name}"
+        )
+        updated_services = [
+            updated if item.name == service.name else item for item in plan.services
+        ]
+        return replace(plan, services=updated_services), updated, True
+
     def _admit(self, plan: Plan,
                bench_cache: Mapping[object, float] | None = None) -> Plan:
         profile = self.probe()
@@ -299,6 +331,16 @@ class Supervisor:
                     (item.launch.health_url for item in plan.services if item.name == name),
                     None,
                 ),
+                "model_ref": next(
+                    (item.model_ref for item in plan.services if item.name == name),
+                    None,
+                ),
+                "quant": next(
+                    (item.quant for item in plan.services if item.name == name), None
+                ),
+                "backend": next(
+                    (item.backend for item in plan.services if item.name == name), None
+                ),
                 "owner_pid": os.getpid(),
             }
             for name, process in self.processes.items()
@@ -315,6 +357,16 @@ class Supervisor:
                 "health_url": next(
                     (item.launch.health_url for item in plan.services if item.name == name),
                     None,
+                ),
+                "model_ref": next(
+                    (item.model_ref for item in plan.services if item.name == name),
+                    None,
+                ),
+                "quant": next(
+                    (item.quant for item in plan.services if item.name == name), None
+                ),
+                "backend": next(
+                    (item.backend for item in plan.services if item.name == name), None
                 ),
                 "owner_pid": os.getpid(),
             }
@@ -333,6 +385,16 @@ class Supervisor:
                     (item.launch.health_url for item in plan.services if item.name == name),
                     None,
                 ),
+                "model_ref": next(
+                    (item.model_ref for item in plan.services if item.name == name),
+                    None,
+                ),
+                "quant": next(
+                    (item.quant for item in plan.services if item.name == name), None
+                ),
+                "backend": next(
+                    (item.backend for item in plan.services if item.name == name), None
+                ),
                 "owner_pid": os.getpid(),
             }
             for name in self.external_shared
@@ -341,6 +403,8 @@ class Supervisor:
         for entry in entries:
             if entry.get("create_time") is None:
                 entry.pop("create_time", None)
+            if entry.get("service") in self.notes:
+                entry["note"] = self.notes[str(entry["service"])]
         self._write_state({
             "version": STATE_VERSION,
             "owner_pid": os.getpid(),
@@ -348,7 +412,7 @@ class Supervisor:
         })
 
     def _fallback(self, plan: Plan, attempt: int) -> Plan:
-        quant_order = ("f16", "q8_0", "q6_k", "q5_k_m", "q4_k_m", "q4_0", "q3_k_m", "q2_k")
+        quant_order = tuple(BPW)
         services: list[PlannedService] = []
         for service in plan.services:
             quant = service.quant
@@ -394,6 +458,7 @@ class Supervisor:
             } for item in plan.services])
         with self._lock:
             current = plan
+            actualized = False
             if admit:
                 try:
                     current = self._admit(plan, bench_cache)
@@ -405,7 +470,8 @@ class Supervisor:
             self.active_plan = current
             for attempt in range(1, 4):
                 try:
-                    for service in current.services:
+                    for index in range(len(current.services)):
+                        service = current.services[index]
                         dead = service.name in self.processes and not self._alive(service.name)
                         if dead:
                             self.processes.pop(service.name, None)
@@ -423,13 +489,17 @@ class Supervisor:
                                 )
                             self._record_restart(service.name)
                         if not no_download:
-                            acquire(service)
+                            current, service, changed = self._apply_acquired(
+                                current, service, acquire(service)
+                            )
+                            actualized = actualized or changed
+                            self.active_plan = current
                         self.processes[service.name] = self.launcher(service)
                         self._arm_atexit()
                         self.failed.pop(service.name, None)
                         if not self._wait_health(service):
                             raise RuntimeError(f"Service did not become healthy: {service.name}")
-                    if current is plan:
+                    if current is plan or actualized:
                         save_plan(current)
                     self._persist(current)
                     return self.status()
@@ -501,6 +571,7 @@ class Supervisor:
             target = next((item for item in selected.services if item.name == service_name), None)
             if target is None:
                 raise KeyError(f"Unknown service: {service_name}")
+            actualized = False
             if service_name in selected.swap_group:
                 for name in list(self.processes):
                     if name != service_name and name in selected.swap_group:
@@ -520,12 +591,19 @@ class Supervisor:
                         self._persist(selected)
                         raise RuntimeError(f"Restart budget exhausted: {service_name}")
                     self._record_restart(service_name)
+                if service_name not in self.processes:
+                    selected, target, actualized = self._apply_acquired(
+                        selected, target, acquire(target)
+                    )
+                    self.active_plan = selected
                 self.processes[service_name] = self.launcher(target)
                 self._arm_atexit()
                 if not self._wait_health(target):
                     self._stop_process(service_name)
                     raise RuntimeError(f"Service did not become healthy: {service_name}")
                 self.failed.pop(service_name, None)
+            if actualized:
+                save_plan(selected)
             self._persist(selected)
             return self.status()
 
@@ -553,12 +631,23 @@ class Supervisor:
                     process.kill()
 
     def status(self) -> RuntimeStatus:
+        def planned(name: str) -> PlannedService | None:
+            if self.active_plan is None:
+                return None
+            return next(
+                (item for item in self.active_plan.services if item.name == name), None
+            )
+
         entries = [{
             "service": name,
             "pid": process.pid,
             "running": process.poll() is None,
             "restarts": len(self.restarts.get(name, [])),
             "parallel_slots": _slots(self.active_plan, name),
+            **({"model_ref": planned(name).model_ref,
+                "quant": planned(name).quant,
+                "backend": planned(name).backend} if planned(name) else {}),
+            **({"note": self.notes[name]} if name in self.notes else {}),
         } for name, process in self.processes.items()]
         entries.extend({
             "service": name,
@@ -566,6 +655,10 @@ class Supervisor:
             "running": True,
             "shared": True,
             "parallel_slots": _slots(self.active_plan, name),
+            **({"model_ref": planned(name).model_ref,
+                "quant": planned(name).quant,
+                "backend": planned(name).backend} if planned(name) else {}),
+            **({"note": self.notes[name]} if name in self.notes else {}),
         } for name in self.shared_services if name not in self.processes)
         entries.extend({
             "service": name,
@@ -574,6 +667,10 @@ class Supervisor:
             "shared": True,
             "external": True,
             "parallel_slots": _slots(self.active_plan, name),
+            **({"model_ref": planned(name).model_ref,
+                "quant": planned(name).quant,
+                "backend": planned(name).backend} if planned(name) else {}),
+            **({"note": self.notes[name]} if name in self.notes else {}),
         } for name in self.external_shared if name not in self.processes)
         if not entries and self.state_path.exists():
             payload = self._load_state()

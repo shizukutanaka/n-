@@ -57,6 +57,12 @@ Supervisor `atexit` cleanup is armed only after a child is actually launched,
 so read-only commands such as `status` and `bench` do not erase live runtime
 state.
 
+For llama.cpp services, `nmesh up` enumerates the GGUF files published by the
+configured Hugging Face repository and resolves the planned quantization to a
+real filename. Split GGUF files are downloaded as a complete set; if only a
+lower quantization is published, the runtime records that safe substitution in
+`status` and the persisted state.
+
 ## Concurrency slots
 
 Plans automatically size concurrency slots from memory left after placement;

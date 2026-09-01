@@ -12,6 +12,7 @@
   license: apache-2.0
   sources:
     ollama: "qwen2.5:0.5b-instruct"
+    hf_gguf: "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
     hf: "Qwen/Qwen2.5-0.5B-Instruct"
 - id: qwen2.5-1.5b-instruct
   family: qwen2.5
@@ -27,6 +28,7 @@
   license: apache-2.0
   sources:
     ollama: "qwen2.5:1.5b-instruct"
+    hf_gguf: "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
     hf: "Qwen/Qwen2.5-1.5B-Instruct"
 - id: qwen2.5-3b-instruct
   family: qwen2.5
@@ -42,6 +44,7 @@
   license: apache-2.0
   sources:
     ollama: "qwen2.5:3b-instruct"
+    hf_gguf: "Qwen/Qwen2.5-3B-Instruct-GGUF"
     hf: "Qwen/Qwen2.5-3B-Instruct"
 - id: qwen2.5-7b-instruct
   family: qwen2.5
@@ -103,6 +106,7 @@
   license: apache-2.0
   sources:
     ollama: "qwen2.5-coder:1.5b"
+    hf_gguf: "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF"
     hf: "Qwen/Qwen2.5-Coder-1.5B-Instruct"
 - id: qwen2.5-coder-7b
   family: qwen2.5-coder
@@ -238,6 +242,7 @@
   license: apache-2.0
   sources:
     ollama: "nomic-embed-text"
+    hf_gguf: "nomic-ai/nomic-embed-text-v1.5-GGUF"
     hf: "nomic-ai/nomic-embed-text-v1.5"
 - id: bge-m3
   family: bge-m3

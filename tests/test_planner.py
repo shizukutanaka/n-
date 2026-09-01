@@ -177,6 +177,15 @@ def test_no_backend_still_plans(catalog: list[ModelSpec]) -> None:
     assert not result.runnable
 
 
+def test_ollama_only_model_never_uses_llamacpp() -> None:
+    model = ModelSpec(
+        "ollama-only", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"ollama": "test:model"},
+    )
+    result = build_plan(profile(8), [model], Policy(roles=["chat"]))
+    assert result.services[0].backend == "ollama"
+
+
 def test_kv_quantization_is_independent(catalog: list[ModelSpec]) -> None:
     model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
     f16 = estimate_memory(model, "q4_k_m", 2048, kv_quant="f16")

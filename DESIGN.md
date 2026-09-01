@@ -438,3 +438,14 @@ They wait up to `NMESH_QUEUE_TIMEOUT` seconds (120 by default); an exhausted
 queue returns HTTP 503 with `Retry-After: 1` and the configured slot count.
 The metrics endpoint reports each limited service's `limit`, `in_flight`, and
 `waiting` counts under `concurrency`.
+
+## 20. GGUF acquisition
+
+For llama.cpp, the planner's model reference is a local destination, not an
+assumed Hugging Face filename. Runtime acquisition enumerates the repository's
+published `.gguf` files and resolves quantization tokens case-insensitively.
+Quantization aliases are matched on token boundaries, and a split model is
+downloaded only when every numbered part is present. The selected file and
+quantization are recorded in runtime state; a lower-precision substitution is
+also surfaced as an acquisition note. A planned quantization is never upgraded
+because its memory estimate is already fixed.
