@@ -37,3 +37,23 @@ Ollama、llama.cpp、vLLM、MLX-LM をサポートします。未インストー
 
 GitHub の権限がある利用者は `ci/github-workflow-ci.yml` を
 `.github/workflows/ci.yml` にコピーして使用してください。
+
+## Gateway service
+
+`nmesh serve --port 18000` runs only the OpenAI-compatible gateway in the
+foreground when backend services are already running. The gateway exposes
+`GET http://127.0.0.1:18000/metrics`, which returns per-service live telemetry
+including sample count, median decode throughput, TTFT, and total latency.
+`nmesh reload --port 18000` asks a running gateway to reload the latest
+`~/.nmesh/plan.json` without restarting it.
+
+## Memory budget controls
+
+`nmesh plan --budget free --explain` plans against currently free VRAM and RAM
+instead of the machine's total capability. The default `--budget total` keeps
+the persisted plan stable as a capability description.
+
+At launch, `nmesh up` proactively checks current free memory and replans when
+the saved plan no longer fits. Use `nmesh up --ignore-free-memory` to skip that
+check and rely on the normal runtime fallback ladder. `nmesh doctor` displays
+each GPU's total/free VRAM and the resulting free VRAM/RAM budgets.

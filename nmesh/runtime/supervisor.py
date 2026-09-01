@@ -7,17 +7,21 @@ import signal
 import subprocess
 import time
 import urllib.request
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
 from typing import Protocol
 
-from nmesh.planner import Plan, PlannedService, load_plan, save_plan
+from nmesh.catalog import ModelSpec, load_catalog
+from nmesh.planner import Plan, PlannedService, build_plan, free_budgets, load_plan, save_plan
+from nmesh.probe import HardwareProfile, detect_hardware
 
 from .acquisition import acquire
 
 STATE_PATH = Path.home() / ".nmesh" / "state.json"
 HEALTH_TIMEOUT = 120.0
+GIB = 1024**3
 
 
 class ProcessLike(Protocol):
@@ -41,16 +45,65 @@ class RuntimeStatus:
 
 class Supervisor:
     def __init__(self, launcher: Launcher | None = None, state_path: Path = STATE_PATH,
-                 health_timeout: float = HEALTH_TIMEOUT):
+                 health_timeout: float = HEALTH_TIMEOUT,
+                 probe: Callable[[], HardwareProfile] | None = None,
+                 catalog: Callable[[], Sequence[ModelSpec]] | None = None):
         self.launcher = launcher or self._launch
         self.state_path = state_path
         self.health_timeout = health_timeout
+        self.probe = probe or detect_hardware
+        self.catalog = catalog or load_catalog
         self.processes: dict[str, ProcessLike] = {}
         self.shared_services: set[str] = set()
         self.external_shared: set[str] = set()
         self.active_plan: Plan | None = None
         self._lock = RLock()
         atexit.register(self.down)
+
+    def _already_up(self, service: PlannedService) -> bool:
+        return (
+            service.name in self.processes
+            or (
+                service.launch.shared_daemon
+                and service.launch.health_url is not None
+                and self._healthy(service)
+            )
+        )
+
+    def _admit(self, plan: Plan,
+               bench_cache: Mapping[object, float] | None = None) -> Plan:
+        profile = self.probe()
+        vram, ram = free_budgets(profile)
+        pending = [service for service in plan.services if not self._already_up(service)]
+        if not pending:
+            return plan
+        resident = [service for service in pending if service.name not in plan.swap_group]
+        swapped = [service for service in pending if service.name in plan.swap_group]
+        need_gpu = sum(service.memory.gpu_bytes for service in resident) + max(
+            [service.memory.gpu_bytes for service in swapped], default=0.0
+        )
+        need_cpu = sum(service.memory.cpu_bytes for service in resident) + max(
+            [service.memory.cpu_bytes for service in swapped], default=0.0
+        )
+        if need_gpu <= vram + 1 and need_cpu <= ram + 1:
+            return plan
+        replanned = build_plan(
+            profile, self.catalog(), replace(plan.policy, budget_source="free"), bench_cache
+        )
+        warning = (
+            f"空きメモリ不足: 必要 {need_gpu / GIB:.2f}GiB VRAM / "
+            f"{need_cpu / GIB:.2f}GiB RAM、利用可能 {vram / GIB:.2f}GiB VRAM / "
+            f"{ram / GIB:.2f}GiB RAM に合わせて再計画しました"
+        )
+        if replanned.services:
+            return replace(replanned, warnings=[*replanned.warnings, warning])
+        return replace(
+            plan,
+            warnings=[
+                *plan.warnings,
+                warning + "。再計画でサービスを選べなかったため既存のfallbackを試みます",
+            ],
+        )
 
     def _launch(self, service: PlannedService) -> ProcessLike:
         kwargs: dict[str, object] = {"env": {**os.environ, **service.launch.env}}
@@ -101,8 +154,6 @@ class Supervisor:
         self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     def _fallback(self, plan: Plan, attempt: int) -> Plan:
-        from dataclasses import replace
-
         quant_order = ("f16", "q8_0", "q6_k", "q5_k_m", "q4_k_m", "q4_0", "q3_k_m", "q2_k")
         services: list[PlannedService] = []
         for service in plan.services:
@@ -133,7 +184,9 @@ class Supervisor:
         return replace(plan, services=services,
                        warnings=[*plan.warnings, f"Runtime fallback attempt {attempt}"])
 
-    def up(self, plan: Plan, no_download: bool = False, dry_run: bool = False) -> RuntimeStatus:
+    def up(self, plan: Plan, no_download: bool = False, dry_run: bool = False,
+           admit: bool = True,
+           bench_cache: Mapping[object, float] | None = None) -> RuntimeStatus:
         if dry_run:
             return RuntimeStatus(False, [{
                 "service": item.name,
@@ -145,28 +198,37 @@ class Supervisor:
                 "argv": item.launch.argv,
             } for item in plan.services])
         with self._lock:
-            self.active_plan = plan
             current = plan
+            if admit:
+                try:
+                    current = self._admit(plan, bench_cache)
+                except Exception as error:  # noqa: BLE001
+                    current = replace(
+                        plan,
+                        warnings=[*plan.warnings, f"Free-memory admission skipped: {error}"],
+                    )
+            self.active_plan = current
             for attempt in range(1, 4):
                 try:
                     for service in current.services:
-                        if (service.launch.shared_daemon and service.launch.health_url is not None
-                                and self._healthy(service)):
-                            self.shared_services.add(service.name)
+                        if self._already_up(service):
+                            if service.launch.shared_daemon:
+                                self.shared_services.add(service.name)
                             continue
                         if not no_download:
                             acquire(service)
                         self.processes[service.name] = self.launcher(service)
                         if not self._wait_health(service):
                             raise RuntimeError(f"Service did not become healthy: {service.name}")
-                    save_plan(current)
+                    if current is plan:
+                        save_plan(current)
                     self._persist(current)
                     return self.status()
                 except (OSError, RuntimeError):
                     self.down()
                     if attempt == 3:
                         raise
-                    current = self._fallback(plan, attempt)
+                    current = self._fallback(current, attempt)
             raise RuntimeError("Runtime startup failed")
 
     def down(self) -> RuntimeStatus:
@@ -265,11 +327,16 @@ class Supervisor:
 _default = Supervisor()
 
 
-def up(plan: Plan | None = None, no_download: bool = False, dry_run: bool = False) -> RuntimeStatus:
+def up(plan: Plan | None = None, no_download: bool = False, dry_run: bool = False,
+       admit: bool = True,
+       bench_cache: Mapping[object, float] | None = None) -> RuntimeStatus:
     selected = plan or load_plan()
     if selected is None:
         raise FileNotFoundError("No plan found")
-    return _default.up(selected, no_download=no_download, dry_run=dry_run)
+    return _default.up(
+        selected, no_download=no_download, dry_run=dry_run, admit=admit,
+        bench_cache=bench_cache,
+    )
 
 
 def down() -> RuntimeStatus:

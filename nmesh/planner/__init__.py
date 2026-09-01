@@ -2,6 +2,7 @@
 
 from .core import (
     BPW,
+    PLAN_PATH,
     QUANT_PENALTY,
     LaunchSpec,
     MemoryEstimate,
@@ -11,6 +12,7 @@ from .core import (
     RoutingRules,
     build_plan,
     estimate_memory,
+    free_budgets,
     load_plan,
     save_plan,
     solve_gpu_layers,
@@ -18,6 +20,7 @@ from .core import (
 
 __all__ = [
     "BPW",
+    "PLAN_PATH",
     "QUANT_PENALTY",
     "LaunchSpec",
     "MemoryEstimate",
@@ -27,6 +30,7 @@ __all__ = [
     "RoutingRules",
     "build_plan",
     "estimate_memory",
+    "free_budgets",
     "load_plan",
     "save_plan",
     "solve_gpu_layers",

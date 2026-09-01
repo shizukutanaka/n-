@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ QUANT_PENALTY = {
     "q4_k_m": 3.5, "q4_0": 5.0, "q3_k_m": 9.0, "q2_k": 16.0,
 }
 GIB = 1024**3
+PLAN_PATH = Path.home() / ".nmesh" / "plan.json"
 INSTALL_HINTS = {
     "ollama": "Install Ollama: https://ollama.com/download",
     "llamacpp": "Install llama.cpp: winget install llama.cpp / brew install llama.cpp / build from source",
@@ -52,6 +54,7 @@ class Policy:
     prefer: str = "balanced"
     allow_download_gb: float = 60.0
     kv_quant: str = "f16"
+    budget_source: str = "total"
 
 
 @dataclass(frozen=True)
@@ -105,23 +108,39 @@ class Plan:
     runnable: bool = True
 
 
-def _profile_budgets(profile: HardwareProfile | None) -> tuple[float, float]:
+def _profile_budgets(profile: HardwareProfile | None, source: str = "total") -> tuple[float, float]:
+    if source not in {"total", "free"}:
+        raise ValueError(f"Unknown budget source: {source}")
     if profile is None:
         return 0.0, 0.0
-    total_vram = sum(gpu.total_vram_bytes for gpu in profile.gpus)
+    total_vram = sum(
+        (gpu.free_vram_bytes if source == "free" else gpu.total_vram_bytes)
+        for gpu in profile.gpus
+    )
     if profile.unified_memory:
-        total_vram = int(profile.total_ram_bytes * 0.70)
+        total_vram = int(
+            (profile.available_ram_bytes if source == "free" else profile.total_ram_bytes) * 0.70
+        )
     display = any(gpu.driving_display for gpu in profile.gpus)
-    return max(total_vram * 0.92 - (0.8 * GIB if display else 0.0), 0.0), profile.total_ram_bytes * 0.70
+    ram = profile.available_ram_bytes if source == "free" else profile.total_ram_bytes
+    return max(total_vram * 0.92 - (0.8 * GIB if display else 0.0), 0.0), ram * 0.70
 
 
-def _gpu_budget(gpu: GPUInfo) -> float:
-    return max(gpu.total_vram_bytes * 0.92 - (0.8 * GIB if gpu.driving_display else 0.0), 0.0)
+def free_budgets(profile: HardwareProfile) -> tuple[float, float]:
+    return _profile_budgets(profile, "free")
+
+
+def _gpu_budget(gpu: GPUInfo, source: str = "total") -> float:
+    if source not in {"total", "free"}:
+        raise ValueError(f"Unknown budget source: {source}")
+    vram = gpu.free_vram_bytes if source == "free" else gpu.total_vram_bytes
+    return max(vram * 0.92 - (0.8 * GIB if gpu.driving_display else 0.0), 0.0)
 
 
 def estimate_memory(
     model: ModelSpec, quant: str, context: int, parallel_slots: int = 1,
     profile: HardwareProfile | None = None, kv_quant: str = "f16",
+    budget_source: str = "total",
 ) -> MemoryEstimate:
     if quant not in BPW:
         raise ValueError(f"Unsupported quantization: {quant}")
@@ -133,7 +152,7 @@ def estimate_memory(
     kv_bytes_per_tok = 2 * model.n_layers * model.n_kv_heads * model.head_dim * kv_elem_bytes
     kv_cache_bytes = kv_bytes_per_tok * context * parallel_slots
     compute_overhead = 0.06 * weight_bytes + 320 * 1024**2
-    vram_budget, ram_budget = _profile_budgets(profile)
+    vram_budget, ram_budget = _profile_budgets(profile, budget_source)
     return MemoryEstimate(
         weight_bytes, per_layer_bytes, kv_bytes_per_tok, kv_cache_bytes, compute_overhead,
         weight_bytes + kv_cache_bytes + compute_overhead, vram_budget, ram_budget,
@@ -262,7 +281,10 @@ def _candidate_for(model: ModelSpec, profile: HardwareProfile, policy: Policy,
     candidates: list[_Candidate] = []
     for quant in BPW:
         for context in contexts:
-            base = estimate_memory(model, quant, context, profile=profile, kv_quant=policy.kv_quant)
+            base = estimate_memory(
+                model, quant, context, profile=profile, kv_quant=policy.kv_quant,
+                budget_source=policy.budget_source,
+            )
             if model.roles == ["embed"]:
                 activation = min(0.02 * base.weight_bytes * math.ceil(context / 512), 512 * 1024**2)
                 overhead = base.compute_overhead + activation
@@ -315,13 +337,17 @@ def _plan_group(group: list[str], pools: dict[str, list[_Candidate]]) -> _Candid
 
 def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfile,
                  services: list[PlannedService], swap_group: list[str],
-                 role_to_service: dict[str, str], hints: list[str]) -> None:
+                 role_to_service: dict[str, str], hints: list[str],
+                 budget_source: str) -> None:
     if not candidate.installed:
         hints.append(INSTALL_HINTS[candidate.backend])
     indices = [gpu.index for gpu in profile.gpus]
     tensor_parallel = 1
     if indices:
-        fit = [gpu for gpu in profile.gpus if candidate.memory.gpu_bytes <= _gpu_budget(gpu) + 1]
+        fit = [
+            gpu for gpu in profile.gpus
+            if candidate.memory.gpu_bytes <= _gpu_budget(gpu, budget_source) + 1
+        ]
         if fit:
             indices = [fit[0].index]
         else:
@@ -383,8 +409,10 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             for role in group:
                 role_candidate = pools.get(role, [])
                 if role_candidate:
-                    _add_service([role], role_candidate[0], profile, services, swap_group,
-                                 role_to_service, hints)
+                    _add_service(
+                        [role], role_candidate[0], profile, services, swap_group,
+                        role_to_service, hints, selected.budget_source,
+                    )
                     total_download += int(role_candidate[0].memory.disk_needed)
                 else:
                     warnings.append(f"役割 {role} を満たす構成が見つかりません")
@@ -392,11 +420,16 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         if candidate is None:
             warnings.append(f"役割 {group[0]} を満たす構成が見つかりません")
             continue
-        _add_service(group, candidate, profile, services, swap_group, role_to_service, hints)
+        _add_service(
+            group, candidate, profile, services, swap_group, role_to_service, hints,
+            selected.budget_source,
+        )
         total_download += int(candidate.memory.disk_needed)
     if len(profile.gpus) > 1:
         for index, service in enumerate(services):
-            if service.memory.gpu_bytes <= _gpu_budget(profile.gpus[0]) + 1:
+            if service.memory.gpu_bytes <= _gpu_budget(
+                profile.gpus[0], selected.budget_source
+            ) + 1:
                 services[index] = _replace_gpu(service, [profile.gpus[index % len(profile.gpus)].index])
     if total_download > selected.allow_download_gb * GIB:
         warnings.append("Planned downloads exceed policy.allow_download_gb.")
@@ -435,7 +468,8 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
         raise TypeError("Invalid policy")
     policy = Policy([str(x) for x in pol["roles"]], float(pol["min_decode_tps"]),
                     int(pol["max_context"]) if pol["max_context"] is not None else None,
-                    str(pol["prefer"]), float(pol["allow_download_gb"]), str(pol.get("kv_quant", "f16")))
+                    str(pol["prefer"]), float(pol["allow_download_gb"]),
+                    str(pol.get("kv_quant", "f16")), str(pol.get("budget_source", "total")))
     services: list[PlannedService] = []
     for item in data["services"]:
         sd = item
@@ -474,14 +508,23 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
 
 
 def save_plan(plan: Plan, path: Path | None = None) -> Path:
-    target = path or Path.home() / ".nmesh" / "plan.json"
+    target = path or PLAN_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(asdict(plan), indent=2, default=str), encoding="utf-8")
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(json.dumps(asdict(plan), indent=2, default=str), encoding="utf-8")
+        os.replace(temporary, target)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
     return target
 
 
 def load_plan(path: Path | None = None) -> Plan | None:
-    target = path or Path.home() / ".nmesh" / "plan.json"
+    target = path or PLAN_PATH
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
         return _plan_from_dict(payload) if isinstance(payload, dict) else None

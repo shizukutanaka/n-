@@ -289,3 +289,54 @@ swap モードでは gateway がリクエストを直列化（`asyncio.Lock`）�
 - 分散マルチノード
 - GUI（CLI + OpenAI互換APIのみ）
 - 未検証モデルのカタログ自動生成
+
+## 13. 実測フィードバック (telemetry)
+
+- gateway の実トラフィックを `~/.nmesh/telemetry.json` に記録する。キーは `nmesh bench` と同じ `(model_id, quant, backend, gpu_name, n_gpu_layers)`。
+- ストリーム要求: 観測した SSE `data:` 行数を completion_tokens とし、最初の行までを `ttft_s`、行数が 16 以上で区間が正のときのみ `decode_tps = (tokens - 1) / (last - first)` を記録する。
+- 非ストリーム要求: `total_s` と上流 `usage.completion_tokens` のみ。全体待時間には prefill が含まれるため、decode tok/s は記録しない。embeddings は decode を持たないので記録しない。
+- `telemetry.bench_overlay(min_samples=5)` はキーごとに decode 測定値が `min_samples` 以上ある場合の中央値を返す。`nmesh plan` は `{**load_cache(), **bench_overlay()}` を `build_plan` に渡す。overlay はメモリ上だけで、`~/.nmesh/bench.json` には書き込まない。
+- `GET /metrics` と `nmesh status` がサービス別のサンプル数・decode tok/s 中央値・TTFT 中央値/p95・全体待時間中央値を返す。
+
+## 14. ルーティングの明示 ID 優先
+
+`/v1/models` が広告する `nmesh-<service>` などの明示 ID はすべてのヒューリスティクより優先される。順序は
+明示 ID → `tools` → コード判定 → context 超過 → chat。`nmesh-code` のような役割名は `role_to_service` 経由で解決される。
+空文字列・`nmesh-auto`・未知の ID は従来と同じくヒューリスティクにフォールスルーする。
+
+## 15. Free-memory budgets and admission
+
+The persisted `Plan` describes machine capability using total VRAM and RAM by
+default. `Policy.budget_source` can be set to `free` for an opt-in plan based
+on currently available memory: GPU budgets use `GPUInfo.free_vram_bytes`, and
+RAM budgets use `HardwareProfile.available_ram_bytes`, while retaining the
+same display reserve and operating-system reserve rules.
+
+`nmesh up` performs a proactive admission check using free memory before
+launching services. Resident services are counted individually and swap-group
+services are counted only by their largest member because they are mutually
+exclusive. If the persisted total-capability plan does not fit, the supervisor
+rebuilds it with `budget_source="free"` and preserves the merged benchmark
+cache. This keeps saved plans useful as capability descriptions while avoiding
+avoidable OOM launches when another application already consumes memory.
+If probing fails or replanning produces no services, startup continues with the
+existing quantization/context/GPU-layer fallback ladder. Use
+`nmesh up --ignore-free-memory` to bypass admission intentionally.
+
+## 16. Gateway reload and swap gate
+
+The gateway keeps a mutable plan state and takes one plan snapshot at the
+start of every chat, embedding, and model-list request. A gateway created
+without an explicit plan checks `plan.json` mtime and reloads an atomically
+replaced plan before handling each such request. `POST /admin/reload` forces
+the same reload path and returns whether the plan changed, its service names,
+and `created_at`; `nmesh reload` is the CLI wrapper. An explicitly supplied
+plan disables mtime auto-reload but still permits the administrative reload
+endpoint. Requests already in flight continue using their original snapshot.
+
+Swap-group traffic uses a reader/writer gate. Requests for the currently
+loaded service acquire concurrent reader slots. A request for another
+swap-group service becomes an exclusive swapper, waits for all readers to
+drain, then calls `ensure_running`; no new reader can enter during that drain
+or swap. Plan reload invalidates the loaded-service marker so the next
+swap-group request revalidates the service.

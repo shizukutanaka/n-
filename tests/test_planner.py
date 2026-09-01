@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
+
 import pytest
 
+import nmesh.planner.core as planner_core
 from nmesh.catalog import ModelSpec, load_catalog
-from nmesh.planner import Policy, build_plan, estimate_memory
+from nmesh.planner import Policy, build_plan, estimate_memory, free_budgets, load_plan, save_plan
 from nmesh.probe import GPUInfo, HardwareProfile, Tier, classify_tier
 
 GIB = 1024**3
@@ -42,6 +46,36 @@ def test_memory_regression(catalog: list[ModelSpec]) -> None:
     model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
     estimate = estimate_memory(model, "q4_k_m", 2048)
     assert estimate.weight_bytes == pytest.approx(4.62e9, rel=0.01)
+
+
+def test_free_budget_source_limits_gpu_layers_and_old_plans_load(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    base = profile(32, (24,))
+    limited = replace(base, gpus=[replace(base.gpus[0], free_vram_bytes=4 * GIB)])
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    total = build_plan(base, [model], Policy(roles=["chat"]))
+    free = build_plan(limited, [model], Policy(roles=["chat"], budget_source="free"))
+    total_service = total.services[0]
+    free_service = free.services[0]
+    assert (
+        (free_service.n_gpu_layers or 0) < (total_service.n_gpu_layers or 0)
+        or free_service.quant != total_service.quant
+    )
+    assert free_service.memory.gpu_bytes <= free_budgets(limited)[0] + 1
+    estimate = estimate_memory(
+        model, "q4_k_m", 2048, profile=limited, budget_source="free"
+    )
+    assert estimate.vram_budget == pytest.approx(free_budgets(limited)[0])
+
+    path = tmp_path / "old-plan.json"
+    save_plan(total, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["policy"]["budget_source"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    loaded = load_plan(path)
+    assert loaded is not None
+    assert loaded.policy.budget_source == "total"
 
 
 def test_cpu_case(catalog: list[ModelSpec]) -> None:
@@ -152,6 +186,25 @@ def test_oversized_model_uses_tensor_parallel() -> None:
     assert service.backend == "vllm"
     assert service.gpu_indices == [0, 1]
     assert "--tensor-parallel-size" in service.launch.argv
+
+
+def test_save_plan_replaces_atomically(tmp_path, catalog: list[ModelSpec], monkeypatch) -> None:
+    first = build_plan(profile(8), catalog)
+    path = tmp_path / "plan.json"
+    save_plan(first, path)
+    assert list(tmp_path.iterdir()) == [path]
+    original = path.read_bytes()
+
+    def fail(self, *args, **kwargs) -> int:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(planner_core.Path, "write_text", fail)
+    with pytest.raises(OSError):
+        save_plan(build_plan(profile(24, (24,)), catalog), path)
+    monkeypatch.undo()
+    assert list(tmp_path.iterdir()) == [path]
+    assert path.read_bytes() == original
+    assert load_plan(path) == first
 
 
 def test_plan_save_load(tmp_path, catalog: list[ModelSpec]) -> None:
