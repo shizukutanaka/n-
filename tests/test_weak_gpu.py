@@ -92,6 +92,8 @@ def test_known_cpu_only_llamacpp_forces_cpu_placement() -> None:
     assert service.memory.cpu_bytes >= service.memory.weight_bytes
     assert not any(flag in service.launch.argv for flag in ("-ngl", "--gpu-layers", "--n-gpu-layers"))
     assert any("no GPU backend" in warning and "Vulkan" in warning for warning in plan.warnings)
+    japanese = build_plan(profile, [model], Policy(roles=["chat"], lang="ja"))
+    assert any("GPU" in warning and "CPU" in warning for warning in japanese.warnings)
 
 
 def test_unknown_llamacpp_device_probe_preserves_gpu_placement() -> None:
@@ -109,13 +111,18 @@ def test_unknown_llamacpp_device_probe_preserves_gpu_placement() -> None:
 
 def test_generic_detection_is_skipped_when_specialized_detection_succeeds(monkeypatch) -> None:
     gpu = GPUInfo(0, "NVIDIA", "nvidia", 8 * GIB, 8 * GIB, None, False)
-    monkeypatch.setattr(detector, "_detect_nvidia", lambda warnings: [gpu])
-    monkeypatch.setattr(detector, "_detect_rocm", lambda warnings: [])
+    monkeypatch.setattr(
+        detector, "_detect_nvidia", lambda warnings, warning_params=None: [gpu]
+    )
+    monkeypatch.setattr(
+        detector, "_detect_rocm", lambda warnings, warning_params=None: []
+    )
     monkeypatch.setattr(
         detector, "detect_generic", lambda os_name: (_ for _ in ()).throw(AssertionError())
     )
     monkeypatch.setattr(
-        detector, "_detect_backends", lambda warnings: ({"llamacpp": None}, {}, {}, {})
+        detector, "_detect_backends",
+        lambda warnings, warning_params=None: ({"llamacpp": None}, {}, {}, {}),
     )
     profile = detector.detect_hardware()
     assert profile.gpus[0].name == "NVIDIA"
@@ -123,13 +130,19 @@ def test_generic_detection_is_skipped_when_specialized_detection_succeeds(monkey
 
 def test_low_vram_generic_gpu_remains_visible_with_explanation(monkeypatch) -> None:
     gpu = GPUInfo(0, "Intel UHD", "intel", GIB, GIB, None, True)
-    monkeypatch.setattr(detector, "_detect_nvidia", lambda warnings: [])
-    monkeypatch.setattr(detector, "_detect_rocm", lambda warnings: [])
+    monkeypatch.setattr(
+        detector, "_detect_nvidia", lambda warnings, warning_params=None: []
+    )
+    monkeypatch.setattr(
+        detector, "_detect_rocm", lambda warnings, warning_params=None: []
+    )
     monkeypatch.setattr(detector, "detect_generic", lambda os_name: [gpu])
     monkeypatch.setattr(
-        detector, "_detect_backends", lambda warnings: ({"llamacpp": None}, {}, {}, {})
+        detector, "_detect_backends",
+        lambda warnings, warning_params=None: ({"llamacpp": None}, {}, {}, {}),
     )
     profile = detector.detect_hardware()
     assert profile.gpus == [gpu]
     assert profile.tier == Tier.T0_CPU
-    assert "less than 2 GiB dedicated VRAM" in profile.warnings[0]
+    assert profile.warnings[0] == "warn.low_vram"
+    assert profile.warning_params[0] == {"gpu": "Intel UHD"}

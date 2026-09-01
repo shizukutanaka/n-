@@ -80,7 +80,7 @@ def _doctor(as_json: bool) -> int:
     try:
         profile = detect_hardware()
     except (OSError, RuntimeError) as error:
-        print(f"doctor failed: {error}", file=sys.stderr)
+        print(i18n.t("err.doctor", i18n.lang(), error=error), file=sys.stderr)
         return 1
     language = i18n.lang()
     free_vram, free_ram = free_budgets(profile)
@@ -112,7 +112,8 @@ def _doctor(as_json: bool) -> int:
         table.add_row(
             f"GPU {gpu.index} VRAM",
             f"{_bytes(gpu.total_vram_bytes)} / {_bytes(gpu.free_vram_bytes)} "
-            f"{i18n.t('label.free', language)} ({gpu.vram_source})",
+            f"{i18n.t('label.free', language)} "
+            f"({i18n.t('label.vram_source', language)}: {gpu.vram_source})",
         )
     table.add_row("Free budget VRAM", _bytes(free_vram))
     table.add_row("Free budget RAM", _bytes(free_ram))
@@ -162,15 +163,15 @@ def _plan(args: argparse.Namespace) -> int:
     try:
         result = _make_plan(args)
     except (OSError, RuntimeError, ValueError) as error:
-        print(f"plan failed: {error}", file=sys.stderr)
+        print(i18n.t("err.plan", i18n.lang(), error=error), file=sys.stderr)
         return 1
     if not result.services or not result.runnable:
-        print("plan produced no runnable services", file=sys.stderr)
+        print(i18n.t("err.plan_empty", i18n.lang()), file=sys.stderr)
         return 1
     try:
         path = save_plan(result)
     except OSError as error:
-        print(f"plan failed to save: {error}", file=sys.stderr)
+        print(i18n.t("err.plan_save", i18n.lang(), error=error), file=sys.stderr)
         return 1
     if args.json:
         data = asdict(result)
@@ -227,7 +228,7 @@ def _runtime(args: argparse.Namespace) -> int:
         try:
             process, _ = _launch_gateway(args.port, detach=False)
         except OSError as error:
-            print(f"gateway failed to start: {error}", file=sys.stderr)
+            print(i18n.t("err.gateway_start", i18n.lang(), error=error), file=sys.stderr)
             return 1
         try:
             exit_code = process.wait()
@@ -250,7 +251,7 @@ def _runtime(args: argparse.Namespace) -> int:
             plan = load_plan()
         if plan is None or not plan.services or not plan.runnable:
             return 1
-        if args.lang:
+        if getattr(args, "lang", None):
             plan = build_plan(
                 detect_hardware(), load_catalog(),
                 replace(plan.policy, lang=i18n.lang(),
@@ -265,7 +266,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 admit=not args.ignore_free_memory, bench_cache=cache,
             )
         except (OSError, RuntimeError) as error:
-            print(f"up failed: {error}", file=sys.stderr)
+            print(i18n.t("err.up", i18n.lang(), error=error), file=sys.stderr)
             return 1
         exit_code = 0
         if not args.dry_run:
@@ -273,7 +274,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 process, log_path = _launch_gateway(args.port, detach=args.detach)
             except OSError as error:
                 runtime_down()
-                print(f"gateway failed to start: {error}", file=sys.stderr)
+                print(i18n.t("err.gateway_start", i18n.lang(), error=error), file=sys.stderr)
                 return 1
             if args.detach:
                 gateway_log = log_path
@@ -282,7 +283,7 @@ def _runtime(args: argparse.Namespace) -> int:
                     clear_gateway(process.pid)
                     process.terminate()
                     print(
-                        f"gateway did not become ready; see {log_path}",
+                        i18n.t("err.gateway_not_ready", i18n.lang(), path=log_path),
                         file=sys.stderr,
                     )
                     runtime_down()
@@ -492,7 +493,7 @@ def _bench(args: argparse.Namespace) -> int:
     try:
         save_cache(cache)
     except OSError as error:
-        print(f"benchmark failed to save: {error}", file=sys.stderr)
+        print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
         return 1
     result = {"key": key, "prefill_tokens": 512, "decode_tokens": args.tokens,
               "median_tps": cache[key], "prefill_tps": measurement.prefill_tps,
@@ -642,7 +643,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         runtime_up(plan, no_download=True)
                     except (OSError, RuntimeError) as restore_error:
                         print(
-                            f"failed to restore original autotune configuration: {restore_error}",
+                            i18n.t("err.autotune_restore", i18n.lang(), error=restore_error),
                             file=sys.stderr,
                         )
                     return 1
@@ -669,10 +670,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 runtime_up(plan, no_download=True)
             except (OSError, RuntimeError) as restore_error:
                 print(
-                    f"failed to restore original autotune configuration: {restore_error}",
+                    i18n.t("err.autotune_restore", i18n.lang(), error=restore_error),
                     file=sys.stderr,
                 )
-            print(f"failed to restore winning autotune configuration: {error}", file=sys.stderr)
+            print(
+                i18n.t("err.autotune_winning", i18n.lang(), error=error),
+                file=sys.stderr,
+            )
             return 1
         result = {"service": service.name, "context": best[0], "n_gpu_layers": best[1],
                   "decode_tps": best[2]}

@@ -189,6 +189,8 @@ series carry an `approximate` label so estimated values are not presented as
 measurements. The decode-throughput family is named
 `nmesh_telemetry_decode_tokens_per_second_median`; time values use the
 `_seconds` base unit.
+HTTP response bodies remain English because `/v1/*` errors and authentication
+details are machine-facing API contracts for clients.
 
 CLI commands return `0` only when the requested operation succeeds. A failed
 plan, unavailable gateway/backend, failed benchmark, missing plan, or non-zero

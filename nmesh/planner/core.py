@@ -901,8 +901,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     ]
     if profile.backend_gpu_devices.get("llamacpp") == () and profile.gpus:
         warnings.append(
-            "llama.cpp binary reports no GPU backend; using CPU placement. "
-            "Install a Vulkan, CUDA, HIP, or SYCL build to use the detected GPU"
+            t("warn.backend_no_gpu", selected.lang)
         )
     hints: list[str] = []
     for model in catalog:
