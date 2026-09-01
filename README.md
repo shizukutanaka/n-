@@ -139,7 +139,9 @@ The existing `/metrics` endpoint remains JSON for compatibility.
 `/metrics/prometheus` adds Prometheus 0.0.4 text exposition for the telemetry
 aggregates and concurrency values already present in that JSON. Telemetry
 series carry an `approximate` label so estimated values are not presented as
-measurements.
+measurements. The decode-throughput family is named
+`nmesh_telemetry_decode_tokens_per_second_median`; time values use the
+`_seconds` base unit.
 
 CLI commands return `0` only when the requested operation succeeds. A failed
 plan, unavailable gateway/backend, failed benchmark, missing plan, or non-zero

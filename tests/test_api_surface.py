@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from dataclasses import replace
@@ -81,6 +82,48 @@ def _completion_plan(port: int, slots: int = 2):
         memory=replace(plan.services[0].memory, parallel_slots=slots),
     )
     return replace(plan, services=[service])
+
+
+def _asgi_get(app: object, authorization: bytes) -> int:
+    async def invoke() -> int:
+        events: list[dict[str, object]] = []
+        received = False
+
+        async def receive() -> dict[str, object]:
+            nonlocal received
+            if received:
+                return {"type": "http.disconnect"}
+            received = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict[str, object]) -> None:
+            events.append(message)
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/v1/models",
+            "raw_path": b"/v1/models",
+            "query_string": b"",
+            "headers": [
+                (b"host", b"testserver"),
+                (b"authorization", authorization),
+            ],
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "root_path": "",
+        }
+        await app(scope, receive, send)
+        return next(
+            int(message["status"])
+            for message in events
+            if message["type"] == "http.response.start"
+        )
+
+    return asyncio.run(invoke())
 
 
 def test_legacy_completions_proxy_and_streaming() -> None:
@@ -187,6 +230,18 @@ def test_api_key_authentication(monkeypatch) -> None:
         assert secret not in wrong.text
 
 
+def test_non_ascii_api_key_authentication(monkeypatch) -> None:
+    secret = "caf\u00e9"
+    monkeypatch.setattr(
+        gateway_module.os.environ,
+        "get",
+        lambda name, default=None: secret if name == "NMESH_API_KEY" else default,
+    )
+    app = create_app(_completion_plan(1))
+    assert _asgi_get(app, b"Bearer wrong") == 401
+    assert _asgi_get(app, b"Bearer caf\xe9") == 200
+
+
 def test_prometheus_metrics_have_help_type_labels_and_escaping() -> None:
     telemetry.record(telemetry.Sample(
         'quoted"service\\line\nbreak', "key", 12.0, 0.1, 0.2, 16, 1.0, True,
@@ -199,6 +254,8 @@ def test_prometheus_metrics_have_help_type_labels_and_escaping() -> None:
     text = response.text
     assert 'service="quoted\\"service\\\\line\\nbreak"' in text
     assert 'approximate="true"' in text
+    assert "# HELP nmesh_telemetry_decode_tokens_per_second_median " in text
+    assert "nmesh_telemetry_decode_tps_median" not in text
     for metric in {
         line.split()[2]
         for line in text.splitlines()

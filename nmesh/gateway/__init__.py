@@ -6,7 +6,7 @@ import os
 import re
 import secrets
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 
@@ -30,12 +30,14 @@ try:
     import httpx
     from fastapi import FastAPI, HTTPException
     from fastapi.responses import Response, StreamingResponse
+    from starlette.requests import Request
 except ImportError:
     FastAPI = None
     httpx = None
     HTTPException = RuntimeError
     Response = None
     StreamingResponse = None
+    Request = object
 
 
 def _get(request: Mapping[str, object], key: str, default: object = None) -> object:
@@ -120,6 +122,17 @@ def _upstream_body(request: Mapping[str, object], service: PlannedService) -> di
     return body
 
 
+def _completion_not_supported(
+    path: str, status_code: int, backend: str
+) -> HTTPException | None:
+    if status_code != 404 or path != "/v1/completions":
+        return None
+    return HTTPException(
+        status_code=502,
+        detail=f"Backend {backend} does not support /v1/completions",
+    )
+
+
 def _prometheus_escape(value: object) -> str:
     return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
@@ -141,7 +154,7 @@ def _prometheus_text(limiter: SlotLimiter) -> str:
             "gauge",
             [],
         ),
-        "nmesh_telemetry_decode_tps_median": (
+        "nmesh_telemetry_decode_tokens_per_second_median": (
             "Median measured or approximate decode throughput in tokens per second.",
             "gauge",
             [],
@@ -182,7 +195,7 @@ def _prometheus_text(limiter: SlotLimiter) -> str:
             labels = {"approximate": str(approximate).lower(), "service": service}
             families["nmesh_telemetry_samples"][2].append((labels, metrics["samples"]))
             metric_names = {
-                "decode_tps_median": "nmesh_telemetry_decode_tps_median",
+                "decode_tps_median": "nmesh_telemetry_decode_tokens_per_second_median",
                 "ttft_s_median": "nmesh_telemetry_ttft_seconds_median",
                 "ttft_s_p95": "nmesh_telemetry_ttft_seconds_p95",
                 "total_s_median": "nmesh_telemetry_total_seconds_median",
@@ -309,15 +322,18 @@ def create_app(
     limiter = SlotLimiter()
     plan_state = _PlanState(selected, explicit, gate, limiter)
     api_key = os.environ.get("NMESH_API_KEY")
+    api_key_bytes = api_key.encode("utf-8") if api_key is not None else None
 
     @app.middleware("http")
-    async def authenticate(request: object, call_next: object) -> object:
+    async def authenticate(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         path = request.url.path
-        if api_key is not None and path.startswith(("/v1/", "/metrics")):
+        if api_key_bytes is not None and path.startswith(("/v1/", "/metrics")):
             authorization = request.headers.get("authorization", "")
             prefix = "Bearer "
             presented = authorization[len(prefix):] if authorization.startswith(prefix) else ""
-            if not secrets.compare_digest(presented, api_key):
+            if not secrets.compare_digest(presented.encode("utf-8"), api_key_bytes):
                 return Response(
                     content=json.dumps({"detail": "Invalid or missing API key"}),
                     status_code=401,
@@ -401,14 +417,9 @@ def create_app(
                     gate.release()
                 if limit_slots:
                     limiter.release(slot_token)
-                if upstream.status_code == 404 and path == "/v1/completions":
-                    raise HTTPException(
-                        status_code=502,
-                        detail=(
-                            f"Backend {service.backend} does not support "
-                            "/v1/completions"
-                        ),
-                    )
+                error = _completion_not_supported(path, upstream.status_code, service.backend)
+                if error is not None:
+                    raise error
                 return Response(content=content, status_code=upstream.status_code,
                                 media_type=upstream.headers.get("content-type"))
 
@@ -491,14 +502,9 @@ def create_app(
                 response = await client.post(f"{_base_url(service)}{path}", json=body)
             content = response.content
             if response.status_code >= 400:
-                if response.status_code == 404 and path == "/v1/completions":
-                    raise HTTPException(
-                        status_code=502,
-                        detail=(
-                            f"Backend {service.backend} does not support "
-                            "/v1/completions"
-                        ),
-                    )
+                error = _completion_not_supported(path, response.status_code, service.backend)
+                if error is not None:
+                    raise error
                 return Response(content=content, status_code=response.status_code,
                                 media_type=response.headers.get("content-type"))
             data = json.loads(content)
