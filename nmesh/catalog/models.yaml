@@ -270,6 +270,7 @@
     ollama: "nomic-embed-text"
     hf_gguf: "nomic-ai/nomic-embed-text-v1.5-GGUF"
     hf: "nomic-ai/nomic-embed-text-v1.5"
+  pooling: mean
 - id: bge-m3
   family: bge-m3
   params: 568000000
@@ -287,3 +288,4 @@
     ollama: "bge-m3"
     hf_gguf: "gpustack/bge-m3-GGUF"
     hf: "BAAI/bge-m3"
+  pooling: cls

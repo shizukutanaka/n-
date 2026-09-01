@@ -653,3 +653,108 @@ def test_llamacpp_layers_are_resolved_against_assigned_card() -> None:
     assert resolved.launch.argv[resolved.launch.argv.index("-ngl") + 1] == str(
         resolved.n_gpu_layers
     )
+
+
+def test_embedding_launch_flags_are_role_aware(catalog: list[ModelSpec]) -> None:
+    assert next(item for item in catalog if item.id == "bge-m3").pooling == "cls"
+    assert next(item for item in catalog if item.id == "nomic-embed-text-v1.5").pooling == "mean"
+    result = build_plan(
+        profile(64, (24,)),
+        catalog,
+        Policy(roles=["chat", "embed"], min_decode_tps=0),
+    )
+    embed = next(service for service in result.services if service.roles == ["embed"])
+    chat = next(service for service in result.services if "chat" in service.roles)
+    assert "--embeddings" in embed.launch.argv
+    assert embed.launch.argv[embed.launch.argv.index("--pooling") + 1] == "cls"
+    assert embed.launch.argv[embed.launch.argv.index("-b") + 1] == str(embed.context)
+    assert embed.launch.argv[embed.launch.argv.index("-ub") + 1] == str(embed.context)
+    assert not any(
+        flag in chat.launch.argv
+        for flag in ("--embeddings", "--embedding", "--pooling", "-b", "-ub")
+    )
+
+
+def test_embedding_capability_warnings_and_flags() -> None:
+    model = ModelSpec(
+        "embed-test", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
+        8192, ["embed"], 80.0, "apache", {"hf_gguf": "embed-test.gguf"},
+        pooling="mean",
+    )
+    no_embedding = replace(
+        profile(32, (12,)),
+        backend_flags={
+            "llamacpp": ("--parallel", "-ngl", "--pooling", "-b", "-ub"),
+        },
+    )
+    unsupported = build_plan(
+        no_embedding, [model], Policy(roles=["embed"], min_decode_tps=0)
+    )
+    unsupported_service = unsupported.services[0]
+    assert "--embeddings" not in unsupported_service.launch.argv
+    assert any("embedding flags are unsupported" in warning for warning in unsupported.warnings)
+
+    no_batch = replace(
+        profile(32, (12,)),
+        backend_flags={
+            "llamacpp": ("--parallel", "-ngl", "--embeddings", "--pooling"),
+        },
+    )
+    limited = build_plan(
+        no_batch, [model], Policy(roles=["embed"], min_decode_tps=0)
+    )
+    limited_service = limited.services[0]
+    assert "-b" not in limited_service.launch.argv
+    assert "-ub" not in limited_service.launch.argv
+    assert any("above 512 tokens may be rejected" in warning for warning in limited.warnings)
+
+
+def test_embedding_unknown_pooling_warns() -> None:
+    model = ModelSpec(
+        "embed-no-pooling", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
+        8192, ["embed"], 80.0, "apache", {"hf_gguf": "embed-test.gguf"},
+    )
+    result = build_plan(
+        profile(32, (12,)), [model], Policy(roles=["embed"], min_decode_tps=0)
+    )
+    assert any("pooling metadata is unknown" in warning for warning in result.warnings)
+
+
+def test_embedding_batch_flags_remain_at_context_after_slot_assignment(
+    catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(
+        profile(64, (24,)),
+        catalog,
+        Policy(roles=["embed"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert service.launch.argv[service.launch.argv.index("-b") + 1] == str(service.context)
+    assert service.launch.argv[service.launch.argv.index("-ub") + 1] == str(service.context)
+
+
+def test_embedding_backend_warnings_are_honest() -> None:
+    model = ModelSpec(
+        "embed-hf", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
+        8192, ["embed"], 80.0, "apache", {"hf": "test/embed"},
+        pooling="mean",
+    )
+    vllm = build_plan(
+        profile(128, (80, 80), os_name="linux"),
+        [model],
+        Policy(roles=["embed"], min_decode_tps=0),
+    )
+    assert any("not verified by nmesh" in warning for warning in vllm.warnings)
+
+    mlx = build_plan(
+        profile(
+            64,
+            (44,),
+            os_name="macos",
+            unified=True,
+            backends={"ollama": None, "llamacpp": None, "vllm": None, "mlx": "installed"},
+        ),
+        [model],
+        Policy(roles=["embed"], min_decode_tps=0),
+    )
+    assert any("does not provide an embedding endpoint" in warning for warning in mlx.warnings)

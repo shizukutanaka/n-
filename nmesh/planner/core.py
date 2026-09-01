@@ -256,7 +256,9 @@ def _launch(
     warnings: list[str] | None = None,
     gpu_devices: tuple[str, ...] | None = None,
     language: str = "en",
+    roles: Sequence[str] = (),
 ) -> LaunchSpec:
+    embed_only = list(roles) == ["embed"]
     ref = _source_for(backend, model, quant)
     if backend == "ollama":
         return LaunchSpec(["ollama", "serve"], {}, "http://127.0.0.1:11434/api/tags", True)
@@ -267,8 +269,16 @@ def _launch(
             argv += ["--tensor-parallel-size", str(tensor_parallel)]
         if gpu_fraction is not None:
             argv += ["--gpu-memory-utilization", f"{gpu_fraction:.3f}"]
+        if embed_only and warnings is not None:
+            warnings.append(
+                t("warn.embeddings_backend_unverified", language, model=model.id)
+            )
     elif backend == "mlx":
         argv = ["python", "-m", "mlx_lm.server", "--model", ref, "--port", str(port)]
+        if embed_only and warnings is not None:
+            warnings.append(
+                t("warn.embeddings_backend_unsupported", language, model=model.id)
+            )
     else:
         known = backend_flags is not None
         parallel = not known or any(
@@ -300,6 +310,39 @@ def _launch(
             argv += ["--tensor-split", ",".join(["1"] * tensor_parallel)]
         elif tensor_parallel > 1 and warnings is not None:
             warnings.append(t("warn.tensor_split_unsupported", language))
+        if backend == "llamacpp" and embed_only:
+            embedding_supported = not known or any(
+                flag in backend_flags for flag in ("--embeddings", "--embedding")
+            )
+            if embedding_supported:
+                argv.append("--embeddings")
+            elif warnings is not None:
+                warnings.append(
+                    t("warn.embeddings_unsupported", language, model=model.id)
+                )
+            if model.pooling:
+                if not known or "--pooling" in backend_flags:
+                    argv.extend(["--pooling", model.pooling])
+            elif warnings is not None:
+                warnings.append(
+                    t("warn.embeddings_pooling_unknown", language, model=model.id)
+                )
+            if context > 512:
+                batch_supported = not known or all(
+                    flag in backend_flags
+                    for flag in ("-b", "--batch-size", "-ub", "--ubatch-size")
+                )
+                if batch_supported:
+                    argv.extend(["-b", str(context), "-ub", str(context)])
+                elif warnings is not None:
+                    warnings.append(
+                        t(
+                            "warn.embeddings_batch_limit",
+                            language,
+                            model=model.id,
+                            context=context,
+                        )
+                    )
     health_path = "/health" if backend == "llamacpp" else "/v1/models"
     return LaunchSpec(argv, {}, f"http://127.0.0.1:{port}{health_path}")
 
@@ -472,6 +515,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         warnings=warnings,
         gpu_devices=gpu_devices,
         language=language,
+        roles=group,
     )
     if candidate.backend == "llamacpp" and "hf_gguf" in candidate.model.sources:
         launch = replace(launch, env={"NMESH_HF_REPO": candidate.model.sources["hf_gguf"]})

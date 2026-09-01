@@ -10,6 +10,11 @@ SUPPORTED = ("en", "ja")
 
 MESSAGES = {
     "en": {
+        "warn.embeddings_unsupported": "{model}: llama.cpp embedding flags are unsupported; /v1/embeddings may be unavailable.",
+        "warn.embeddings_pooling_unknown": "{model}: pooling metadata is unknown; publisher/vendor may use pooling type 'none', which the OpenAI-compatible embedding endpoint rejects.",
+        "warn.embeddings_batch_limit": "{model}: embedding inputs above 512 tokens may be rejected because the physical batch-size flags are unavailable (planned context {context}).",
+        "warn.embeddings_backend_unsupported": "{model}: mlx_lm.server does not provide an embedding endpoint.",
+        "warn.embeddings_backend_unverified": "{model}: vLLM embedding and pooling behavior is not verified by nmesh; nmesh does not guess or inject settings.",
         "install.ollama": "Install Ollama: https://ollama.com/download",
         "install.llamacpp": "Install llama.cpp: winget install llama.cpp / brew install llama.cpp / build from source",
         "install.vllm": "Install vLLM: pip install vllm",
@@ -112,6 +117,11 @@ MESSAGES = {
         "label.backend_detail": "{service}: backend={backend} model_ref={model_ref} port={port} context={context} slots={slots} n_gpu_layers={layers} argv={argv}",
     },
     "ja": {
+        "warn.embeddings_unsupported": "{model}: llama.cpp は埋め込みフラグに対応していないため、/v1/embeddings は利用できない可能性があります。",
+        "warn.embeddings_pooling_unknown": "{model}: pooling のメタデータが不明です。publisher/vendor が pooling type 'none' を使うと、OpenAI 互換の埋め込みエンドポイントは拒否する可能性があります。",
+        "warn.embeddings_batch_limit": "{model}: 物理バッチサイズのフラグに対応していないため、512 トークンを超える入力は拒否される可能性があります（計画コンテキスト {context}）。",
+        "warn.embeddings_backend_unsupported": "{model}: mlx_lm.server には埋め込みエンドポイントがありません。",
+        "warn.embeddings_backend_unverified": "{model}: vLLM の埋め込みと pooling の挙動は nmesh で未検証です。nmesh は設定を推測して注入しません。",
         "install.ollama": "Ollamaをインストールしてください: https://ollama.com/download",
         "install.llamacpp": "llama.cppをインストールしてください: winget install llama.cpp / brew install llama.cpp / ソースからビルド",
         "install.vllm": "vLLMをインストールしてください: pip install vllm",
