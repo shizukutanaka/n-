@@ -63,6 +63,23 @@ def _print_json(value: object) -> None:
     print(json.dumps(value, indent=2, default=str))
 
 
+def _profile_warnings(profile: object, language: str) -> list[str]:
+    warnings = getattr(profile, "warnings", [])
+    params = getattr(profile, "warning_params", [])
+    return [
+        i18n.t(
+            warning,
+            language,
+            **(
+                params[index]
+                if index < len(params) and isinstance(params[index], dict)
+                else {}
+            ),
+        )
+        for index, warning in enumerate(warnings)
+    ]
+
+
 def _doctor(as_json: bool) -> int:
     profile = detect_hardware()
     language = i18n.lang()
@@ -73,14 +90,10 @@ def _doctor(as_json: bool) -> int:
          "languages": list(service.languages)}
         for service in selected.services
     ] if selected is not None else []
+    localized_warnings = _profile_warnings(profile, language)
     if as_json:
         data = asdict(profile)
-        data["warnings"] = [
-            i18n.t("warn.nvidia_unavailable", language)
-            if warning == "NVIDIA detection unavailable"
-            else warning
-            for warning in profile.warnings
-        ]
+        data["warnings"] = localized_warnings
         data["free_budgets"] = {"vram_bytes": free_vram, "ram_bytes": free_ram}
         data["selected_models"] = selected_models
         _print_json(data)
@@ -118,13 +131,8 @@ def _doctor(as_json: bool) -> int:
             str(len(flags)) if flags is not None else i18n.t("label.unknown", language),
         )
     Console(legacy_windows=False).print(backend)
-    for warning in profile.warnings:
-        localized = (
-            i18n.t("warn.nvidia_unavailable", language)
-            if warning == "NVIDIA detection unavailable"
-            else warning
-        )
-        Console(legacy_windows=False).print(f"[yellow]- {localized}[/yellow]")
+    for warning in localized_warnings:
+        Console(legacy_windows=False).print(f"[yellow]- {warning}[/yellow]")
     if selected_models:
         models = Table(title=i18n.t("label.selected_models", language))
         models.add_column(i18n.t("label.service", language))
@@ -155,12 +163,7 @@ def _plan(args: argparse.Namespace) -> int:
     path = save_plan(result)
     if args.json:
         data = asdict(result)
-        data["profile"]["warnings"] = [
-            i18n.t("warn.nvidia_unavailable", result.policy.lang)
-            if warning == "NVIDIA detection unavailable"
-            else warning
-            for warning in result.profile.warnings
-        ]
+        data["profile"]["warnings"] = _profile_warnings(result.profile, result.policy.lang)
         _print_json(data)
         return 0
     language = result.policy.lang
@@ -489,7 +492,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         layer_values = sorted({service.n_gpu_layers or 0, max((service.n_gpu_layers or 0) // 2, 0)})
         running = runtime_status()
         if not _service_running(service, running):
-            print(i18n.t("err.autotune_up", i18n.lang()), file=sys.stderr)
+            print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
             return 1
         base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
             f"http://127.0.0.1:{service.port}"

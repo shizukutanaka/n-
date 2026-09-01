@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import locale
+from dataclasses import replace
 
 from nmesh.catalog.loader import _model_from_mapping
 from nmesh.i18n import MESSAGES, lang, t
@@ -55,6 +56,24 @@ def test_planner_warning_uses_policy_language() -> None:
     english = build_plan(profile(32), [], Policy(roles=["chat"]))
     assert any("実行可能なモデル" in warning for warning in japanese.warnings)
     assert any("No runnable model" in warning for warning in english.warnings)
+
+
+def test_detector_warning_key_is_translated_in_plan_and_doctor(
+    monkeypatch, capsys
+) -> None:
+    warning_profile = replace(profile(32), warnings=["warn.nvidia_unavailable"])
+    japanese = build_plan(warning_profile, [], Policy(roles=["chat"], lang="ja"))
+    english = build_plan(warning_profile, [], Policy(roles=["chat"]))
+    assert "NVIDIA の検出を利用できません。" in japanese.warnings
+    assert "NVIDIA detection unavailable" in english.warnings
+
+    from nmesh import cli
+
+    monkeypatch.setattr(cli, "detect_hardware", lambda: warning_profile)
+    monkeypatch.setattr(cli, "load_plan", lambda: None)
+    monkeypatch.setenv("NMESH_LANG", "ja")
+    assert cli._doctor(False) == 0
+    assert "- NVIDIA の検出を利用できません。" in capsys.readouterr().out
 
 
 def test_language_preference_is_soft_and_normalizes_catalog_metadata() -> None:

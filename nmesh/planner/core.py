@@ -840,8 +840,7 @@ def _rewrite_launch(
             del argv[index:index + 2]
         if not parallel and warnings is not None and slots > 1:
             warnings.append(
-                t("warn.slots_clamped", language, service="llamacpp",
-                  requested=slots, slots=1)
+                t("warn.parallel_clamped", language, requested=slots)
             )
     elif service.backend == "vllm":
         if "--max-num-seqs" in argv:
@@ -862,11 +861,18 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                bench_cache: Mapping[object, float] | None = None) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
+    warning_params = getattr(profile, "warning_params", [])
     warnings = [
-        t("warn.nvidia_unavailable", selected.lang)
-        if warning == "NVIDIA detection unavailable"
-        else warning
-        for warning in profile.warnings
+        t(
+            warning,
+            selected.lang,
+            **(
+                warning_params[index]
+                if index < len(warning_params) and isinstance(warning_params[index], dict)
+                else {}
+            ),
+        )
+        for index, warning in enumerate(profile.warnings)
     ]
     hints: list[str] = []
     for model in catalog:
@@ -962,6 +968,12 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             for name, flags in pd.get("backend_flags", {}).items()
         },
         {str(name): str(path) for name, path in pd.get("backend_paths", {}).items()},
+        [
+            {str(key): str(value) for key, value in params.items()}
+            if isinstance(params, dict)
+            else {}
+            for params in pd.get("warning_params", [])
+        ],
     )
     pol = data["policy"]
     if not isinstance(pol, dict):

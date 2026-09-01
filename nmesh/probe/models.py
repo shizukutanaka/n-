@@ -44,6 +44,7 @@ class HardwareProfile:
     warnings: list[str] = field(default_factory=list)
     backend_flags: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     backend_paths: Mapping[str, str] = field(default_factory=dict)
+    warning_params: list[dict[str, str]] = field(default_factory=list)
 
 
 def classify_tier(
