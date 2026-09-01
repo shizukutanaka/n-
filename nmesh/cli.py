@@ -49,7 +49,11 @@ def _print_json(value: object) -> None:
 
 
 def _doctor(as_json: bool) -> int:
-    profile = detect_hardware()
+    try:
+        profile = detect_hardware()
+    except (OSError, RuntimeError) as error:
+        print(f"doctor failed: {error}", file=sys.stderr)
+        return 1
     free_vram, free_ram = free_budgets(profile)
     if as_json:
         data = asdict(profile)
@@ -105,8 +109,19 @@ def _make_plan(args: argparse.Namespace) -> object:
 
 
 def _plan(args: argparse.Namespace) -> int:
-    result = _make_plan(args)
-    path = save_plan(result)
+    try:
+        result = _make_plan(args)
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"plan failed: {error}", file=sys.stderr)
+        return 1
+    if not result.services or not result.runnable:
+        print("plan produced no runnable services", file=sys.stderr)
+        return 1
+    try:
+        path = save_plan(result)
+    except OSError as error:
+        print(f"plan failed to save: {error}", file=sys.stderr)
+        return 1
     if args.json:
         _print_json(asdict(result))
         return 0
@@ -144,31 +159,50 @@ def _plan(args: argparse.Namespace) -> int:
 
 
 def _runtime(args: argparse.Namespace) -> int:
+    exit_code = 0
     if args.command == "serve":
-        process, _ = _launch_gateway(args.port, detach=False)
         try:
-            process.wait()
+            process, _ = _launch_gateway(args.port, detach=False)
+        except OSError as error:
+            print(f"gateway failed to start: {error}", file=sys.stderr)
+            return 1
+        try:
+            exit_code = process.wait()
         except KeyboardInterrupt:
             process.terminate()
+            exit_code = 1
         finally:
             clear_gateway(process.pid)
-        return 0
+        return 0 if exit_code == 0 else 1
     if args.command == "up":
         gateway_log: Path | None = None
         plan = load_plan()
         if plan is None:
-            _plan(argparse.Namespace(roles="chat,code,embed", prefer="balanced",
-                                     context=None, budget="total", json=False, explain=False))
+            if _plan(argparse.Namespace(
+                roles="chat,code,embed", prefer="balanced", context=None,
+                budget="total", parallel_slots=None, json=False, explain=False,
+            )) != 0:
+                return 1
             plan = load_plan()
-        if plan is None:
+        if plan is None or not plan.services or not plan.runnable:
             return 1
         cache = {**load_cache(), **bench_overlay()}
-        result = runtime_up(
-            plan, no_download=args.no_download, dry_run=args.dry_run,
-            admit=not args.ignore_free_memory, bench_cache=cache,
-        )
+        try:
+            result = runtime_up(
+                plan, no_download=args.no_download, dry_run=args.dry_run,
+                admit=not args.ignore_free_memory, bench_cache=cache,
+            )
+        except (OSError, RuntimeError) as error:
+            print(f"up failed: {error}", file=sys.stderr)
+            return 1
+        exit_code = 0
         if not args.dry_run:
-            process, log_path = _launch_gateway(args.port, detach=args.detach)
+            try:
+                process, log_path = _launch_gateway(args.port, detach=args.detach)
+            except OSError as error:
+                runtime_down()
+                print(f"gateway failed to start: {error}", file=sys.stderr)
+                return 1
             if args.detach:
                 gateway_log = log_path
                 disarm_atexit()
@@ -184,10 +218,11 @@ def _runtime(args: argparse.Namespace) -> int:
                 result = runtime_status()
             else:
                 try:
-                    process.wait()
+                    exit_code = process.wait()
                 except KeyboardInterrupt:
                     process.terminate()
                     runtime_down()
+                    exit_code = 1
                 finally:
                     clear_gateway(process.pid)
     elif args.command == "down":
@@ -259,7 +294,7 @@ def _runtime(args: argparse.Namespace) -> int:
                     f"{metrics.get('total_s_median', 0):.3f}",
                 )
             Console().print(table)
-    return 0
+    return 0 if exit_code == 0 else 1
 
 
 def _launch_gateway(port: int, detach: bool) -> tuple[subprocess.Popen[bytes], Path | None]:
@@ -375,7 +410,11 @@ def _bench(args: argparse.Namespace) -> int:
                         plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
                         service.n_gpu_layers)
     cache[key] = measurement.decode_tps
-    save_cache(cache)
+    try:
+        save_cache(cache)
+    except OSError as error:
+        print(f"benchmark failed to save: {error}", file=sys.stderr)
+        return 1
     result = {"key": key, "prefill_tokens": 512, "decode_tokens": args.tokens,
               "median_tps": cache[key], "prefill_tps": measurement.prefill_tps,
               "ttft_s": measurement.ttft_s, "approximate": measurement.approximate,
@@ -408,7 +447,7 @@ def _run_prompt(args: argparse.Namespace) -> int:
     except (OSError, json.JSONDecodeError, KeyError, IndexError) as error:
         output = f"gateway unavailable: {error}"
     print(output)
-    return 0
+    return 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:

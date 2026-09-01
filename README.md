@@ -121,6 +121,34 @@ probe fails), preserves the previous behavior rather than making an
 unsupported CPU fallback assumption. To use a detected GPU with llama.cpp,
 install or build a backend with a Vulkan, CUDA, HIP, or SYCL GPU backend.
 
+## OpenAI-compatible API surface
+
+In addition to `/v1/chat/completions`, the gateway provides the legacy
+`/v1/completions` endpoint. Its `prompt` may be one string or a list of
+strings; nmesh concatenates that input for context-length routing. Both
+completion endpoints honor explicit `nmesh-<service>` model IDs, streaming,
+backend slot limits, swap ordering, and telemetry.
+
+Set `NMESH_API_KEY` before starting the gateway to require
+`Authorization: Bearer <key>` on `/v1/*` and `/metrics*`. `/health` remains
+unauthenticated for readiness probes. When the variable is unset, authentication
+is disabled. The key is compared securely and is never returned in errors,
+metrics, or logs.
+
+The existing `/metrics` endpoint remains JSON for compatibility.
+`/metrics/prometheus` adds Prometheus 0.0.4 text exposition for the telemetry
+aggregates and concurrency values already present in that JSON. Telemetry
+series carry an `approximate` label so estimated values are not presented as
+measurements. The decode-throughput family is named
+`nmesh_telemetry_decode_tokens_per_second_median`; time values use the
+`_seconds` base unit.
+
+CLI commands return `0` only when the requested operation succeeds. A failed
+plan, unavailable gateway/backend, failed benchmark, missing plan, or non-zero
+foreground server exit returns `1`. `status` and `down` remain idempotent:
+querying status or stopping an already-stopped runtime is a successful
+operation.
+
 ## GPU detection and honest VRAM reporting
 
 nmesh first tries the specialized NVIDIA and ROCm detectors: NVML or

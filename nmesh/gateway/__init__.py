@@ -4,8 +4,9 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 
@@ -13,7 +14,7 @@ from nmesh.bench import benchmark_key
 from nmesh.planner import PLAN_PATH, Plan, PlannedService, load_plan
 from nmesh.runtime import ensure_running, heartbeat
 from nmesh.runtime import status as runtime_status
-from nmesh.telemetry import Sample
+from nmesh.telemetry import Sample, summary_by_approximate
 from nmesh.telemetry import record as record_telemetry
 from nmesh.telemetry import summary as telemetry_summary
 
@@ -29,12 +30,14 @@ try:
     import httpx
     from fastapi import FastAPI, HTTPException
     from fastapi.responses import Response, StreamingResponse
+    from starlette.requests import Request
 except ImportError:
     FastAPI = None
     httpx = None
     HTTPException = RuntimeError
     Response = None
     StreamingResponse = None
+    Request = object
 
 
 def _get(request: Mapping[str, object], key: str, default: object = None) -> object:
@@ -43,11 +46,16 @@ def _get(request: Mapping[str, object], key: str, default: object = None) -> obj
 
 def _content(request: Mapping[str, object]) -> str:
     messages = _get(request, "messages", [])
-    if not isinstance(messages, list):
-        return ""
-    return " ".join(
-        str(item.get("content", "")) for item in messages if isinstance(item, Mapping)
-    )
+    if isinstance(messages, list) and messages:
+        return " ".join(
+            str(item.get("content", "")) for item in messages if isinstance(item, Mapping)
+        )
+    prompt = _get(request, "prompt", "")
+    if isinstance(prompt, str):
+        return prompt
+    if isinstance(prompt, list):
+        return " ".join(item for item in prompt if isinstance(item, str))
+    return ""
 
 
 def estimate_tokens(text: str) -> int:
@@ -112,6 +120,102 @@ def _upstream_body(request: Mapping[str, object], service: PlannedService) -> di
     if service.backend == "ollama":
         body["keep_alive"] = "5m" if service.resident else "30s"
     return body
+
+
+def _completion_not_supported(
+    path: str, status_code: int, backend: str
+) -> HTTPException | None:
+    if status_code != 404 or path != "/v1/completions":
+        return None
+    return HTTPException(
+        status_code=502,
+        detail=f"Backend {backend} does not support /v1/completions",
+    )
+
+
+def _prometheus_escape(value: object) -> str:
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def _prometheus_labels(labels: Mapping[str, object]) -> str:
+    if not labels:
+        return ""
+    values = ", ".join(
+        f'{name}="{_prometheus_escape(value)}"'
+        for name, value in sorted(labels.items())
+    )
+    return "{" + values + "}"
+
+
+def _prometheus_text(limiter: SlotLimiter) -> str:
+    families: dict[str, tuple[str, str, list[tuple[Mapping[str, object], object]]]] = {
+        "nmesh_telemetry_samples": (
+            "Number of telemetry samples.",
+            "gauge",
+            [],
+        ),
+        "nmesh_telemetry_decode_tokens_per_second_median": (
+            "Median measured or approximate decode throughput in tokens per second.",
+            "gauge",
+            [],
+        ),
+        "nmesh_telemetry_ttft_seconds_median": (
+            "Median measured or approximate time to first token in seconds.",
+            "gauge",
+            [],
+        ),
+        "nmesh_telemetry_ttft_seconds_p95": (
+            "95th percentile measured or approximate time to first token in seconds.",
+            "gauge",
+            [],
+        ),
+        "nmesh_telemetry_total_seconds_median": (
+            "Median measured or approximate total request time in seconds.",
+            "gauge",
+            [],
+        ),
+        "nmesh_concurrency_limit": (
+            "Configured backend concurrency slot limit.",
+            "gauge",
+            [],
+        ),
+        "nmesh_concurrency_in_flight": (
+            "Backend requests currently occupying concurrency slots.",
+            "gauge",
+            [],
+        ),
+        "nmesh_concurrency_waiting": (
+            "Backend requests waiting for concurrency slots.",
+            "gauge",
+            [],
+        ),
+    }
+    for service, groups in summary_by_approximate().items():
+        for approximate, metrics in groups.items():
+            labels = {"approximate": str(approximate).lower(), "service": service}
+            families["nmesh_telemetry_samples"][2].append((labels, metrics["samples"]))
+            metric_names = {
+                "decode_tps_median": "nmesh_telemetry_decode_tokens_per_second_median",
+                "ttft_s_median": "nmesh_telemetry_ttft_seconds_median",
+                "ttft_s_p95": "nmesh_telemetry_ttft_seconds_p95",
+                "total_s_median": "nmesh_telemetry_total_seconds_median",
+            }
+            for key, metric_name in metric_names.items():
+                if key in metrics:
+                    families[metric_name][2].append((labels, metrics[key]))
+    for service, metrics in limiter.metrics().items():
+        labels = {"service": service}
+        families["nmesh_concurrency_limit"][2].append((labels, metrics["limit"]))
+        families["nmesh_concurrency_in_flight"][2].append((labels, metrics["in_flight"]))
+        families["nmesh_concurrency_waiting"][2].append((labels, metrics["waiting"]))
+    lines: list[str] = []
+    for name, (help_text, metric_type, values) in families.items():
+        lines.extend((f"# HELP {name} {help_text}", f"# TYPE {name} {metric_type}"))
+        lines.extend(
+            f"{name}{_prometheus_labels(labels)} {float(value):g}"
+            for labels, value in values
+        )
+    return "\n".join(lines) + "\n"
 
 
 class _PlanState:
@@ -217,6 +321,26 @@ def create_app(
     gate = SwapGate()
     limiter = SlotLimiter()
     plan_state = _PlanState(selected, explicit, gate, limiter)
+    api_key = os.environ.get("NMESH_API_KEY")
+    api_key_bytes = api_key.encode("utf-8") if api_key is not None else None
+
+    @app.middleware("http")
+    async def authenticate(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        path = request.url.path
+        if api_key_bytes is not None and path.startswith(("/v1/", "/metrics")):
+            authorization = request.headers.get("authorization", "")
+            prefix = "Bearer "
+            presented = authorization[len(prefix):] if authorization.startswith(prefix) else ""
+            if not secrets.compare_digest(presented.encode("latin-1"), api_key_bytes):
+                return Response(
+                    content=json.dumps({"detail": "Invalid or missing API key"}),
+                    status_code=401,
+                    media_type="application/json",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        return await call_next(request)
 
     async def proxy(request: dict[str, object], service: PlannedService,
                     plan_snapshot: Plan, telemetry_keys: Mapping[str, str],
@@ -293,6 +417,9 @@ def create_app(
                     gate.release()
                 if limit_slots:
                     limiter.release(slot_token)
+                error = _completion_not_supported(path, upstream.status_code, service.backend)
+                if error is not None:
+                    raise error
                 return Response(content=content, status_code=upstream.status_code,
                                 media_type=upstream.headers.get("content-type"))
 
@@ -375,6 +502,9 @@ def create_app(
                 response = await client.post(f"{_base_url(service)}{path}", json=body)
             content = response.content
             if response.status_code >= 400:
+                error = _completion_not_supported(path, response.status_code, service.backend)
+                if error is not None:
+                    raise error
                 return Response(content=content, status_code=response.status_code,
                                 media_type=response.headers.get("content-type"))
             data = json.loads(content)
@@ -441,13 +571,27 @@ def create_app(
             "concurrency": limiter.metrics(),
         }
 
+    @app.get("/metrics/prometheus")
+    async def metrics_prometheus() -> object:
+        return Response(_prometheus_text(limiter), media_type="text/plain; version=0.0.4")
+
     @app.post("/v1/chat/completions")
-    async def completions(request: dict[str, object]) -> object:
+    async def chat_completions(request: dict[str, object]) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
         service = _service(selected, route(request, selected))
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/chat/completions",
+            limit_slots=True,
+        )
+
+    @app.post("/v1/completions")
+    async def legacy_completions(request: dict[str, object]) -> object:
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
+        service = _service(selected, route(request, selected))
+        return await proxy(
+            request, service, selected, telemetry_keys, "/v1/completions",
             limit_slots=True,
         )
 
