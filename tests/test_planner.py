@@ -286,8 +286,11 @@ def test_forced_slots_clamp_and_one_is_silent(catalog: list[ModelSpec]) -> None:
     )
     service = small.services[0]
     assert service.memory.parallel_slots < 32
-    assert any("requested 32" in warning and "granted" in warning
-               for warning in small.warnings)
+    assert any(
+        "32" in warning and str(service.memory.parallel_slots) in warning
+        and service.name in warning
+        for warning in small.warnings
+    )
 
     large = build_plan(
         profile(64, (24,)), [next(

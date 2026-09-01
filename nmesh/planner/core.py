@@ -492,7 +492,8 @@ def _assign_slots(
                     slots = min(cap, requested, 1 + max(available, 0))
                 if requested is not None and slots != requested and warnings is not None:
                     warnings.append(
-                        f"parallel_slots requested {requested}, granted {slots} for {service.name}"
+                        f"{service.name}: parallel_slots {requested} は空き容量に収まらないため "
+                        f"{slots} に切り下げました"
                     )
         slots = max(1, slots)
         if slots > 1:

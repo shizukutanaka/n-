@@ -26,6 +26,19 @@ RESTART_WINDOW = 300.0
 GIB = 1024**3
 
 
+def _slots(plan: Plan | None, name: str) -> int:
+    if plan is None:
+        return 1
+    return next(
+        (item.memory.parallel_slots for item in plan.services if item.name == name),
+        1,
+    )
+
+
+def _port(plan: Plan, name: str, default: int) -> int:
+    return next((item.port for item in plan.services if item.name == name), default)
+
+
 class ProcessLike(Protocol):
     pid: int
 
@@ -166,30 +179,21 @@ class Supervisor:
     def _persist(self, plan: Plan) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         entries: list[dict[str, object]] = [
-            {"service": name, "pid": process.pid, "port": next(
-                (item.port for item in plan.services if item.name == name), 0
-            ), "started_at": time.time(), "shared": False,
-             "parallel_slots": next(
-                 (item.memory.parallel_slots for item in plan.services if item.name == name), 1
-             )}
+            {"service": name, "pid": process.pid, "port": _port(plan, name, 0),
+             "started_at": time.time(), "shared": False,
+             "parallel_slots": _slots(plan, name)}
             for name, process in self.processes.items()
         ]
         entries.extend(
-            {"service": name, "pid": None, "port": next(
-                (item.port for item in plan.services if item.name == name), 11434
-            ), "started_at": time.time(), "shared": True,
-             "parallel_slots": next(
-                 (item.memory.parallel_slots for item in plan.services if item.name == name), 1
-             )}
+            {"service": name, "pid": None, "port": _port(plan, name, 11434),
+             "started_at": time.time(), "shared": True,
+             "parallel_slots": _slots(plan, name)}
             for name in self.shared_services if name not in self.processes
         )
         entries.extend(
-            {"service": name, "pid": None, "port": next(
-                (item.port for item in plan.services if item.name == name), 0
-            ), "started_at": time.time(), "shared": True, "external": True,
-             "parallel_slots": next(
-                 (item.memory.parallel_slots for item in plan.services if item.name == name), 1
-             )}
+            {"service": name, "pid": None, "port": _port(plan, name, 0),
+             "started_at": time.time(), "shared": True, "external": True,
+             "parallel_slots": _slots(plan, name)}
             for name in self.external_shared
             if name not in self.processes and name not in self.shared_services
         )
@@ -389,23 +393,14 @@ class Supervisor:
             "pid": process.pid,
             "running": process.poll() is None,
             "restarts": len(self.restarts.get(name, [])),
-            "parallel_slots": (
-                next(
-                    (item.memory.parallel_slots for item in self.active_plan.services
-                     if item.name == name),
-                    1,
-                ) if self.active_plan is not None else 1
-            ),
+            "parallel_slots": _slots(self.active_plan, name),
         } for name, process in self.processes.items()]
         entries.extend({
             "service": name,
             "pid": None,
             "running": True,
             "shared": True,
-            "parallel_slots": next(
-                (item.memory.parallel_slots for item in self.active_plan.services
-                 if item.name == name), 1
-            ) if self.active_plan is not None else 1,
+            "parallel_slots": _slots(self.active_plan, name),
         } for name in self.shared_services if name not in self.processes)
         entries.extend({
             "service": name,
@@ -413,10 +408,7 @@ class Supervisor:
             "running": True,
             "shared": True,
             "external": True,
-            "parallel_slots": next(
-                (item.memory.parallel_slots for item in self.active_plan.services
-                 if item.name == name), 1
-            ) if self.active_plan is not None else 1,
+            "parallel_slots": _slots(self.active_plan, name),
         } for name in self.external_shared if name not in self.processes)
         from_state = False
         if not entries and self.state_path.exists():
