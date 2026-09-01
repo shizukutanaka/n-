@@ -172,10 +172,10 @@ class Policy:
    ```
    score = quality_adj * w_q + normalized_tps * w_s
    quality_adj = model.quality - quant_penalty[quant]     # f16:0 q8:0.5 q6:1 q5:2 q4_k_m:3.5 q4_0:5 q3:9 q2:16
-   prefer=quality → (w_q, w_s) = (1.0, 0.25)
-   prefer=speed   → (0.4, 1.0)
-   prefer=balanced→ (1.0, 0.6)
-   normalized_tps = min(decode_tps, 60) / 60 * 100
+   prefer=quality → (w_q, w_s) = (1.0, 0.1)
+   prefer=speed   → (0.5, 1.0)
+   prefer=balanced→ (1.0, 0.25)
+   normalized_tps = min(decode_tps, 30) / 30 * 100
    ```
 5. 配置（Tierごと）:
    - `T0/T1`: 全役割を **swap グループ**にまとめる。同時常駐は1本。役割数を減らせる場合（chat と code を汎用1本で兼ねる）は兼務させる。埋め込みは CPU 上の小型モデルで常駐可（<0.5GiB）。
@@ -270,7 +270,7 @@ swap モードでは gateway がリクエストを直列化（`asyncio.Lock`）�
 
 ## 11. テスト方針（pytest、CI必須）
 
-- **メモリ見積りの単体テスト**: 既知の値で回帰固定（例: 7.62Bパラメータ・q4_k_m → weight ≈ 4.62 GiB。誤差1%以内）。
+- **メモリ見積りの単体テスト**: 既知の値で回帰固定（例: 7.62Bパラメータ・q4_k_m → weight ≈ 4.62e9 バイト ≈ 4.30 GiB。誤差1%以内）。
 - **合成 HardwareProfile フィクスチャ**で planner をテスト:
   1. CPUのみ 8GiB RAM → T0、CPU向け小型モデル、swap 1本、`runnable`
   2. GTX 1650 4GiB / 16GiB RAM → T1、部分オフロード、n_gpu_layers が 0 < x < n_layers

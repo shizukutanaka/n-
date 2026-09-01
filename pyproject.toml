@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nmesh"
+version = "0.1.0"
+description = "Hardware-aware local LLM planner"
+requires-python = ">=3.10"
+dependencies = [
+  "psutil>=5.9",
+  "pyyaml>=6.0",
+  "rich>=13.0",
+]
+
+[project.optional-dependencies]
+nvidia = ["pynvml>=11.5"]
+gateway = ["fastapi>=0.100", "uvicorn>=0.23", "httpx>=0.24"]
+download = ["huggingface_hub>=0.20"]
+dev = ["pytest>=7.0", "ruff>=0.1", "mypy>=1.5"]
+
+[project.scripts]
+nmesh = "nmesh.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nmesh"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
