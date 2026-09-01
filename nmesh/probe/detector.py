@@ -10,6 +10,7 @@ from pathlib import Path
 import psutil
 
 from .caps import llamacpp_caps
+from .generic_gpu import detect_generic
 from .models import GPUInfo, HardwareProfile, OperatingSystem, classify_tier
 
 
@@ -58,6 +59,7 @@ def parse_nvidia_smi(text: str) -> list[GPUInfo]:
                 free_vram_bytes=free,
                 compute_capability=_parse_cc(fields[4]),
                 driving_display=False,
+                vram_source="smi",
             )
         )
     return gpus
@@ -119,6 +121,7 @@ def parse_rocm_smi(text: str) -> list[GPUInfo]:
                 free_vram_bytes=free or total,
                 compute_capability=None,
                 driving_display=False,
+                vram_source="smi",
             )
         )
     return sorted(gpus, key=lambda gpu: gpu.index)
@@ -144,7 +147,10 @@ def _detect_nvidia(warnings: list[str]) -> list[GPUInfo]:
                 except (AttributeError, RuntimeError, ValueError):
                     capability = None
                 gpus.append(
-                    GPUInfo(index, str(name), "nvidia", memory.total, memory.free, capability, False)
+                    GPUInfo(
+                        index, str(name), "nvidia", memory.total, memory.free,
+                        capability, False, "nvml",
+                    )
                 )
             return gpus
         finally:
@@ -175,7 +181,12 @@ def _detect_rocm(warnings: list[str]) -> list[GPUInfo]:
 
 def _detect_backends(
     warnings: list[str],
-) -> tuple[dict[str, str | None], dict[str, tuple[str, ...]], dict[str, str]]:
+) -> tuple[
+    dict[str, str | None],
+    dict[str, tuple[str, ...]],
+    dict[str, str],
+    dict[str, tuple[str, ...]],
+]:
     backends: dict[str, str | None] = {
         "ollama": None,
         "llamacpp": None,
@@ -184,6 +195,7 @@ def _detect_backends(
     }
     flags: dict[str, tuple[str, ...]] = {}
     paths: dict[str, str] = {}
+    gpu_devices: dict[str, tuple[str, ...]] = {}
     commands: dict[str, list[str]] = {
         "ollama": ["ollama", "--version"],
         "llamacpp": ["llama-server", "--version"],
@@ -202,6 +214,8 @@ def _detect_backends(
             caps = llamacpp_caps(str(executable))
             if caps is not None:
                 flags[name] = tuple(sorted(caps.flags))
+                if caps.gpu_devices is not None:
+                    gpu_devices[name] = caps.gpu_devices
     python_executable = shutil.which("python") or shutil.which("python3")
     if python_executable:
         output, error = _run([python_executable, "-c", "import mlx_lm; print('installed')"])
@@ -209,7 +223,7 @@ def _detect_backends(
             backends["mlx"] = "installed"
         elif error and "No module named" not in error:
             warnings.append("Unable to check mlx_lm")
-    return backends, flags, paths
+    return backends, flags, paths, gpu_devices
 
 
 def _os_name() -> OperatingSystem:
@@ -238,6 +252,7 @@ def _mark_display(gpus: list[GPUInfo], os_name: OperatingSystem) -> list[GPUInfo
             gpu.free_vram_bytes,
             gpu.compute_capability,
             driving if gpu.index == first.index else gpu.driving_display,
+            gpu.vram_source,
         )
         for gpu in gpus
     ]
@@ -265,13 +280,21 @@ def detect_hardware() -> HardwareProfile:
     gpus: list[GPUInfo] = []
     if unified:
         total = int(total_ram * 0.70)
-        gpus = [GPUInfo(0, "Apple Silicon", "apple", total, total, None, True)]
+        gpus = [GPUInfo(0, "Apple Silicon", "apple", total, total, None, True, "unknown")]
     else:
         gpus = _detect_nvidia(warnings)
         if not gpus:
             gpus = _detect_rocm(warnings)
+        if not gpus:
+            gpus = detect_generic(os_name)
+            for gpu in gpus:
+                if gpu.total_vram_bytes < 2 * 1024**3:
+                    warnings.append(
+                        f"{gpu.name} has less than 2 GiB dedicated VRAM; it remains visible "
+                        "but is not used for GPU placement"
+                    )
     gpus = _mark_display(gpus, os_name)
-    backends, backend_flags, backend_paths = _detect_backends(warnings)
+    backends, backend_flags, backend_paths, backend_gpu_devices = _detect_backends(warnings)
     tier = classify_tier(gpus, unified, total_ram)
     return HardwareProfile(
         os_name,
@@ -288,4 +311,5 @@ def detect_hardware() -> HardwareProfile:
         warnings,
         backend_flags,
         backend_paths,
+        backend_gpu_devices,
     )

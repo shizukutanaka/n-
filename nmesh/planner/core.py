@@ -240,6 +240,7 @@ def _launch(
     gpu_fraction: float | None = None,
     backend_flags: frozenset[str] | None = None,
     warnings: list[str] | None = None,
+    gpu_devices: tuple[str, ...] | None = None,
 ) -> LaunchSpec:
     ref = _source_for(backend, model, quant)
     if backend == "ollama":
@@ -258,7 +259,10 @@ def _launch(
         parallel = not known or any(
             flag in backend_flags for flag in ("-np", "--parallel")
         )
-        gpu_layers = not known or _supports_gpu_layers(backend_flags)
+        gpu_layers = (
+            gpu_devices != ()
+            and (not known or _supports_gpu_layers(backend_flags))
+        )
         tensor_split = not known or "--tensor-split" in backend_flags
         argv = [
             "llama-server", "-m", ref, "-c",
@@ -273,7 +277,7 @@ def _launch(
         argv += ["--port", str(port)]
         if gpu_layers:
             argv += ["-ngl", str(layers)]
-        elif warnings is not None:
+        elif warnings is not None and gpu_devices != ():
             warnings.append(
                 "llamacpp: GPU-layer flags unsupported; using CPU placement"
             )
@@ -341,6 +345,11 @@ def _candidate_for(model: ModelSpec, profile: HardwareProfile, policy: Policy,
             if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
                 continue
             backend, installed = _backend(profile, model, layers)
+            if backend == "llamacpp" and profile.backend_gpu_devices.get("llamacpp") == ():
+                layers = 0
+                gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
+                if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
+                    continue
             if not _has_source(backend, model):
                 continue
             gpu_name = profile.gpus[0].name if profile.gpus else "cpu"
@@ -401,9 +410,10 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
     layers = candidate.n_gpu_layers
     memory = candidate.memory
     backend_flags = profile.backend_flags.get(candidate.backend)
+    gpu_devices = profile.backend_gpu_devices.get(candidate.backend)
     if (
         candidate.backend == "llamacpp"
-        and not _supports_gpu_layers(backend_flags)
+        and (not _supports_gpu_layers(backend_flags) or gpu_devices == ())
     ):
         model_layers = max(
             1, round(memory.weight_bytes / memory.per_layer_bytes)
@@ -418,6 +428,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         port, layers or 0, tensor_parallel,
         backend_flags=backend_flags,
         warnings=warnings,
+        gpu_devices=gpu_devices,
     )
     if candidate.backend == "llamacpp" and "hf_gguf" in candidate.model.sources:
         launch = replace(launch, env={"NMESH_HF_REPO": candidate.model.sources["hf_gguf"]})
@@ -440,7 +451,8 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
 def _rebuild_launch(service: PlannedService, tensor_parallel: int,
                     layers: int | None,
                     backend_flags: frozenset[str] | None = None,
-                    warnings: list[str] | None = None) -> LaunchSpec:
+                    warnings: list[str] | None = None,
+                    gpu_devices: tuple[str, ...] | None = None) -> LaunchSpec:
     argv = list(service.launch.argv)
     if service.backend == "vllm":
         if tensor_parallel > 1:
@@ -471,7 +483,7 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
             index = argv.index("--tensor-split")
             del argv[index:index + 2]
         gpu_layer_flags = GPU_LAYER_FLAGS
-        gpu_layers_supported = _supports_gpu_layers(backend_flags)
+        gpu_layers_supported = gpu_devices != () and _supports_gpu_layers(backend_flags)
         if layers is not None and gpu_layers_supported:
             for flag in gpu_layer_flags:
                 if flag in argv:
@@ -484,7 +496,7 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
                     index = argv.index(flag)
                     del argv[index:index + 2]
                     removed = True
-            if removed and warnings is not None:
+            if removed and warnings is not None and gpu_devices != ():
                 warnings.append(
                     "llamacpp: GPU-layer flags unsupported; using CPU placement"
                 )
@@ -495,8 +507,12 @@ def _cpu_llamacpp_service(
     service: PlannedService,
     backend_flags: frozenset[str] | tuple[str, ...] | None,
     warnings: list[str],
+    gpu_devices: tuple[str, ...] | None = None,
 ) -> PlannedService:
-    if service.backend != "llamacpp" or _supports_gpu_layers(backend_flags):
+    if (
+        service.backend != "llamacpp"
+        or (_supports_gpu_layers(backend_flags) and gpu_devices != ())
+    ):
         return service
     model_layers = max(
         1, round(service.memory.weight_bytes / service.memory.per_layer_bytes)
@@ -504,7 +520,7 @@ def _cpu_llamacpp_service(
     memory = replace(service.memory, n_gpu_layers=0)
     gpu_bytes, cpu_bytes = _split_memory(memory, model_layers, 0)
     memory = replace(memory, gpu_bytes=gpu_bytes, cpu_bytes=cpu_bytes)
-    launch = _rebuild_launch(service, 1, 0, backend_flags, warnings)
+    launch = _rebuild_launch(service, 1, 0, backend_flags, warnings, gpu_devices)
     return replace(service, n_gpu_layers=0, memory=memory, launch=launch)
 
 
@@ -519,7 +535,8 @@ def _place_services(
         return services
     services = [
         _cpu_llamacpp_service(
-            service, profile.backend_flags.get(service.backend), warnings
+            service, profile.backend_flags.get(service.backend), warnings,
+            profile.backend_gpu_devices.get(service.backend),
         )
         for service in services
     ]
@@ -629,6 +646,7 @@ def _place_services(
                 launch=_rebuild_launch(
                     current, tensor_parallel, current.n_gpu_layers,
                     profile.backend_flags.get(current.backend), warnings,
+                    profile.backend_gpu_devices.get(current.backend),
                 ),
             )
         placed[service.name] = current
@@ -847,6 +865,11 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
     warnings = list(profile.warnings)
+    if profile.backend_gpu_devices.get("llamacpp") == () and profile.gpus:
+        warnings.append(
+            "llama.cpp binary reports no GPU backend; using CPU placement. "
+            "Install a Vulkan, CUDA, HIP, or SYCL build to use the detected GPU"
+        )
     hints: list[str] = []
     for model in catalog:
         if (
@@ -911,9 +934,12 @@ def _gpu_from_dict(data: object) -> GPUInfo:
     if not isinstance(data, dict):
         raise TypeError("Invalid GPU data")
     cap = data.get("compute_capability")
-    return GPUInfo(int(data["index"]), str(data["name"]), str(data["vendor"]),
-                   int(data["total_vram_bytes"]), int(data["free_vram_bytes"]),
-                   tuple(cap) if isinstance(cap, list) else cap, bool(data["driving_display"]))
+    return GPUInfo(
+        int(data["index"]), str(data["name"]), str(data["vendor"]),
+        int(data["total_vram_bytes"]), int(data["free_vram_bytes"]),
+        tuple(cap) if isinstance(cap, list) else cap, bool(data["driving_display"]),
+        str(data.get("vram_source", "unknown")),
+    )
 
 
 def _plan_from_dict(data: dict[str, object]) -> Plan:
@@ -931,6 +957,14 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             for name, flags in pd.get("backend_flags", {}).items()
         },
         {str(name): str(path) for name, path in pd.get("backend_paths", {}).items()},
+        {
+            str(name): (
+                tuple(str(device) for device in devices)
+                if isinstance(devices, list)
+                else None
+            )
+            for name, devices in pd.get("backend_gpu_devices", {}).items()
+        },
     )
     pol = data["policy"]
     if not isinstance(pol, dict):

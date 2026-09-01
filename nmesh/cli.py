@@ -67,7 +67,8 @@ def _doctor(as_json: bool) -> int:
     for gpu in profile.gpus:
         table.add_row(
             f"GPU {gpu.index} VRAM",
-            f"{_bytes(gpu.total_vram_bytes)} / {_bytes(gpu.free_vram_bytes)} free",
+            f"{_bytes(gpu.total_vram_bytes)} / {_bytes(gpu.free_vram_bytes)} free "
+            f"({gpu.vram_source})",
         )
     table.add_row("Free budget VRAM", _bytes(free_vram))
     table.add_row("Free budget RAM", _bytes(free_ram))
