@@ -113,7 +113,7 @@ def _runtime(args: argparse.Namespace) -> int:
         try:
             subprocess.run(command, check=False)
         except KeyboardInterrupt:
-            runtime_down()
+            pass
         return 0
     if args.command == "up":
         plan = load_plan()
@@ -143,11 +143,9 @@ def _runtime(args: argparse.Namespace) -> int:
                 result.running = True
         except OSError:
             result.services.append({"service": "gateway", "port": 18000, "running": False})
+    status_data = asdict(result)
     if args.command == "status":
-        status_data = asdict(result)
         status_data["telemetry"] = telemetry_summary()
-    else:
-        status_data = asdict(result)
     if args.json:
         _print_json(status_data)
     elif args.command == "up" and args.dry_run:

@@ -167,7 +167,7 @@ def create_app(plan: Plan | None = None) -> object:
                                 else 0.0)
                         decode = (tokens - 1) / span if tokens >= 16 and span > 0 else None
                         try:
-                            record_telemetry(Sample(
+                            await asyncio.to_thread(record_telemetry, Sample(
                                 service.name, telemetry_keys[service.name], decode,
                                 first_line_time - started if first_line_time is not None else None,
                                 time.perf_counter() - started, tokens, time.time(),
@@ -199,7 +199,7 @@ def create_app(plan: Plan | None = None) -> object:
                 if isinstance(usage, dict) else 0
             )
             try:
-                record_telemetry(Sample(
+                await asyncio.to_thread(record_telemetry, Sample(
                     service.name, telemetry_keys[service.name], None, None,
                     time.perf_counter() - started, completion_tokens, time.time(),
                 ))
