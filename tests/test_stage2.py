@@ -483,7 +483,7 @@ def test_supervisor_admission_replans_against_free_memory(
     result = supervisor.up(plan, no_download=True)
     assert result.running
     assert supervisor.active_plan is not None
-    assert any("再計画しました" in warning for warning in supervisor.active_plan.warnings)
+    assert any("Free-memory admission" in warning for warning in supervisor.active_plan.warnings)
     assert supervisor.active_plan.services != plan.services
     assert supervisor.active_plan.services[0].memory.gpu_bytes <= free_budgets(starved)[0] + 1
     assert plan_path.read_bytes() == original_plan

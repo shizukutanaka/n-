@@ -1,3 +1,22 @@
+# Internationalization and language-aware planning
+
+The locale resolver checks `NMESH_LANG`, `LC_ALL`, `LC_MESSAGES`, `LANG`, and
+then `locale.getlocale()`, in that order. It normalizes the primary language
+subtag and currently supports English and Japanese. Translation keys have an
+English and Japanese entry; missing keys and formatting parameters are
+failure-tolerant.
+
+The planner remains pure with respect to the environment. `Policy.lang`
+controls the language used to render planner warnings, while
+`Policy.languages` contains an explicit, optional model-language preference.
+The CLI resolves the locale and populates `Policy.lang`; locale alone never
+changes requested model languages. `--lang ja,en` applies a soft score
+multiplier of `1.0` when all requested languages are claimed and `0.7`
+otherwise, without filtering candidates.
+
+Warnings persisted in `plan.json` are rendered in the language of the process
+that produced the plan. Catalog language metadata describes publisher/vendor
+claims, not measured language benchmarks. Argparse help remains untranslated.
 # nmesh — ローカルLLM自動オーケストレーター 設計書
 
 弱いGPUのノートPCから複数GPUのワークステーションまで、**ハードウェアを自動検出して最適なローカルLLM構成を自動で組み上げる**ソフトウェア。
