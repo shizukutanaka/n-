@@ -709,6 +709,55 @@ def test_embedding_capability_warnings_and_flags() -> None:
     assert any("above 512 tokens may be rejected" in warning for warning in limited.warnings)
 
 
+def test_embedding_uses_supported_flag_aliases_without_warnings() -> None:
+    model = ModelSpec(
+        "embed-alias", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
+        8192, ["embed"], 80.0, "apache", {"hf_gguf": "embed-alias.gguf"},
+        pooling="mean",
+    )
+    aliases = replace(
+        profile(32, (12,)),
+        backend_flags={
+            "llamacpp": (
+                "--embedding",
+                "--batch-size",
+                "--ubatch-size",
+                "--pooling",
+                "--parallel",
+                "-ngl",
+            ),
+        },
+    )
+    result = build_plan(
+        aliases, [model], Policy(roles=["embed"], min_decode_tps=0)
+    )
+    argv = result.services[0].launch.argv
+    assert "--embedding" in argv
+    assert "--embeddings" not in argv
+    assert argv[argv.index("--batch-size") + 1] == "8192"
+    assert argv[argv.index("--ubatch-size") + 1] == "8192"
+    assert not result.warnings
+
+
+def test_embedding_warns_when_pooling_flag_is_unsupported() -> None:
+    model = ModelSpec(
+        "embed-no-pooling-flag", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
+        8192, ["embed"], 80.0, "apache", {"hf_gguf": "embed-test.gguf"},
+        pooling="mean",
+    )
+    no_pooling = replace(
+        profile(32, (12,)),
+        backend_flags={
+            "llamacpp": ("--embeddings", "-b", "-ub", "--parallel", "-ngl"),
+        },
+    )
+    result = build_plan(
+        no_pooling, [model], Policy(roles=["embed"], min_decode_tps=0)
+    )
+    assert "--pooling" not in result.services[0].launch.argv
+    assert any("pooling metadata is unknown" in warning for warning in result.warnings)
+
+
 def test_embedding_unknown_pooling_warns() -> None:
     model = ModelSpec(
         "embed-no-pooling", "embed-test", 137_000_000, 12, 12, 12, 64, 768,

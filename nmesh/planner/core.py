@@ -311,29 +311,55 @@ def _launch(
         elif tensor_parallel > 1 and warnings is not None:
             warnings.append(t("warn.tensor_split_unsupported", language))
         if backend == "llamacpp" and embed_only:
-            embedding_supported = not known or any(
-                flag in backend_flags for flag in ("--embeddings", "--embedding")
-            )
-            if embedding_supported:
-                argv.append("--embeddings")
+            if not known or "--embeddings" in backend_flags:
+                embedding_flag = "--embeddings"
+            elif "--embedding" in backend_flags:
+                embedding_flag = "--embedding"
+            else:
+                embedding_flag = None
+            if embedding_flag is not None:
+                argv.append(embedding_flag)
             elif warnings is not None:
                 warnings.append(
                     t("warn.embeddings_unsupported", language, model=model.id)
                 )
-            if model.pooling:
-                if not known or "--pooling" in backend_flags:
-                    argv.extend(["--pooling", model.pooling])
+            pooling_supported = not known or "--pooling" in backend_flags
+            if model.pooling and pooling_supported:
+                argv.extend(["--pooling", model.pooling])
             elif warnings is not None:
                 warnings.append(
                     t("warn.embeddings_pooling_unknown", language, model=model.id)
                 )
             if context > 512:
-                batch_supported = not known or all(
-                    flag in backend_flags
-                    for flag in ("-b", "--batch-size", "-ub", "--ubatch-size")
+                if not known:
+                    logical_batch_flag = "-b"
+                    physical_batch_flag = "-ub"
+                else:
+                    logical_batch_flag = (
+                        "-b" if "-b" in backend_flags else "--batch-size"
+                    )
+                    physical_batch_flag = (
+                        "-ub" if "-ub" in backend_flags else "--ubatch-size"
+                    )
+                batch_supported = not known or (
+                    any(
+                        flag in backend_flags
+                        for flag in ("-b", "--batch-size")
+                    )
+                    and any(
+                        flag in backend_flags
+                        for flag in ("-ub", "--ubatch-size")
+                    )
                 )
                 if batch_supported:
-                    argv.extend(["-b", str(context), "-ub", str(context)])
+                    argv.extend(
+                        [
+                            logical_batch_flag,
+                            str(context),
+                            physical_batch_flag,
+                            str(context),
+                        ]
+                    )
                 elif warnings is not None:
                     warnings.append(
                         t(
