@@ -102,6 +102,22 @@ services. The default is `18010`; nmesh assigns subsequent service ports from
 that base. Use a free base (as the E2E harness does) and ensure the gateway
 port selected for `nmesh up --port` does not conflict with it.
 
+## Hardware profile simulation
+
+`nmesh doctor --json` output can be saved on a GPU machine and consumed
+elsewhere with `nmesh plan --profile mine.json`. The profile input exercises
+planning decisions only; it does not verify runtime behavior or measure GPU
+performance. A simulated plan is marked as such and never writes saved
+`plan.json` state, so it cannot become the local machine's runtime plan.
+
+The repository's `profiles/` files are synthetic examples for planner
+regression testing. To use a real machine's description:
+
+```text
+nmesh doctor --json > mine.json
+nmesh plan --profile mine.json
+```
+
 ## GPU detection and honest VRAM reporting
 
 nmesh first tries the specialized NVIDIA and ROCm detectors: NVML or

@@ -26,7 +26,7 @@ from nmesh.planner import (
     load_plan,
     save_plan,
 )
-from nmesh.probe import HardwareProfile, detect_hardware
+from nmesh.probe import HardwareProfile, detect_hardware, profile_from_dict
 from nmesh.runtime import RuntimeStatus, clear_gateway, disarm_atexit, record_gateway
 from nmesh.runtime import down as runtime_down
 from nmesh.runtime import status as runtime_status
@@ -80,15 +80,26 @@ def _profile_warnings(profile: HardwareProfile, language: str) -> list[str]:
     ]
 
 
-def _doctor(as_json: bool) -> int:
+def _load_profile(path: str) -> HardwareProfile:
     try:
-        profile = detect_hardware()
-    except (OSError, RuntimeError) as error:
-        print(i18n.t("err.doctor", i18n.lang(), error=error), file=sys.stderr)
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise TypeError("profile must be an object")
+        return profile_from_dict(payload)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(str(error)) from error
+
+
+def _doctor(as_json: bool, profile_path: str | None = None) -> int:
+    try:
+        profile = _load_profile(profile_path) if profile_path else detect_hardware()
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        key = "err.profile_load" if profile_path else "err.doctor"
+        print(i18n.t(key, i18n.lang(), error=error), file=sys.stderr)
         return 1
     language = i18n.lang()
     free_vram, free_ram = free_budgets(profile)
-    selected = load_plan()
+    selected = None if profile_path else load_plan()
     selected_models = [
         {"service": service.name, "model": service.model_id,
          "languages": list(service.languages)}
@@ -100,8 +111,12 @@ def _doctor(as_json: bool) -> int:
         data["warnings"] = localized_warnings
         data["free_budgets"] = {"vram_bytes": free_vram, "ram_bytes": free_ram}
         data["selected_models"] = selected_models
+        if profile_path:
+            data["simulated"] = True
         _print_json(data)
         return 0
+    if profile_path:
+        _console().print(f"[yellow]{i18n.t('warn.simulated_profile', language)}[/yellow]")
     table = Table(title="nmesh doctor")
     table.add_column(i18n.t("label.item", language))
     table.add_column(i18n.t("label.value", language))
@@ -150,7 +165,8 @@ def _doctor(as_json: bool) -> int:
 
 
 def _make_plan(args: argparse.Namespace) -> object:
-    profile = detect_hardware()
+    profile = _load_profile(args.profile) if getattr(args, "profile", None) else detect_hardware()
+    args._simulated = bool(getattr(args, "profile", None))
     roles = [role.strip() for role in args.roles.split(",") if role.strip()]
     policy = Policy(roles=roles or ["chat", "code", "embed"], prefer=args.prefer,
                     max_context=args.context, budget_source=getattr(args, "budget", "total"),
@@ -166,23 +182,30 @@ def _make_plan(args: argparse.Namespace) -> object:
 def _plan(args: argparse.Namespace) -> int:
     try:
         result = _make_plan(args)
-    except (OSError, RuntimeError, ValueError) as error:
-        print(i18n.t("err.plan", i18n.lang(), error=error), file=sys.stderr)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        key = "err.profile_load" if getattr(args, "profile", None) else "err.plan"
+        print(i18n.t(key, i18n.lang(), error=error), file=sys.stderr)
         return 1
     if not result.services or not result.runnable:
         print(i18n.t("err.plan_empty", i18n.lang()), file=sys.stderr)
         return 1
-    try:
-        path = save_plan(result)
-    except OSError as error:
-        print(i18n.t("err.plan_save", i18n.lang(), error=error), file=sys.stderr)
-        return 1
+    path = None
+    if not getattr(args, "_simulated", False):
+        try:
+            path = save_plan(result)
+        except OSError as error:
+            print(i18n.t("err.plan_save", i18n.lang(), error=error), file=sys.stderr)
+            return 1
     if args.json:
         data = asdict(result)
         data["profile"]["warnings"] = _profile_warnings(result.profile, result.policy.lang)
+        if getattr(args, "_simulated", False):
+            data["simulated"] = True
         _print_json(data)
         return 0
     language = result.policy.lang
+    if getattr(args, "_simulated", False):
+        _console().print(f"[yellow]{i18n.t('warn.simulated_profile', language)}[/yellow]")
     table = Table(title=f"nmesh plan ({result.tier.value})")
     for column in (
         i18n.t("label.service", language), i18n.t("label.roles", language),
@@ -195,10 +218,12 @@ def _plan(args: argparse.Namespace) -> int:
     for service in result.services:
         table.add_row(service.name, ",".join(service.roles), service.model_id, service.backend,
                       str(service.context), str(service.memory.parallel_slots),
-                      str(service.n_gpu_layers), ",".join(service.languages),
+                      "-" if service.n_gpu_layers is None else str(service.n_gpu_layers),
+                      ",".join(service.languages),
                       f"{service.decode_tps:.1f}")
     _console().print(table)
-    _console().print(i18n.t("label.saved_to", language, path=path))
+    if path is not None:
+        _console().print(i18n.t("label.saved_to", language, path=path))
     if result.policy.budget_source == "free":
         _console().print(i18n.t("label.free_budgets", language))
     if getattr(args, "_telemetry_keys", 0):
@@ -545,6 +570,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command")
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("--profile")
     plan = sub.add_parser("plan")
     plan.add_argument("--json", action="store_true")
     plan.add_argument("--explain", action="store_true")
@@ -554,6 +580,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--budget", choices=("total", "free"), default="total")
     plan.add_argument("--parallel-slots", type=int)
     plan.add_argument("--lang")
+    plan.add_argument("--profile")
     up_parser = sub.add_parser("up")
     up_parser.add_argument("--json", action="store_true")
     up_parser.add_argument("--dry-run", action="store_true")
@@ -590,7 +617,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.global_json and hasattr(args, "json"):
         args.json = True
     if args.command == "doctor":
-        return _doctor(args.json)
+        return _doctor(args.json, args.profile)
     if args.command == "plan":
         return _plan(args)
     if args.command == "reload":

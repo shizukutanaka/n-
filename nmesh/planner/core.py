@@ -455,7 +455,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         candidate.model.sources.get("hf_gguf") or candidate.model.sources.get("hf"),
         candidate.quant, candidate.backend, candidate.context,
         11434 if candidate.backend == "ollama" else port, indices,
-        None if candidate.backend in {"vllm", "mlx"} else layers,
+        None if candidate.backend in {"vllm", "mlx", "ollama"} else layers,
         profile.tier not in {Tier.T0_CPU, Tier.T1_LOW} or not services,
         memory, candidate.decode_tps, candidate.estimated, launch,
         candidate.model.languages,
@@ -568,6 +568,8 @@ def _place_services(
     budgets = {
         gpu.index: _gpu_budget(gpu, policy.budget_source) for gpu in profile.gpus
     }
+    ram_budget = _profile_budgets(profile, policy.budget_source)[1]
+    ram_used = 0.0
     remaining = dict(budgets)
     swap_reserved = {index: 0.0 for index in indices}
     swap_names = set(swap_group)
@@ -579,6 +581,7 @@ def _place_services(
     for service in ordered:
         if service.memory.gpu_bytes <= 0:
             placed[service.name] = service
+            ram_used += service.memory.cpu_bytes
             continue
         is_swap = service.name in swap_names
         fits = [
@@ -586,10 +589,14 @@ def _place_services(
             if service.memory.gpu_bytes
             <= remaining[index] + (swap_reserved[index] if is_swap else 0.0) + 1
         ]
+        placement_budget = 0.0
         if fits:
             target = min(fits, key=lambda index: (remaining[index], index))
             assigned = [target]
             tensor_parallel = 1
+            placement_budget = remaining[target] + (
+                swap_reserved[target] if is_swap else 0.0
+            )
             committed = service.memory.gpu_bytes
             if is_swap:
                 committed = max(swap_reserved[target], committed)
@@ -597,7 +604,7 @@ def _place_services(
                 swap_reserved[target] = committed
             else:
                 remaining[target] -= committed
-        elif len(indices) > 1:
+        elif service.backend in {"llamacpp", "vllm"} and len(indices) > 1:
             assigned = indices
             tensor_parallel = len(indices)
             committed = service.memory.gpu_bytes / tensor_parallel
@@ -608,16 +615,45 @@ def _place_services(
                     swap_reserved[index] = new_reserved
                 else:
                     remaining[index] -= committed
-        else:
-            target = indices[0]
+        elif service.backend in {"ollama", "vllm", "mlx"}:
+            total_bytes = service.memory.cpu_bytes + service.memory.gpu_bytes
+            if ram_used + total_bytes <= ram_budget + 1:
+                placed[service.name] = replace(
+                    service,
+                    gpu_indices=[],
+                    memory=replace(
+                        service.memory,
+                        gpu_bytes=0.0,
+                        cpu_bytes=total_bytes,
+                    ),
+                )
+                ram_used += total_bytes
+                warnings.append(
+                    t("warn.backend_placement_estimate", policy.lang,
+                      service=service.name, backend=service.backend)
+                )
+                continue
+            target = max(indices, key=lambda index: (remaining[index], -index))
             assigned = [target]
             tensor_parallel = 1
+            placement_budget = remaining[target] + (
+                swap_reserved[target] if is_swap else 0.0
+            )
             committed = service.memory.gpu_bytes
             remaining[target] -= committed
             warnings.append(
                 t("warn.gpu_over_budget", policy.lang, service=service.name,
                   committed=committed, budget=budgets[target])
             )
+        else:
+            target = max(indices, key=lambda index: (remaining[index], -index))
+            assigned = [target]
+            tensor_parallel = 1
+            placement_budget = remaining[target] + (
+                swap_reserved[target] if is_swap else 0.0
+            )
+            committed = service.memory.gpu_bytes
+            remaining[target] -= committed
 
         current = replace(service, gpu_indices=assigned)
         if (
@@ -630,7 +666,7 @@ def _place_services(
                     current.memory.weight_bytes / current.memory.per_layer_bytes
                 ),
             )
-            target_budget = budgets[assigned[0]]
+            target_budget = placement_budget
             card_memory = replace(current.memory, vram_budget=target_budget)
             layers = solve_gpu_layers(card_memory, model_layers)
             if layers < current.n_gpu_layers:
@@ -638,7 +674,10 @@ def _place_services(
                 gpu_bytes, cpu_bytes = _split_memory(
                     adjusted, model_layers, layers
                 )
-                if cpu_bytes <= adjusted.ram_budget + 1:
+                if (
+                    cpu_bytes <= adjusted.ram_budget + 1
+                    and gpu_bytes <= target_budget + 1
+                ):
                     old_bytes = current.memory.gpu_bytes
                     current = replace(
                         current,
@@ -660,6 +699,13 @@ def _place_services(
                         t("warn.layers_reduced", policy.lang, service=service.name,
                           layers=layers, previous=current.n_gpu_layers)
                     )
+                    if service.memory.gpu_bytes > target_budget:
+                        warnings.append(
+                            t("warn.gpu_over_budget", policy.lang,
+                              service=service.name,
+                              committed=service.memory.gpu_bytes,
+                              budget=budgets[assigned[0]])
+                        )
             else:
                 current = replace(
                     current, memory=card_memory
@@ -675,6 +721,7 @@ def _place_services(
                 ),
             )
         placed[service.name] = current
+        ram_used += current.memory.cpu_bytes
     return [placed[service.name] for service in services]
 
 
@@ -707,6 +754,11 @@ def _assign_slots(
         if kind == "cpu":
             return ram_budget
         return sum(vram_budget.get(index, 0.0) for index in indices)
+
+    def effective_layers(service: PlannedService, model_layers: int) -> int:
+        if service.n_gpu_layers is not None:
+            return service.n_gpu_layers
+        return model_layers if service.gpu_indices else 0
 
     grouped: dict[tuple[str, tuple[int, ...]], list[PlannedService]] = {}
     for service in services:
@@ -789,7 +841,7 @@ def _assign_slots(
                 ),
                 parallel_slots=slots,
             )
-            layers = model_layers if service.n_gpu_layers is None else service.n_gpu_layers
+            layers = effective_layers(service, model_layers)
             gpu_bytes, cpu_bytes = _split_memory(rewritten, model_layers, layers)
             domain_fit = gpu_bytes <= budget(key) + 1 if key[0] == "gpu" else True
             if not domain_fit or cpu_bytes > ram_budget + 1:
@@ -808,7 +860,7 @@ def _assign_slots(
         gpu_bytes, cpu_bytes = _split_memory(
             rewritten,
             model_layers,
-            model_layers if service.n_gpu_layers is None else service.n_gpu_layers,
+            effective_layers(service, model_layers),
         )
         rewritten = replace(rewritten, gpu_bytes=gpu_bytes, cpu_bytes=cpu_bytes)
         gpu_fraction = None

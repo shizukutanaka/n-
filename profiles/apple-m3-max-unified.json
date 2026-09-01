@@ -1,0 +1,57 @@
+{
+  "cpu_name": "Apple M3 Max",
+  "physical_cores": 14,
+  "logical_cores": 14,
+  "total_ram_bytes": 68719476736,
+  "available_ram_bytes": 51539607552,
+  "free_disk_bytes": 1073741824000,
+  "unified_memory": true,
+  "warnings": [],
+  "warning_params": [],
+  "free_budgets": {
+    "vram_bytes": 0,
+    "ram_bytes": 0
+  },
+  "selected_models": [],
+  "os": "macos",
+  "tier": "T4_WORKSTATION",
+  "gpus": [
+    {
+      "index": 0,
+      "name": "Apple M3 Max GPU",
+      "vendor": "apple",
+      "total_vram_bytes": 51539607552,
+      "free_vram_bytes": 51539607552,
+      "compute_capability": null,
+      "driving_display": false,
+      "vram_source": "unknown"
+    }
+  ],
+  "available_backends": {
+    "mlx": "0.20.0",
+    "llamacpp": "b10734"
+  },
+  "backend_paths": {
+    "mlx": "/opt/homebrew/bin/python",
+    "llamacpp": "/usr/local/bin/llama-server"
+  },
+  "backend_flags": {
+    "mlx": [
+      "--device",
+      "gpu"
+    ],
+    "llamacpp": [
+      "--parallel",
+      "-ngl",
+      "-c"
+    ]
+  },
+  "backend_gpu_devices": {
+    "mlx": [
+      "apple-gpu"
+    ],
+    "llamacpp": [
+      "Metal0"
+    ]
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "cpu_name": "Synthetic x86_64 CPU",
+  "physical_cores": 8,
+  "logical_cores": 16,
+  "total_ram_bytes": 34359738368,
+  "available_ram_bytes": 25769803776,
+  "free_disk_bytes": 536870912000,
+  "unified_memory": false,
+  "warnings": [],
+  "warning_params": [],
+  "free_budgets": {
+    "vram_bytes": 0,
+    "ram_bytes": 0
+  },
+  "selected_models": [],
+  "os": "windows",
+  "tier": "T1_LOW",
+  "gpus": [
+    {
+      "index": 0,
+      "name": "Intel Iris Xe Graphics",
+      "vendor": "intel",
+      "total_vram_bytes": 1073741824,
+      "free_vram_bytes": 1073741824,
+      "compute_capability": null,
+      "driving_display": true,
+      "vram_source": "sysfs"
+    }
+  ],
+  "available_backends": {
+    "llamacpp": "b10734",
+    "ollama": "0.5.7"
+  },
+  "backend_paths": {
+    "llamacpp": "C:/Users/Administrator/llamacpp/llama-server.exe",
+    "ollama": "C:/Program Files/Ollama/ollama.exe"
+  },
+  "backend_flags": {
+    "llamacpp": [
+      "-ngl",
+      "--parallel",
+      "-c"
+    ],
+    "ollama": [
+      "serve"
+    ]
+  },
+  "backend_gpu_devices": {
+    "llamacpp": []
+  }
+}
