@@ -5,11 +5,12 @@ import json
 import re
 import time
 from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 
 from nmesh.bench import benchmark_key
 from nmesh.planner import PLAN_PATH, Plan, PlannedService, load_plan
-from nmesh.runtime import ensure_running
+from nmesh.runtime import ensure_running, heartbeat
 from nmesh.runtime import status as runtime_status
 from nmesh.telemetry import Sample
 from nmesh.telemetry import record as record_telemetry
@@ -152,14 +153,38 @@ class _PlanState:
         return self._reload_from_disk(force=True)
 
 
-def create_app(plan: Plan | None = None) -> object:
+def create_app(
+    plan: Plan | None = None,
+    watchdog: bool = False,
+    watchdog_interval: float = 15.0,
+) -> object:
     if FastAPI is None:
         raise ImportError("Install nmesh[gateway] to use the gateway")
     explicit = plan is not None
     selected = plan if explicit else load_plan(PLAN_PATH)
     if selected is None:
         raise FileNotFoundError("No plan found")
-    app = FastAPI(title="nmesh gateway")
+    @asynccontextmanager
+    async def lifespan(_app: object):
+        task: asyncio.Task[None] | None = None
+        if watchdog:
+            async def watch() -> None:
+                while True:
+                    await asyncio.sleep(watchdog_interval)
+                    try:
+                        await asyncio.to_thread(heartbeat)
+                    except Exception:  # noqa: BLE001, S110
+                        pass
+
+            task = asyncio.create_task(watch())
+        try:
+            yield
+        finally:
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    app = FastAPI(title="nmesh gateway", lifespan=lifespan)
     gate = SwapGate()
     plan_state = _PlanState(selected, explicit, gate)
 
@@ -185,9 +210,23 @@ def create_app(plan: Plan | None = None) -> object:
         client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0))
         if request.get("stream"):
             try:
-                upstream = await client.send(
-                    client.build_request("POST", url, json=body), stream=True
-                )
+                upstream_request = client.build_request("POST", url, json=body)
+                try:
+                    upstream = await client.send(upstream_request, stream=True)
+                except httpx.ConnectError:
+                    try:
+                        await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
+                    except Exception as error:
+                        raise HTTPException(status_code=502, detail=str(error)) from error
+                    upstream_request = client.build_request(
+                        "POST", f"{_base_url(service)}{path}", json=body
+                    )
+                    upstream = await client.send(upstream_request, stream=True)
+            except HTTPException:
+                await client.aclose()
+                if locked:
+                    gate.release()
+                raise
             except httpx.HTTPError as error:
                 await client.aclose()
                 if locked:
@@ -241,7 +280,14 @@ def create_app(plan: Plan | None = None) -> object:
                             pass
             return StreamingResponse(stream(), media_type="text/event-stream")
         try:
-            response = await client.post(url, json=body)
+            try:
+                response = await client.post(url, json=body)
+            except httpx.ConnectError:
+                try:
+                    await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
+                except Exception as error:
+                    raise HTTPException(status_code=502, detail=str(error)) from error
+                response = await client.post(f"{_base_url(service)}{path}", json=body)
             content = response.content
             if response.status_code >= 400:
                 return Response(content=content, status_code=response.status_code,

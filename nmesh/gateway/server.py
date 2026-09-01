@@ -8,7 +8,7 @@ from . import create_app
 
 
 def serve(port: int = 18000) -> None:
-    uvicorn.run(create_app(), host="127.0.0.1", port=port)
+    uvicorn.run(create_app(watchdog=True), host="127.0.0.1", port=port)
 
 
 if __name__ == "__main__":
