@@ -64,7 +64,7 @@ def test_record_persists_sums_keyed_by_model(monkeypatch, tmp_path: Path) -> Non
         text = "日" * cjk + "a" * other
         record("routing-model", text, int(tokens))
     payload = json.loads((tmp_path / "tokens.json").read_text(encoding="utf-8"))
-    assert payload["services"]["routing-model"]["n"] == 20
+    assert payload["models"]["routing-model"]["n"] == 20
     assert calibration_for("routing-model").samples == 20
     assert calibration_for("other-model").samples == 0
     assert all_sums()["routing-model"].n == 20

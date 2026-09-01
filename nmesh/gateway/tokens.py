@@ -114,11 +114,11 @@ def _read() -> dict[str, Sums]:
         payload = json.loads(_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
-    if not isinstance(payload, dict) or not isinstance(payload.get("services"), dict):
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), dict):
         return {}
     return {
         str(name): _coerce_sums(value)
-        for name, value in payload["services"].items()
+        for name, value in payload["models"].items()
     }
 
 
@@ -130,7 +130,7 @@ def _write(values: dict[str, Sums]) -> None:
     )
     try:
         temporary.write_text(
-            json.dumps({"services": {
+            json.dumps({"models": {
                 name: asdict(sums) for name, sums in values.items()
             }}, indent=2),
             encoding="utf-8",
