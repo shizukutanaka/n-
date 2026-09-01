@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import pytest
 
+import nmesh.planner.core as planner_core
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.planner import Policy, build_plan, estimate_memory, free_budgets, load_plan, save_plan
 from nmesh.probe import GPUInfo, HardwareProfile, Tier, classify_tier
@@ -185,6 +186,25 @@ def test_oversized_model_uses_tensor_parallel() -> None:
     assert service.backend == "vllm"
     assert service.gpu_indices == [0, 1]
     assert "--tensor-parallel-size" in service.launch.argv
+
+
+def test_save_plan_replaces_atomically(tmp_path, catalog: list[ModelSpec], monkeypatch) -> None:
+    first = build_plan(profile(8), catalog)
+    path = tmp_path / "plan.json"
+    save_plan(first, path)
+    assert list(tmp_path.iterdir()) == [path]
+    original = path.read_bytes()
+
+    def fail(self, *args, **kwargs) -> int:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(planner_core.Path, "write_text", fail)
+    with pytest.raises(OSError):
+        save_plan(build_plan(profile(24, (24,)), catalog), path)
+    monkeypatch.undo()
+    assert list(tmp_path.iterdir()) == [path]
+    assert path.read_bytes() == original
+    assert load_plan(path) == first
 
 
 def test_plan_save_load(tmp_path, catalog: list[ModelSpec]) -> None:

@@ -6,10 +6,9 @@ import re
 import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict
-from pathlib import Path
 
 from nmesh.bench import benchmark_key
-from nmesh.planner import Plan, PlannedService, load_plan
+from nmesh.planner import PLAN_PATH, Plan, PlannedService, load_plan
 from nmesh.runtime import ensure_running
 from nmesh.runtime import status as runtime_status
 from nmesh.telemetry import Sample
@@ -87,9 +86,6 @@ def _upstream_body(request: Mapping[str, object], service: PlannedService) -> di
     if service.backend == "ollama":
         body["keep_alive"] = "5m" if service.resident else "30s"
     return body
-
-
-PLAN_PATH = Path.home() / ".nmesh" / "plan.json"
 
 
 class _PlanState:

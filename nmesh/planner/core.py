@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ QUANT_PENALTY = {
     "q4_k_m": 3.5, "q4_0": 5.0, "q3_k_m": 9.0, "q2_k": 16.0,
 }
 GIB = 1024**3
+PLAN_PATH = Path.home() / ".nmesh" / "plan.json"
 INSTALL_HINTS = {
     "ollama": "Install Ollama: https://ollama.com/download",
     "llamacpp": "Install llama.cpp: winget install llama.cpp / brew install llama.cpp / build from source",
@@ -506,14 +508,23 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
 
 
 def save_plan(plan: Plan, path: Path | None = None) -> Path:
-    target = path or Path.home() / ".nmesh" / "plan.json"
+    target = path or PLAN_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(asdict(plan), indent=2, default=str), encoding="utf-8")
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(json.dumps(asdict(plan), indent=2, default=str), encoding="utf-8")
+        os.replace(temporary, target)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
     return target
 
 
 def load_plan(path: Path | None = None) -> Plan | None:
-    target = path or Path.home() / ".nmesh" / "plan.json"
+    target = path or PLAN_PATH
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
         return _plan_from_dict(payload) if isinstance(payload, dict) else None
