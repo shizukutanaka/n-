@@ -1,4 +1,4 @@
-﻿import json
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -28,7 +28,10 @@ def test_bundled_profiles_round_trip_and_gpu_budgets() -> None:
         swap_group = set(plan.swap_group)
         for service in plan.services:
             known_devices = profile.backend_gpu_devices.get(service.backend)
-            if known_devices == ():
+            if (
+                known_devices == ()
+                and service.backend not in {"ollama", "vllm", "mlx"}
+            ):
                 assert service.n_gpu_layers == 0
             if service.backend in {"ollama", "vllm", "mlx"}:
                 assert service.n_gpu_layers is None

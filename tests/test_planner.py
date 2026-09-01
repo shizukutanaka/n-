@@ -240,6 +240,22 @@ def test_oversized_model_uses_tensor_parallel() -> None:
     assert "--tensor-parallel-size" in service.launch.argv
 
 
+def test_oversized_llamacpp_model_uses_tensor_split() -> None:
+    model = ModelSpec(
+        "oversized-llamacpp", "test", 60_000_000_000, 80, 80, 100, 128,
+        12800, 4096, ["chat"], 99.0, "test", {"hf_gguf": "test.gguf"},
+    )
+    result = build_plan(
+        profile(128, (24, 8)),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert service.backend == "llamacpp"
+    assert service.gpu_indices == [0, 1]
+    assert "--tensor-split" in service.launch.argv
+
+
 def test_save_plan_replaces_atomically(tmp_path, catalog: list[ModelSpec], monkeypatch) -> None:
     first = build_plan(profile(8), catalog)
     path = tmp_path / "plan.json"

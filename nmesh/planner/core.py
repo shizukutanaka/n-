@@ -604,7 +604,7 @@ def _place_services(
                 swap_reserved[target] = committed
             else:
                 remaining[target] -= committed
-        elif service.backend == "vllm" and len(indices) > 1:
+        elif service.backend in {"llamacpp", "vllm"} and len(indices) > 1:
             assigned = indices
             tensor_parallel = len(indices)
             committed = service.memory.gpu_bytes / tensor_parallel

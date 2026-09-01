@@ -1,4 +1,4 @@
-﻿# Synthetic hardware profiles
+# Synthetic hardware profiles
 
 These JSON files are synthetic descriptions of hardware the project does not own. They are shaped like `nmesh doctor --json` output so they can exercise planner behavior and regression tests without pretending to measure hardware.
 
