@@ -301,6 +301,37 @@ def test_cpu_partial_offload_and_embedding_keep_one_slot(catalog: list[ModelSpec
     assert embed.services[0].memory.kv_bytes_per_tok == 0
 
 
+def test_llamacpp_caps_without_parallel_clamp_slots_and_context(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    no_parallel = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": frozenset({"-ngl", "--tensor-split"})},
+    )
+    result = build_plan(no_parallel, [model], Policy(roles=["chat"]))
+    service = result.services[0]
+    assert service.memory.parallel_slots == 1
+    assert service.memory.kv_cache_bytes == (
+        service.memory.kv_bytes_per_tok * service.context
+    )
+    assert "--parallel" not in service.launch.argv
+    assert service.launch.argv[service.launch.argv.index("-c") + 1] == str(service.context)
+    assert any("--parallel" in warning for warning in result.warnings)
+
+
+def test_unknown_llamacpp_caps_preserve_launch_behavior(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    result = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = result.services[0]
+    slots = service.memory.parallel_slots
+    assert "--parallel" in service.launch.argv
+    assert service.launch.argv[service.launch.argv.index("--parallel") + 1] == str(slots)
+    assert service.launch.argv[service.launch.argv.index("-c") + 1] == str(
+        service.context * slots
+    )
+
+
 def test_vllm_slots_and_total_vram_fraction() -> None:
     model = ModelSpec(
         "oversized", "test", 150_000_000_000, 100, 100, 100, 128,

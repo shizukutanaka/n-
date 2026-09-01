@@ -9,6 +9,7 @@ from pathlib import Path
 
 import psutil
 
+from .caps import llamacpp_caps
 from .models import GPUInfo, HardwareProfile, OperatingSystem, classify_tier
 
 
@@ -172,13 +173,17 @@ def _detect_rocm(warnings: list[str]) -> list[GPUInfo]:
     return gpus
 
 
-def _detect_backends(warnings: list[str]) -> dict[str, str | None]:
+def _detect_backends(
+    warnings: list[str],
+) -> tuple[dict[str, str | None], dict[str, frozenset[str]], dict[str, str]]:
     backends: dict[str, str | None] = {
         "ollama": None,
         "llamacpp": None,
         "vllm": None,
         "mlx": None,
     }
+    flags: dict[str, frozenset[str]] = {}
+    paths: dict[str, str] = {}
     commands: dict[str, list[str]] = {
         "ollama": ["ollama", "--version"],
         "llamacpp": ["llama-server", "--version"],
@@ -187,10 +192,16 @@ def _detect_backends(warnings: list[str]) -> dict[str, str | None]:
     for name, command in commands.items():
         if shutil.which(command[0]) is None:
             continue
+        executable = Path(shutil.which(command[0]) or command[0]).resolve()
+        paths[name] = str(executable)
         output, error = _run(command)
         version_text = (output or error or "").strip()
         if version_text:
             backends[name] = version_text.splitlines()[0]
+        if name == "llamacpp":
+            caps = llamacpp_caps(str(executable))
+            if caps is not None:
+                flags[name] = caps.flags
     python_executable = shutil.which("python") or shutil.which("python3")
     if python_executable:
         output, error = _run([python_executable, "-c", "import mlx_lm; print('installed')"])
@@ -198,7 +209,7 @@ def _detect_backends(warnings: list[str]) -> dict[str, str | None]:
             backends["mlx"] = "installed"
         elif error and "No module named" not in error:
             warnings.append("Unable to check mlx_lm")
-    return backends
+    return backends, flags, paths
 
 
 def _os_name() -> OperatingSystem:
@@ -260,7 +271,7 @@ def detect_hardware() -> HardwareProfile:
         if not gpus:
             gpus = _detect_rocm(warnings)
     gpus = _mark_display(gpus, os_name)
-    backends = _detect_backends(warnings)
+    backends, backend_flags, backend_paths = _detect_backends(warnings)
     tier = classify_tier(gpus, unified, total_ram)
     return HardwareProfile(
         os_name,
@@ -275,4 +286,6 @@ def detect_hardware() -> HardwareProfile:
         backends,
         tier,
         warnings,
+        backend_flags,
+        backend_paths,
     )

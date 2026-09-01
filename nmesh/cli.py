@@ -49,6 +49,9 @@ def _doctor(as_json: bool) -> int:
     free_vram, free_ram = free_budgets(profile)
     if as_json:
         data = asdict(profile)
+        data["backend_flags"] = {
+            name: sorted(flags) for name, flags in profile.backend_flags.items()
+        }
         data["free_budgets"] = {"vram_bytes": free_vram, "ram_bytes": free_ram}
         _print_json(data)
         return 0
@@ -70,9 +73,17 @@ def _doctor(as_json: bool) -> int:
     Console().print(table)
     backend = Table(title="Backends")
     backend.add_column("Backend")
+    backend.add_column("Binary")
     backend.add_column("Version")
+    backend.add_column("Flags")
     for name, version in profile.available_backends.items():
-        backend.add_row(name, version or "not found")
+        flags = profile.backend_flags.get(name)
+        backend.add_row(
+            name,
+            profile.backend_paths.get(name, "not found"),
+            version or "not found",
+            str(len(flags)) if flags is not None else "unknown",
+        )
     Console().print(backend)
     for warning in profile.warnings:
         Console().print(f"[yellow]- {warning}[/yellow]")
@@ -95,7 +106,12 @@ def _plan(args: argparse.Namespace) -> int:
     result = _make_plan(args)
     path = save_plan(result)
     if args.json:
-        _print_json(asdict(result))
+        data = asdict(result)
+        data["profile"]["backend_flags"] = {
+            name: sorted(flags) for name, flags in result.profile.backend_flags.items()
+        }
+        data["profile"]["backend_paths"] = dict(result.profile.backend_paths)
+        _print_json(data)
         return 0
     table = Table(title=f"nmesh plan ({result.tier.value})")
     for column in (
