@@ -303,3 +303,22 @@ swap モードでは gateway がリクエストを直列化（`asyncio.Lock`）�
 `/v1/models` が広告する `nmesh-<service>` などの明示 ID はすべてのヒューリスティクより優先される。順序は
 明示 ID → `tools` → コード判定 → context 超過 → chat。`nmesh-code` のような役割名は `role_to_service` 経由で解決される。
 空文字列・`nmesh-auto`・未知の ID は従来と同じくヒューリスティクにフォールスルーする。
+
+## 15. Free-memory budgets and admission
+
+The persisted `Plan` describes machine capability using total VRAM and RAM by
+default. `Policy.budget_source` can be set to `free` for an opt-in plan based
+on currently available memory: GPU budgets use `GPUInfo.free_vram_bytes`, and
+RAM budgets use `HardwareProfile.available_ram_bytes`, while retaining the
+same display reserve and operating-system reserve rules.
+
+`nmesh up` performs a proactive admission check using free memory before
+launching services. Resident services are counted individually and swap-group
+services are counted only by their largest member because they are mutually
+exclusive. If the persisted total-capability plan does not fit, the supervisor
+rebuilds it with `budget_source="free"` and preserves the merged benchmark
+cache. This keeps saved plans useful as capability descriptions while avoiding
+avoidable OOM launches when another application already consumes memory.
+If probing fails or replanning produces no services, startup continues with the
+existing quantization/context/GPU-layer fallback ladder. Use
+`nmesh up --ignore-free-memory` to bypass admission intentionally.

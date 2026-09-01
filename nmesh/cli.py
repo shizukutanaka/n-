@@ -13,7 +13,14 @@ from rich.table import Table
 
 from nmesh.bench import benchmark_key, load_cache, measure, save_cache
 from nmesh.catalog import load_catalog
-from nmesh.planner import PlannedService, Policy, build_plan, load_plan, save_plan
+from nmesh.planner import (
+    PlannedService,
+    Policy,
+    build_plan,
+    free_budgets,
+    load_plan,
+    save_plan,
+)
 from nmesh.probe import detect_hardware
 from nmesh.runtime import RuntimeStatus
 from nmesh.runtime import down as runtime_down
@@ -39,8 +46,11 @@ def _print_json(value: object) -> None:
 
 def _doctor(as_json: bool) -> int:
     profile = detect_hardware()
+    free_vram, free_ram = free_budgets(profile)
     if as_json:
-        _print_json(asdict(profile))
+        data = asdict(profile)
+        data["free_budgets"] = {"vram_bytes": free_vram, "ram_bytes": free_ram}
+        _print_json(data)
         return 0
     table = Table(title="nmesh doctor")
     table.add_column("Item")
@@ -50,6 +60,13 @@ def _doctor(as_json: bool) -> int:
     table.add_row("RAM", f"{_bytes(profile.total_ram_bytes)} / {_bytes(profile.available_ram_bytes)} free")
     table.add_row("Tier", profile.tier.value)
     table.add_row("GPU", ", ".join(gpu.name for gpu in profile.gpus) or "none")
+    for gpu in profile.gpus:
+        table.add_row(
+            f"GPU {gpu.index} VRAM",
+            f"{_bytes(gpu.total_vram_bytes)} / {_bytes(gpu.free_vram_bytes)} free",
+        )
+    table.add_row("Free budget VRAM", _bytes(free_vram))
+    table.add_row("Free budget RAM", _bytes(free_ram))
     Console().print(table)
     backend = Table(title="Backends")
     backend.add_column("Backend")
@@ -66,7 +83,7 @@ def _make_plan(args: argparse.Namespace) -> object:
     profile = detect_hardware()
     roles = [role.strip() for role in args.roles.split(",") if role.strip()]
     policy = Policy(roles=roles or ["chat", "code", "embed"], prefer=args.prefer,
-                    max_context=args.context)
+                    max_context=args.context, budget_source=getattr(args, "budget", "total"))
     live = bench_overlay()
     args._telemetry_keys = len(live)
     cache = {**load_cache(), **live}
@@ -87,6 +104,8 @@ def _plan(args: argparse.Namespace) -> int:
                       str(service.context), str(service.n_gpu_layers), f"{service.decode_tps:.1f}")
     Console().print(table)
     Console().print(f"Saved to: {path}")
+    if result.policy.budget_source == "free":
+        Console().print("Budgets use currently-free memory.")
     if getattr(args, "_telemetry_keys", 0):
         Console().print(
             f"Live telemetry overlay: {args._telemetry_keys} benchmark key(s)"
@@ -119,11 +138,15 @@ def _runtime(args: argparse.Namespace) -> int:
         plan = load_plan()
         if plan is None:
             _plan(argparse.Namespace(roles="chat,code,embed", prefer="balanced",
-                                     context=None, json=False, explain=False))
+                                     context=None, budget="total", json=False, explain=False))
             plan = load_plan()
         if plan is None:
             return 1
-        result = runtime_up(plan, no_download=args.no_download, dry_run=args.dry_run)
+        cache = {**load_cache(), **bench_overlay()}
+        result = runtime_up(
+            plan, no_download=args.no_download, dry_run=args.dry_run,
+            admit=not args.ignore_free_memory, bench_cache=cache,
+        )
         if not args.dry_run:
             command = [sys.executable, "-m", "nmesh.gateway.server", "--port", str(args.port)]
             if args.detach:
@@ -272,12 +295,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--prefer", choices=("quality", "speed", "balanced"), default="balanced")
     plan.add_argument("--roles", default="chat,code,embed")
     plan.add_argument("--context", type=int)
+    plan.add_argument("--budget", choices=("total", "free"), default="total")
     up_parser = sub.add_parser("up")
     up_parser.add_argument("--json", action="store_true")
     up_parser.add_argument("--dry-run", action="store_true")
     up_parser.add_argument("--no-download", action="store_true")
     up_parser.add_argument("--detach", action="store_true")
     up_parser.add_argument("--port", type=int, default=18000)
+    up_parser.add_argument("--ignore-free-memory", action="store_true")
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=18000)
     for name in ("status", "down"):
