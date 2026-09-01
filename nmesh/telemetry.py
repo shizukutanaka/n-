@@ -8,6 +8,8 @@ import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from nmesh.paths import nmesh_home
+
 
 @dataclass(frozen=True)
 class Sample:
@@ -22,9 +24,9 @@ class Sample:
 
 
 class Telemetry:
-    def __init__(self, path: Path = Path.home() / ".nmesh" / "telemetry.json",  # noqa: B008
+    def __init__(self, path: Path | None = None,
                  max_samples: int = 200) -> None:
-        self.path = path
+        self.path = path or nmesh_home() / "telemetry.json"
         self.max_samples = max_samples
         self._lock = threading.Lock()
 

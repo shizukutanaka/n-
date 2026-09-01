@@ -5,8 +5,10 @@ import statistics
 from collections.abc import Callable
 from pathlib import Path
 
+from nmesh.paths import nmesh_home
+
 BenchCache = dict[str, float]
-CACHE_PATH = Path.home() / ".nmesh" / "bench.json"
+CACHE_PATH = nmesh_home() / "bench.json"
 
 
 def benchmark_key(model_id: str, quant: str, backend: str, gpu_name: str,
@@ -14,18 +16,20 @@ def benchmark_key(model_id: str, quant: str, backend: str, gpu_name: str,
     return f"{model_id}|{quant}|{backend}|{gpu_name}|{n_gpu_layers or 0}"
 
 
-def load_cache(path: Path = CACHE_PATH) -> BenchCache:
+def load_cache(path: Path | None = None) -> BenchCache:
+    target = path or CACHE_PATH
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(target.read_text(encoding="utf-8"))
         return {str(key): float(value) for key, value in payload.items()} if isinstance(payload, dict) else {}
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return {}
 
 
-def save_cache(cache: BenchCache, path: Path = CACHE_PATH) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
-    return path
+def save_cache(cache: BenchCache, path: Path | None = None) -> Path:
+    target = path or CACHE_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    return target
 
 
 def benchmark(run: Callable[[int, int], float], prefill_tokens: int = 512,

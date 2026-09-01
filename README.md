@@ -121,6 +121,28 @@ probe fails), preserves the previous behavior rather than making an
 unsupported CPU fallback assumption. To use a detected GPU with llama.cpp,
 install or build a backend with a Vulkan, CUDA, HIP, or SYCL GPU backend.
 
+## Real-backend end-to-end harness
+
+The optional real-backend harness runs the complete planner, runtime, gateway,
+completion, metrics, benchmark, and teardown workflow without using the
+user's normal state directory:
+
+```text
+python scripts/e2e.py
+```
+
+It creates a temporary `NMESH_HOME`, selects free ports, and uses a local
+`llama-server` plus GGUF model. Set `NMESH_LLAMA_SERVER` and
+`NMESH_E2E_MODEL` when the executable or model is not discoverable
+automatically. This is intentionally standalone rather than a pytest test
+because it requires a real model and can take several minutes.
+
+Exit codes:
+
+* `0` — every real-backend step passed and all selected ports were released.
+* `1` — a required step failed.
+* `77` — the required real backend or local GGUF model is unavailable.
+
 ## GPU detection and honest VRAM reporting
 
 nmesh first tries the specialized NVIDIA and ROCm detectors: NVML or

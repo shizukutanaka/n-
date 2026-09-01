@@ -8,7 +8,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-CAPS_PATH = Path.home() / ".nmesh" / "caps.json"
+from nmesh.paths import nmesh_home
+
+CAPS_PATH = nmesh_home() / "caps.json"
 
 
 @dataclass(frozen=True)
