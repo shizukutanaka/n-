@@ -42,6 +42,28 @@ def catalog() -> list[ModelSpec]:
     return load_catalog()
 
 
+def placement_catalog() -> list[ModelSpec]:
+    return [
+        ModelSpec(
+            "large", "large", 10_000_000_000, 40, 32, 8, 128, 4096, 8192,
+            ["chat"], 90.0, "apache", {"hf_gguf": "large.gguf"},
+        ),
+        ModelSpec(
+            "small", "small", 1_000_000_000, 24, 16, 4, 128, 2048, 8192,
+            ["code"], 80.0, "apache", {"hf_gguf": "small.gguf"},
+        ),
+    ]
+
+
+def symmetric_catalog() -> list[ModelSpec]:
+    return [
+        ModelSpec(
+            "symmetric", "symmetric", 14_000_000_000, 40, 32, 8, 128, 4096,
+            8192, ["chat", "code"], 90.0, "apache", {"hf_gguf": "symmetric.gguf"},
+        ),
+    ]
+
+
 def test_memory_regression(catalog: list[ModelSpec]) -> None:
     model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
     estimate = estimate_memory(model, "q4_k_m", 2048)
@@ -87,6 +109,7 @@ def test_cpu_case(catalog: list[ModelSpec]) -> None:
     assert len(result.swap_group) == 1
     assert result.services[0].n_gpu_layers == 0
     assert result.services[0].backend in {"ollama", "llamacpp"}
+    assert result.services[0].gpu_indices == []
     assert result.services[0].memory.gpu_bytes == 0
     assert result.services[0].memory.cpu_bytes <= result.services[0].memory.ram_budget
 
@@ -324,3 +347,75 @@ def test_parallel_slot_round_trip_and_old_memory_default(
     old = load_plan(path)
     assert old is not None
     assert old.services[0].memory.parallel_slots == 1
+
+
+def test_multi_gpu_services_use_different_cards() -> None:
+    result = build_plan(
+        profile(64, (24, 24)),
+        symmetric_catalog(),
+        Policy(roles=["chat", "code"]),
+    )
+    services = result.services
+    assert len(services) == 2
+    assert {service.gpu_indices[0] for service in services} == {0, 1}
+
+
+def test_asymmetric_gpu_placement_uses_fitting_cards() -> None:
+    result = build_plan(
+        profile(64, (24, 8)),
+        placement_catalog(),
+        Policy(roles=["chat", "code"]),
+    )
+    assert len(result.services) == 2
+    for service in result.services:
+        assert len(service.gpu_indices) == 1
+        gpu = next(
+            gpu for gpu in result.profile.gpus if gpu.index == service.gpu_indices[0]
+        )
+        assert service.memory.gpu_bytes <= planner_core._gpu_budget(gpu) + 1
+    assert next(item for item in result.services if item.model_id == "large").gpu_indices == [0]
+    assert next(item for item in result.services if item.model_id == "small").gpu_indices == [1]
+
+
+def test_swap_group_reserves_only_largest_member() -> None:
+    result = build_plan(
+        profile(16, (12,)),
+        placement_catalog(),
+        Policy(roles=["chat", "code"]),
+    )
+    assert len(result.services) == 2
+    services = [
+        replace(service, resident=False) for service in result.services
+    ]
+    services = planner_core._place_services(
+        services, result.profile, result.policy,
+        [service.name for service in services], [],
+    )
+    assert all(service.gpu_indices == [0] for service in services)
+    largest = max(service.memory.gpu_bytes for service in services)
+    assert largest == max(service.memory.gpu_bytes for service in services)
+
+
+def test_llamacpp_layers_are_resolved_against_assigned_card() -> None:
+    result = build_plan(
+        profile(64, (24, 8)),
+        placement_catalog(),
+        Policy(roles=["chat", "code"]),
+    )
+    large = next(service for service in result.services if service.model_id == "large")
+    assert large.backend == "llamacpp"
+    assert large.n_gpu_layers == 40
+    oversized = replace(
+        large,
+        gpu_indices=[],
+        memory=replace(large.memory, gpu_bytes=1 * GIB),
+    )
+    resolved = planner_core._place_services(
+        [oversized], result.profile, result.policy, [], [],
+    )[0]
+    assert resolved.gpu_indices == [1]
+    assert resolved.n_gpu_layers < large.n_gpu_layers
+    assert resolved.memory.gpu_bytes <= planner_core._gpu_budget(result.profile.gpus[1]) + 1
+    assert resolved.launch.argv[resolved.launch.argv.index("-ngl") + 1] == str(
+        resolved.n_gpu_layers
+    )
