@@ -16,6 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 nvidia = ["pynvml>=11.5"]
 gateway = ["fastapi>=0.100", "uvicorn>=0.23", "httpx>=0.24"]
+download = ["huggingface_hub>=0.20"]
 dev = ["pytest>=7.0", "ruff>=0.1", "mypy>=1.5"]
 
 [project.scripts]

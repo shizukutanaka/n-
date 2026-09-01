@@ -252,4 +252,5 @@
   quality: 90
   license: mit
   sources:
+    ollama: "bge-m3"
     hf: "BAAI/bge-m3"

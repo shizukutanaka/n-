@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,27 +11,21 @@ from nmesh import __version__
 from nmesh.catalog import ModelSpec
 from nmesh.probe import GPUInfo, HardwareProfile, Tier
 
-BPW: dict[str, float] = {
-    "f16": 16.0,
-    "q8_0": 8.5,
-    "q6_k": 6.6,
-    "q5_k_m": 5.7,
-    "q4_k_m": 4.85,
-    "q4_0": 4.55,
-    "q3_k_m": 3.9,
-    "q2_k": 3.35,
+BPW = {
+    "f16": 16.0, "q8_0": 8.5, "q6_k": 6.6, "q5_k_m": 5.7,
+    "q4_k_m": 4.85, "q4_0": 4.55, "q3_k_m": 3.9, "q2_k": 3.35,
 }
-QUANT_PENALTY: dict[str, float] = {
-    "f16": 0.0,
-    "q8_0": 0.5,
-    "q6_k": 1.0,
-    "q5_k_m": 2.0,
-    "q4_k_m": 3.5,
-    "q4_0": 5.0,
-    "q3_k_m": 9.0,
-    "q2_k": 16.0,
+QUANT_PENALTY = {
+    "f16": 0.0, "q8_0": 0.5, "q6_k": 1.0, "q5_k_m": 2.0,
+    "q4_k_m": 3.5, "q4_0": 5.0, "q3_k_m": 9.0, "q2_k": 16.0,
 }
 GIB = 1024**3
+INSTALL_HINTS = {
+    "ollama": "Install Ollama: https://ollama.com/download",
+    "llamacpp": "Install llama.cpp: winget install llama.cpp / brew install llama.cpp / build from source",
+    "vllm": "Install vLLM: pip install vllm",
+    "mlx": "Install MLX-LM: pip install mlx-lm",
+}
 
 
 @dataclass(frozen=True)
@@ -57,6 +51,7 @@ class Policy:
     max_context: int | None = None
     prefer: str = "balanced"
     allow_download_gb: float = 60.0
+    kv_quant: str = "f16"
 
 
 @dataclass(frozen=True)
@@ -64,6 +59,7 @@ class LaunchSpec:
     argv: list[str]
     env: dict[str, str]
     health_url: str | None
+    shared_daemon: bool = False
 
 
 @dataclass(frozen=True)
@@ -71,6 +67,7 @@ class PlannedService:
     name: str
     roles: list[str]
     model_id: str
+    model_ref: str
     quant: str
     backend: str
     context: int
@@ -114,37 +111,32 @@ def _profile_budgets(profile: HardwareProfile | None) -> tuple[float, float]:
     if profile.unified_memory:
         total_vram = int(profile.total_ram_bytes * 0.70)
     display = any(gpu.driving_display for gpu in profile.gpus)
-    vram_budget = total_vram * 0.92 - (0.8 * GIB if display else 0.0)
-    return max(vram_budget, 0.0), profile.total_ram_bytes * 0.70
+    return max(total_vram * 0.92 - (0.8 * GIB if display else 0.0), 0.0), profile.total_ram_bytes * 0.70
+
+
+def _gpu_budget(gpu: GPUInfo) -> float:
+    return max(gpu.total_vram_bytes * 0.92 - (0.8 * GIB if gpu.driving_display else 0.0), 0.0)
 
 
 def estimate_memory(
-    model: ModelSpec,
-    quant: str,
-    context: int,
-    parallel_slots: int = 1,
-    profile: HardwareProfile | None = None,
+    model: ModelSpec, quant: str, context: int, parallel_slots: int = 1,
+    profile: HardwareProfile | None = None, kv_quant: str = "f16",
 ) -> MemoryEstimate:
     if quant not in BPW:
         raise ValueError(f"Unsupported quantization: {quant}")
+    if kv_quant not in {"f16", "q8_0"}:
+        raise ValueError(f"Unsupported KV quantization: {kv_quant}")
     weight_bytes = model.params * BPW[quant] / 8
     per_layer_bytes = weight_bytes / model.n_layers
-    kv_elem_bytes = 1 if quant == "q8_0" else 2
+    kv_elem_bytes = {"f16": 2, "q8_0": 1}[kv_quant]
     kv_bytes_per_tok = 2 * model.n_layers * model.n_kv_heads * model.head_dim * kv_elem_bytes
     kv_cache_bytes = kv_bytes_per_tok * context * parallel_slots
     compute_overhead = 0.06 * weight_bytes + 320 * 1024**2
-    total_bytes = weight_bytes + kv_cache_bytes + compute_overhead
     vram_budget, ram_budget = _profile_budgets(profile)
     return MemoryEstimate(
-        weight_bytes=weight_bytes,
-        per_layer_bytes=per_layer_bytes,
-        kv_bytes_per_tok=kv_bytes_per_tok,
-        kv_cache_bytes=kv_cache_bytes,
-        compute_overhead=compute_overhead,
-        total_bytes=total_bytes,
-        vram_budget=vram_budget,
-        ram_budget=ram_budget,
-        disk_needed=weight_bytes * 1.05,
+        weight_bytes, per_layer_bytes, kv_bytes_per_tok, kv_cache_bytes, compute_overhead,
+        weight_bytes + kv_cache_bytes + compute_overhead, vram_budget, ram_budget,
+        weight_bytes * 1.05,
     )
 
 
@@ -159,92 +151,77 @@ def solve_gpu_layers(memory: MemoryEstimate, n_layers: int) -> int:
 
 
 def _gpu_bandwidth(gpu: GPUInfo) -> float:
-    known = {
-        "4090": 1008.0,
-        "3060": 360.0,
-        "1650": 192.0,
-        "a100": 1555.0,
-        "h100": 2039.0,
-    }
-    lowered = gpu.name.lower()
-    for model_name, bandwidth in known.items():
-        if model_name in lowered:
+    known = {"4090": 1008.0, "3060": 360.0, "1650": 192.0, "a100": 1555.0, "h100": 2039.0}
+    for name, bandwidth in known.items():
+        if name in gpu.name.lower():
             return bandwidth
-    return {"nvidia": 400.0, "amd": 350.0, "apple": 200.0, "intel": 200.0}.get(
-        gpu.vendor, 200.0
-    )
+    return {"nvidia": 400.0, "amd": 350.0, "apple": 200.0, "intel": 200.0}.get(gpu.vendor, 200.0)
 
 
-def _throughput(
-    model: ModelSpec, memory: MemoryEstimate, n_gpu_layers: int, profile: HardwareProfile
-) -> float:
-    gpu_frac = n_gpu_layers / model.n_layers
-    cpu_frac = 1.0 - gpu_frac
-    cpu_bw = 40.0
+def _throughput(model: ModelSpec, memory: MemoryEstimate, layers: int,
+                profile: HardwareProfile) -> float:
+    gpu_frac = layers / model.n_layers
     if gpu_frac == 0 or not profile.gpus:
-        effective_bw = cpu_bw
+        effective = 40.0
     else:
         gpu_bw = sum(_gpu_bandwidth(gpu) for gpu in profile.gpus) / len(profile.gpus)
-        effective_bw = 1.0 / (gpu_frac / gpu_bw + cpu_frac / cpu_bw)
-    return 0.75 * effective_bw * 1e9 / memory.weight_bytes
+        effective = 1.0 / (gpu_frac / gpu_bw + (1.0 - gpu_frac) / 40.0)
+    return 0.75 * effective * 1e9 / memory.weight_bytes
 
 
-def _backend(profile: HardwareProfile, model: ModelSpec, n_gpu_layers: int) -> str | None:
-    available = profile.available_backends
+def _backend(profile: HardwareProfile, model: ModelSpec, layers: int) -> tuple[str, bool]:
     nvidia = any(gpu.vendor == "nvidia" for gpu in profile.gpus)
-    full_gpu = n_gpu_layers >= model.n_layers
-    non_gguf = "hf" in model.sources
-    if profile.os == "linux" and nvidia and full_gpu and non_gguf and available.get("vllm"):
-        return "vllm"
-    if profile.unified_memory and available.get("mlx"):
-        return "mlx"
-    if available.get("llamacpp"):
-        return "llamacpp"
-    if available.get("ollama"):
-        return "ollama"
-    return None
-
-
-def _launch(
-    backend: str,
-    model: ModelSpec,
-    quant: str,
-    context: int,
-    port: int,
-    n_gpu_layers: int,
-    tensor_parallel_size: int = 1,
-) -> LaunchSpec:
-    source = model.sources.get("ollama", model.id)
-    if backend == "ollama":
-        argv = ["ollama", "serve"]
-    elif backend == "vllm":
-        argv = [
-            "vllm",
-            "serve",
-            source,
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-            "--max-model-len",
-            str(context),
-        ]
-        if tensor_parallel_size > 1:
-            argv.extend(["--tensor-parallel-size", str(tensor_parallel_size)])
-    elif backend == "mlx":
-        argv = ["python", "-m", "mlx_lm.server", "--model", source, "--port", str(port)]
+    full_gpu = layers >= model.n_layers
+    if profile.os == "linux" and nvidia and full_gpu and "hf" in model.sources:
+        name = "vllm"
+    elif profile.unified_memory and "hf" in model.sources:
+        name = "mlx"
+    elif "hf_gguf" in model.sources:
+        name = "llamacpp"
+    elif "ollama" in model.sources:
+        name = "ollama"
+    elif profile.os == "linux" and "hf" in model.sources:
+        name = "vllm"
+    elif profile.unified_memory and "hf" in model.sources:
+        name = "mlx"
     else:
-        argv = [
-            "llama-server",
-            "-m",
-            source,
-            "-c",
-            str(context),
-            "--port",
-            str(port),
-            "-ngl",
-            str(n_gpu_layers),
-        ]
+        name = "llamacpp"
+    return name, bool(profile.available_backends.get(name))
+
+
+def _source_for(backend: str, model: ModelSpec, quant: str) -> str:
+    if backend in {"vllm", "mlx"}:
+        return model.sources["hf"]
+    if backend == "llamacpp":
+        return str(Path.home() / ".nmesh" / "models" / f"{model.id}-{quant}.gguf")
+    return model.sources["ollama"]
+
+
+def _has_source(backend: str, model: ModelSpec) -> bool:
+    return {
+        "vllm": "hf",
+        "mlx": "hf",
+        "llamacpp": "hf_gguf",
+        "ollama": "ollama",
+    }.get(backend, "") in model.sources
+
+
+def _launch(backend: str, model: ModelSpec, quant: str, context: int, port: int,
+            layers: int, tensor_parallel: int) -> LaunchSpec:
+    ref = _source_for(backend, model, quant)
+    if backend == "ollama":
+        return LaunchSpec(["ollama", "serve"], {}, "http://127.0.0.1:11434/api/tags", True)
+    if backend == "vllm":
+        argv = ["vllm", "serve", ref, "--host", "127.0.0.1", "--port", str(port),
+                "--max-model-len", str(context)]
+        if tensor_parallel > 1:
+            argv += ["--tensor-parallel-size", str(tensor_parallel)]
+    elif backend == "mlx":
+        argv = ["python", "-m", "mlx_lm.server", "--model", ref, "--port", str(port)]
+    else:
+        argv = ["llama-server", "-m", ref, "-c", str(context), "--port", str(port), "-ngl", str(layers)]
+        if tensor_parallel > 1:
+            argv += ["--tensor-split", ",".join(["1"] * tensor_parallel)]
     return LaunchSpec(argv, {}, f"http://127.0.0.1:{port}/health")
 
 
@@ -256,355 +233,243 @@ class _Candidate:
     memory: MemoryEstimate
     n_gpu_layers: int
     decode_tps: float
-    backend: str | None
+    backend: str
+    installed: bool
     score: float
+    estimated: bool
 
 
-def _bench_value(
-    cache: Mapping[str, float] | None, model: ModelSpec, quant: str, backend: str
-) -> float | None:
+def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: str,
+                 backend: str, gpu_name: str, layers: int) -> float | None:
     if cache is None:
         return None
-    keys = (
-        f"{model.id}|{quant}|{backend}",
-        f"{model.id}:{quant}:{backend}",
-        f"{model.id},{quant},{backend}",
-    )
-    for key in keys:
-        value = cache.get(key)
-        if value is not None:
-            return float(value)
+    for key in (
+        (model.id, quant, backend, gpu_name, layers),
+        f"{model.id}|{quant}|{backend}|{gpu_name}|{layers}",
+        f"{model.id}:{quant}:{backend}:{gpu_name}:{layers}",
+    ):
+        if key in cache:
+            return float(cache[key])
     return None
 
 
-def _candidate_for(
-    model: ModelSpec,
-    profile: HardwareProfile,
-    policy: Policy,
-    cache: Mapping[str, float] | None,
-) -> list[_Candidate]:
-    contexts: list[int] = []
+def _candidate_for(model: ModelSpec, profile: HardwareProfile, policy: Policy,
+                   cache: Mapping[object, float] | None) -> list[_Candidate]:
     initial = min(model.max_context, policy.max_context or 8192)
-    for context in (initial, 4096, 2048):
-        if context <= initial and context not in contexts:
-            contexts.append(context)
+    contexts = list(dict.fromkeys(context for context in (initial, 4096, 2048) if context <= initial))
     candidates: list[_Candidate] = []
     for quant in BPW:
         for context in contexts:
-            memory = estimate_memory(model, quant, context, profile=profile)
-            n_gpu_layers = solve_gpu_layers(memory, model.n_layers)
-            if not profile.gpus or profile.tier == Tier.T0_CPU:
-                n_gpu_layers = 0
-            gpu_bytes = (
-                memory.kv_cache_bytes
-                + memory.compute_overhead
-                + memory.per_layer_bytes * n_gpu_layers
+            base = estimate_memory(model, quant, context, profile=profile, kv_quant=policy.kv_quant)
+            layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
+            if profile.tier == Tier.T0_CPU:
+                layers = 0
+            on_gpu = layers > 0
+            gpu_bytes = base.per_layer_bytes * layers + (
+                base.kv_cache_bytes + base.compute_overhead if on_gpu else 0.0
             )
-            cpu_bytes = memory.weight_bytes - memory.per_layer_bytes * n_gpu_layers
-            if gpu_bytes > memory.vram_budget + 1 or cpu_bytes > memory.ram_budget + 1:
+            cpu_bytes = base.per_layer_bytes * (model.n_layers - layers) + (
+                0.0 if on_gpu else base.kv_cache_bytes + base.compute_overhead
+            )
+            if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
                 continue
-            backend = _backend(profile, model, n_gpu_layers)
-            if backend is None:
+            backend, installed = _backend(profile, model, layers)
+            if not _has_source(backend, model):
                 continue
-            memory = MemoryEstimate(
-                **{
-                    **asdict(memory),
-                    "cpu_bytes": cpu_bytes,
-                    "gpu_bytes": gpu_bytes,
-                    "n_gpu_layers": n_gpu_layers,
-                }
-            )
-            bench = _bench_value(cache, model, quant, backend)
-            decode_tps = bench if bench is not None else _throughput(
-                model, memory, n_gpu_layers, profile
-            )
-            if decode_tps < policy.min_decode_tps:
+            gpu_name = profile.gpus[0].name if profile.gpus else "cpu"
+            bench = _bench_value(cache, model, quant, backend, gpu_name, layers)
+            memory = MemoryEstimate(**{**asdict(base), "cpu_bytes": cpu_bytes,
+                                       "gpu_bytes": gpu_bytes, "n_gpu_layers": layers})
+            tps = bench if bench is not None else _throughput(model, memory, layers, profile)
+            if tps < policy.min_decode_tps:
                 continue
-            weights = {"quality": (1.0, 0.25), "speed": (0.4, 1.0), "balanced": (1.0, 0.6)}
-            weight_quality, weight_speed = weights.get(policy.prefer, weights["balanced"])
-            quality_adj = model.quality - QUANT_PENALTY[quant]
-            normalized_tps = min(decode_tps, 60) / 60 * 100
-            score = quality_adj * weight_quality + normalized_tps * weight_speed
-            candidates.append(
-                _Candidate(
-                    model, quant, context, memory, n_gpu_layers, decode_tps, backend, score
-                )
-            )
+            wq, ws = {"quality": (1.0, 0.25), "speed": (0.4, 1.0),
+                      "balanced": (1.0, 0.6)}.get(policy.prefer, (1.0, 0.6))
+            score = (model.quality - QUANT_PENALTY[quant]) * wq + min(tps, 60) / 60 * 100 * ws
+            candidates.append(_Candidate(model, quant, context, memory, layers, tps,
+                                         backend, installed, score, bench is None))
             break
-    return sorted(candidates, key=lambda candidate: candidate.score, reverse=True)
+    return sorted(candidates, key=lambda item: item.score, reverse=True)
 
 
-def _smallest_fallback(
-    models: Sequence[ModelSpec], role: str, profile: HardwareProfile, policy: Policy
-) -> _Candidate | None:
-    supported = [model for model in models if role in model.roles]
-    if not supported:
+def _plan_group(group: list[str], pools: dict[str, list[_Candidate]]) -> _Candidate | None:
+    if not group:
         return None
-    model = min(supported, key=lambda item: item.params)
-    quant = "q4_k_m"
-    context = min(model.max_context, policy.max_context or 2048)
-    memory = estimate_memory(model, quant, context, profile=profile)
-    n_gpu_layers = solve_gpu_layers(memory, model.n_layers) if profile.gpus else 0
-    backend = _backend(profile, model, n_gpu_layers) or "unavailable"
-    memory = MemoryEstimate(
-        **{
-            **asdict(memory),
-            "cpu_bytes": memory.weight_bytes - memory.per_layer_bytes * n_gpu_layers,
-            "gpu_bytes": memory.kv_cache_bytes
-            + memory.compute_overhead
-            + memory.per_layer_bytes * n_gpu_layers,
-            "n_gpu_layers": n_gpu_layers,
-        }
-    )
-    return _Candidate(
-        model,
-        quant,
-        context,
-        memory,
-        n_gpu_layers,
-        _throughput(model, memory, n_gpu_layers, profile),
-        backend,
-        model.quality - QUANT_PENALTY[quant],
-    )
+    ids = {candidate.model.id for candidate in pools.get(group[0], [])}
+    for role in group[1:]:
+        ids &= {candidate.model.id for candidate in pools.get(role, [])}
+    return next((candidate for candidate in pools[group[0]] if candidate.model.id in ids), None)
 
 
-def build_plan(
-    profile: HardwareProfile,
-    catalog: Sequence[ModelSpec],
-    policy: Policy | None = None,
-    bench_cache: Mapping[str, float] | None = None,
-) -> Plan:
-    selected_policy = policy or Policy()
-    roles = list(dict.fromkeys(selected_policy.roles))
+def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfile,
+                 services: list[PlannedService], swap_group: list[str],
+                 role_to_service: dict[str, str], hints: list[str]) -> None:
+    if not candidate.installed:
+        hints.append(INSTALL_HINTS[candidate.backend])
+    indices = [gpu.index for gpu in profile.gpus]
+    tensor_parallel = 1
+    if indices:
+        fit = [gpu for gpu in profile.gpus if candidate.memory.gpu_bytes <= _gpu_budget(gpu) + 1]
+        if fit:
+            indices = [fit[0].index]
+        else:
+            tensor_parallel = len(indices)
+    name = group[0]
+    port = 18010 + len(services)
+    launch = _launch(candidate.backend, candidate.model, candidate.quant, candidate.context,
+                     port, candidate.n_gpu_layers, tensor_parallel)
+    if candidate.backend == "llamacpp" and "hf_gguf" in candidate.model.sources:
+        launch = replace(launch, env={"NMESH_HF_REPO": candidate.model.sources["hf_gguf"]})
+    service = PlannedService(
+        name, group, candidate.model.id, _source_for(candidate.backend, candidate.model, candidate.quant),
+        candidate.quant, candidate.backend, candidate.context,
+        11434 if candidate.backend == "ollama" else port, indices,
+        None if candidate.backend in {"vllm", "mlx"} else candidate.n_gpu_layers,
+        profile.tier not in {Tier.T0_CPU, Tier.T1_LOW} or not services,
+        candidate.memory, candidate.decode_tps, candidate.estimated, launch,
+    )
+    services.append(service)
+    for role in group:
+        role_to_service[role] = name
+    if not service.resident:
+        swap_group.append(name)
+
+
+def _replace_gpu(service: PlannedService, indices: list[int]) -> PlannedService:
+    return PlannedService(service.name, service.roles, service.model_id, service.model_ref,
+                          service.quant, service.backend, service.context, service.port, indices,
+                          service.n_gpu_layers, service.resident, service.memory, service.decode_tps,
+                          service.estimated, service.launch)
+
+
+def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
+               policy: Policy | None = None,
+               bench_cache: Mapping[object, float] | None = None) -> Plan:
+    selected = policy or Policy()
+    roles = list(dict.fromkeys(selected.roles))
     warnings = list(profile.warnings)
-    install_hints: list[str] = []
-    all_candidates: dict[str, list[_Candidate]] = {}
-    for role in roles:
-        role_models = [model for model in catalog if role in model.roles]
-        combined = [model for model in role_models if all(item in model.roles for item in roles if item != "embed")]
-        models = combined if role in {"chat", "code"} and combined else role_models
-        candidates: list[_Candidate] = []
-        for model in models:
-            candidates.extend(_candidate_for(model, profile, selected_policy, bench_cache))
-        if profile.tier == Tier.T1_LOW and role in {"chat", "code"}:
-            partial = [candidate for candidate in candidates if candidate.n_gpu_layers < candidate.model.n_layers]
-            if partial:
-                candidates = partial
-        all_candidates[role] = sorted(candidates, key=lambda item: item.score, reverse=True)
-
-    resident_roles: list[list[str]]
-    if profile.tier in {Tier.T0_CPU, Tier.T1_LOW}:
-        main_roles = [role for role in roles if role in {"chat", "code"}]
-        resident_roles = [main_roles[:1]] if main_roles else []
-        if len(main_roles) > 1:
-            resident_roles[0] = main_roles
-        resident_roles.extend([[role] for role in roles if role == "embed"])
-    elif profile.tier in {Tier.T2_MID, Tier.T3_HIGH}:
-        main_roles = [role for role in roles if role in {"chat", "code"}]
-        resident_roles = [main_roles] if main_roles else []
-        resident_roles.extend([[role] for role in roles if role == "embed"])
+    hints: list[str] = []
+    pools = {role: sorted(
+        (candidate for model in catalog if role in model.roles
+         for candidate in _candidate_for(model, profile, selected, bench_cache)),
+        key=lambda item: item.score, reverse=True,
+    ) for role in roles}
+    if profile.tier in {Tier.T0_CPU, Tier.T1_LOW, Tier.T2_MID, Tier.T3_HIGH}:
+        groups = [[role for role in roles if role in {"chat", "code"}]]
+        groups += [[role] for role in roles if role == "embed"]
     else:
-        resident_roles = [[role] for role in roles]
-
+        groups = [[role] for role in roles]
     services: list[PlannedService] = []
     swap_group: list[str] = []
     role_to_service: dict[str, str] = {}
     total_download = 0
-    for group in resident_roles:
-        if not group:
+    for group in [item for item in groups if item]:
+        candidate = _plan_group(group, pools)
+        if candidate is None and len(group) > 1:
+            for role in group:
+                role_candidate = pools.get(role, [])
+                if role_candidate:
+                    _add_service([role], role_candidate[0], profile, services, swap_group,
+                                 role_to_service, hints)
+                    total_download += int(role_candidate[0].memory.disk_needed)
+                else:
+                    warnings.append(f"役割 {role} を満たす構成が見つかりません")
             continue
-        pool = [candidate for candidate in all_candidates.get(group[0], []) if all(
-            candidate.model.id in {item.model.id for item in all_candidates.get(role, [])}
-            for role in group
-        )]
-        candidate = pool[0] if pool else None
         if candidate is None:
-            candidate = _smallest_fallback(catalog, group[0], profile, selected_policy)
-        if candidate is None:
-            warnings.append(f"No catalog model supports role(s): {', '.join(group)}")
+            warnings.append(f"役割 {group[0]} を満たす構成が見つかりません")
             continue
-        resident = profile.tier not in {Tier.T0_CPU, Tier.T1_LOW} or not services
-        name = group[0]
-        backend = candidate.backend or "unavailable"
-        if candidate.backend is None:
-            install_hints.append("Install llama-server, ollama, vllm, or mlx_lm.")
-        gpu_indices = [gpu.index for gpu in profile.gpus]
-        if profile.tier == Tier.T5_SERVER and len(gpu_indices) > 1:
-            gpu_indices = [gpu.index for gpu in profile.gpus]
-        elif gpu_indices:
-            gpu_indices = [gpu_indices[0]]
-        launch = _launch(
-            backend,
-            candidate.model,
-            candidate.quant,
-            candidate.context,
-            18010 + len(services),
-            candidate.n_gpu_layers,
-            len(profile.gpus) if profile.tier == Tier.T5_SERVER else 1,
-        )
-        service = PlannedService(
-            name=name,
-            roles=group,
-            model_id=candidate.model.id,
-            quant=candidate.quant,
-            backend=backend,
-            context=candidate.context,
-            port=18010 + len(services),
-            gpu_indices=gpu_indices,
-            n_gpu_layers=None if backend in {"vllm", "mlx"} else candidate.n_gpu_layers,
-            resident=resident,
-            memory=candidate.memory,
-            decode_tps=candidate.decode_tps,
-            estimated=_bench_value(bench_cache, candidate.model, candidate.quant, backend) is None,
-            launch=launch,
-        )
-        services.append(service)
+        _add_service(group, candidate, profile, services, swap_group, role_to_service, hints)
         total_download += int(candidate.memory.disk_needed)
-        for role in group:
-            role_to_service[role] = name
-        if not resident:
-            swap_group.append(name)
-
-    if not services:
-        warnings.append("No runnable services were found.")
-    if total_download > selected_policy.allow_download_gb * GIB:
+    if len(profile.gpus) > 1:
+        for index, service in enumerate(services):
+            if service.memory.gpu_bytes <= _gpu_budget(profile.gpus[0]) + 1:
+                services[index] = _replace_gpu(service, [profile.gpus[index % len(profile.gpus)].index])
+    if total_download > selected.allow_download_gb * GIB:
         warnings.append("Planned downloads exceed policy.allow_download_gb.")
-    routing = RoutingRules("rules", role_to_service, {"nmesh-auto": role_to_service.get("chat", "")})
+    covered = set(role_to_service)
+    runnable = bool(services) and covered >= set(roles) and not hints
     return Plan(
-        created_at=datetime.now(timezone.utc).isoformat(),
-        nmesh_version=__version__,
-        profile=profile,
-        tier=profile.tier,
-        policy=selected_policy,
-        services=services,
-        swap_group=swap_group,
-        routing=routing,
-        warnings=warnings,
-        install_hints=list(dict.fromkeys(install_hints)),
-        total_download_bytes=total_download,
-        runnable=bool(services) and not install_hints,
+        datetime.now(timezone.utc).isoformat(), __version__, profile, profile.tier, selected,
+        services, swap_group,
+        RoutingRules("rules", role_to_service, {"nmesh-auto": role_to_service.get("chat", "")}),
+        warnings, list(dict.fromkeys(hints)), total_download, runnable,
     )
 
 
 def _gpu_from_dict(data: object) -> GPUInfo:
     if not isinstance(data, dict):
         raise TypeError("Invalid GPU data")
-    capability = data.get("compute_capability")
-    parsed_capability = tuple(capability) if isinstance(capability, list) else capability
-    return GPUInfo(
-        int(data["index"]),
-        str(data["name"]),
-        str(data["vendor"]),  # type: ignore[arg-type]
-        int(data["total_vram_bytes"]),
-        int(data["free_vram_bytes"]),
-        parsed_capability,
-        bool(data["driving_display"]),
-    )
+    cap = data.get("compute_capability")
+    return GPUInfo(int(data["index"]), str(data["name"]), str(data["vendor"]),
+                   int(data["total_vram_bytes"]), int(data["free_vram_bytes"]),
+                   tuple(cap) if isinstance(cap, list) else cap, bool(data["driving_display"]))
 
 
 def _plan_from_dict(data: dict[str, object]) -> Plan:
-    profile_data = data["profile"]
-    if not isinstance(profile_data, dict):
-        raise TypeError("Invalid profile data")
+    pd = data["profile"]
+    if not isinstance(pd, dict):
+        raise TypeError("Invalid profile")
     profile = HardwareProfile(
-        str(profile_data["os"]),  # type: ignore[arg-type]
-        str(profile_data["cpu_name"]),
-        int(profile_data["physical_cores"]),
-        int(profile_data["logical_cores"]),
-        int(profile_data["total_ram_bytes"]),
-        int(profile_data["available_ram_bytes"]),
-        int(profile_data["free_disk_bytes"]),
-        bool(profile_data["unified_memory"]),
-        [_gpu_from_dict(item) for item in profile_data["gpus"]],  # type: ignore[index]
-        {str(key): value if isinstance(value, str) else None for key, value in profile_data["available_backends"].items()},  # type: ignore[union-attr]
-        Tier(str(data["tier"])),
-        [str(item) for item in profile_data.get("warnings", [])],  # type: ignore[union-attr]
+        str(pd["os"]), str(pd["cpu_name"]), int(pd["physical_cores"]), int(pd["logical_cores"]),
+        int(pd["total_ram_bytes"]), int(pd["available_ram_bytes"]), int(pd["free_disk_bytes"]),
+        bool(pd["unified_memory"]), [_gpu_from_dict(item) for item in pd["gpus"]],
+        {str(k): v if isinstance(v, str) else None for k, v in pd["available_backends"].items()},
+        Tier(str(pd["tier"])), [str(x) for x in pd.get("warnings", [])],
     )
-    policy_data = data["policy"]
-    if not isinstance(policy_data, dict):
-        raise TypeError("Invalid policy data")
-    policy = Policy(
-        [str(role) for role in policy_data["roles"]],
-        float(policy_data["min_decode_tps"]),
-        int(policy_data["max_context"]) if policy_data["max_context"] is not None else None,
-        str(policy_data["prefer"]),
-        float(policy_data["allow_download_gb"]),
-    )
+    pol = data["policy"]
+    if not isinstance(pol, dict):
+        raise TypeError("Invalid policy")
+    policy = Policy([str(x) for x in pol["roles"]], float(pol["min_decode_tps"]),
+                    int(pol["max_context"]) if pol["max_context"] is not None else None,
+                    str(pol["prefer"]), float(pol["allow_download_gb"]), str(pol.get("kv_quant", "f16")))
     services: list[PlannedService] = []
-    for item in data["services"]:  # type: ignore[union-attr]
-        service_data = item
-        if not isinstance(service_data, dict):
-            raise TypeError("Invalid service data")
-        memory_data = service_data["memory"]
-        launch_data = service_data["launch"]
-        if not isinstance(memory_data, dict) or not isinstance(launch_data, dict):
-            raise TypeError("Invalid service nested data")
-        memory = MemoryEstimate(**{str(key): float(value) for key, value in memory_data.items()})
+    for item in data["services"]:
+        sd = item
+        if not isinstance(sd, dict):
+            raise TypeError("Invalid service")
+        md, ld = sd["memory"], sd["launch"]
+        if not isinstance(md, dict) or not isinstance(ld, dict):
+            raise TypeError("Invalid nested data")
+        memory_values = {str(k): v for k, v in md.items()}
+        memory_values["n_gpu_layers"] = int(memory_values["n_gpu_layers"])
+        memory = MemoryEstimate(**memory_values)
         launch = LaunchSpec(
-            [str(arg) for arg in launch_data["argv"]],
-            {str(key): str(value) for key, value in launch_data["env"].items()},
-            str(launch_data["health_url"]) if launch_data["health_url"] else None,
+            [str(x) for x in ld["argv"]], {str(k): str(v) for k, v in ld["env"].items()},
+            str(ld["health_url"]) if ld["health_url"] else None, bool(ld.get("shared_daemon", False)),
         )
-        services.append(
-            PlannedService(
-                str(service_data["name"]),
-                [str(role) for role in service_data["roles"]],
-                str(service_data["model_id"]),
-                str(service_data["quant"]),
-                str(service_data["backend"]),
-                int(service_data["context"]),
-                int(service_data["port"]),
-                [int(index) for index in service_data["gpu_indices"]],
-                int(service_data["n_gpu_layers"]) if service_data["n_gpu_layers"] is not None else None,
-                bool(service_data["resident"]),
-                memory,
-                float(service_data["decode_tps"]),
-                bool(service_data["estimated"]),
-                launch,
-            )
-        )
-    routing_data = data["routing"]
-    if not isinstance(routing_data, dict):
-        raise TypeError("Invalid routing data")
-    routing = RoutingRules(
-        str(routing_data["mode"]),
-        {str(key): str(value) for key, value in routing_data["role_to_service"].items()},
-        {str(key): str(value) for key, value in routing_data["aliases"].items()},
-    )
+        services.append(PlannedService(
+            str(sd["name"]), [str(x) for x in sd["roles"]], str(sd["model_id"]),
+            str(sd.get("model_ref", sd["model_id"])), str(sd["quant"]), str(sd["backend"]),
+            int(sd["context"]), int(sd["port"]), [int(x) for x in sd["gpu_indices"]],
+            int(sd["n_gpu_layers"]) if sd["n_gpu_layers"] is not None else None, bool(sd["resident"]),
+            memory, float(sd["decode_tps"]), bool(sd["estimated"]), launch,
+        ))
+    rd = data["routing"]
+    if not isinstance(rd, dict):
+        raise TypeError("Invalid routing")
+    routing = RoutingRules(str(rd["mode"]), {str(k): str(v) for k, v in rd["role_to_service"].items()},
+                           {str(k): str(v) for k, v in rd["aliases"].items()})
     return Plan(
-        str(data["created_at"]),
-        str(data["nmesh_version"]),
-        profile,
-        Tier(str(data["tier"])),
-        policy,
-        services,
-        [str(item) for item in data["swap_group"]],
-        routing,
-        [str(item) for item in data["warnings"]],
-        [str(item) for item in data["install_hints"]],
-        int(data["total_download_bytes"]),
-        bool(data.get("runnable", True)),
+        str(data["created_at"]), str(data["nmesh_version"]), profile, Tier(str(data["tier"])),
+        policy, services, [str(x) for x in data["swap_group"]], routing,
+        [str(x) for x in data["warnings"]], [str(x) for x in data["install_hints"]],
+        int(data["total_download_bytes"]), bool(data.get("runnable", True)),
     )
 
 
 def save_plan(plan: Plan, path: Path | None = None) -> Path:
-    target = path or (Path.home() / ".nmesh" / "plan.json")
+    target = path or Path.home() / ".nmesh" / "plan.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(asdict(plan), indent=2, default=str), encoding="utf-8")
     return target
 
 
 def load_plan(path: Path | None = None) -> Plan | None:
-    target = path or (Path.home() / ".nmesh" / "plan.json")
+    target = path or Path.home() / ".nmesh" / "plan.json"
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    try:
-        return _plan_from_dict(payload)
-    except (KeyError, TypeError, ValueError):
+        return _plan_from_dict(payload) if isinstance(payload, dict) else None
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
 
 

@@ -270,7 +270,7 @@ swap モードでは gateway がリクエストを直列化（`asyncio.Lock`）�
 
 ## 11. テスト方針（pytest、CI必須）
 
-- **メモリ見積りの単体テスト**: 既知の値で回帰固定（例: 7.62Bパラメータ・q4_k_m → weight ≈ 4.62 GiB。誤差1%以内）。
+- **メモリ見積りの単体テスト**: 既知の値で回帰固定（例: 7.62Bパラメータ・q4_k_m → weight ≈ 4.62e9 バイト ≈ 4.30 GiB。誤差1%以内）。
 - **合成 HardwareProfile フィクスチャ**で planner をテスト:
   1. CPUのみ 8GiB RAM → T0、CPU向け小型モデル、swap 1本、`runnable`
   2. GTX 1650 4GiB / 16GiB RAM → T1、部分オフロード、n_gpu_layers が 0 < x < n_layers
