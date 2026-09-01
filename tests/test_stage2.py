@@ -10,7 +10,7 @@ import pytest
 
 from nmesh.bench import benchmark, benchmark_key, load_cache, save_cache
 from nmesh.catalog import ModelSpec, load_catalog
-from nmesh.gateway import route
+from nmesh.gateway import estimate_tokens, route
 from nmesh.planner import Policy, build_plan, free_budgets
 from nmesh.planner import save_plan as planner_save_plan
 from nmesh.probe import HardwareProfile
@@ -42,6 +42,38 @@ def test_route_rules(catalog: list[object]) -> None:
         plan.routing.role_to_service["code"]
     )
     assert route({"messages": [{"content": "hello"}]}, plan) == plan.routing.role_to_service["chat"]
+
+
+def test_estimate_tokens_is_script_aware() -> None:
+    japanese = "日本語" * 100
+    ascii_text = "abcd" * 100
+    assert estimate_tokens(japanese) >= len(japanese) * 0.9
+    assert estimate_tokens(ascii_text) == len(ascii_text) // 4
+
+
+def test_route_uses_script_aware_context_and_reserved_output(catalog) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    base = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    small = replace(base.services[0], name="small", context=1024)
+    large = replace(base.services[0], name="large", context=4096)
+    plan = replace(
+        base,
+        services=[small, large],
+        routing=replace(
+            base.routing,
+            role_to_service={"chat": "small"},
+            aliases={"nmesh-auto": "small"},
+        ),
+    )
+    japanese = "日本語" * 300
+    assert len(japanese) // 4 < small.context * 0.8
+    assert route({"messages": [{"content": japanese}]}, plan) == "large"
+    borderline = "abcd" * 650
+    assert len(borderline) // 4 < small.context * 0.8
+    assert route({
+        "messages": [{"content": borderline}],
+        "max_tokens": 300,
+    }, plan) == "large"
 
 
 def test_bench_cache_round_trip(tmp_path) -> None:

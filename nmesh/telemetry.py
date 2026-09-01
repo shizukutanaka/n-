@@ -18,6 +18,7 @@ class Sample:
     total_s: float
     completion_tokens: int
     at: float
+    approximate: bool = True
 
 
 class Telemetry:
@@ -36,6 +37,7 @@ class Telemetry:
                 float(item["decode_tps"]) if item.get("decode_tps") is not None else None,
                 float(item["ttft_s"]) if item.get("ttft_s") is not None else None,
                 float(item["total_s"]), int(item["completion_tokens"]), float(item["at"]),
+                bool(item.get("approximate", True)),
             ) for item in values if isinstance(item, dict)]
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             return []
@@ -87,13 +89,18 @@ class Telemetry:
         return result
 
     def bench_overlay(self, min_samples: int = 5) -> dict[str, float]:
-        groups: dict[str, list[float]] = {}
+        exact: dict[str, list[float]] = {}
+        approximate: dict[str, list[float]] = {}
         for sample in self.samples():
             if sample.decode_tps is not None:
+                groups = approximate if sample.approximate else exact
                 groups.setdefault(sample.key, []).append(sample.decode_tps)
+        selected = exact
+        for key, values in approximate.items():
+            selected.setdefault(key, values)
         return {
             key: statistics.median(values)
-            for key, values in groups.items() if len(values) >= min_samples
+            for key, values in selected.items() if len(values) >= min_samples
         }
 
 
