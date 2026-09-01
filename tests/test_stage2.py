@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 
 import pytest
@@ -240,6 +241,28 @@ def test_supervisor_status_state_fallback_is_running(tmp_path) -> None:
     result = Supervisor(state_path=state_path).status()
     assert result.running is True
     assert result.services[0]["service"] == "chat"
+
+
+def test_supervisor_heartbeat_adopts_healthy_service_past_restart_budget(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("healthy external service should not launch"),
+        tmp_path / "adopt-budget.json",
+        health_timeout=0.01,
+    )
+    supervisor.active_plan = replace(plan, services=[service])
+    supervisor.restarts[service.name] = [time.monotonic()] * supervisor_module.MAX_RESTARTS
+    supervisor.failed[service.name] = "stale failure"
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+    supervisor.heartbeat()
+    assert service.name in supervisor.external_shared
+    assert supervisor.failed == {}
 
 
 def test_supervisor_admission_replans_against_free_memory(

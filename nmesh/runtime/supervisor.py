@@ -422,15 +422,18 @@ class Supervisor:
                     and service.name not in self.external_shared
                 ):
                     continue
-                if self._already_up(service) or service.name in self.failed:
+                if self._adopt(service):
+                    self.failed.pop(service.name, None)
+                    changed = True
+                    continue
+                if self._already_up(service):
+                    continue
+                if service.name in self.failed:
                     continue
                 if service.name in self.processes:
                     self.processes.pop(service.name, None)
                 if not self._restart_budget(service.name):
                     self.failed[service.name] = "Restart budget exhausted"
-                    changed = True
-                    continue
-                if self._adopt(service):
                     changed = True
                     continue
                 self._record_restart(service.name)
