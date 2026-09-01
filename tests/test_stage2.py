@@ -158,6 +158,102 @@ def test_supervisor_rewrites_acquired_model_and_records_note(
     supervisor.down()
 
 
+def test_supervisor_applies_ollama_derived_model_ref(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        backend="ollama",
+        model_ref="qwen2.5:0.5b-instruct",
+        launch=replace(plan.services[0].launch, argv=["ollama", "serve"], health_url=None),
+    )
+    plan = replace(plan, services=[service])
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service: Acquired(
+            None, None, False, model_ref="nmesh-chat-c8192"
+        ),
+    )
+    supervisor = Supervisor(
+        lambda _service: _AdmissionProcess(),
+        tmp_path / "ollama-state.json",
+        health_timeout=0.01,
+    )
+
+    result = supervisor.up(plan, admit=False)
+
+    assert result.running
+    launched = supervisor.active_plan.services[0]
+    assert launched.model_ref == "nmesh-chat-c8192"
+    assert launched.launch.argv == ["ollama", "serve"]
+    supervisor.down()
+
+
+def test_supervisor_ollama_create_failure_keeps_base_and_warns(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        backend="ollama",
+        model_ref="qwen2.5:0.5b-instruct",
+        launch=replace(plan.services[0].launch, argv=["ollama", "serve"], health_url=None),
+    )
+    plan = replace(plan, services=[service])
+    warning = "Ollama context could not be set for chat; it will run at Ollama's default context, not the planned 8192."
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service: Acquired(
+            None,
+            None,
+            False,
+            model_ref=service.model_ref,
+            warning=warning,
+        ),
+    )
+    supervisor = Supervisor(
+        lambda _service: _AdmissionProcess(),
+        tmp_path / "ollama-failure-state.json",
+        health_timeout=0.01,
+    )
+
+    result = supervisor.up(plan, admit=False)
+
+    assert result.running
+    assert supervisor.active_plan.services[0].model_ref == service.model_ref
+    assert warning in supervisor.active_plan.warnings
+    assert result.services[0]["note"] == warning
+    supervisor.down()
+
+
+def test_supervisor_no_download_ollama_warns_and_keeps_base(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        backend="ollama",
+        model_ref="qwen2.5:0.5b-instruct",
+        launch=replace(plan.services[0].launch, argv=["ollama", "serve"], health_url=None),
+    )
+    plan = replace(plan, services=[service])
+    supervisor = Supervisor(
+        lambda _service: _AdmissionProcess(),
+        tmp_path / "ollama-no-download-state.json",
+        health_timeout=0.01,
+    )
+
+    result = supervisor.up(plan, no_download=True, admit=False)
+
+    assert result.running
+    assert supervisor.active_plan.services[0].model_ref == service.model_ref
+    assert any("default context" in warning for warning in supervisor.active_plan.warnings)
+    supervisor.down()
+
+
 class _AdmissionProcess:
     pid = 456
 

@@ -81,6 +81,7 @@
   languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "qwen2.5:14b-instruct"
+    hf_gguf: "Qwen/Qwen2.5-14B-Instruct-GGUF"
     hf: "Qwen/Qwen2.5-14B-Instruct"
 - id: qwen2.5-32b-instruct
   family: qwen2.5
@@ -97,6 +98,7 @@
   languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "qwen2.5:32b-instruct"
+    hf_gguf: "Qwen/Qwen2.5-32B-Instruct-GGUF"
     hf: "Qwen/Qwen2.5-32B-Instruct"
 - id: qwen2.5-coder-1.5b
   family: qwen2.5-coder
@@ -130,6 +132,7 @@
   languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "qwen2.5-coder:7b"
+    hf_gguf: "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF"
     hf: "Qwen/Qwen2.5-Coder-7B-Instruct"
 - id: qwen2.5-coder-14b
   family: qwen2.5-coder
@@ -146,6 +149,7 @@
   languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "qwen2.5-coder:14b"
+    hf_gguf: "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF"
     hf: "Qwen/Qwen2.5-Coder-14B-Instruct"
 - id: llama3.1-8b-instruct
   family: llama3.1
@@ -162,6 +166,7 @@
   languages: [en, de, fr, it, pt, hi, es, th]
   sources:
     ollama: "llama3.1:8b-instruct"
+    hf_gguf: "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
     hf: "meta-llama/Llama-3.1-8B-Instruct"
 - id: llama3.3-70b-instruct
   family: llama3.3
@@ -178,6 +183,7 @@
   languages: [en, de, fr, it, pt, hi, es, th]
   sources:
     ollama: "llama3.3:70b-instruct"
+    hf_gguf: "bartowski/Llama-3.3-70B-Instruct-GGUF"
     hf: "meta-llama/Llama-3.3-70B-Instruct"
 - id: phi-4-14b
   family: phi-4
@@ -194,6 +200,7 @@
   languages: [en]
   sources:
     ollama: "phi4"
+    hf_gguf: "bartowski/phi-4-GGUF"
     hf: "microsoft/phi-4"
 - id: gemma2-2b
   family: gemma2
@@ -210,6 +217,7 @@
   languages: [en]
   sources:
     ollama: "gemma2:2b"
+    hf_gguf: "bartowski/gemma-2-2b-it-GGUF"
     hf: "google/gemma-2-2b-it"
 - id: gemma2-9b
   family: gemma2
@@ -226,6 +234,7 @@
   languages: [en]
   sources:
     ollama: "gemma2:9b"
+    hf_gguf: "bartowski/gemma-2-9b-it-GGUF"
     hf: "google/gemma-2-9b-it"
 - id: mistral-7b-instruct
   family: mistral
@@ -242,6 +251,7 @@
   languages: [en]
   sources:
     ollama: "mistral:7b-instruct"
+    hf_gguf: "bartowski/Mistral-7B-Instruct-v0.3-GGUF"
     hf: "mistralai/Mistral-7B-Instruct-v0.3"
 - id: nomic-embed-text-v1.5
   family: nomic-embed
@@ -275,4 +285,5 @@
   languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "bge-m3"
+    hf_gguf: "gpustack/bge-m3-GGUF"
     hf: "BAAI/bge-m3"

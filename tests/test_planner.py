@@ -197,6 +197,20 @@ def test_ollama_only_model_never_uses_llamacpp(tmp_path, monkeypatch) -> None:
     assert result.services[0].backend == "ollama"
 
 
+def test_installed_lower_preference_backend_wins() -> None:
+    model = ModelSpec(
+        "both-sources", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache",
+        {"hf_gguf": "repo", "ollama": "test:model"},
+    )
+    available = profile(
+        8,
+        backends={"ollama": "installed", "llamacpp": None, "vllm": None, "mlx": None},
+    )
+
+    assert planner_core._backend(available, model, 14) == ("ollama", True)
+
+
 def test_hf_only_model_does_not_warn_about_missing_gguf_source() -> None:
     model = ModelSpec(
         "hf-only", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
