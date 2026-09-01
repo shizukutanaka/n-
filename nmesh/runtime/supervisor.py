@@ -17,12 +17,13 @@ from typing import Protocol
 import psutil
 
 from nmesh.catalog import ModelSpec, load_catalog
+from nmesh.paths import nmesh_home
 from nmesh.planner import BPW, Plan, PlannedService, build_plan, free_budgets, load_plan, save_plan
 from nmesh.probe import HardwareProfile, detect_hardware
 
 from .acquisition import Acquired, acquire
 
-STATE_PATH = Path.home() / ".nmesh" / "state.json"
+STATE_PATH = nmesh_home() / "state.json"
 HEALTH_TIMEOUT = 120.0
 MAX_RESTARTS = 3
 RESTART_WINDOW = 300.0

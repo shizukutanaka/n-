@@ -16,6 +16,7 @@ from rich.table import Table
 
 from nmesh.bench import benchmark_key, load_cache, measure, save_cache
 from nmesh.catalog import load_catalog
+from nmesh.paths import nmesh_home
 from nmesh.planner import (
     PlannedService,
     Policy,
@@ -307,7 +308,7 @@ def _launch_gateway(port: int, detach: bool) -> tuple[subprocess.Popen[bytes], P
             kwargs["creationflags"] = 0x00000008 | 0x00000200
         else:
             kwargs["start_new_session"] = True
-        log_path = Path.home() / ".nmesh" / "gateway.log"
+        log_path = nmesh_home() / "gateway.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("ab")
         kwargs["stdout"] = log

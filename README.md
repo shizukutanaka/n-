@@ -79,6 +79,19 @@ the saved plan no longer fits. Use `nmesh up --ignore-free-memory` to skip that
 check and rely on the normal runtime fallback ladder. `nmesh doctor` displays
 each GPU's total/free VRAM and the resulting free VRAM/RAM budgets.
 
+## State and port environment variables
+
+`NMESH_HOME` relocates all nmesh-owned persistent and downloaded state:
+the plan, runtime state, benchmark cache, capability cache, telemetry, user
+catalog, gateway log, and downloaded GGUFs. Set it to a scratch directory
+before starting nmesh processes to run isolated experiments without touching
+the real `~/.nmesh` state or catalog.
+
+`NMESH_SERVICE_PORT_BASE` changes the base port used for planned backend
+services. The default is `18010`; nmesh assigns subsequent service ports from
+that base. Use a free base (as the E2E harness does) and ensure the gateway
+port selected for `nmesh up --port` does not conflict with it.
+
 ## GPU detection and honest VRAM reporting
 
 nmesh first tries the specialized NVIDIA and ROCm detectors: NVML or
@@ -120,6 +133,30 @@ emitting GPU-layer arguments. An unknown result, `None` (for example when the
 probe fails), preserves the previous behavior rather than making an
 unsupported CPU fallback assumption. To use a detected GPU with llama.cpp,
 install or build a backend with a Vulkan, CUDA, HIP, or SYCL GPU backend.
+
+## Real-backend end-to-end harness
+
+The optional real-backend harness runs the complete planner, runtime, gateway,
+completion, metrics, benchmark, and teardown workflow without using the
+user's normal state directory:
+
+```text
+python scripts/e2e.py
+```
+
+It creates a temporary `NMESH_HOME`, selects free ports, and uses a local
+`llama-server` plus GGUF model. When possible, it reuses an already-downloaded
+GGUF from the real `~/.nmesh/models` directory read-only, by hard-linking,
+symlinking, or copying it into the scratch directory. Set `NMESH_E2E_MODEL`
+to choose a different local model. This is intentionally standalone rather
+than a pytest test because it requires a real model and can take several
+minutes.
+
+Exit codes:
+
+* `0` — every real-backend step passed and all selected ports were released.
+* `1` — a required step failed.
+* `77` — the required real backend or local GGUF model is unavailable.
 
 ## OpenAI-compatible API surface
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from nmesh import __version__
 from nmesh.catalog import ModelSpec
+from nmesh.paths import nmesh_home
 from nmesh.probe import GPUInfo, HardwareProfile, Tier
 
 BPW = {
@@ -21,7 +22,7 @@ QUANT_PENALTY = {
     "q4_k_m": 3.5, "q4_0": 5.0, "q3_k_m": 9.0, "q2_k": 16.0,
 }
 GIB = 1024**3
-PLAN_PATH = Path.home() / ".nmesh" / "plan.json"
+PLAN_PATH = nmesh_home() / "plan.json"
 INSTALL_HINTS = {
     "ollama": "Install Ollama: https://ollama.com/download",
     "llamacpp": "Install llama.cpp: winget install llama.cpp / brew install llama.cpp / build from source",
@@ -215,8 +216,15 @@ def _source_for(backend: str, model: ModelSpec, quant: str) -> str:
     if backend in {"vllm", "mlx"}:
         return model.sources["hf"]
     if backend == "llamacpp":
-        return str(Path.home() / ".nmesh" / "models" / f"{model.id}-{quant}.gguf")
+        return str(nmesh_home() / "models" / f"{model.id}-{quant}.gguf")
     return model.sources["ollama"]
+
+
+def _service_port_base() -> int:
+    try:
+        return int(os.environ.get("NMESH_SERVICE_PORT_BASE", "18010"))
+    except ValueError:
+        return 18010
 
 
 def _has_source(backend: str, model: ModelSpec) -> bool:
@@ -406,7 +414,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
     indices: list[int] = []
     tensor_parallel = 1
     name = group[0]
-    port = 18010 + len(services)
+    port = _service_port_base() + len(services)
     layers = candidate.n_gpu_layers
     memory = candidate.memory
     backend_flags = profile.backend_flags.get(candidate.backend)

@@ -5,6 +5,8 @@ from pathlib import Path
 
 import yaml
 
+from nmesh.paths import nmesh_home
+
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -86,7 +88,7 @@ def load_catalog(
     bundled_path: Path | None = None, user_path: Path | None = None
 ) -> list[ModelSpec]:
     bundled = bundled_path or Path(__file__).with_name("models.yaml")
-    user = user_path or (Path.home() / ".nmesh" / "models.yaml")
+    user = user_path or (nmesh_home() / "models.yaml")
     merged: dict[str, ModelSpec] = {model.id: model for model in _read_models(bundled)}
     merged.update({model.id: model for model in _read_models(user)})
     return list(merged.values())

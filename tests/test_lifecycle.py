@@ -183,7 +183,7 @@ def test_launch_gateway_uses_posix_detachment(monkeypatch, tmp_path: Path) -> No
     monkeypatch.setattr(cli.subprocess, "Popen", popen)
     monkeypatch.setattr(cli.os, "name", "posix")
     monkeypatch.setattr(cli, "record_gateway", lambda _pid, _port: None)
-    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
 
     cli._launch_gateway(19000, detach=True)
 
