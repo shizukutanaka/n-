@@ -287,9 +287,8 @@ def test_oversized_llamacpp_cpu_fallback_clears_split_and_warns() -> None:
     assert service.gpu_indices == []
     assert service.launch.argv[service.launch.argv.index("-ngl") + 1] == "0"
     assert "--tensor-split" not in service.launch.argv
-    assert i18n.t(
-        "warn.gpu_layers_cpu_fallback", "en", service=service.name
-    ) in result.warnings
+    warning = i18n.t("warn.gpu_layers_cpu_fallback", "en", service=service.name)
+    assert result.warnings.count(warning) == 1
 
 
 def test_ollama_quantization_warning_is_emitted_for_placed_service() -> None:
@@ -306,6 +305,29 @@ def test_ollama_quantization_warning_is_emitted_for_placed_service() -> None:
     assert service.backend == "ollama"
     assert service.gpu_indices == [0]
     assert sum("Ollama tag's own quantization" in warning for warning in result.warnings) == 1
+
+
+def test_single_gpu_cpu_fallback_warns() -> None:
+    models = [
+        ModelSpec(
+            "first", "first", 20_000_000_000, 80, 80, 100, 128,
+            12800, 4096, ["chat"], 99.0, "test", {"hf_gguf": "first.gguf"},
+        ),
+        ModelSpec(
+            "second", "second", 20_000_000_000, 80, 80, 100, 128,
+            12800, 4096, ["code"], 99.0, "test", {"hf_gguf": "second.gguf"},
+        ),
+    ]
+    result = build_plan(
+        profile(128, (24,)),
+        models,
+        Policy(roles=["chat", "code"], min_decode_tps=0),
+    )
+    service = next(item for item in result.services if item.name == "code")
+    assert service.n_gpu_layers == 0
+    assert service.gpu_indices == []
+    warning = i18n.t("warn.gpu_layers_cpu_fallback", "en", service=service.name)
+    assert result.warnings.count(warning) == 1
 
 
 def test_save_plan_replaces_atomically(tmp_path, catalog: list[ModelSpec], monkeypatch) -> None:
