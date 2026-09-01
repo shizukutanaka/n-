@@ -26,6 +26,7 @@ class GPUInfo:
     free_vram_bytes: int
     compute_capability: tuple[int, int] | None
     driving_display: bool
+    vram_source: Literal["nvml", "smi", "registry", "sysfs", "unknown"] = "unknown"
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class HardwareProfile:
     warnings: list[str] = field(default_factory=list)
     backend_flags: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     backend_paths: Mapping[str, str] = field(default_factory=dict)
+    backend_gpu_devices: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 def classify_tier(

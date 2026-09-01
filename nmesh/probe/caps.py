@@ -16,6 +16,7 @@ class BackendCaps:
     binary: str
     version: str | None
     flags: frozenset[str]
+    gpu_devices: tuple[str, ...] | None = None
 
     def supports(self, *aliases: str) -> bool:
         return any(alias in self.flags for alias in aliases)
@@ -44,6 +45,28 @@ def parse_help(text: str) -> tuple[frozenset[str], str | None]:
             version = line.strip()
             break
     return frozenset(flags), version
+
+
+def parse_devices(text: str) -> tuple[str, ...] | None:
+    """Parse llama.cpp's --list-devices output.
+
+    None means the output did not identify the device-list protocol; an empty
+    tuple is an explicit report that the binary has no GPU devices.
+    """
+    lines = text.splitlines()
+    marker = next(
+        (index for index, line in enumerate(lines)
+         if line.strip().lower().startswith("available devices")),
+        None,
+    )
+    if marker is None:
+        return None
+    devices = tuple(
+        line.strip()
+        for line in lines[marker + 1:]
+        if line.strip() and line.strip().lower() not in {"(none)", "none"}
+    )
+    return devices
 
 
 def _resolve_binary(binary: str) -> Path | None:
@@ -92,6 +115,9 @@ def llamacpp_caps(
                 str(cached["binary"]),
                 str(cached["version"]) if cached.get("version") else None,
                 frozenset(str(flag) for flag in cached.get("flags", [])),
+                tuple(str(device) for device in cached["gpu_devices"])
+                if isinstance(cached.get("gpu_devices"), list)
+                else None if cached.get("gpu_devices") is None else (),
             )
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         pass
@@ -111,6 +137,7 @@ def llamacpp_caps(
     if not flags:
         return None
     version: str | None = help_version
+    gpu_devices: tuple[str, ...] | None = None
     try:
         version_result = subprocess.run(
             [str(resolved), "--version"],
@@ -124,7 +151,20 @@ def llamacpp_caps(
             version = version_text.splitlines()[0]
     except (OSError, subprocess.SubprocessError):
         pass
-    caps = BackendCaps(str(resolved), version, flags)
+    try:
+        devices_result = subprocess.run(
+            [str(resolved), "--list-devices"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        devices_text = (devices_result.stdout or "") + "\n" + (devices_result.stderr or "")
+        if devices_result.returncode == 0:
+            gpu_devices = parse_devices(devices_text)
+    except (OSError, subprocess.SubprocessError):
+        gpu_devices = None
+    caps = BackendCaps(str(resolved), version, flags, gpu_devices)
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
@@ -137,6 +177,7 @@ def llamacpp_caps(
             "binary": caps.binary,
             "version": caps.version,
             "flags": sorted(caps.flags),
+            "gpu_devices": list(caps.gpu_devices) if caps.gpu_devices is not None else None,
         }
         try:
             _write_cache(target, payload)
