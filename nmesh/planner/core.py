@@ -198,9 +198,7 @@ def _backend(profile: HardwareProfile, model: ModelSpec, layers: int) -> tuple[s
         name = "vllm"
     elif profile.unified_memory and "hf" in model.sources:
         name = "mlx"
-    elif "hf_gguf" in model.sources or any(
-        Path.home().joinpath(".nmesh", "models").glob(f"{model.id}-*.gguf")
-    ):
+    elif "hf_gguf" in model.sources:
         name = "llamacpp"
     elif "ollama" in model.sources:
         name = "ollama"
@@ -716,11 +714,10 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     for model in catalog:
         if (
             any(role in model.roles for role in roles)
-            and "hf_gguf" not in model.sources
-            and "ollama" not in model.sources
+            and not any(source in model.sources for source in ("hf", "hf_gguf", "ollama"))
         ):
             warnings.append(
-                f"{model.id}: no hf_gguf or ollama source is configured"
+                f"{model.id}: no Hugging Face or Ollama source is configured"
             )
     pools = {role: sorted(
         (candidate for model in catalog if role in model.roles

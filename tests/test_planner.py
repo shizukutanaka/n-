@@ -177,13 +177,30 @@ def test_no_backend_still_plans(catalog: list[ModelSpec]) -> None:
     assert not result.runnable
 
 
-def test_ollama_only_model_never_uses_llamacpp() -> None:
+def test_ollama_only_model_never_uses_llamacpp(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        planner_core.Path,
+        "home",
+        classmethod(lambda _cls: tmp_path),
+    )
+    model_dir = tmp_path / ".nmesh" / "models"
+    model_dir.mkdir(parents=True)
+    (model_dir / "ollama-only-q4_k_m.gguf").write_bytes(b"stray local file")
     model = ModelSpec(
         "ollama-only", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
         ["chat"], 90.0, "apache", {"ollama": "test:model"},
     )
     result = build_plan(profile(8), [model], Policy(roles=["chat"]))
     assert result.services[0].backend == "ollama"
+
+
+def test_hf_only_model_does_not_warn_about_missing_gguf_source() -> None:
+    model = ModelSpec(
+        "hf-only", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"hf": "test/model"},
+    )
+    result = build_plan(profile(8), [model], Policy(roles=["chat"]))
+    assert not any("hf-only" in warning for warning in result.warnings)
 
 
 def test_kv_quantization_is_independent(catalog: list[ModelSpec]) -> None:
