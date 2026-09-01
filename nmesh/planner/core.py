@@ -207,7 +207,7 @@ def _backend(profile: HardwareProfile, model: ModelSpec, layers: int) -> tuple[s
     elif profile.unified_memory and "hf" in model.sources:
         name = "mlx"
     else:
-        name = "llamacpp"
+        return "", False
     return name, bool(profile.available_backends.get(name))
 
 
@@ -711,6 +711,14 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     roles = list(dict.fromkeys(selected.roles))
     warnings = list(profile.warnings)
     hints: list[str] = []
+    for model in catalog:
+        if (
+            any(role in model.roles for role in roles)
+            and not any(source in model.sources for source in ("hf", "hf_gguf", "ollama"))
+        ):
+            warnings.append(
+                f"{model.id}: no Hugging Face or Ollama source is configured"
+            )
     pools = {role: sorted(
         (candidate for model in catalog if role in model.roles
          for candidate in _candidate_for(model, profile, selected, bench_cache)),

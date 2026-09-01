@@ -185,6 +185,11 @@ def _runtime(args: argparse.Namespace) -> int:
     else:
         Console().print(result)
         if args.command == "status":
+            for item in result.services:
+                if item.get("note"):
+                    Console().print(
+                        f"{item.get('service')}: acquisition note: {item['note']}"
+                    )
             telemetry = telemetry_summary()
             table = Table(title="Telemetry")
             table.add_column("Service")
