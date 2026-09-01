@@ -178,7 +178,7 @@ def _runtime(args: argparse.Namespace) -> int:
                         f"gateway did not become ready; see {log_path}",
                         file=sys.stderr,
                     )
-                    runtime_down(foreign=True)
+                    runtime_down()
                     return 1
                 result = runtime_status()
             else:

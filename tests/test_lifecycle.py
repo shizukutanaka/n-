@@ -4,11 +4,14 @@ import json
 import os
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import psutil
 
 from nmesh import cli
+from nmesh.catalog import load_catalog
 from nmesh.planner import Policy, build_plan
+from nmesh.runtime import service_unit as service_unit_module
 from nmesh.runtime.service_unit import service_unit
 from nmesh.runtime.supervisor import Supervisor
 
@@ -96,6 +99,26 @@ def test_status_surfaces_gateway_pid_and_port(tmp_path: Path) -> None:
     assert gateway["running"] is True
 
 
+def test_status_keeps_dead_gateway_view_after_pruning(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "owner_pid": os.getpid(),
+            "gateway": {"pid": 999999, "port": 18000, "owner_pid": os.getpid()},
+            "services": [],
+        }),
+        encoding="utf-8",
+    )
+    supervisor = Supervisor(state_path=state_path)
+
+    status = supervisor.status()
+    gateway = next(item for item in status.services if item["service"] == "gateway")
+
+    assert gateway["running"] is False
+    assert not state_path.exists()
+
+
 def test_live_foreign_service_keeps_state_when_gateway_is_stopped(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     state_path.write_text(
@@ -168,6 +191,34 @@ def test_launch_gateway_uses_posix_detachment(monkeypatch, tmp_path: Path) -> No
     assert calls[0]["close_fds"] is True
 
 
+def test_detached_gateway_timeout_only_stops_owned_runtime(monkeypatch, tmp_path: Path) -> None:
+    plan = build_plan(profile(32, (24,)), load_catalog(), Policy(roles=["chat"]))
+    process = SimpleNamespace(pid=1234, terminate=lambda: None)
+    down_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "load_cache", dict)
+    monkeypatch.setattr(cli, "bench_overlay", dict)
+    monkeypatch.setattr(cli, "runtime_up", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "runtime_down", lambda *args, **kwargs: down_calls.append((args, kwargs)))
+    monkeypatch.setattr(cli, "_launch_gateway", lambda _port, detach: (process, tmp_path / "gateway.log"))
+    monkeypatch.setattr(cli, "_wait_gateway", lambda _port, _process: False)
+    monkeypatch.setattr(cli, "clear_gateway", lambda _pid: None)
+
+    result = cli._runtime(SimpleNamespace(
+        command="up",
+        port=18000,
+        detach=True,
+        dry_run=False,
+        no_download=False,
+        ignore_free_memory=False,
+        json=True,
+    ))
+
+    assert result == 1
+    assert down_calls == [((), {})]
+
+
 def test_fallback_only_scales_context_with_parallel_flag(tmp_path: Path) -> None:
     from nmesh.catalog import load_catalog
 
@@ -207,7 +258,9 @@ def test_service_units_are_pure_and_platform_specific(monkeypatch) -> None:
     assert "19000" in text
     assert command.startswith("systemctl --user")
 
-    filename, text, command = service_unit(19001, "darwin")
+    monkeypatch.setattr(service_unit_module.os, "name", "posix")
+    monkeypatch.setattr(service_unit_module.sys, "platform", "darwin")
+    filename, text, command = service_unit(19001)
     assert filename.endswith(".plist")
     assert "/resolved/python" in text
     assert "19001" in text

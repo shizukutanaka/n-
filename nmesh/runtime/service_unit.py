@@ -11,9 +11,15 @@ def service_unit(
     port: int = 18000, os_name: str | None = None
 ) -> tuple[str, str, str]:
     """Return the filename, unit text, and explicit install command."""
-    current = os.name if os_name is None else os_name
+    current = os_name
     executable = sys.executable
-    if current == "nt":
+    windows = os.name == "nt" if current is None else current == "nt"
+    macos = (
+        sys.platform.startswith("darwin")
+        if current is None
+        else current.startswith("darwin")
+    )
+    if windows:
         task_command = subprocess.list2cmdline(
             (executable, "-m", "nmesh.gateway.server", "--port", str(port))
         )
@@ -22,7 +28,7 @@ def service_unit(
             f'/tr "{task_command}"'
         )
         return "nmesh-gateway.cmd", command + "\n", command
-    if current == "darwin":
+    if macos:
         label = "com.nmesh.gateway"
         text = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -51,20 +57,3 @@ Restart=on-failure
 WantedBy=default.target
 """
     return "nmesh-gateway.service", text, "systemctl --user enable --now ~/.config/systemd/user/nmesh-gateway.service"
-
-
-def linux_service_unit(port: int = 18000) -> tuple[str, str, str]:
-    return service_unit(port, "posix")
-
-
-def macos_service_unit(port: int = 18000) -> tuple[str, str, str]:
-    return service_unit(port, "darwin")
-
-
-def windows_service_unit(port: int = 18000) -> tuple[str, str, str]:
-    return service_unit(port, "nt")
-
-
-linux_unit = linux_service_unit
-macos_unit = macos_service_unit
-windows_unit = windows_service_unit

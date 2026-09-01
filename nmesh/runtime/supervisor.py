@@ -102,7 +102,7 @@ class Supervisor:
             atexit.register(self.down)
             self._atexit_armed = True
 
-    def _disarm_atexit(self) -> None:
+    def disarm_atexit(self) -> None:
         if self._atexit_armed:
             atexit.unregister(self.down)
             self._atexit_armed = False
@@ -765,54 +765,54 @@ class Supervisor:
                 "backend": planned(name).backend} if planned(name) else {}),
             **({"note": self.notes[name]} if name in self.notes else {}),
         } for name in self.external_shared if name not in self.processes)
-        if not entries and self.state_path.exists():
-            payload = self._load_state()
-            if payload is not None:
-                entries = [
-                    dict(item) for item in payload.get("services", [])
-                    if isinstance(item, dict)
-                ]
-                gateway = payload.get("gateway")
-                if isinstance(gateway, dict):
-                    gateway_entry = dict(gateway)
-                    gateway_entry["service"] = "gateway"
-                    gateway_entry["running"] = self._entry_alive(gateway)
-                    entries.append(gateway_entry)
-                live_entries = []
-                for item in entries:
-                    item["running"] = self._entry_alive(item)
-                    if item["running"]:
-                        live_entries.append(item)
-                had_dead_entries = len(live_entries) != len(entries)
-                if had_dead_entries:
-                    if live_entries:
-                        payload["services"] = [
-                            item for item in live_entries if item.get("service") != "gateway"
-                        ]
-                        gateway_items = [
-                            item for item in live_entries if item.get("service") == "gateway"
-                        ]
-                        if gateway_items:
-                            payload["gateway"] = {
-                                key: value for key, value in gateway_items[0].items()
-                                if key != "service" and key != "running"
-                            }
-                        else:
-                            payload.pop("gateway", None)
-                        self._write_state(payload)
+        payload = self._load_state() if self.state_path.exists() else None
+        gateway = payload.get("gateway") if payload else None
+        gateway_entry = None
+        gateway_running = False
+        if isinstance(gateway, dict):
+            gateway_entry = dict(gateway)
+            gateway_entry["service"] = "gateway"
+            gateway_running = self._entry_alive(gateway)
+            gateway_entry["running"] = gateway_running
+        if not entries and payload is not None:
+            state_services = [
+                dict(item) for item in payload.get("services", [])
+                if isinstance(item, dict)
+            ]
+            entries = state_services
+            live_services = []
+            for item in state_services:
+                item["running"] = self._entry_alive(item)
+                if item["running"]:
+                    live_services.append(item)
+            if gateway_entry is not None:
+                entries.append(gateway_entry)
+            if len(live_services) != len(state_services) or (
+                gateway_entry is not None and not gateway_running
+            ):
+                if live_services or gateway_running:
+                    payload["services"] = live_services
+                    if gateway_running:
+                        payload["gateway"] = gateway
                     else:
-                        try:
-                            self.state_path.unlink()
-                        except FileNotFoundError:
-                            pass
-        if not any(item.get("service") == "gateway" for item in entries):
-            payload = self._load_state()
-            gateway = payload.get("gateway") if payload else None
-            if isinstance(gateway, dict):
-                item = dict(gateway)
-                item["service"] = "gateway"
-                item["running"] = self._entry_alive(gateway)
-                entries.append(item)
+                        payload.pop("gateway", None)
+                    self._write_state(payload)
+                else:
+                    try:
+                        self.state_path.unlink()
+                    except FileNotFoundError:
+                        pass
+        elif gateway_entry is not None:
+            entries.append(gateway_entry)
+            if not gateway_running:
+                payload.pop("gateway", None)
+                if payload.get("services"):
+                    self._write_state(payload)
+                else:
+                    try:
+                        self.state_path.unlink()
+                    except FileNotFoundError:
+                        pass
         names = {str(item.get("service")) for item in entries}
         entries.extend({
             "service": name,
@@ -903,7 +903,7 @@ def clear_gateway(pid: int | None = None) -> None:
 
 
 def disarm_atexit() -> None:
-    _default._disarm_atexit()
+    _default.disarm_atexit()
 
 
 def stop_gateway(foreign: bool = False) -> bool:
