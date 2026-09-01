@@ -2,17 +2,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
+import sys
 import urllib.request
 from collections.abc import Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from rich.console import Console
 from rich.table import Table
 
-from nmesh.bench import autotune, benchmark, benchmark_key, load_cache, save_cache
+from nmesh.bench import benchmark_key, load_cache, measure, save_cache
 from nmesh.catalog import load_catalog
-from nmesh.planner import Policy, build_plan, load_plan, save_plan
+from nmesh.planner import PlannedService, Policy, build_plan, load_plan, save_plan
 from nmesh.probe import detect_hardware
+from nmesh.runtime import RuntimeStatus
 from nmesh.runtime import down as runtime_down
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime import up as runtime_up
@@ -105,15 +108,34 @@ def _runtime(args: argparse.Namespace) -> int:
         if plan is None:
             return 1
         result = runtime_up(plan, no_download=args.no_download, dry_run=args.dry_run)
+        if not args.dry_run:
+            command = [sys.executable, "-m", "nmesh.gateway.server", "--port", str(args.port)]
+            if args.detach:
+                subprocess.Popen(command, start_new_session=True)
+            else:
+                try:
+                    subprocess.run(command, check=False)
+                except KeyboardInterrupt:
+                    runtime_down()
     elif args.command == "down":
         result = runtime_down()
     else:
         result = runtime_status()
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:18000/health", timeout=2):
+                result.services.append({"service": "gateway", "port": 18000, "running": True})
+                result.running = True
+        except OSError:
+            result.services.append({"service": "gateway", "port": 18000, "running": False})
     if args.json:
         _print_json(asdict(result))
     elif args.command == "up" and args.dry_run:
         for item in result.services:
-            Console().print(f"{item['service']}: {' '.join(str(x) for x in item['argv'])}")
+            Console().print(
+                f"{item['service']}: backend={item['backend']} model_ref={item['model_ref']} "
+                f"port={item['port']} context={item['context']} "
+                f"n_gpu_layers={item['n_gpu_layers']} argv={' '.join(str(x) for x in item['argv'])}"
+            )
     else:
         Console().print(result)
     return 0
@@ -136,19 +158,46 @@ def _models(args: argparse.Namespace) -> int:
     return 0
 
 
+def _service_running(service: PlannedService, runtime: RuntimeStatus) -> bool:
+    if not any(item.get("service") == service.name and item.get("running", True)
+               for item in runtime.services):
+        return False
+    health_url = service.launch.health_url
+    if health_url is None:
+        return True
+    try:
+        with urllib.request.urlopen(health_url, timeout=2):
+            return True
+    except OSError:
+        return False
+
+
 def _bench(args: argparse.Namespace) -> int:
     plan = load_plan()
     if plan is None or not plan.services:
         return 1
     service = next((item for item in plan.services if item.name == args.service), plan.services[0])
+    running = runtime_status()
+    if not _service_running(service, running):
+        print("このサービスは起動していません。先に nmesh up を実行してください", file=sys.stderr)
+        return 1
+    base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
+        f"http://127.0.0.1:{service.port}"
+    )
+    try:
+        measurement = measure(service, base_url, decode_tokens=args.tokens)
+    except (OSError, RuntimeError) as error:
+        print(f"ベンチマークに失敗しました: {error}", file=sys.stderr)
+        return 1
     cache = load_cache()
     key = benchmark_key(service.model_id, service.quant, service.backend,
                         plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
                         service.n_gpu_layers)
-    cache[key] = benchmark(lambda _prefill, _decode: service.decode_tps)
+    cache[key] = measurement.decode_tps
     save_cache(cache)
     result = {"key": key, "prefill_tokens": 512, "decode_tokens": args.tokens,
-              "median_tps": cache[key]}
+              "median_tps": cache[key], "prefill_tps": measurement.prefill_tps,
+              "ttft_s": measurement.ttft_s}
     _print_json(result) if args.json else Console().print(result)
     return 0
 
@@ -160,8 +209,13 @@ def _run_prompt(args: argparse.Namespace) -> int:
                                      {"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=300) as response:
-            output = response.read().decode()
-    except OSError as error:
+            payload = json.loads(response.read().decode())
+            if args.json:
+                print(json.dumps(payload, indent=2))
+            else:
+                print(payload["choices"][0]["message"]["content"])
+            return 0
+    except (OSError, json.JSONDecodeError, KeyError, IndexError) as error:
         output = f"gateway unavailable: {error}"
     print(output)
     return 0
@@ -185,6 +239,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--dry-run", action="store_true")
     up_parser.add_argument("--no-download", action="store_true")
     up_parser.add_argument("--detach", action="store_true")
+    up_parser.add_argument("--port", type=int, default=18000)
     for name in ("status", "down"):
         item = sub.add_parser(name)
         item.add_argument("--json", action="store_true")
@@ -223,11 +278,48 @@ def main(argv: Sequence[str] | None = None) -> int:
         service = plan.services[0]
         context_values = sorted({max(service.context // 2, 128), service.context})
         layer_values = sorted({service.n_gpu_layers or 0, max((service.n_gpu_layers or 0) // 2, 0)})
-        best_context, best_layers, best_tps = autotune(
-            lambda _context, _layers: service.decode_tps, context_values, layer_values
+        running = runtime_status()
+        if not _service_running(service, running):
+            print("このサービスは起動していません。先に nmesh up を実行してください", file=sys.stderr)
+            return 1
+        base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
+            f"http://127.0.0.1:{service.port}"
         )
-        result = {"service": service.name, "context": best_context, "n_gpu_layers": best_layers,
-                  "decode_tps": best_tps}
+        best: tuple[int, int, float] | None = None
+        for context in context_values:
+            for layers in layer_values:
+                argv = list(service.launch.argv)
+                if "--max-model-len" in argv:
+                    argv[argv.index("--max-model-len") + 1] = str(context)
+                if "-c" in argv:
+                    argv[argv.index("-c") + 1] = str(context)
+                if "-ngl" in argv:
+                    argv[argv.index("-ngl") + 1] = str(layers)
+                tuned = replace(
+                    service, context=context, n_gpu_layers=layers,
+                    launch=replace(service.launch, argv=argv),
+                )
+                tuned_plan = replace(plan, services=[
+                    tuned if item.name == service.name else item for item in plan.services
+                ])
+                runtime_down()
+                try:
+                    runtime_up(tuned_plan, no_download=True)
+                    result = measure(tuned, base_url)
+                except (OSError, RuntimeError) as error:
+                    print(f"オートチューンに失敗しました: {error}", file=sys.stderr)
+                    runtime_down()
+                    return 1
+                if best is None or result.decode_tps > best[2]:
+                    best = (context, layers, result.decode_tps)
+        if best is None:
+            return 1
+        tuned = replace(service, context=best[0], n_gpu_layers=best[1])
+        save_plan(replace(plan, services=[
+            tuned if item.name == service.name else item for item in plan.services
+        ]))
+        result = {"service": service.name, "context": best[0], "n_gpu_layers": best[1],
+                  "decode_tps": best[2]}
         _print_json(result) if args.json else Console().print(result)
         return 0
     if args.command == "run":

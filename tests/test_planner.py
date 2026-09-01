@@ -128,6 +128,21 @@ def test_kv_quantization_is_independent(catalog: list[ModelSpec]) -> None:
     assert q8.weight_bytes == f16.weight_bytes
 
 
+def test_embedding_has_activation_memory_not_kv(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "bge-m3")
+    result = build_plan(profile(32), catalog, Policy(roles=["embed"]))
+    service = result.services[0]
+    assert service.model_id == model.id
+    assert service.context == min(model.max_context, 8192)
+    assert service.memory.kv_cache_bytes == 0
+    assert service.memory.compute_overhead > 0.06 * service.memory.weight_bytes + 320 * 1024**2
+
+
+def test_cpu_quality_preference_avoids_tiny_model(catalog: list[ModelSpec]) -> None:
+    result = build_plan(profile(32), catalog, Policy(roles=["chat"]))
+    assert result.services[0].model_id != "qwen2.5-0.5b-instruct"
+
+
 def test_oversized_model_uses_tensor_parallel() -> None:
     model = ModelSpec("oversized", "test", 150_000_000_000, 100, 100, 100, 128,
                       12800, 4096, ["chat"], 99.0, "test", {"hf": "test/model"})
@@ -147,5 +162,5 @@ def test_plan_save_load(tmp_path, catalog: list[ModelSpec]) -> None:
     save_plan(result, path)
     loaded = load_plan(path)
     assert loaded is not None
-    assert loaded.services[0].model_id == result.services[0].model_id
+    assert loaded == result
     assert isinstance(loaded.services[0].memory.n_gpu_layers, int)

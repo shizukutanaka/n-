@@ -11,13 +11,13 @@ def acquire(service: PlannedService) -> Path | None:
         subprocess.run(["ollama", "pull", service.model_ref], check=True)
         return None
     if service.backend in {"vllm", "mlx"}:
-        from huggingface_hub import hf_hub_download
+        from huggingface_hub import snapshot_download
 
-        return Path(hf_hub_download(repo_id=service.model_ref, filename="config.json"))
+        return Path(snapshot_download(repo_id=service.download_repo or service.model_ref))
     if service.backend == "llamacpp" and not Path(service.model_ref).exists():
         from huggingface_hub import hf_hub_download
 
-        repo_id = service.launch.env.get("NMESH_HF_REPO")
+        repo_id = service.download_repo
         if repo_id is None:
             raise RuntimeError("No Hugging Face GGUF repository configured")
         filename = Path(service.model_ref).name

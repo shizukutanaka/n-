@@ -172,10 +172,10 @@ class Policy:
    ```
    score = quality_adj * w_q + normalized_tps * w_s
    quality_adj = model.quality - quant_penalty[quant]     # f16:0 q8:0.5 q6:1 q5:2 q4_k_m:3.5 q4_0:5 q3:9 q2:16
-   prefer=quality → (w_q, w_s) = (1.0, 0.25)
-   prefer=speed   → (0.4, 1.0)
-   prefer=balanced→ (1.0, 0.6)
-   normalized_tps = min(decode_tps, 60) / 60 * 100
+   prefer=quality → (w_q, w_s) = (1.0, 0.1)
+   prefer=speed   → (0.5, 1.0)
+   prefer=balanced→ (1.0, 0.25)
+   normalized_tps = min(decode_tps, 30) / 30 * 100
    ```
 5. 配置（Tierごと）:
    - `T0/T1`: 全役割を **swap グループ**にまとめる。同時常駐は1本。役割数を減らせる場合（chat と code を汎用1本で兼ねる）は兼務させる。埋め込みは CPU 上の小型モデルで常駐可（<0.5GiB）。

@@ -68,6 +68,7 @@ class PlannedService:
     roles: list[str]
     model_id: str
     model_ref: str
+    download_repo: str | None
     quant: str
     backend: str
     context: int
@@ -222,7 +223,8 @@ def _launch(backend: str, model: ModelSpec, quant: str, context: int, port: int,
         argv = ["llama-server", "-m", ref, "-c", str(context), "--port", str(port), "-ngl", str(layers)]
         if tensor_parallel > 1:
             argv += ["--tensor-split", ",".join(["1"] * tensor_parallel)]
-    return LaunchSpec(argv, {}, f"http://127.0.0.1:{port}/health")
+    health_path = "/health" if backend == "llamacpp" else "/v1/models"
+    return LaunchSpec(argv, {}, f"http://127.0.0.1:{port}{health_path}")
 
 
 @dataclass(frozen=True)
@@ -261,6 +263,16 @@ def _candidate_for(model: ModelSpec, profile: HardwareProfile, policy: Policy,
     for quant in BPW:
         for context in contexts:
             base = estimate_memory(model, quant, context, profile=profile, kv_quant=policy.kv_quant)
+            if model.roles == ["embed"]:
+                activation = min(0.02 * base.weight_bytes * math.ceil(context / 512), 512 * 1024**2)
+                overhead = base.compute_overhead + activation
+                base = replace(
+                    base,
+                    kv_bytes_per_tok=0.0,
+                    kv_cache_bytes=0.0,
+                    compute_overhead=overhead,
+                    total_bytes=base.weight_bytes + overhead,
+                )
             layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
             if profile.tier == Tier.T0_CPU:
                 layers = 0
@@ -283,9 +295,9 @@ def _candidate_for(model: ModelSpec, profile: HardwareProfile, policy: Policy,
             tps = bench if bench is not None else _throughput(model, memory, layers, profile)
             if tps < policy.min_decode_tps:
                 continue
-            wq, ws = {"quality": (1.0, 0.25), "speed": (0.4, 1.0),
-                      "balanced": (1.0, 0.6)}.get(policy.prefer, (1.0, 0.6))
-            score = (model.quality - QUANT_PENALTY[quant]) * wq + min(tps, 60) / 60 * 100 * ws
+            wq, ws = {"quality": (1.0, 0.1), "speed": (0.5, 1.0),
+                      "balanced": (1.0, 0.25)}.get(policy.prefer, (1.0, 0.25))
+            score = (model.quality - QUANT_PENALTY[quant]) * wq + min(tps, 30) / 30 * 100 * ws
             candidates.append(_Candidate(model, quant, context, memory, layers, tps,
                                          backend, installed, score, bench is None))
             break
@@ -322,6 +334,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         launch = replace(launch, env={"NMESH_HF_REPO": candidate.model.sources["hf_gguf"]})
     service = PlannedService(
         name, group, candidate.model.id, _source_for(candidate.backend, candidate.model, candidate.quant),
+        candidate.model.sources.get("hf_gguf") or candidate.model.sources.get("hf"),
         candidate.quant, candidate.backend, candidate.context,
         11434 if candidate.backend == "ollama" else port, indices,
         None if candidate.backend in {"vllm", "mlx"} else candidate.n_gpu_layers,
@@ -337,6 +350,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
 
 def _replace_gpu(service: PlannedService, indices: list[int]) -> PlannedService:
     return PlannedService(service.name, service.roles, service.model_id, service.model_ref,
+                          service.download_repo,
                           service.quant, service.backend, service.context, service.port, indices,
                           service.n_gpu_layers, service.resident, service.memory, service.decode_tps,
                           service.estimated, service.launch)
@@ -439,7 +453,9 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
         )
         services.append(PlannedService(
             str(sd["name"]), [str(x) for x in sd["roles"]], str(sd["model_id"]),
-            str(sd.get("model_ref", sd["model_id"])), str(sd["quant"]), str(sd["backend"]),
+            str(sd.get("model_ref", sd["model_id"])),
+            str(sd["download_repo"]) if sd.get("download_repo") is not None else None,
+            str(sd["quant"]), str(sd["backend"]),
             int(sd["context"]), int(sd["port"]), [int(x) for x in sd["gpu_indices"]],
             int(sd["n_gpu_layers"]) if sd["n_gpu_layers"] is not None else None, bool(sd["resident"]),
             memory, float(sd["decode_tps"]), bool(sd["estimated"]), launch,

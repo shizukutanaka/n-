@@ -46,6 +46,9 @@ class Supervisor:
         self.state_path = state_path
         self.health_timeout = health_timeout
         self.processes: dict[str, ProcessLike] = {}
+        self.shared_services: set[str] = set()
+        self.external_shared: set[str] = set()
+        self.active_plan: Plan | None = None
         self._lock = RLock()
         atexit.register(self.down)
 
@@ -80,10 +83,20 @@ class Supervisor:
 
     def _persist(self, plan: Plan) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "services": [{"service": name, "pid": process.pid, "port": next(
+        entries: list[dict[str, object]] = [
+            {"service": name, "pid": process.pid, "port": next(
                 (item.port for item in plan.services if item.name == name), 0
-            ), "started_at": time.time()} for name, process in self.processes.items()],
+            ), "started_at": time.time(), "shared": False}
+            for name, process in self.processes.items()
+        ]
+        entries.extend(
+            {"service": name, "pid": None, "port": next(
+                (item.port for item in plan.services if item.name == name), 11434
+            ), "started_at": time.time(), "shared": True}
+            for name in self.shared_services if name not in self.processes
+        )
+        payload = {
+            "services": entries,
         }
         self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -122,14 +135,24 @@ class Supervisor:
 
     def up(self, plan: Plan, no_download: bool = False, dry_run: bool = False) -> RuntimeStatus:
         if dry_run:
-            return RuntimeStatus(False, [{"service": item.name, "argv": item.launch.argv}
-                                         for item in plan.services])
+            return RuntimeStatus(False, [{
+                "service": item.name,
+                "backend": item.backend,
+                "model_ref": item.model_ref,
+                "port": item.port,
+                "context": item.context,
+                "n_gpu_layers": item.n_gpu_layers,
+                "argv": item.launch.argv,
+            } for item in plan.services])
         with self._lock:
+            self.active_plan = plan
             current = plan
             for attempt in range(1, 4):
                 try:
                     for service in current.services:
-                        if service.launch.shared_daemon and self.processes:
+                        if (service.launch.shared_daemon and service.launch.health_url is not None
+                                and self._healthy(service)):
+                            self.shared_services.add(service.name)
                             continue
                         if not no_download:
                             acquire(service)
@@ -169,15 +192,67 @@ class Supervisor:
                     else:
                         process.kill()
             self.processes.clear()
+            self.shared_services.clear()
+            self.external_shared.clear()
+            self.active_plan = None
             try:
                 self.state_path.unlink()
             except FileNotFoundError:
                 pass
         return RuntimeStatus(False, [])
 
+    def ensure_running(self, service_name: str, plan: Plan | None = None) -> RuntimeStatus:
+        with self._lock:
+            selected = plan or self.active_plan
+            if selected is None:
+                raise FileNotFoundError("No active plan")
+            self.active_plan = selected
+            target = next((item for item in selected.services if item.name == service_name), None)
+            if target is None:
+                raise KeyError(f"Unknown service: {service_name}")
+            if service_name in selected.swap_group:
+                for name in list(self.processes):
+                    if name != service_name and name in selected.swap_group:
+                        self._stop_process(name)
+            if (target.launch.shared_daemon and target.launch.health_url is not None
+                    and self._healthy(target)):
+                self.shared_services.add(service_name)
+            elif service_name not in self.processes:
+                self.processes[service_name] = self.launcher(target)
+                if not self._wait_health(target):
+                    self._stop_process(service_name)
+                    raise RuntimeError(f"Service did not become healthy: {service_name}")
+            self._persist(selected)
+            return self.status()
+
+    def _stop_process(self, service_name: str) -> None:
+        process = self.processes.pop(service_name, None)
+        if process is None:
+            return
+        if process.poll() is None:
+            if os.name == "nt":
+                process.terminate()
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except OSError:
+                    process.terminate()
+            try:
+                process.wait(timeout=10)
+            except (subprocess.TimeoutExpired, TimeoutError):
+                if os.name != "nt":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except OSError:
+                        process.kill()
+                else:
+                    process.kill()
+
     def status(self) -> RuntimeStatus:
         entries = [{"service": name, "pid": process.pid, "running": process.poll() is None}
                    for name, process in self.processes.items()]
+        entries.extend({"service": name, "pid": None, "running": True, "shared": True}
+                       for name in self.shared_services if name not in self.processes)
         if not entries and self.state_path.exists():
             try:
                 payload = json.loads(self.state_path.read_text(encoding="utf-8"))
@@ -203,3 +278,7 @@ def down() -> RuntimeStatus:
 
 def status() -> RuntimeStatus:
     return _default.status()
+
+
+def ensure_running(service_name: str, plan: Plan | None = None) -> RuntimeStatus:
+    return _default.ensure_running(service_name, plan)
