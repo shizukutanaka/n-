@@ -70,9 +70,17 @@ def _doctor(as_json: bool) -> int:
     Console().print(table)
     backend = Table(title="Backends")
     backend.add_column("Backend")
+    backend.add_column("Binary")
     backend.add_column("Version")
+    backend.add_column("Flags")
     for name, version in profile.available_backends.items():
-        backend.add_row(name, version or "not found")
+        flags = profile.backend_flags.get(name)
+        backend.add_row(
+            name,
+            profile.backend_paths.get(name, "not found"),
+            version or "not found",
+            str(len(flags)) if flags is not None else "unknown",
+        )
     Console().print(backend)
     for warning in profile.warnings:
         Console().print(f"[yellow]- {warning}[/yellow]")

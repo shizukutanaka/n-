@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
@@ -41,6 +42,8 @@ class HardwareProfile:
     available_backends: dict[str, str | None]
     tier: Tier
     warnings: list[str] = field(default_factory=list)
+    backend_flags: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    backend_paths: Mapping[str, str] = field(default_factory=dict)
 
 
 def classify_tier(

@@ -268,6 +268,28 @@ def test_plan_save_load(tmp_path, catalog: list[ModelSpec]) -> None:
     assert isinstance(loaded.services[0].memory.n_gpu_layers, int)
 
 
+def test_plan_save_load_serializes_backend_flags_as_strings(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl")},
+    )
+    result = build_plan(machine, [model], Policy(roles=["chat"]))
+    path = tmp_path / "plan.json"
+    save_plan(result, path)
+    text = path.read_text(encoding="utf-8")
+    payload = json.loads(text)
+    flags = payload["profile"]["backend_flags"]["llamacpp"]
+    assert isinstance(flags, list)
+    assert all(isinstance(flag, str) for flag in flags)
+    assert "frozenset(" not in text
+    loaded = load_plan(path)
+    assert loaded is not None
+    assert loaded.profile.backend_flags["llamacpp"] == ("--parallel", "-ngl")
+
+
 def test_full_gpu_slots_expand_llamacpp_context_and_kv(catalog: list[ModelSpec]) -> None:
     model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
     result = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
@@ -299,6 +321,54 @@ def test_cpu_partial_offload_and_embedding_keep_one_slot(catalog: list[ModelSpec
     embed = build_plan(profile(32), catalog, Policy(roles=["embed"]))
     assert embed.services[0].memory.parallel_slots == 1
     assert embed.services[0].memory.kv_bytes_per_tok == 0
+
+
+def test_llamacpp_caps_without_parallel_clamp_slots_and_context(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    no_parallel = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--tensor-split", "-ngl")},
+    )
+    result = build_plan(no_parallel, [model], Policy(roles=["chat"]))
+    service = result.services[0]
+    assert service.memory.parallel_slots == 1
+    assert service.memory.kv_cache_bytes == (
+        service.memory.kv_bytes_per_tok * service.context
+    )
+    assert "--parallel" not in service.launch.argv
+    assert service.launch.argv[service.launch.argv.index("-c") + 1] == str(service.context)
+    assert any("--parallel" in warning for warning in result.warnings)
+
+
+def test_llamacpp_caps_without_gpu_layers_force_cpu_placement(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    no_gpu_layers = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "--tensor-split")},
+    )
+    result = build_plan(no_gpu_layers, [model], Policy(roles=["chat"]))
+    service = result.services[0]
+    assert service.n_gpu_layers == 0
+    assert service.memory.gpu_bytes == 0
+    assert service.memory.cpu_bytes >= service.memory.weight_bytes
+    assert not any(flag in service.launch.argv for flag in ("-ngl", "--gpu-layers", "--n-gpu-layers"))
+    assert any("GPU-layer flags unsupported" in warning for warning in result.warnings)
+
+
+def test_unknown_llamacpp_caps_preserve_launch_behavior(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    result = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = result.services[0]
+    slots = service.memory.parallel_slots
+    assert "--parallel" in service.launch.argv
+    assert service.launch.argv[service.launch.argv.index("--parallel") + 1] == str(slots)
+    assert service.launch.argv[service.launch.argv.index("-c") + 1] == str(
+        service.context * slots
+    )
 
 
 def test_vllm_slots_and_total_vram_fraction() -> None:
