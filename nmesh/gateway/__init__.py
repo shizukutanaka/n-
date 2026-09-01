@@ -50,6 +50,19 @@ def _content(request: Mapping[str, object]) -> str:
     )
 
 
+def estimate_tokens(text: str) -> int:
+    cjk = sum(
+        0x3000 <= ord(char) <= 0x30FF
+        or 0x3400 <= ord(char) <= 0x4DBF
+        or 0x4E00 <= ord(char) <= 0x9FFF
+        or 0xF900 <= ord(char) <= 0xFAFF
+        or 0xAC00 <= ord(char) <= 0xD7AF
+        or 0xFF00 <= ord(char) <= 0xFFEF
+        for char in text
+    )
+    return cjk + (len(text) - cjk + 3) // 4
+
+
 def route(request: Mapping[str, object], plan: Plan) -> str:
     explicit = _explicit(_get(request, "model"), plan)
     if explicit is not None:
@@ -61,7 +74,12 @@ def route(request: Mapping[str, object], plan: Plan) -> str:
         return plan.routing.role_to_service.get("code", plan.routing.role_to_service.get("chat", ""))
     chat_name = plan.routing.role_to_service.get("chat", "")
     chat = next((item for item in plan.services if item.name == chat_name), None)
-    if chat and len(content) // 4 > chat.context * 0.8:
+    max_tokens = request.get("max_tokens") or 0
+    try:
+        reserved = int(max_tokens)
+    except (TypeError, ValueError):
+        reserved = 0
+    if chat and estimate_tokens(content) + reserved > chat.context * 0.8:
         return max(plan.services, key=lambda item: item.context, default=chat).name
     return chat_name or (plan.services[0].name if plan.services else "")
 
@@ -235,6 +253,11 @@ def create_app(
         assert httpx is not None
         client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0))
         if request.get("stream"):
+            stream_options = request.get("stream_options")
+            request_wants_usage = (
+                isinstance(stream_options, Mapping)
+                and bool(stream_options.get("include_usage"))
+            )
             try:
                 upstream_request = client.build_request("POST", url, json=body)
                 try:
@@ -276,6 +299,7 @@ def create_app(
             async def stream() -> AsyncIterator[bytes]:
                 buffer = b""
                 tokens = 0
+                usage: dict[str, object] | None = None
                 first_line_time: float | None = None
                 last_line_time: float | None = None
                 try:
@@ -286,6 +310,19 @@ def create_app(
                             line, buffer = buffer.split(b"\n", 1)
                             line = line.rstrip(b"\r")
                             if line.startswith(b"data: ") and line != b"data: [DONE]":
+                                try:
+                                    payload = json.loads(line[6:])
+                                except json.JSONDecodeError:
+                                    payload = {}
+                                candidate_usage = (
+                                    payload.get("usage")
+                                    if isinstance(payload, dict) else None
+                                )
+                                if isinstance(candidate_usage, dict):
+                                    usage = candidate_usage
+                                    choices = payload.get("choices")
+                                    if isinstance(choices, list) and not choices:
+                                        continue
                                 now = time.perf_counter()
                                 tokens += 1
                                 first_line_time = first_line_time or now
@@ -303,12 +340,26 @@ def create_app(
                         span = (last_line_time - first_line_time
                                 if first_line_time is not None and last_line_time is not None
                                 else 0.0)
-                        decode = (tokens - 1) / span if tokens >= 16 and span > 0 else None
+                        exact = (
+                            request_wants_usage
+                            and
+                            usage is not None
+                            and "completion_tokens" in usage
+                        )
+                        completion_tokens = (
+                            int(usage["completion_tokens"]) if exact
+                            else tokens
+                        )
+                        decode = (
+                            max(completion_tokens - 1, 0) / span
+                            if completion_tokens >= 16 and span > 0 else None
+                        )
                         try:
                             await asyncio.to_thread(record_telemetry, Sample(
                                 service.name, telemetry_keys[service.name], decode,
                                 first_line_time - started if first_line_time is not None else None,
-                                time.perf_counter() - started, tokens, time.time(),
+                                time.perf_counter() - started, completion_tokens, time.time(),
+                                not exact,
                             ))
                         except Exception:  # noqa: BLE001, S110
                             pass
@@ -343,10 +394,12 @@ def create_app(
                 int(usage.get("completion_tokens", 0))
                 if isinstance(usage, dict) else 0
             )
+            exact = isinstance(usage, dict) and "completion_tokens" in usage
             try:
                 await asyncio.to_thread(record_telemetry, Sample(
                     service.name, telemetry_keys[service.name], None, None,
                     time.perf_counter() - started, completion_tokens, time.time(),
+                    not exact,
                 ))
             except Exception:  # noqa: BLE001, S110
                 pass

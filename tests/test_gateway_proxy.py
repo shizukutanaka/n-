@@ -36,6 +36,39 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
         return
 
 
+class _UsageHandler(BaseHTTPRequestHandler):
+    request_body: ClassVar[dict[str, object]] = {}
+    usage_on_every_chunk: ClassVar[bool] = False
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.__class__.request_body = json.loads(self.rfile.read(length))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        for index in range(20):
+            data: dict[str, object] = {
+                "choices": [{"delta": {"content": str(index)}}],
+            }
+            if self.__class__.usage_on_every_chunk:
+                data["usage"] = {
+                    "prompt_tokens": 23,
+                    "completion_tokens": index + 1,
+                }
+            payload = json.dumps(data).encode()
+            self.wfile.write(b"data: " + payload + b"\n\n")
+            self.wfile.flush()
+        payload = json.dumps({
+            "choices": [],
+            "usage": {"prompt_tokens": 23, "completion_tokens": 17},
+        }).encode()
+        self.wfile.write(b"data: " + payload + b"\n\n")
+        self.wfile.write(b"data: [DONE]\n\n")
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 def test_gateway_proxy_rewrites_model_and_forwards_sse() -> None:
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
     thread = threading.Thread(target=upstream.serve_forever, daemon=True)
@@ -71,8 +104,33 @@ def test_bench_runner_uses_streaming_endpoint() -> None:
                          prefill_tokens=8, decode_tokens=2, runs=3)
         assert result.prefill_tps > 0
         assert result.decode_tps > 0
+        assert result.approximate is True
         assert _UpstreamHandler.request_body["max_tokens"] == 2
     finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_bench_runner_uses_upstream_usage_counts() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UsageHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _UsageHandler.usage_on_every_chunk = True
+        model = ModelSpec("usage-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        result = measure(
+            plan.services[0], f"http://127.0.0.1:{upstream.server_address[1]}",
+            prefill_tokens=512, decode_tokens=17, runs=1,
+        )
+        assert result.approximate is False
+        assert result.prompt_tokens == 23
+        assert _UsageHandler.request_body["stream_options"] == {
+            "include_usage": True,
+        }
+    finally:
+        _UsageHandler.usage_on_every_chunk = False
         upstream.shutdown()
         upstream.server_close()
 

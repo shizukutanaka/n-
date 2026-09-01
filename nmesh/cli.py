@@ -298,8 +298,17 @@ def _bench(args: argparse.Namespace) -> int:
     save_cache(cache)
     result = {"key": key, "prefill_tokens": 512, "decode_tokens": args.tokens,
               "median_tps": cache[key], "prefill_tps": measurement.prefill_tps,
-              "ttft_s": measurement.ttft_s}
-    _print_json(result) if args.json else Console().print(result)
+              "ttft_s": measurement.ttft_s, "approximate": measurement.approximate,
+              "prompt_tokens": measurement.prompt_tokens}
+    if args.json:
+        _print_json(result)
+    else:
+        marker = "~" if measurement.approximate else ""
+        Console().print(
+            f"median decode: {marker}{measurement.decode_tps} tok/s\n"
+            f"prefill:       {marker}{measurement.prefill_tps} tok/s\n"
+            f"TTFT:          {marker}{measurement.ttft_s} s"
+        )
     return 0
 
 

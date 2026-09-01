@@ -25,8 +25,9 @@ def sample(
     ttft_s: float | None = 0.2,
     total_s: float = 1.0,
     at: float = 1.0,
+    approximate: bool = True,
 ) -> Sample:
-    return Sample(service, key, decode_tps, ttft_s, total_s, 20, at)
+    return Sample(service, key, decode_tps, ttft_s, total_s, 20, at, approximate)
 
 
 def test_record_round_trip_and_trim(tmp_path) -> None:
@@ -70,9 +71,46 @@ def test_corrupt_json_is_empty(tmp_path) -> None:
     assert Telemetry(path).samples() == []
 
 
+def test_old_telemetry_samples_default_to_approximate(tmp_path) -> None:
+    path = tmp_path / "telemetry.json"
+    path.write_text(json.dumps({"samples": [{
+        "service": "chat",
+        "key": "old",
+        "decode_tps": 10,
+        "ttft_s": 0.2,
+        "total_s": 1,
+        "completion_tokens": 20,
+        "at": 1,
+    }]}), encoding="utf-8")
+    assert Telemetry(path).samples()[0].approximate is True
+
+
+def test_bench_overlay_prefers_exact_samples(tmp_path) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    for value in (10.0, 12.0, 14.0):
+        store.record(sample(key="mixed", decode_tps=value))
+    for value in (20.0, 22.0, 24.0):
+        store.record(sample(key="mixed", decode_tps=value, approximate=False))
+    for value in (30.0, 32.0, 34.0):
+        store.record(sample(key="only-approx", decode_tps=value))
+    for value in (1.0, 3.0):
+        store.record(sample(key="fallback", decode_tps=value, approximate=False))
+    for value in range(10, 20):
+        store.record(sample(key="fallback", decode_tps=float(value)))
+    assert store.bench_overlay(min_samples=3) == {
+        "mixed": 22.0,
+        "only-approx": 32.0,
+        "fallback": 14.5,
+    }
+
+
 class _TelemetryHandler(BaseHTTPRequestHandler):
     request_body: ClassVar[dict[str, object]] = {}
     stream: ClassVar[bool] = True
+    include_usage: ClassVar[bool] = False
+    usage_on_every_chunk: ClassVar[bool] = False
+    chunks: ClassVar[int] = 20
+    completion_tokens: ClassVar[int] = 17
 
     def do_POST(self) -> None:
         length = int(self.headers["Content-Length"])
@@ -93,13 +131,28 @@ class _TelemetryHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        for index in range(20):
-            payload = json.dumps(
-                {"choices": [{"delta": {"content": str(index)}}]}
-            ).encode()
+        for index in range(self.__class__.chunks):
+            data: dict[str, object] = {
+                "choices": [{"delta": {"content": str(index)}}]
+            }
+            if self.__class__.usage_on_every_chunk:
+                data["usage"] = {
+                    "completion_tokens": index + 1,
+                    "prompt_tokens": 23,
+                }
+            payload = json.dumps(data).encode()
             self.wfile.write(b"data: " + payload + b"\n\n")
             self.wfile.flush()
             time.sleep(0.002)
+        if self.__class__.include_usage:
+            payload = json.dumps({
+                "choices": [],
+                "usage": {
+                    "completion_tokens": self.__class__.completion_tokens,
+                    "prompt_tokens": 23,
+                },
+            }).encode()
+            self.wfile.write(b"data: " + payload + b"\n\n")
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
 
@@ -121,6 +174,7 @@ def test_gateway_records_stream_and_nonstream_telemetry(tmp_path, monkeypatch) -
     thread = threading.Thread(target=upstream.serve_forever, daemon=True)
     thread.start()
     try:
+        _TelemetryHandler.include_usage = False
         plan = _gateway_plan(upstream.server_address[1])
         client = TestClient(create_app(plan))
         response = client.post("/v1/chat/completions", json={
@@ -131,6 +185,7 @@ def test_gateway_records_stream_and_nonstream_telemetry(tmp_path, monkeypatch) -
         stream_sample = store.samples()[-1]
         assert stream_sample.decode_tps is not None and stream_sample.decode_tps > 0
         assert stream_sample.ttft_s is not None and stream_sample.ttft_s > 0
+        assert stream_sample.approximate is True
         _TelemetryHandler.stream = False
         response = client.post("/v1/chat/completions", json={
             "model": "nmesh-auto", "stream": False,
@@ -143,5 +198,103 @@ def test_gateway_records_stream_and_nonstream_telemetry(tmp_path, monkeypatch) -
         assert client.get("/metrics").json()["services"]["chat"]["samples"] == 2
         assert not (tmp_path / "bench.json").exists()
     finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_uses_client_requested_usage_without_mutating_request(
+    tmp_path, monkeypatch
+) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    monkeypatch.setattr(telemetry, "_default", store)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _TelemetryHandler.stream = True
+        _TelemetryHandler.include_usage = True
+        plan = _gateway_plan(upstream.server_address[1])
+        client = TestClient(create_app(plan))
+        request = {
+            "model": "nmesh-auto",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        response = client.post("/v1/chat/completions", json=request)
+        assert response.status_code == 200
+        assert _TelemetryHandler.request_body == request | {
+            "model": plan.services[0].model_ref,
+        }
+        sample = store.samples()[-1]
+        assert sample.approximate is False
+        assert sample.completion_tokens == 17
+    finally:
+        _TelemetryHandler.chunks = 20
+        _TelemetryHandler.completion_tokens = 17
+        _TelemetryHandler.include_usage = False
+        _TelemetryHandler.usage_on_every_chunk = False
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_keeps_usage_bearing_token_chunks(tmp_path, monkeypatch) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    monkeypatch.setattr(telemetry, "_default", store)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _TelemetryHandler.stream = True
+        _TelemetryHandler.include_usage = True
+        _TelemetryHandler.usage_on_every_chunk = True
+        plan = _gateway_plan(upstream.server_address[1])
+        client = TestClient(create_app(plan))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        sample = store.samples()[-1]
+        assert sample.approximate is False
+        assert sample.completion_tokens == 17
+        assert sample.ttft_s is not None
+        assert sample.decode_tps is not None
+    finally:
+        _TelemetryHandler.include_usage = False
+        _TelemetryHandler.usage_on_every_chunk = False
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_short_stream_records_no_decode_rate(tmp_path, monkeypatch) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    monkeypatch.setattr(telemetry, "_default", store)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _TelemetryHandler.stream = True
+        _TelemetryHandler.include_usage = True
+        _TelemetryHandler.chunks = 5
+        _TelemetryHandler.completion_tokens = 5
+        plan = _gateway_plan(upstream.server_address[1])
+        client = TestClient(create_app(plan))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        sample = store.samples()[-1]
+        assert sample.decode_tps is None
+        assert sample.ttft_s is not None
+    finally:
+        _TelemetryHandler.chunks = 20
+        _TelemetryHandler.completion_tokens = 17
+        _TelemetryHandler.include_usage = False
         upstream.shutdown()
         upstream.server_close()
