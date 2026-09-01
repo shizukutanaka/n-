@@ -322,3 +322,21 @@ avoidable OOM launches when another application already consumes memory.
 If probing fails or replanning produces no services, startup continues with the
 existing quantization/context/GPU-layer fallback ladder. Use
 `nmesh up --ignore-free-memory` to bypass admission intentionally.
+
+## 16. Gateway reload and swap gate
+
+The gateway keeps a mutable plan state and takes one plan snapshot at the
+start of every chat, embedding, and model-list request. A gateway created
+without an explicit plan checks `plan.json` mtime and reloads an atomically
+replaced plan before handling each such request. `POST /admin/reload` forces
+the same reload path and returns whether the plan changed, its service names,
+and `created_at`; `nmesh reload` is the CLI wrapper. An explicitly supplied
+plan disables mtime auto-reload but still permits the administrative reload
+endpoint. Requests already in flight continue using their original snapshot.
+
+Swap-group traffic uses a reader/writer gate. Requests for the currently
+loaded service acquire concurrent reader slots. A request for another
+swap-group service becomes an exclusive swapper, waits for all readers to
+drain, then calls `ensure_running`; no new reader can enter during that drain
+or swap. Plan reload invalidates the loaded-service marker so the next
+swap-group request revalidates the service.

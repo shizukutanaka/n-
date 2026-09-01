@@ -202,6 +202,29 @@ def _runtime(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reload(args: argparse.Namespace) -> int:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{args.port}/admin/reload",
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            if response.status >= 400:
+                return 1
+            data = json.loads(response.read().decode())
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"gateway reload failed: {error}", file=sys.stderr)
+        return 1
+    if args.json:
+        _print_json(data)
+    else:
+        print(
+            f"Reloaded: {', '.join(data.get('services', []))} "
+            f"(created_at={data.get('created_at')})"
+        )
+    return 0
+
+
 def _models(args: argparse.Namespace) -> int:
     models = load_catalog()
     if args.role:
@@ -305,6 +328,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--ignore-free-memory", action="store_true")
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=18000)
+    reload_parser = sub.add_parser("reload")
+    reload_parser.add_argument("--port", type=int, default=18000)
+    reload_parser.add_argument("--json", action="store_true")
     for name in ("status", "down"):
         item = sub.add_parser(name)
         item.add_argument("--json", action="store_true")
@@ -328,6 +354,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _doctor(args.json)
     if args.command == "plan":
         return _plan(args)
+    if args.command == "reload":
+        return _reload(args)
     if args.command in {"up", "down", "status", "serve"}:
         if args.command == "up":
             args.dry_run = args.dry_run or args.global_dry_run

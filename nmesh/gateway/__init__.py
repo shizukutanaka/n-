@@ -6,6 +6,7 @@ import re
 import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import asdict
+from pathlib import Path
 
 from nmesh.bench import benchmark_key
 from nmesh.planner import Plan, PlannedService, load_plan
@@ -14,6 +15,8 @@ from nmesh.runtime import status as runtime_status
 from nmesh.telemetry import Sample
 from nmesh.telemetry import record as record_telemetry
 from nmesh.telemetry import summary as telemetry_summary
+
+from .gate import SwapGate
 
 try:
     import httpx
@@ -86,34 +89,100 @@ def _upstream_body(request: Mapping[str, object], service: PlannedService) -> di
     return body
 
 
+PLAN_PATH = Path.home() / ".nmesh" / "plan.json"
+
+
+class _PlanState:
+    def __init__(self, plan: Plan, explicit: bool, gate: SwapGate) -> None:
+        self.plan = plan
+        self.telemetry_keys: dict[str, str] = {}
+        self.mtime: float | None = None
+        self._mtime_ns: int | None = None
+        self._explicit = explicit
+        self._gate = gate
+        self.reload(plan)
+        if not explicit:
+            stamp = self._plan_stamp()
+            if stamp is not None:
+                self.mtime, self._mtime_ns = stamp
+
+    def snapshot(self) -> tuple[Plan, dict[str, str]]:
+        return self.plan, self.telemetry_keys.copy()
+
+    def reload(self, plan: Plan) -> None:
+        gpu = plan.profile.gpus[0].name if plan.profile.gpus else "cpu"
+        self.plan = plan
+        self.telemetry_keys = {
+            service.name: benchmark_key(
+                service.model_id, service.quant, service.backend, gpu, service.n_gpu_layers
+            )
+            for service in plan.services
+        }
+        self._gate.invalidate()
+
+    def _plan_stamp(self) -> tuple[float, int] | None:
+        try:
+            stat = PLAN_PATH.stat()
+            return stat.st_mtime, stat.st_mtime_ns
+        except OSError:
+            return None
+
+    def _reload_from_disk(self, force: bool = False) -> bool | None:
+        stamp = self._plan_stamp()
+        if stamp is None:
+            return None if force else False
+        mtime, mtime_ns = stamp
+        if not force and mtime == self.mtime and mtime_ns == self._mtime_ns:
+            return False
+        try:
+            loaded = load_plan(PLAN_PATH)
+        except Exception:  # noqa: BLE001
+            return None if force else False
+        if loaded is None:
+            return None if force else False
+        changed = loaded != self.plan
+        self.mtime = mtime
+        self._mtime_ns = mtime_ns
+        if changed:
+            self.reload(loaded)
+        return changed
+
+    def maybe_reload(self) -> bool:
+        if self._explicit:
+            return False
+        return bool(self._reload_from_disk())
+
+    def force_reload(self) -> bool | None:
+        return self._reload_from_disk(force=True)
+
+
 def create_app(plan: Plan | None = None) -> object:
     if FastAPI is None:
         raise ImportError("Install nmesh[gateway] to use the gateway")
-    selected = plan or load_plan()
+    explicit = plan is not None
+    selected = plan if explicit else load_plan(PLAN_PATH)
     if selected is None:
         raise FileNotFoundError("No plan found")
     app = FastAPI(title="nmesh gateway")
-    swap_lock = asyncio.Lock()
-    gpu = selected.profile.gpus[0].name if selected.profile.gpus else "cpu"
-    telemetry_keys = {
-        service.name: benchmark_key(service.model_id, service.quant, service.backend,
-                                    gpu, service.n_gpu_layers)
-        for service in selected.services
-    }
+    gate = SwapGate()
+    plan_state = _PlanState(selected, explicit, gate)
 
     async def proxy(request: dict[str, object], service: PlannedService,
+                    plan_snapshot: Plan, telemetry_keys: Mapping[str, str],
                     path: str, instrument: bool = True) -> object:
         started = time.perf_counter()
-        locked = service.name in selected.swap_group
+        locked = service.name in plan_snapshot.swap_group
         if locked:
             try:
-                await asyncio.wait_for(swap_lock.acquire(), timeout=300.0)
-                await asyncio.to_thread(ensure_running, service.name, selected)
+                await asyncio.wait_for(
+                    gate.acquire(
+                        service.name,
+                        lambda: ensure_running(service.name, plan_snapshot),
+                    ),
+                    timeout=300.0,
+                )
             except asyncio.TimeoutError as error:
                 raise HTTPException(status_code=504, detail="Timed out waiting for service swap") from error
-            except Exception:
-                swap_lock.release()
-                raise
         body = _upstream_body(request, service)
         url = f"{_base_url(service)}{path}"
         assert httpx is not None
@@ -126,14 +195,14 @@ def create_app(plan: Plan | None = None) -> object:
             except httpx.HTTPError as error:
                 await client.aclose()
                 if locked:
-                    swap_lock.release()
+                    gate.release()
                 raise HTTPException(status_code=502, detail=str(error)) from error
             if upstream.status_code >= 400:
                 content = await upstream.aread()
                 await upstream.aclose()
                 await client.aclose()
                 if locked:
-                    swap_lock.release()
+                    gate.release()
                 return Response(content=content, status_code=upstream.status_code,
                                 media_type=upstream.headers.get("content-type"))
 
@@ -160,7 +229,7 @@ def create_app(plan: Plan | None = None) -> object:
                     await upstream.aclose()
                     await client.aclose()
                     if locked:
-                        swap_lock.release()
+                        gate.release()
                     if instrument:
                         span = (last_line_time - first_line_time
                                 if first_line_time is not None and last_line_time is not None
@@ -179,17 +248,15 @@ def create_app(plan: Plan | None = None) -> object:
             response = await client.post(url, json=body)
             content = response.content
             if response.status_code >= 400:
-                await client.aclose()
                 return Response(content=content, status_code=response.status_code,
                                 media_type=response.headers.get("content-type"))
             data = json.loads(content)
         except (httpx.HTTPError, json.JSONDecodeError) as error:
-            await client.aclose()
             raise HTTPException(status_code=502, detail=str(error)) from error
         finally:
+            await client.aclose()
             if locked:
-                swap_lock.release()
-        await client.aclose()
+                gate.release()
         if isinstance(data, dict) and "model" in data:
             data["model"] = request.get("model", data["model"])
         if instrument:
@@ -217,10 +284,24 @@ def create_app(plan: Plan | None = None) -> object:
 
     @app.get("/v1/models")
     async def models() -> dict[str, object]:
+        plan_state.maybe_reload()
+        selected, _ = plan_state.snapshot()
         ids = ["nmesh-auto"] + [f"nmesh-{service.name}" for service in selected.services]
         return {"object": "list", "data": [
             {"id": item, "object": "model", "owned_by": "nmesh"} for item in ids
         ]}
+
+    @app.post("/admin/reload")
+    async def reload_endpoint() -> dict[str, object]:
+        reloaded = plan_state.force_reload()
+        if reloaded is None:
+            raise HTTPException(status_code=503, detail="No plan found")
+        selected, _ = plan_state.snapshot()
+        return {
+            "reloaded": reloaded,
+            "services": [service.name for service in selected.services],
+            "created_at": selected.created_at,
+        }
 
     @app.get("/metrics")
     async def metrics() -> dict[str, object]:
@@ -228,13 +309,21 @@ def create_app(plan: Plan | None = None) -> object:
 
     @app.post("/v1/chat/completions")
     async def completions(request: dict[str, object]) -> object:
-        return await proxy(request, _service(selected, route(request, selected)),
-                           "/v1/chat/completions")
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
+        service = _service(selected, route(request, selected))
+        return await proxy(
+            request, service, selected, telemetry_keys, "/v1/chat/completions"
+        )
 
     @app.post("/v1/embeddings")
     async def embeddings(request: dict[str, object]) -> object:
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
         service = _service(selected, selected.routing.role_to_service.get("embed", ""))
-        return await proxy(request, service, "/v1/embeddings", instrument=False)
+        return await proxy(
+            request, service, selected, telemetry_keys, "/v1/embeddings", instrument=False
+        )
 
     return app
 

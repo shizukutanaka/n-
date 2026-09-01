@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -8,10 +9,12 @@ from typing import ClassVar
 
 from fastapi.testclient import TestClient
 
-from nmesh.bench import measure
+import nmesh.gateway as gateway_module
+from nmesh import telemetry
+from nmesh.bench import benchmark_key, measure
 from nmesh.catalog import ModelSpec
 from nmesh.gateway import create_app, route
-from nmesh.planner import Policy, build_plan
+from nmesh.planner import Plan, Policy, build_plan, save_plan
 
 from .test_planner import profile
 
@@ -101,3 +104,143 @@ def test_auto_and_unknown_model_use_heuristics() -> None:
     assert route({"model": "nmesh-auto", "tools": [{"type": "function"}]}, plan) == (
         plan.routing.role_to_service["chat"]
     )
+
+
+class _ReloadHandler(BaseHTTPRequestHandler):
+    bodies: ClassVar[list[dict[str, object]]] = []
+    block: ClassVar[bool] = False
+    started: ClassVar[threading.Event] = threading.Event()
+    release: ClassVar[threading.Event] = threading.Event()
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        body = json.loads(self.rfile.read(length))
+        self.__class__.bodies.append(body)
+        if self.__class__.block:
+            self.__class__.started.set()
+            self.__class__.release.wait(timeout=5)
+        payload = json.dumps({
+            "model": body["model"],
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"completion_tokens": 3},
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def _reload_plans(port: int) -> tuple[Plan, Plan]:
+    model = ModelSpec("reload-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    base = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(base.services[0], port=port, model_ref="old-ref")
+    old = replace(base, services=[service], created_at="old")
+    new_service = replace(service, model_id="new-model", model_ref="new-ref", quant="q8_0")
+    new = replace(old, services=[new_service], created_at="new")
+    return old, new
+
+
+def _start_reload_upstream() -> ThreadingHTTPServer:
+    _ReloadHandler.bodies = []
+    _ReloadHandler.block = False
+    _ReloadHandler.started.clear()
+    _ReloadHandler.release.clear()
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _ReloadHandler)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    return upstream
+
+
+def test_gateway_admin_reload_refreshes_plan_and_telemetry(
+    tmp_path, monkeypatch
+) -> None:
+    upstream = _start_reload_upstream()
+    try:
+        old, new = _reload_plans(upstream.server_address[1])
+        path = tmp_path / "plan.json"
+        save_plan(old, path)
+        monkeypatch.setattr(gateway_module, "PLAN_PATH", path)
+        client = TestClient(create_app(old))
+
+        assert client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto", "messages": [{"role": "user", "content": "hello"}],
+        }).json()["model"] == "nmesh-auto"
+        old_gpu = old.profile.gpus[0].name
+        old_key = benchmark_key(
+            old.services[0].model_id, old.services[0].quant, old.services[0].backend,
+            old_gpu, old.services[0].n_gpu_layers,
+        )
+        save_plan(new, path)
+        response = client.post("/admin/reload")
+        assert response.status_code == 200
+        assert response.json() == {
+            "reloaded": True, "services": ["chat"], "created_at": "new",
+        }
+        assert client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto", "messages": [{"role": "user", "content": "hello"}],
+        }).status_code == 200
+        assert _ReloadHandler.bodies[0]["model"] == "old-ref"
+        assert _ReloadHandler.bodies[1]["model"] == "new-ref"
+        new_key = benchmark_key(
+            new.services[0].model_id, new.services[0].quant, new.services[0].backend,
+            old_gpu, new.services[0].n_gpu_layers,
+        )
+        samples = telemetry._default.samples()
+        assert {sample.key for sample in samples} == {old_key, new_key}
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_auto_reload_uses_plan_mtime(tmp_path, monkeypatch) -> None:
+    upstream = _start_reload_upstream()
+    try:
+        old, new = _reload_plans(upstream.server_address[1])
+        path = tmp_path / "plan.json"
+        save_plan(old, path)
+        monkeypatch.setattr(gateway_module, "PLAN_PATH", path)
+        client = TestClient(create_app())
+        save_plan(new, path)
+        mtime_ns = path.stat().st_mtime_ns + 1_000_000_000
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto", "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert _ReloadHandler.bodies[-1]["model"] == "new-ref"
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_request_keeps_plan_snapshot_during_reload(tmp_path, monkeypatch) -> None:
+    upstream = _start_reload_upstream()
+    _ReloadHandler.block = True
+    try:
+        old, new = _reload_plans(upstream.server_address[1])
+        path = tmp_path / "plan.json"
+        save_plan(old, path)
+        monkeypatch.setattr(gateway_module, "PLAN_PATH", path)
+        client = TestClient(create_app(old))
+        responses: list[object] = []
+        thread = threading.Thread(target=lambda: responses.append(client.post(
+            "/v1/chat/completions",
+            json={"model": "nmesh-auto", "messages": [{"role": "user", "content": "hello"}]},
+        )))
+        thread.start()
+        assert _ReloadHandler.started.wait(timeout=2)
+        save_plan(new, path)
+        reload_response = client.post("/admin/reload")
+        assert reload_response.status_code == 200
+        _ReloadHandler.release.set()
+        thread.join(timeout=5)
+        assert len(responses) == 1
+        assert _ReloadHandler.bodies[0]["model"] == "old-ref"
+    finally:
+        _ReloadHandler.release.set()
+        upstream.shutdown()
+        upstream.server_close()
