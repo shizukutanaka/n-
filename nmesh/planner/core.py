@@ -895,11 +895,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         t(
             warning,
             selected.lang,
-            **(
-                warning_params[index]
-                if index < len(warning_params)
-                else {}
-            ),
+            **(warning_params[index] if index < len(warning_params) else {}),
         )
         for index, warning in enumerate(profile.warnings)
     ]
