@@ -398,3 +398,19 @@ After a llama.cpp service is assigned to one card, its GPU-layer count is
 re-solved against that card's budget rather than the aggregate VRAM budget.
 The memory split and launch arguments are rebuilt together, including `-ngl`;
 the tensor-parallel fallback retains its original aggregate layer solution.
+
+## 19. Gateway concurrency limits
+
+The gateway limits chat requests only for llama.cpp and vLLM services, using
+the planner's `parallel_slots` value as an asynchronous semaphore. Ollama and
+MLX remain unlimited because those runtimes provide their own scheduling, and
+embedding requests remain unlimited because embedding services have no decode
+slot to protect. A plan reload rebuilds the current semaphore map; requests
+that acquired an older semaphore release that same object.
+
+Chat requests acquire a backend slot before entering the swap gate and release
+it beside every gate release, including streaming completion and error paths.
+They wait up to `NMESH_QUEUE_TIMEOUT` seconds (120 by default); an exhausted
+queue returns HTTP 503 with `Retry-After: 1` and the configured slot count.
+The metrics endpoint reports each limited service's `limit`, `in_flight`, and
+`waiting` counts under `concurrency`.

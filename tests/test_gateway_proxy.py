@@ -264,7 +264,11 @@ def test_gateway_retries_once_after_connect_error(monkeypatch) -> None:
     model = ModelSpec("retry-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
                       4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
     plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
-    service = plan.services[0]
+    service = replace(
+        plan.services[0],
+        memory=replace(plan.services[0].memory, parallel_slots=1),
+    )
+    plan = replace(plan, services=[service])
     calls: list[tuple[str, Plan]] = []
 
     def fake_ensure(name: str, snapshot: Plan) -> None:
@@ -278,3 +282,4 @@ def test_gateway_retries_once_after_connect_error(monkeypatch) -> None:
     assert response.status_code == 502
     assert len(calls) == 1
     assert calls[0] == (service.name, plan)
+    assert client.get("/metrics").json()["concurrency"][service.name]["in_flight"] == 0
