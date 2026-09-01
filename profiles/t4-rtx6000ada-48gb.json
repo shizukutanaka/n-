@@ -1,0 +1,56 @@
+{
+  "cpu_name": "Synthetic x86_64 CPU",
+  "physical_cores": 8,
+  "logical_cores": 16,
+  "total_ram_bytes": 137438953472,
+  "available_ram_bytes": 103079215104,
+  "free_disk_bytes": 536870912000,
+  "unified_memory": false,
+  "warnings": [],
+  "warning_params": [],
+  "free_budgets": {
+    "vram_bytes": 0,
+    "ram_bytes": 0
+  },
+  "selected_models": [],
+  "os": "windows",
+  "tier": "T4_WORKSTATION",
+  "gpus": [
+    {
+      "index": 0,
+      "name": "NVIDIA RTX 6000 Ada Generation",
+      "vendor": "nvidia",
+      "total_vram_bytes": 51539607552,
+      "free_vram_bytes": 51539607552,
+      "compute_capability": [
+        8,
+        9
+      ],
+      "driving_display": false,
+      "vram_source": "nvml"
+    }
+  ],
+  "available_backends": {
+    "llamacpp": "b10734",
+    "ollama": "0.5.7"
+  },
+  "backend_paths": {
+    "llamacpp": "C:/Users/Administrator/llamacpp/llama-server.exe",
+    "ollama": "C:/Program Files/Ollama/ollama.exe"
+  },
+  "backend_flags": {
+    "llamacpp": [
+      "--parallel",
+      "-ngl",
+      "-c"
+    ],
+    "ollama": [
+      "serve"
+    ]
+  },
+  "backend_gpu_devices": {
+    "llamacpp": [
+      "CUDA0"
+    ]
+  }
+}
