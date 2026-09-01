@@ -20,6 +20,17 @@ from nmesh.telemetry import summary as telemetry_summary
 
 from .gate import SwapGate
 from .limit import SlotLimiter
+from .tokens import (
+    Sums,
+    all_sums,
+    calibration_for,
+    estimate_tokens,
+    exact_tokens,
+    fit,
+)
+from .tokens import (
+    record as record_token_calibration,
+)
 
 try:
     QUEUE_TIMEOUT = float(os.environ.get("NMESH_QUEUE_TIMEOUT", "120.0"))
@@ -58,20 +69,11 @@ def _content(request: Mapping[str, object]) -> str:
     return ""
 
 
-def estimate_tokens(text: str) -> int:
-    cjk = sum(
-        0x3000 <= ord(char) <= 0x30FF
-        or 0x3400 <= ord(char) <= 0x4DBF
-        or 0x4E00 <= ord(char) <= 0x9FFF
-        or 0xF900 <= ord(char) <= 0xFAFF
-        or 0xAC00 <= ord(char) <= 0xD7AF
-        or 0xFF00 <= ord(char) <= 0xFFEF
-        for char in text
-    )
-    return cjk + (len(text) - cjk + 3) // 4
-
-
-def route(request: Mapping[str, object], plan: Plan) -> str:
+def route(
+    request: Mapping[str, object],
+    plan: Plan,
+    token_hint: int | None = None,
+) -> str:
     explicit = _explicit(_get(request, "model"), plan)
     if explicit is not None:
         return explicit
@@ -87,7 +89,8 @@ def route(request: Mapping[str, object], plan: Plan) -> str:
         reserved = int(max_tokens)
     except (TypeError, ValueError):
         reserved = 0
-    if chat and estimate_tokens(content) + reserved > chat.context * 0.8:
+    token_count = estimate_tokens(content) if token_hint is None else token_hint
+    if chat and token_count + reserved > chat.context * 0.8:
         return max(plan.services, key=lambda item: item.context, default=chat).name
     return chat_name or (plan.services[0].name if plan.services else "")
 
@@ -122,6 +125,84 @@ def _upstream_body(request: Mapping[str, object], service: PlannedService) -> di
     return body
 
 
+def _reserved_tokens(request: Mapping[str, object]) -> int:
+    value = request.get("max_tokens") or 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _chat_service(plan: Plan) -> PlannedService | None:
+    name = plan.routing.role_to_service.get("chat", "")
+    return next((item for item in plan.services if item.name == name), None)
+
+
+def _service_is_running_llamacpp(service: PlannedService) -> bool:
+    if service.backend != "llamacpp":
+        return False
+    try:
+        runtime = runtime_status()
+    except (OSError, ValueError, RuntimeError):
+        return False
+    return any(
+        item.get("service") == service.name
+        and bool(item.get("running", False))
+        and item.get("backend", service.backend) == "llamacpp"
+        for item in runtime.services
+    )
+
+
+async def _routing_token_hint(
+    request: Mapping[str, object], plan: Plan
+) -> int | None:
+    chat = _chat_service(plan)
+    if chat is None:
+        return None
+    content = _content(request)
+    count = estimate_tokens(content, calibration_for(chat.model_id))
+    threshold = chat.context * 0.8 - _reserved_tokens(request)
+    if (
+        threshold > 0
+        and 0.5 * threshold <= count <= 2 * threshold
+        and _service_is_running_llamacpp(chat)
+    ):
+        assert httpx is not None
+        client = httpx.AsyncClient()
+        try:
+            exact = await exact_tokens(_base_url(chat), content, client)
+            if exact is not None:
+                count = exact
+        finally:
+            await client.aclose()
+    return count
+
+
+async def _record_prompt_calibration(
+    service: PlannedService,
+    request: Mapping[str, object],
+    usage: object,
+) -> None:
+    if not isinstance(usage, Mapping):
+        return
+    value = usage.get("prompt_tokens")
+    try:
+        prompt_tokens = int(value)
+    except (TypeError, ValueError):
+        return
+    if prompt_tokens < 0:
+        return
+    try:
+        await asyncio.to_thread(
+            record_token_calibration,
+            service.model_id,
+            _content(request),
+            prompt_tokens,
+        )
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+
 def _completion_not_supported(
     path: str, status_code: int, backend: str
 ) -> HTTPException | None:
@@ -147,7 +228,24 @@ def _prometheus_labels(labels: Mapping[str, object]) -> str:
     return "{" + values + "}"
 
 
-def _prometheus_text(limiter: SlotLimiter) -> str:
+def _calibration_metrics(services: list[PlannedService]) -> dict[str, dict[str, object]]:
+    sums = all_sums()
+    metrics: dict[str, dict[str, object]] = {}
+    for service in services:
+        calibration = fit(sums.get(service.model_id, Sums()))
+        metrics[service.name] = {
+            "model": service.model_id,
+            "cjk_per_char": calibration.cjk_per_char,
+            "other_per_char": calibration.other_per_char,
+            "samples": calibration.samples,
+            "measured": calibration.measured,
+        }
+    return metrics
+
+
+def _prometheus_text(
+    limiter: SlotLimiter, services: list[PlannedService] | None = None
+) -> str:
     families: dict[str, tuple[str, str, list[tuple[Mapping[str, object], object]]]] = {
         "nmesh_telemetry_samples": (
             "Number of telemetry samples.",
@@ -189,6 +287,21 @@ def _prometheus_text(limiter: SlotLimiter) -> str:
             "gauge",
             [],
         ),
+        "nmesh_token_calibration_cjk_per_char": (
+            "Calibrated CJK characters per prompt token.",
+            "gauge",
+            [],
+        ),
+        "nmesh_token_calibration_other_per_char": (
+            "Calibrated non-CJK characters per prompt token.",
+            "gauge",
+            [],
+        ),
+        "nmesh_token_calibration_samples": (
+            "Number of exact prompt-token calibration samples.",
+            "gauge",
+            [],
+        ),
     }
     for service, groups in summary_by_approximate().items():
         for approximate, metrics in groups.items():
@@ -208,6 +321,21 @@ def _prometheus_text(limiter: SlotLimiter) -> str:
         families["nmesh_concurrency_limit"][2].append((labels, metrics["limit"]))
         families["nmesh_concurrency_in_flight"][2].append((labels, metrics["in_flight"]))
         families["nmesh_concurrency_waiting"][2].append((labels, metrics["waiting"]))
+    for service, metrics in _calibration_metrics(services or []).items():
+        labels = {
+            "measured": str(metrics["measured"]).lower(),
+            "model": metrics["model"],
+            "service": service,
+        }
+        families["nmesh_token_calibration_cjk_per_char"][2].append(
+            (labels, metrics["cjk_per_char"])
+        )
+        families["nmesh_token_calibration_other_per_char"][2].append(
+            (labels, metrics["other_per_char"])
+        )
+        families["nmesh_token_calibration_samples"][2].append(
+            (labels, metrics["samples"])
+        )
     lines: list[str] = []
     for name, (help_text, metric_type, values) in families.items():
         lines.extend((f"# HELP {name} {help_text}", f"# TYPE {name} {metric_type}"))
@@ -490,6 +618,7 @@ def create_app(
                             ))
                         except Exception:  # noqa: BLE001, S110
                             pass
+                    await _record_prompt_calibration(service, request, usage)
             return StreamingResponse(stream(), media_type="text/event-stream")
         try:
             try:
@@ -533,6 +662,11 @@ def create_app(
                 ))
             except Exception:  # noqa: BLE001, S110
                 pass
+        await _record_prompt_calibration(
+            service,
+            request,
+            data.get("usage") if isinstance(data, dict) else None,
+        )
         return data
 
     @app.get("/health")
@@ -566,20 +700,29 @@ def create_app(
 
     @app.get("/metrics")
     async def metrics() -> dict[str, object]:
+        plan_state.maybe_reload()
+        selected, _ = plan_state.snapshot()
         return {
             "services": telemetry_summary(),
             "concurrency": limiter.metrics(),
+            "token_calibration": _calibration_metrics(selected.services),
         }
 
     @app.get("/metrics/prometheus")
     async def metrics_prometheus() -> object:
-        return Response(_prometheus_text(limiter), media_type="text/plain; version=0.0.4")
+        plan_state.maybe_reload()
+        selected, _ = plan_state.snapshot()
+        return Response(
+            _prometheus_text(limiter, selected.services),
+            media_type="text/plain; version=0.0.4",
+        )
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: dict[str, object]) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
-        service = _service(selected, route(request, selected))
+        token_hint = await _routing_token_hint(request, selected)
+        service = _service(selected, route(request, selected, token_hint=token_hint))
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/chat/completions",
             limit_slots=True,
@@ -589,7 +732,8 @@ def create_app(
     async def legacy_completions(request: dict[str, object]) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
-        service = _service(selected, route(request, selected))
+        token_hint = await _routing_token_hint(request, selected)
+        service = _service(selected, route(request, selected, token_hint=token_hint))
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/completions",
             limit_slots=True,

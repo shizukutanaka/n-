@@ -92,8 +92,8 @@ each GPU's total/free VRAM and the resulting free VRAM/RAM budgets.
 ## State and port environment variables
 
 `NMESH_HOME` relocates all nmesh-owned persistent and downloaded state:
-the plan, runtime state, benchmark cache, capability cache, telemetry, user
-catalog, gateway log, and downloaded GGUFs. Set it to a scratch directory
+the plan, runtime state, benchmark cache, capability cache, telemetry, token
+calibration (`tokens.json`), user catalog, gateway log, and downloaded GGUFs. Set it to a scratch directory
 before starting nmesh processes to run isolated experiments without touching
 the real `~/.nmesh` state or catalog.
 
@@ -191,6 +191,39 @@ measurements. The decode-throughput family is named
 `_seconds` base unit.
 HTTP response bodies remain English because `/v1/*` errors and authentication
 details are machine-facing API contracts for clients.
+
+### Prompt token accounting
+
+Context-length routing needs a prompt-token count. The built-in heuristic
+(CJK characters count as 1.0 tokens, other characters as 0.25) is only a
+conservative guess: measured against the real Qwen2.5-1.5B-Instruct tokenizer
+through llama.cpp `POST /tokenize`, the heuristic divided by the real count is
+1.71-1.75 for Japanese prose, 1.12 for English prose, 1.04 for Korean, 1.38 for
+Chinese, and 0.82 for Python code. It errs in both directions and, worst of
+all, under-counts code, which is exactly the content routed to the code
+service.
+
+nmesh therefore calibrates the two coefficients per model. Whenever an upstream
+response reports an exact `usage.prompt_tokens`, the character counts and that
+exact token count are accumulated in `tokens.json` under `NMESH_HOME`, keyed by
+model id because the tokenizer is a property of the model rather than of the
+service. Coefficients are fitted by least squares and are only used once a
+model has at least 20 exact samples and the fit is well-conditioned and within
+sane bounds; otherwise the defaults above are used. Estimates are never fed
+back into the calibration.
+
+The calibration is exposed on `/metrics` and on `/metrics/prometheus` as
+`nmesh_token_calibration_cjk_per_char`, `nmesh_token_calibration_other_per_char`
+and `nmesh_token_calibration_samples`, labelled with both `service` and `model`
+and with `measured="true|false"`. `measured="false"` means you are looking at
+the default guess, not a measurement.
+
+Near the routing boundary only - when the calibrated estimate lies between half
+and twice the remaining context threshold - and only when the chat service is a
+running llama.cpp service, nmesh asks that backend for the exact count through
+`POST /tokenize` with a short timeout. Any failure or timeout falls back to the
+estimate and never fails the request. The vLLM tokenizer endpoint is
+deliberately not used because its shape is unverified here.
 
 CLI commands return `0` only when the requested operation succeeds. A failed
 plan, unavailable gateway/backend, failed benchmark, missing plan, or non-zero
