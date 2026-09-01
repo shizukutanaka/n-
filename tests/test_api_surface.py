@@ -184,6 +184,8 @@ def test_completion_slot_limiter_matches_chat(monkeypatch) -> None:
             second = client.post("/v1/completions", json={"prompt": "second"})
             assert second.status_code == 503
             assert second.headers["Retry-After"] == "1"
+            assert second.json()["error"]["type"] == "server_error"
+            assert second.json()["error"]["code"] == 503
             _CompletionHandler.release.set()
             first.join(timeout=5)
             assert result[0].status_code == 200
@@ -201,7 +203,8 @@ def test_completion_404_names_backend() -> None:
         with TestClient(create_app(plan)) as client:
             response = client.post("/v1/completions", json={"prompt": "hello"})
         assert response.status_code == 502
-        assert "llamacpp" in response.json()["detail"]
+        assert response.json()["error"]["type"] == "server_error"
+        assert "llamacpp" in response.json()["error"]["message"]
     finally:
         _CompletionHandler.status = 200
         upstream.shutdown()
@@ -226,8 +229,46 @@ def test_api_key_authentication(monkeypatch) -> None:
         assert wrong.status_code == 401
         assert right.status_code == 200
         assert missing.headers["WWW-Authenticate"] == "Bearer"
+        assert missing.json() == {
+            "error": {
+                "message": "Invalid or missing API key",
+                "type": "invalid_request_error",
+                "code": 401,
+            }
+        }
         assert secret not in missing.text
         assert secret not in wrong.text
+
+
+def test_openai_model_listing_and_detail() -> None:
+    plan = _completion_plan(1)
+    with TestClient(create_app(plan)) as client:
+        listing = client.get("/v1/models")
+        assert listing.status_code == 200
+        models = listing.json()["data"]
+        assert models
+        assert all(isinstance(item["created"], int) for item in models)
+        advertised = models[0]["id"]
+        detail = client.get(f"/v1/models/{advertised}")
+        assert detail.status_code == 200
+        assert detail.json() == next(item for item in models if item["id"] == advertised)
+        missing = client.get("/v1/models/not-advertised")
+        assert missing.status_code == 404
+        assert missing.json()["error"]["type"] == "invalid_request_error"
+        assert missing.json()["error"]["code"] == 404
+
+
+def test_reserved_tokens_uses_larger_completion_limit() -> None:
+    assert gateway_module._reserved_tokens({"max_completion_tokens": 8}) == 8
+    assert gateway_module._reserved_tokens({
+        "max_tokens": 4, "max_completion_tokens": 8,
+    }) == 8
+    assert gateway_module._reserved_tokens({
+        "max_tokens": 8, "max_completion_tokens": 4,
+    }) == 8
+    assert gateway_module._reserved_tokens({
+        "max_tokens": None, "max_completion_tokens": "bad",
+    }) == 0
 
 
 def test_non_ascii_api_key_authentication(monkeypatch) -> None:

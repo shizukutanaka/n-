@@ -183,7 +183,8 @@ def test_gateway_slot_timeout_returns_retryable_503(monkeypatch) -> None:
             second = client.post("/v1/chat/completions", json={"messages": []})
             assert second.status_code == 503
             assert second.headers["Retry-After"] == "1"
-            assert "1 slots" in second.json()["detail"]
+            assert second.json()["error"]["type"] == "server_error"
+            assert "1 slots" in second.json()["error"]["message"]
             _LimitHandler.release.set()
             first.join(timeout=5)
             assert first_result[0].status_code == 200
