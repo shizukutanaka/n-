@@ -6,9 +6,12 @@ import os
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 from nmesh.paths import nmesh_home
+
+if TYPE_CHECKING:
+    from httpx import AsyncClient
 
 CJK_RANGES = (
     (0x3000, 0x30FF),
@@ -141,23 +144,28 @@ def _write(values: dict[str, Sums]) -> None:
         raise
 
 
-def load_sums(service: str) -> Sums:
+def all_sums() -> dict[str, Sums]:
     with _LOCK:
-        return _read().get(service, Sums())
+        return _read()
 
 
-def calibration_for(service: str) -> Calibration:
-    return fit(load_sums(service))
+def load_sums(model_id: str) -> Sums:
+    with _LOCK:
+        return _read().get(model_id, Sums())
 
 
-def record(service: str, text: str, exact_tokens: int) -> None:
+def calibration_for(model_id: str) -> Calibration:
+    return fit(load_sums(model_id))
+
+
+def record(model_id: str, text: str, exact_tokens: int) -> None:
     if exact_tokens < 0:
         return
     cjk, other = split_chars(text)
     with _LOCK:
         values = _read()
-        previous = values.get(service, Sums())
-        values[service] = Sums(
+        previous = values.get(model_id, Sums())
+        values[model_id] = Sums(
             n=previous.n + 1,
             s_cc=previous.s_cc + cjk * cjk,
             s_co=previous.s_co + cjk * other,
@@ -168,7 +176,7 @@ def record(service: str, text: str, exact_tokens: int) -> None:
         _write(values)
 
 
-async def exact_tokens(base_url: str, text: str, client: Any) -> int | None:
+async def exact_tokens(base_url: str, text: str, client: AsyncClient) -> int | None:
     # vLLM's tokenize endpoint is intentionally unsupported until its shape is verified.
     try:
         response = await client.post(
@@ -184,6 +192,7 @@ async def exact_tokens(base_url: str, text: str, client: Any) -> int | None:
             return len(tokens)
         if isinstance(tokens, int) and tokens >= 0:
             return tokens
+    # Any client or transport error must fall back to the estimate, never fail the request.
     except Exception:  # noqa: BLE001
         return None
     return None

@@ -21,9 +21,12 @@ from nmesh.telemetry import summary as telemetry_summary
 from .gate import SwapGate
 from .limit import SlotLimiter
 from .tokens import (
+    Sums,
+    all_sums,
     calibration_for,
     estimate_tokens,
     exact_tokens,
+    fit,
 )
 from .tokens import (
     record as record_token_calibration,
@@ -140,7 +143,7 @@ def _service_is_running_llamacpp(service: PlannedService) -> bool:
         return False
     try:
         runtime = runtime_status()
-    except Exception:  # noqa: BLE001
+    except (OSError, ValueError, RuntimeError):
         return False
     return any(
         item.get("service") == service.name
@@ -157,7 +160,7 @@ async def _routing_token_hint(
     if chat is None:
         return None
     content = _content(request)
-    count = estimate_tokens(content, calibration_for(chat.name))
+    count = estimate_tokens(content, calibration_for(chat.model_id))
     threshold = chat.context * 0.8 - _reserved_tokens(request)
     if (
         threshold > 0
@@ -192,7 +195,7 @@ async def _record_prompt_calibration(
     try:
         await asyncio.to_thread(
             record_token_calibration,
-            service.name,
+            service.model_id,
             _content(request),
             prompt_tokens,
         )
@@ -226,16 +229,18 @@ def _prometheus_labels(labels: Mapping[str, object]) -> str:
 
 
 def _calibration_metrics(services: list[PlannedService]) -> dict[str, dict[str, object]]:
-    return {
-        service.name: {
+    sums = all_sums()
+    metrics: dict[str, dict[str, object]] = {}
+    for service in services:
+        calibration = fit(sums.get(service.model_id, Sums()))
+        metrics[service.name] = {
+            "model": service.model_id,
             "cjk_per_char": calibration.cjk_per_char,
             "other_per_char": calibration.other_per_char,
             "samples": calibration.samples,
             "measured": calibration.measured,
         }
-        for service in services
-        for calibration in [calibration_for(service.name)]
-    }
+    return metrics
 
 
 def _prometheus_text(
@@ -317,7 +322,11 @@ def _prometheus_text(
         families["nmesh_concurrency_in_flight"][2].append((labels, metrics["in_flight"]))
         families["nmesh_concurrency_waiting"][2].append((labels, metrics["waiting"]))
     for service, metrics in _calibration_metrics(services or []).items():
-        labels = {"measured": str(metrics["measured"]).lower(), "service": service}
+        labels = {
+            "measured": str(metrics["measured"]).lower(),
+            "model": metrics["model"],
+            "service": service,
+        }
         families["nmesh_token_calibration_cjk_per_char"][2].append(
             (labels, metrics["cjk_per_char"])
         )

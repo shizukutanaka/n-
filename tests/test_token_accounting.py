@@ -14,6 +14,7 @@ from nmesh.catalog import ModelSpec
 from nmesh.gateway.tokens import (
     Calibration,
     Sums,
+    all_sums,
     calibration_for,
     estimate_tokens,
     exact_tokens,
@@ -57,14 +58,16 @@ def test_fit_defaults_for_under_sampled_singular_and_clamped() -> None:
     assert fit(clamped) == Calibration(1.0, 0.25, 20, False)
 
 
-def test_record_persists_sums_and_calibration(monkeypatch, tmp_path: Path) -> None:
+def test_record_persists_sums_keyed_by_model(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
     for cjk, other, tokens in ((1, 3, 2.75), (2, 1, 3.0)) * 10:
         text = "日" * cjk + "a" * other
-        record("chat", text, int(tokens))
+        record("routing-model", text, int(tokens))
     payload = json.loads((tmp_path / "tokens.json").read_text(encoding="utf-8"))
-    assert payload["services"]["chat"]["n"] == 20
-    assert calibration_for("chat").samples == 20
+    assert payload["services"]["routing-model"]["n"] == 20
+    assert calibration_for("routing-model").samples == 20
+    assert calibration_for("other-model").samples == 0
+    assert all_sums()["routing-model"].n == 20
 
 
 def test_exact_tokens_timeout_falls_back_without_raising() -> None:
@@ -125,14 +128,16 @@ def test_metrics_expose_default_token_calibration() -> None:
         metrics = client.get("/metrics").json()
         calibration = metrics["token_calibration"]["small"]
         assert calibration == {
+            "model": "routing-model",
             "cjk_per_char": 1.0,
             "other_per_char": 0.25,
             "samples": 0,
             "measured": False,
         }
         text = client.get("/metrics/prometheus").text
-    assert 'nmesh_token_calibration_cjk_per_char{measured="false", service="small"}' in text
-    assert 'nmesh_token_calibration_samples{measured="false", service="small"} 0' in text
+    labels = 'measured="false", model="routing-model", service="small"'
+    assert "nmesh_token_calibration_cjk_per_char{" + labels + "}" in text
+    assert "nmesh_token_calibration_samples{" + labels + "} 0" in text
 
 
 def test_missing_prompt_usage_does_not_update_calibration(monkeypatch, tmp_path) -> None:
