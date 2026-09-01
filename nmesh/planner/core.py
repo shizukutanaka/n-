@@ -557,8 +557,6 @@ def _place_services(
     swap_group: Sequence[str],
     warnings: list[str],
 ) -> list[PlannedService]:
-    if not profile.gpus:
-        return services
     services = [
         _cpu_llamacpp_service(
             service, profile.backend_flags.get(service.backend), warnings,
@@ -566,6 +564,17 @@ def _place_services(
         )
         for service in services
     ]
+    for service in services:
+        if service.backend == "ollama":
+            warnings.append(
+                t(
+                    "warn.ollama_quant_estimate",
+                    policy.lang,
+                    service=service.name,
+                )
+            )
+    if not profile.gpus:
+        return services
     indices = [gpu.index for gpu in profile.gpus]
     budgets = {
         gpu.index: _gpu_budget(gpu, policy.budget_source) for gpu in profile.gpus
@@ -581,6 +590,7 @@ def _place_services(
     )
     placed: dict[str, PlannedService] = {}
     for service in ordered:
+        original_layers = service.n_gpu_layers
         if service.memory.gpu_bytes <= 0:
             placed[service.name] = service
             ram_used += service.memory.cpu_bytes
@@ -609,7 +619,7 @@ def _place_services(
         elif service.backend in {"llamacpp", "vllm"} and len(indices) > 1:
             assigned = indices
             tensor_parallel = len(indices)
-            placement_budget = min(remaining.values()) * tensor_parallel
+            placement_budget = min(remaining[index] for index in indices) * tensor_parallel
             if (
                 service.backend == "llamacpp"
                 and service.n_gpu_layers is not None
@@ -635,14 +645,34 @@ def _place_services(
                             cpu_bytes=cpu_bytes,
                         ),
                     )
-            committed = service.memory.gpu_bytes / tensor_parallel
-            for index in indices:
-                if is_swap:
-                    new_reserved = max(swap_reserved[index], committed)
-                    remaining[index] -= new_reserved - swap_reserved[index]
-                    swap_reserved[index] = new_reserved
+                    if layers == 0:
+                        warnings.append(
+                            t(
+                                "warn.gpu_layers_cpu_fallback",
+                                policy.lang,
+                                service=service.name,
+                            )
+                        )
+                        assigned = []
+                        tensor_parallel = 1
+                    else:
+                        committed = service.memory.gpu_bytes / tensor_parallel
+                        for index in indices:
+                            if is_swap:
+                                new_reserved = max(swap_reserved[index], committed)
+                                remaining[index] -= new_reserved - swap_reserved[index]
+                                swap_reserved[index] = new_reserved
+                            else:
+                                remaining[index] -= committed
                 else:
-                    remaining[index] -= committed
+                    committed = service.memory.gpu_bytes / tensor_parallel
+                    for index in indices:
+                        if is_swap:
+                            new_reserved = max(swap_reserved[index], committed)
+                            remaining[index] -= new_reserved - swap_reserved[index]
+                            swap_reserved[index] = new_reserved
+                        else:
+                            remaining[index] -= committed
         elif service.backend in {"ollama", "vllm", "mlx"}:
             total_bytes = service.memory.cpu_bytes + service.memory.gpu_bytes
             if ram_used + total_bytes <= ram_budget + 1:
@@ -660,14 +690,6 @@ def _place_services(
                     t("warn.backend_placement_estimate", policy.lang,
                       service=service.name, backend=service.backend)
                 )
-                if service.backend == "ollama":
-                    warnings.append(
-                        t(
-                            "warn.ollama_quant_estimate",
-                            policy.lang,
-                            service=service.name,
-                        )
-                    )
                 continue
             target = max(indices, key=lambda index: (remaining[index], -index))
             assigned = [target]
@@ -749,7 +771,11 @@ def _place_services(
                 current = replace(
                     current, memory=card_memory
                 )
-        if tensor_parallel != 1 or current.n_gpu_layers != service.n_gpu_layers:
+        if (
+            tensor_parallel != 1
+            or current.n_gpu_layers != original_layers
+            or (tensor_parallel == 1 and "--tensor-split" in current.launch.argv)
+        ):
             current = replace(
                 current,
                 launch=_rebuild_launch(
