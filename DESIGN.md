@@ -449,3 +449,40 @@ downloaded only when every numbered part is present. The selected file and
 quantization are recorded in runtime state; a lower-precision substitution is
 also surfaced as an acquisition note. A planned quantization is never upgraded
 because its memory estimate is already fixed.
+
+## 21. GPU detection provenance and backend capability
+
+Hardware detection uses a strict fallback order. Apple Silicon uses the
+existing unified-memory path. Otherwise nmesh tries NVML/`nvidia-smi`, then
+`rocm-smi` when NVIDIA detection found no GPUs, and only then invokes generic
+platform detection. The generic path must not replace a successful specialized
+result. Windows generic detection reads `Win32_VideoController` and the
+display-adapter registry class; Linux generic detection reads DRM vendor IDs
+and AMD's `mem_info_vram_total`.
+
+Windows `AdapterRAM` is a signed 32-bit field and saturates at approximately
+4095 MiB. It must therefore not be treated as the real capacity of an adapter
+such as an Intel Arc A770. Generic Windows detection prefers the 64-bit
+`HardwareInformation.qwMemorySize` registry value and uses `AdapterRAM` only
+when it is below the saturation boundary. Every `GPUInfo` carries the
+provenance of its total VRAM (`nvml`, `smi`, `registry`, `sysfs`, or
+`unknown`). For registry- and sysfs-derived adapters free VRAM is not
+measured; `free = total` is a conservative planning upper bound, while the
+display reserve remains applied.
+
+Backend help flags describe an interface, not an implementation capability.
+The CPU-only llama.cpp b10734 binary advertises `-ngl` in its help but its
+device report is:
+
+```text
+Available devices:
+  (none)
+```
+
+The planner therefore distinguishes a known empty device tuple, `()`, from an
+unknown probe result, `None`. For llama.cpp, `()` forces CPU placement,
+`n_gpu_layers=0`, zero GPU accounting, and RAM accounting for weights, KV, and
+overhead. `None` preserves the prior flag-based behavior because a failed
+probe must not falsely degrade a working GPU installation. A detected GPU can
+be used by llama.cpp only after installing or building a Vulkan, CUDA, HIP, or
+SYCL backend.
