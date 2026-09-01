@@ -67,26 +67,42 @@ class Telemetry:
         with self._lock:
             return self._load()
 
+    @staticmethod
+    def _summarize(values: list[Sample]) -> dict[str, float]:
+        item: dict[str, float] = {"samples": float(len(values))}
+        decode = [value.decode_tps for value in values if value.decode_tps is not None]
+        ttft = [value.ttft_s for value in values if value.ttft_s is not None]
+        total = [value.total_s for value in values]
+        if decode:
+            item["decode_tps_median"] = statistics.median(decode)
+        if ttft:
+            ordered = sorted(ttft)
+            item["ttft_s_median"] = statistics.median(ordered)
+            item["ttft_s_p95"] = ordered[min(len(ordered) - 1, math.ceil(0.95 * len(ordered)) - 1)]
+        if total:
+            item["total_s_median"] = statistics.median(total)
+        return item
+
     def summary(self) -> dict[str, dict[str, float]]:
         groups: dict[str, list[Sample]] = {}
         for sample in self.samples():
             groups.setdefault(sample.service, []).append(sample)
-        result: dict[str, dict[str, float]] = {}
-        for service, values in groups.items():
-            item: dict[str, float] = {"samples": float(len(values))}
-            decode = [value.decode_tps for value in values if value.decode_tps is not None]
-            ttft = [value.ttft_s for value in values if value.ttft_s is not None]
-            total = [value.total_s for value in values]
-            if decode:
-                item["decode_tps_median"] = statistics.median(decode)
-            if ttft:
-                ordered = sorted(ttft)
-                item["ttft_s_median"] = statistics.median(ordered)
-                item["ttft_s_p95"] = ordered[min(len(ordered) - 1, math.ceil(0.95 * len(ordered)) - 1)]
-            if total:
-                item["total_s_median"] = statistics.median(total)
-            result[service] = item
-        return result
+        return {
+            service: self._summarize(values)
+            for service, values in groups.items()
+        }
+
+    def summary_by_approximate(self) -> dict[str, dict[bool, dict[str, float]]]:
+        groups: dict[str, dict[bool, list[Sample]]] = {}
+        for sample in self.samples():
+            groups.setdefault(sample.service, {}).setdefault(sample.approximate, []).append(sample)
+        return {
+            service: {
+                approximate: self._summarize(values)
+                for approximate, values in grouped.items()
+            }
+            for service, grouped in groups.items()
+        }
 
     def bench_overlay(self, min_samples: int = 5) -> dict[str, float]:
         exact: dict[str, list[float]] = {}
@@ -120,8 +136,14 @@ def summary() -> dict[str, dict[str, float]]:
     return _default.summary()
 
 
+def summary_by_approximate() -> dict[str, dict[bool, dict[str, float]]]:
+    return _default.summary_by_approximate()
+
+
 def bench_overlay(min_samples: int = 5) -> dict[str, float]:
     return _default.bench_overlay(min_samples)
 
 
-__all__ = ["Sample", "Telemetry", "bench_overlay", "record", "summary"]
+__all__ = [
+    "Sample", "Telemetry", "bench_overlay", "record", "summary", "summary_by_approximate",
+]
