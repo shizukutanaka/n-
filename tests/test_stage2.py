@@ -358,9 +358,16 @@ def test_supervisor_loads_v1_state(tmp_path) -> None:
         }),
         encoding="utf-8",
     )
-    result = Supervisor(state_path=state_path).status()
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        state_path=state_path,
+        terminator=terminated.append,
+    )
+    result = supervisor.status()
     assert result.running
     assert result.services[0]["running"] is True
+    supervisor.down(foreign=True)
+    assert terminated == [os.getpid()]
 
 
 def test_supervisor_heartbeat_adopts_healthy_service_past_restart_budget(

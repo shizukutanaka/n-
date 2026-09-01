@@ -591,7 +591,6 @@ class Supervisor:
                 if had_dead_entries:
                     if live_entries:
                         payload["services"] = live_entries
-                        payload["owner_pid"] = os.getpid()
                         self._write_state(payload)
                     else:
                         try:
