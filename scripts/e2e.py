@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import shutil
@@ -18,6 +19,8 @@ from typing import NoReturn
 SUCCESS = 0
 FAILURE = 1
 BACKEND_UNAVAILABLE = 77
+
+_STEP_LOGS = itertools.count()
 
 
 class HarnessFailure(RuntimeError):
@@ -100,15 +103,22 @@ def _model_source(model_id: str | None = None, quant: str | None = None) -> Path
 
 
 def _command(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, "-m", "nmesh.cli", *args],
-        cwd=Path(__file__).resolve().parents[1],
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
+    # Detached backend processes inherit the child's output handles, so a pipe
+    # would stay open until they exit; a per-step file returns immediately.
+    log = Path(env["NMESH_HOME"]) / f"cli-step-{next(_STEP_LOGS)}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("w", encoding="utf-8", errors="replace") as sink:
+        completed = subprocess.run(
+            [sys.executable, "-m", "nmesh.cli", *args],
+            cwd=Path(__file__).resolve().parents[1],
+            env=env,
+            text=True,
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    output = log.read_text(encoding="utf-8", errors="replace")
+    return subprocess.CompletedProcess(completed.args, completed.returncode, output, "")
 
 
 def _run_step(env: dict[str, str], step: str, *args: str) -> str:
@@ -197,6 +207,7 @@ def main() -> int:
     env["NMESH_SERVICE_PORT_BASE"] = str(service_base)
     env["PATH"] = str(backend.parent) + os.pathsep + env.get("PATH", "")
     started = False
+    asserted = False
     try:
         _json_step(env, "doctor --json", "doctor", "--json")
         plan = _json_step(env, "plan", "plan", "--roles", "chat", "--json")
@@ -223,6 +234,7 @@ def main() -> int:
             int(item["port"]) for item in services
             if isinstance(item, dict) and "port" in item
         )
+        ports = list(dict.fromkeys(ports))
         started = True
         _run_step(env, "up", "up", "--detach", "--no-download", "--port", str(gateway_port), "--json")
         base = f"http://127.0.0.1:{gateway_port}"
@@ -250,6 +262,7 @@ def main() -> int:
         _run_step(env, "down", "down", "--json")
         started = False
         _assert_no_listeners(ports)
+        asserted = True
         return SUCCESS
     except HarnessFailure as error:
         print(f"\nERROR: {error}", file=sys.stderr)
@@ -258,11 +271,12 @@ def main() -> int:
         if started:
             result = _command(env, "down", "--json")
             print(f"\n== teardown down ==\n{result.stdout}", end="")
-        time.sleep(0.2)
-        try:
-            _assert_no_listeners(ports)
-        except HarnessFailure as error:
-            print(f"\nERROR: {error}", file=sys.stderr)
+        if not asserted:
+            time.sleep(0.2)
+            try:
+                _assert_no_listeners(ports)
+            except HarnessFailure as error:
+                print(f"\nERROR: {error}", file=sys.stderr)
         shutil.rmtree(scratch, ignore_errors=True)
 
 
