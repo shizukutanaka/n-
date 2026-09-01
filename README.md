@@ -51,6 +51,12 @@ use `create_app(..., watchdog=False)` when embedding it without supervision.
 Set `NMESH_QUEUE_TIMEOUT` to control how long chat requests wait for a backend
 concurrency slot before receiving a retryable 503 response.
 
+Runtime state is persisted atomically in `~/.nmesh/state.json`; `status` checks
+PID liveness and `down` can terminate services owned by another process.
+Supervisor `atexit` cleanup is armed only after a child is actually launched,
+so read-only commands such as `status` and `bench` do not erase live runtime
+state.
+
 ## Concurrency slots
 
 Plans automatically size concurrency slots from memory left after placement;

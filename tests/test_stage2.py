@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
 import time
 from dataclasses import replace
 
+import psutil
 import pytest
 
 from nmesh.bench import benchmark, benchmark_key, load_cache, save_cache
@@ -235,12 +238,136 @@ def test_supervisor_adopts_healthy_external_service(
 def test_supervisor_status_state_fallback_is_running(tmp_path) -> None:
     state_path = tmp_path / "state.json"
     state_path.write_text(
-        '{"services": [{"service": "chat", "pid": 123, "port": 18010}]}',
+        json.dumps({"services": [{
+            "service": "chat",
+            "pid": os.getpid(),
+            "port": 18010,
+        }]}),
         encoding="utf-8",
     )
     result = Supervisor(state_path=state_path).status()
     assert result.running is True
     assert result.services[0]["service"] == "chat"
+
+
+class _StateProcess:
+    pid = os.getpid()
+
+    def poll(self) -> None:
+        return None
+
+    def terminate(self) -> None:
+        return None
+
+    def kill(self) -> None:
+        return None
+
+    def wait(self, timeout: float | None = None) -> int:
+        return 0
+
+
+def test_supervisor_state_is_shared_between_processes(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    plan = _recovery_plan(catalog)
+    state_path = tmp_path / "shared-state.json"
+    first = Supervisor(lambda _service: _StateProcess(), state_path, health_timeout=0.01)
+    first.up(plan, no_download=True, admit=False)
+    second = Supervisor(state_path=state_path)
+    result = second.status()
+    assert result.running
+    assert result.services[0]["running"] is True
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert payload["version"] == 2
+    assert payload["owner_pid"] == os.getpid()
+    assert payload["services"][0]["health_url"] is None
+    first.down()
+
+
+def test_supervisor_state_prunes_dead_entries(tmp_path) -> None:
+    state_path = tmp_path / "dead-state.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "owner_pid": 123,
+            "services": [{
+                "service": "chat",
+                "pid": os.getpid(),
+                "create_time": time.time() + 100,
+                "port": 18010,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    supervisor = Supervisor(state_path=state_path)
+    result = supervisor.status()
+    assert result.running is False
+    assert result.services[0]["running"] is False
+    assert not state_path.exists()
+
+
+def test_supervisor_status_does_not_arm_atexit(tmp_path) -> None:
+    state_path = tmp_path / "status-only.json"
+    state_path.write_text(
+        '{"version": 2, "owner_pid": 1, "services": []}',
+        encoding="utf-8",
+    )
+    supervisor = Supervisor(state_path=state_path)
+    supervisor.status()
+    assert supervisor._atexit_armed is False
+    assert state_path.exists()
+
+
+def test_supervisor_foreign_down_terminates_recorded_pid(tmp_path) -> None:
+    state_path = tmp_path / "foreign-state.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "owner_pid": os.getpid() + 1,
+            "services": [{
+                "service": "chat",
+                "pid": os.getpid(),
+                "create_time": psutil.Process(os.getpid()).create_time(),
+                "port": 18010,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        state_path=state_path,
+        terminator=terminated.append,
+    )
+    supervisor.down()
+    assert terminated == []
+    assert state_path.exists()
+    supervisor.down(foreign=True)
+    assert terminated == [os.getpid()]
+    assert not state_path.exists()
+
+
+def test_supervisor_loads_v1_state(tmp_path) -> None:
+    state_path = tmp_path / "v1-state.json"
+    state_path.write_text(
+        json.dumps({
+            "services": [{
+                "service": "chat",
+                "pid": os.getpid(),
+                "port": 18010,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        state_path=state_path,
+        terminator=terminated.append,
+    )
+    result = supervisor.status()
+    assert result.running
+    assert result.services[0]["running"] is True
+    supervisor.down(foreign=True)
+    assert terminated == [os.getpid()]
 
 
 def test_supervisor_heartbeat_adopts_healthy_service_past_restart_budget(

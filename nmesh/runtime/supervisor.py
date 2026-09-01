@@ -6,12 +6,15 @@ import os
 import signal
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
 from typing import Protocol
+
+import psutil
 
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.planner import Plan, PlannedService, build_plan, free_budgets, load_plan, save_plan
@@ -24,6 +27,8 @@ HEALTH_TIMEOUT = 120.0
 MAX_RESTARTS = 3
 RESTART_WINDOW = 300.0
 GIB = 1024**3
+STATE_VERSION = 2
+PID_CREATE_TIME_TOLERANCE = 2.0
 
 
 def _slots(plan: Plan | None, name: str) -> int:
@@ -37,6 +42,18 @@ def _slots(plan: Plan | None, name: str) -> int:
 
 def _port(plan: Plan, name: str, default: int) -> int:
     return next((item.port for item in plan.services if item.name == name), default)
+
+
+def _pid_alive(pid: int, create_time: float | None = None) -> bool:
+    try:
+        process = psutil.Process(pid)
+        if not process.is_running():
+            return False
+        if create_time is not None:
+            return abs(process.create_time() - create_time) <= PID_CREATE_TIME_TOLERANCE
+        return True
+    except (psutil.Error, OSError, ValueError):
+        return False
 
 
 class ProcessLike(Protocol):
@@ -62,7 +79,8 @@ class Supervisor:
     def __init__(self, launcher: Launcher | None = None, state_path: Path = STATE_PATH,
                  health_timeout: float = HEALTH_TIMEOUT,
                  probe: Callable[[], HardwareProfile] | None = None,
-                 catalog: Callable[[], Sequence[ModelSpec]] | None = None):
+                 catalog: Callable[[], Sequence[ModelSpec]] | None = None,
+                 terminator: Callable[[int], None] | None = None):
         self.launcher = launcher or self._launch
         self.state_path = state_path
         self.health_timeout = health_timeout
@@ -75,7 +93,80 @@ class Supervisor:
         self.failed: dict[str, str] = {}
         self.active_plan: Plan | None = None
         self._lock = RLock()
-        atexit.register(self.down)
+        self._atexit_armed = False
+        self._terminator = terminator or self._terminate_pid
+
+    def _arm_atexit(self) -> None:
+        if not self._atexit_armed:
+            atexit.register(self.down)
+            self._atexit_armed = True
+
+    @staticmethod
+    def _terminate_pid(pid: int) -> None:
+        try:
+            process = psutil.Process(pid)
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except psutil.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)
+        except (psutil.Error, OSError, ValueError):
+            return
+
+    @staticmethod
+    def _create_time(pid: int) -> float | None:
+        try:
+            return psutil.Process(pid).create_time()
+        except (psutil.Error, OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _health_url_alive(url: object) -> bool:
+        if not isinstance(url, str) or not url:
+            return False
+        try:
+            with urllib.request.urlopen(url, timeout=2):
+                return True
+        except urllib.error.HTTPError as error:
+            return error.code < 500
+        except (OSError, ValueError):
+            return False
+
+    @classmethod
+    def _entry_alive(cls, entry: Mapping[str, object]) -> bool:
+        pid = entry.get("pid")
+        if pid is not None:
+            try:
+                return _pid_alive(int(pid), float(entry["create_time"])
+                                 if entry.get("create_time") is not None else None)
+            except (TypeError, ValueError):
+                return False
+        if entry.get("shared") or entry.get("external"):
+            return cls._health_url_alive(entry.get("health_url"))
+        return False
+
+    def _load_state(self) -> dict[str, object] | None:
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _write_state(self, payload: Mapping[str, object]) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.state_path.with_name(
+            f".{self.state_path.name}.{os.getpid()}.tmp"
+        )
+        try:
+            temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            os.replace(temporary, self.state_path)
+        except OSError:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise
 
     def _already_up(self, service: PlannedService) -> bool:
         if service.name in self.processes:
@@ -177,30 +268,84 @@ class Supervisor:
         return False
 
     def _persist(self, plan: Plan) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        entries: list[dict[str, object]] = [
-            {"service": name, "pid": process.pid, "port": _port(plan, name, 0),
-             "started_at": time.time(), "shared": False,
-             "parallel_slots": _slots(plan, name)}
-            for name, process in self.processes.items()
+        existing = self._load_state() or {}
+        previous_owner = existing.get("owner_pid")
+        previous_entries = existing.get("services", [])
+        if not isinstance(previous_entries, list):
+            previous_entries = []
+        owned_names = (
+            set(self.processes) | self.shared_services | self.external_shared
+        )
+        entries = [
+            dict(entry) for entry in previous_entries
+            if isinstance(entry, dict)
+            and str(entry.get("service")) not in owned_names
+            and (
+                entry.get("owner_pid", previous_owner) != os.getpid()
+                and self._entry_alive(entry)
+            )
         ]
         entries.extend(
-            {"service": name, "pid": None, "port": _port(plan, name, 11434),
-             "started_at": time.time(), "shared": True,
-             "parallel_slots": _slots(plan, name)}
+            {
+                "service": name,
+                "pid": process.pid,
+                "port": _port(plan, name, 0),
+                "started_at": time.time(),
+                "create_time": self._create_time(process.pid),
+                "shared": False,
+                "external": False,
+                "parallel_slots": _slots(plan, name),
+                "health_url": next(
+                    (item.launch.health_url for item in plan.services if item.name == name),
+                    None,
+                ),
+                "owner_pid": os.getpid(),
+            }
+            for name, process in self.processes.items()
+        )
+        entries.extend(
+            {
+                "service": name,
+                "pid": None,
+                "port": _port(plan, name, 11434),
+                "started_at": time.time(),
+                "shared": True,
+                "external": False,
+                "parallel_slots": _slots(plan, name),
+                "health_url": next(
+                    (item.launch.health_url for item in plan.services if item.name == name),
+                    None,
+                ),
+                "owner_pid": os.getpid(),
+            }
             for name in self.shared_services if name not in self.processes
         )
         entries.extend(
-            {"service": name, "pid": None, "port": _port(plan, name, 0),
-             "started_at": time.time(), "shared": True, "external": True,
-             "parallel_slots": _slots(plan, name)}
+            {
+                "service": name,
+                "pid": None,
+                "port": _port(plan, name, 0),
+                "started_at": time.time(),
+                "shared": True,
+                "external": True,
+                "parallel_slots": _slots(plan, name),
+                "health_url": next(
+                    (item.launch.health_url for item in plan.services if item.name == name),
+                    None,
+                ),
+                "owner_pid": os.getpid(),
+            }
             for name in self.external_shared
             if name not in self.processes and name not in self.shared_services
         )
-        payload = {
+        for entry in entries:
+            if entry.get("create_time") is None:
+                entry.pop("create_time", None)
+        self._write_state({
+            "version": STATE_VERSION,
+            "owner_pid": os.getpid(),
             "services": entries,
-        }
-        self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        })
 
     def _fallback(self, plan: Plan, attempt: int) -> Plan:
         quant_order = ("f16", "q8_0", "q6_k", "q5_k_m", "q4_k_m", "q4_0", "q3_k_m", "q2_k")
@@ -280,6 +425,7 @@ class Supervisor:
                         if not no_download:
                             acquire(service)
                         self.processes[service.name] = self.launcher(service)
+                        self._arm_atexit()
                         self.failed.pop(service.name, None)
                         if not self._wait_health(service):
                             raise RuntimeError(f"Service did not become healthy: {service.name}")
@@ -294,7 +440,7 @@ class Supervisor:
                     current = self._fallback(current, attempt)
             raise RuntimeError("Runtime startup failed")
 
-    def down(self) -> RuntimeStatus:
+    def down(self, foreign: bool = False) -> RuntimeStatus:
         with self._lock:
             for process in list(self.processes.values()):
                 if process.poll() is not None:
@@ -316,16 +462,34 @@ class Supervisor:
                             process.kill()
                     else:
                         process.kill()
+            state = self._load_state()
+            if state is not None:
+                retained: list[dict[str, object]] = []
+                for entry in state.get("services", []):
+                    if not isinstance(entry, dict):
+                        continue
+                    owner = entry.get("owner_pid", state.get("owner_pid"))
+                    if owner == os.getpid():
+                        continue
+                    if foreign and entry.get("pid") is not None and self._entry_alive(entry):
+                        self._terminator(int(entry["pid"]))
+                        continue
+                    if self._entry_alive(entry):
+                        retained.append(entry)
+                state["services"] = retained
+                if retained:
+                    self._write_state(state)
+                else:
+                    try:
+                        self.state_path.unlink()
+                    except FileNotFoundError:
+                        pass
             self.processes.clear()
             self.shared_services.clear()
             self.external_shared.clear()
             self.restarts.clear()
             self.failed.clear()
             self.active_plan = None
-            try:
-                self.state_path.unlink()
-            except FileNotFoundError:
-                pass
         return RuntimeStatus(False, [])
 
     def ensure_running(self, service_name: str, plan: Plan | None = None) -> RuntimeStatus:
@@ -357,6 +521,7 @@ class Supervisor:
                         raise RuntimeError(f"Restart budget exhausted: {service_name}")
                     self._record_restart(service_name)
                 self.processes[service_name] = self.launcher(target)
+                self._arm_atexit()
                 if not self._wait_health(target):
                     self._stop_process(service_name)
                     raise RuntimeError(f"Service did not become healthy: {service_name}")
@@ -410,14 +575,28 @@ class Supervisor:
             "external": True,
             "parallel_slots": _slots(self.active_plan, name),
         } for name in self.external_shared if name not in self.processes)
-        from_state = False
         if not entries and self.state_path.exists():
-            try:
-                payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-                entries = list(payload.get("services", []))
-                from_state = True
-            except (OSError, json.JSONDecodeError):
-                entries = []
+            payload = self._load_state()
+            if payload is not None:
+                entries = [
+                    dict(item) for item in payload.get("services", [])
+                    if isinstance(item, dict)
+                ]
+                live_entries = []
+                for item in entries:
+                    item["running"] = self._entry_alive(item)
+                    if item["running"]:
+                        live_entries.append(item)
+                had_dead_entries = len(live_entries) != len(entries)
+                if had_dead_entries:
+                    if live_entries:
+                        payload["services"] = live_entries
+                        self._write_state(payload)
+                    else:
+                        try:
+                            self.state_path.unlink()
+                        except FileNotFoundError:
+                            pass
         names = {str(item.get("service")) for item in entries}
         entries.extend({
             "service": name,
@@ -430,9 +609,8 @@ class Supervisor:
                  if item.name == name), 1
             ) if self.active_plan is not None else 1,
         } for name, reason in self.failed.items() if name not in names)
-        default_running = bool(from_state)
         return RuntimeStatus(
-            any(bool(item.get("running", default_running)) for item in entries), entries
+            any(bool(item.get("running", False)) for item in entries), entries
         )
 
     def heartbeat(self) -> RuntimeStatus:
@@ -465,6 +643,7 @@ class Supervisor:
                 changed = True
                 try:
                     self.processes[service.name] = self.launcher(service)
+                    self._arm_atexit()
                     if not self._wait_health(service, timeout=min(self.health_timeout, 30.0)):
                         self._stop_process(service.name)
                         if not self._restart_budget(service.name):
@@ -495,8 +674,8 @@ def up(plan: Plan | None = None, no_download: bool = False, dry_run: bool = Fals
     )
 
 
-def down() -> RuntimeStatus:
-    return _default.down()
+def down(foreign: bool = False) -> RuntimeStatus:
+    return _default.down(foreign=foreign)
 
 
 def status() -> RuntimeStatus:

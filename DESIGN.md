@@ -355,7 +355,31 @@ The gateway server enables a 15-second watchdog by default. It runs the
 runtime heartbeat in a worker thread, continues after heartbeat exceptions,
 and cancels the task cleanly during shutdown. A request that encounters an
 upstream connection failure invokes `ensure_running` once and retries once
-before returning the existing 502 error.
+  before returning the existing 502 error.
+
+### 17.1 Runtime state ownership and liveness
+
+`~/.nmesh/state.json` is version 2 and is written atomically. It records the
+state owner, service PID/port, launch time, PID creation time when available,
+health URL, slot count, and whether an entry is shared or external. PID
+creation times are checked with a two-second tolerance to prevent PID reuse
+from making a stale process appear alive; legacy version-1 files without
+creation times remain readable and use PID existence checks.
+
+State writes merge live entries owned by other processes rather than deleting
+them. Status probes persisted entries and prunes dead entries, so a stale
+state file cannot report a corpse as running. `nmesh down` uses the foreign
+mode to terminate live PIDs owned by another process; supervisor cleanup and
+startup fallback only stop children owned by the current supervisor.
+PID-less shared or external entries are retained only while their persisted
+health URL responds, and each service entry carries its owner when state from
+multiple supervisors is merged.
+
+The supervisor arms its `atexit` cleanup handler lazily, immediately after it
+launches its first child. Constructing a supervisor for `status`, `doctor`, or
+`bench` therefore cannot delete another process's state file or stop its
+services. A foreground `nmesh up` still owns and cleans up its launched
+children on exit.
 
 ## 18. Concurrency slots
 
