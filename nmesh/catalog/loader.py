@@ -23,6 +23,7 @@ class ModelSpec:
     quality: float
     license: str
     sources: dict[str, str]
+    languages: tuple[str, ...] = ("en",)
 
 
 def _model_from_mapping(item: object) -> ModelSpec | None:
@@ -50,6 +51,14 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
         sources_value = item["sources"]
         if not isinstance(roles_value, list) or not isinstance(sources_value, dict):
             return None
+        languages_value = item.get("languages", ["en"])
+        if not isinstance(languages_value, list):
+            languages_value = ["en"]
+        languages = tuple(
+            str(value).strip().lower().split("-", 1)[0].split("_", 1)[0]
+            for value in languages_value
+            if str(value).strip()
+        ) or ("en",)
         return ModelSpec(
             id=str(item["id"]),
             family=str(item["family"]),
@@ -64,6 +73,7 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
             quality=float(item["quality"]),
             license=str(item["license"]),
             sources={str(key): str(value) for key, value in sources_value.items()},
+            languages=languages,
         )
     except (TypeError, ValueError):
         return None

@@ -1,3 +1,13 @@
+# Multilingual output and model language preference
+
+Set `NMESH_LANG=ja` (or `en`) to localize nmesh's runtime, planner, and CLI
+output. Argparse help text remains English and is intentionally outside this
+translation layer.
+
+Use `nmesh plan --lang ja,en` or `nmesh up --lang ja,en` to softly prioritize
+models that claim those languages. This is not a hard filter: nmesh still
+selects a runnable model when no candidate claims every requested language.
+Catalog language lists are publisher/vendor claims, not measured benchmarks.
 # nmesh
 
 nmesh は、ローカル LLM のためのハードウェア自動検出、モデル選択、メモリ見積もり、

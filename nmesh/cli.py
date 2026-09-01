@@ -14,6 +14,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from nmesh import i18n
 from nmesh.bench import benchmark_key, load_cache, measure, save_cache
 from nmesh.catalog import load_catalog
 from nmesh.paths import nmesh_home
@@ -33,6 +34,24 @@ from nmesh.runtime import up as runtime_up
 from nmesh.runtime.service_unit import service_unit
 from nmesh.telemetry import bench_overlay
 from nmesh.telemetry import summary as telemetry_summary
+
+
+def _configure_output() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+def _parse_languages(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    result: list[str] = []
+    for item in value.split(","):
+        primary = item.strip().lower().replace("_", "-").split("-", 1)[0]
+        if primary and primary not in result:
+            result.append(primary)
+    return tuple(result)
 
 
 def _bytes(value: float) -> str:
@@ -55,45 +74,74 @@ def _doctor(as_json: bool) -> int:
     except (OSError, RuntimeError) as error:
         print(f"doctor failed: {error}", file=sys.stderr)
         return 1
+    language = i18n.lang()
     free_vram, free_ram = free_budgets(profile)
+    selected = load_plan()
+    selected_models = [
+        {"service": service.name, "model": service.model_id,
+         "languages": list(service.languages)}
+        for service in selected.services
+    ] if selected is not None else []
     if as_json:
         data = asdict(profile)
+        data["warnings"] = [
+            i18n.t("warn.nvidia_unavailable", language)
+            if warning == "NVIDIA detection unavailable"
+            else warning
+            for warning in profile.warnings
+        ]
         data["free_budgets"] = {"vram_bytes": free_vram, "ram_bytes": free_ram}
+        data["selected_models"] = selected_models
         _print_json(data)
         return 0
     table = Table(title="nmesh doctor")
-    table.add_column("Item")
-    table.add_column("Value")
+    table.add_column(i18n.t("label.item", language))
+    table.add_column(i18n.t("label.value", language))
     table.add_row("OS", profile.os)
     table.add_row("CPU", profile.cpu_name)
-    table.add_row("RAM", f"{_bytes(profile.total_ram_bytes)} / {_bytes(profile.available_ram_bytes)} free")
+    table.add_row("RAM", f"{_bytes(profile.total_ram_bytes)} / {_bytes(profile.available_ram_bytes)} "
+                  f"{i18n.t('label.free', language)}")
     table.add_row("Tier", profile.tier.value)
-    table.add_row("GPU", ", ".join(gpu.name for gpu in profile.gpus) or "none")
+    table.add_row("GPU", ", ".join(gpu.name for gpu in profile.gpus)
+                  or i18n.t("label.none", language))
     for gpu in profile.gpus:
         table.add_row(
             f"GPU {gpu.index} VRAM",
-            f"{_bytes(gpu.total_vram_bytes)} / {_bytes(gpu.free_vram_bytes)} free "
-            f"({gpu.vram_source})",
+            f"{_bytes(gpu.total_vram_bytes)} / {_bytes(gpu.free_vram_bytes)} "
+            f"{i18n.t('label.free', language)} ({gpu.vram_source})",
         )
     table.add_row("Free budget VRAM", _bytes(free_vram))
     table.add_row("Free budget RAM", _bytes(free_ram))
-    Console().print(table)
-    backend = Table(title="Backends")
-    backend.add_column("Backend")
-    backend.add_column("Binary")
-    backend.add_column("Version")
-    backend.add_column("Flags")
+    Console(legacy_windows=False).print(table)
+    backend = Table(title=i18n.t("label.backends", language))
+    backend.add_column(i18n.t("label.backend", language))
+    backend.add_column(i18n.t("label.binary", language))
+    backend.add_column(i18n.t("label.version", language))
+    backend.add_column(i18n.t("label.flags", language))
     for name, version in profile.available_backends.items():
         flags = profile.backend_flags.get(name)
         backend.add_row(
             name,
-            profile.backend_paths.get(name, "not found"),
-            version or "not found",
-            str(len(flags)) if flags is not None else "unknown",
+            profile.backend_paths.get(name, i18n.t("label.not_found", language)),
+            version or i18n.t("label.not_found", language),
+            str(len(flags)) if flags is not None else i18n.t("label.unknown", language),
         )
-    Console().print(backend)
+    Console(legacy_windows=False).print(backend)
     for warning in profile.warnings:
-        Console().print(f"[yellow]- {warning}[/yellow]")
+        localized = (
+            i18n.t("warn.nvidia_unavailable", language)
+            if warning == "NVIDIA detection unavailable"
+            else warning
+        )
+        Console(legacy_windows=False).print(f"[yellow]- {localized}[/yellow]")
+    if selected_models:
+        models = Table(title=i18n.t("label.selected_models", language))
+        models.add_column(i18n.t("label.service", language))
+        models.add_column(i18n.t("label.model", language))
+        models.add_column(i18n.t("label.languages", language))
+        for item in selected_models:
+            models.add_row(item["service"], item["model"], ",".join(item["languages"]))
+        Console(legacy_windows=False).print(models)
     return 0
 
 
@@ -102,7 +150,9 @@ def _make_plan(args: argparse.Namespace) -> object:
     roles = [role.strip() for role in args.roles.split(",") if role.strip()]
     policy = Policy(roles=roles or ["chat", "code", "embed"], prefer=args.prefer,
                     max_context=args.context, budget_source=getattr(args, "budget", "total"),
-                    parallel_slots=getattr(args, "parallel_slots", None))
+                    parallel_slots=getattr(args, "parallel_slots", None),
+                    lang=i18n.lang(),
+                    languages=_parse_languages(getattr(args, "lang", None)))
     live = bench_overlay()
     args._telemetry_keys = len(live)
     cache = {**load_cache(), **live}
@@ -124,38 +174,56 @@ def _plan(args: argparse.Namespace) -> int:
         print(f"plan failed to save: {error}", file=sys.stderr)
         return 1
     if args.json:
-        _print_json(asdict(result))
+        data = asdict(result)
+        data["profile"]["warnings"] = [
+            i18n.t("warn.nvidia_unavailable", result.policy.lang)
+            if warning == "NVIDIA detection unavailable"
+            else warning
+            for warning in result.profile.warnings
+        ]
+        _print_json(data)
         return 0
+    language = result.policy.lang
     table = Table(title=f"nmesh plan ({result.tier.value})")
     for column in (
-        "Service", "Roles", "Model", "Backend", "Context", "Slots", "GPU layers", "tok/s",
+        i18n.t("label.service", language), i18n.t("label.roles", language),
+        i18n.t("label.model", language), i18n.t("label.backend", language),
+        i18n.t("label.context", language), i18n.t("label.slots", language),
+        i18n.t("label.gpu_layers", language), i18n.t("label.languages", language),
+        i18n.t("label.tps", language),
     ):
         table.add_column(column)
     for service in result.services:
         table.add_row(service.name, ",".join(service.roles), service.model_id, service.backend,
                       str(service.context), str(service.memory.parallel_slots),
-                      str(service.n_gpu_layers), f"{service.decode_tps:.1f}")
-    Console().print(table)
-    Console().print(f"Saved to: {path}")
+                      str(service.n_gpu_layers), ",".join(service.languages),
+                      f"{service.decode_tps:.1f}")
+    Console(legacy_windows=False).print(table)
+    Console(legacy_windows=False).print(i18n.t("label.saved_to", language, path=path))
     if result.policy.budget_source == "free":
-        Console().print("Budgets use currently-free memory.")
+        Console(legacy_windows=False).print(i18n.t("label.free_budgets", language))
     if getattr(args, "_telemetry_keys", 0):
-        Console().print(
-            f"Live telemetry overlay: {args._telemetry_keys} benchmark key(s)"
+        Console(legacy_windows=False).print(
+            i18n.t("label.telemetry_overlay", language, count=args._telemetry_keys)
         )
     for hint in result.install_hints:
-        Console().print(f"[yellow]Install: {hint}[/yellow]")
+        Console(legacy_windows=False).print(f"[yellow]{i18n.t('label.install', language, hint=hint)}[/yellow]")
     for warning in result.warnings:
-        Console().print(f"[yellow]Warning: {warning}[/yellow]")
+        Console(legacy_windows=False).print(f"[yellow]{i18n.t('label.warning', language, warning=warning)}[/yellow]")
+    if not getattr(args, "lang", None) and language != "en":
+        Console(legacy_windows=False).print(i18n.t("hint.language", language, locale=language, language=language))
     if args.explain:
-        memory = Table(title="Memory")
-        for column in ("Service", "Weights", "KV", "GPU / CPU"):
+        memory = Table(title=i18n.t("label.memory", language))
+        for column in (i18n.t("label.service", language),
+                       i18n.t("label.weights", language),
+                       i18n.t("label.kv", language),
+                       i18n.t("label.gpu_cpu", language)):
             memory.add_column(column)
         for service in result.services:
             item = service.memory
             memory.add_row(service.name, _bytes(item.weight_bytes), _bytes(item.kv_cache_bytes),
                            f"{_bytes(item.gpu_bytes)} / {_bytes(item.cpu_bytes)}")
-        Console().print(memory)
+        Console(legacy_windows=False).print(memory)
     return 0
 
 
@@ -182,11 +250,20 @@ def _runtime(args: argparse.Namespace) -> int:
             if _plan(argparse.Namespace(
                 roles="chat,code,embed", prefer="balanced", context=None,
                 budget="total", parallel_slots=None, json=False, explain=False,
+                lang=None,
             )) != 0:
                 return 1
             plan = load_plan()
         if plan is None or not plan.services or not plan.runnable:
             return 1
+        if args.lang:
+            plan = build_plan(
+                detect_hardware(), load_catalog(),
+                replace(plan.policy, lang=i18n.lang(),
+                        languages=_parse_languages(args.lang)),
+                {**load_cache(), **bench_overlay()},
+            )
+            save_plan(plan)
         cache = {**load_cache(), **bench_overlay()}
         try:
             result = runtime_up(
@@ -256,35 +333,41 @@ def _runtime(args: argparse.Namespace) -> int:
     status_data = asdict(result)
     if args.command == "up" and args.detach and gateway_log is not None:
         status_data["gateway_log"] = str(gateway_log)
+    language = i18n.lang()
     if args.command == "status":
         status_data["telemetry"] = telemetry_summary()
     if args.json:
         _print_json(status_data)
     elif args.command == "up" and args.dry_run:
         for item in result.services:
-            Console().print(
-                f"{item['service']}: backend={item['backend']} model_ref={item['model_ref']} "
-                f"port={item['port']} context={item['context']} slots={item['parallel_slots']} "
-                f"n_gpu_layers={item['n_gpu_layers']} argv={' '.join(str(x) for x in item['argv'])}"
+            Console(legacy_windows=False).print(
+                i18n.t("label.backend_detail", language, service=item["service"],
+                       backend=item["backend"], model_ref=item["model_ref"],
+                       port=item["port"], context=item["context"],
+                       slots=item["parallel_slots"], layers=item["n_gpu_layers"],
+                       argv=" ".join(str(x) for x in item["argv"]))
             )
     else:
-        Console().print(result)
+        Console(legacy_windows=False).print(result)
         if args.command == "up" and args.detach and gateway_log is not None:
-            Console().print(f"Gateway log: {gateway_log}")
+            Console(legacy_windows=False).print(
+                i18n.t("label.gateway_log", language, path=gateway_log)
+            )
         if args.command == "status":
             for item in result.services:
                 if item.get("note"):
-                    Console().print(
-                        f"{item.get('service')}: note: {item['note']}"
+                    Console(legacy_windows=False).print(
+                        i18n.t("label.acquisition_note", language,
+                               service=item.get("service"), note=item["note"])
                     )
             telemetry = telemetry_summary()
-            table = Table(title="Telemetry")
-            table.add_column("Service")
-            table.add_column("Samples")
-            table.add_column("Decode median")
-            table.add_column("TTFT median")
-            table.add_column("TTFT p95")
-            table.add_column("Total median")
+            table = Table(title=i18n.t("label.telemetry", language))
+            table.add_column(i18n.t("label.service", language))
+            table.add_column(i18n.t("label.samples", language))
+            table.add_column(i18n.t("label.decode_median", language))
+            table.add_column(i18n.t("label.ttft_median", language))
+            table.add_column(i18n.t("label.ttft_p95", language))
+            table.add_column(i18n.t("label.total_median", language))
             for service, metrics in telemetry.items():
                 table.add_row(
                     service,
@@ -294,7 +377,7 @@ def _runtime(args: argparse.Namespace) -> int:
                     f"{metrics.get('ttft_s_p95', 0):.3f}",
                     f"{metrics.get('total_s_median', 0):.3f}",
                 )
-            Console().print(table)
+            Console(legacy_windows=False).print(table)
     return 0 if exit_code == 0 else 1
 
 
@@ -346,15 +429,14 @@ def _reload(args: argparse.Namespace) -> int:
                 return 1
             data = json.loads(response.read().decode())
     except (OSError, json.JSONDecodeError) as error:
-        print(f"gateway reload failed: {error}", file=sys.stderr)
+        print(i18n.t("err.gateway_reload", i18n.lang(), error=error), file=sys.stderr)
         return 1
     if args.json:
         _print_json(data)
     else:
-        print(
-            f"Reloaded: {', '.join(data.get('services', []))} "
-            f"(created_at={data.get('created_at')})"
-        )
+        print(i18n.t("label.reloaded", i18n.lang(),
+                     services=", ".join(data.get("services", [])),
+                     created_at=data.get("created_at")))
     return 0
 
 
@@ -365,13 +447,15 @@ def _models(args: argparse.Namespace) -> int:
     if args.json:
         _print_json([asdict(model) for model in models])
         return 0
-    table = Table(title="Models")
-    for column in ("ID", "Family", "Params", "Roles", "Context"):
+    language = i18n.lang()
+    table = Table(title=i18n.t("label.models", language))
+    for column in ("ID", "Family", "Params", i18n.t("label.roles", language),
+                   i18n.t("label.context", language), i18n.t("label.languages", language)):
         table.add_column(column)
     for model in models:
         table.add_row(model.id, model.family, str(model.params), ",".join(model.roles),
-                      str(model.max_context))
-    Console().print(table)
+                      str(model.max_context), ",".join(model.languages))
+    Console(legacy_windows=False).print(table)
     return 0
 
 
@@ -396,7 +480,7 @@ def _bench(args: argparse.Namespace) -> int:
     service = next((item for item in plan.services if item.name == args.service), plan.services[0])
     running = runtime_status()
     if not _service_running(service, running):
-        print("このサービスは起動していません。先に nmesh up を実行してください", file=sys.stderr)
+        print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
         return 1
     base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
@@ -404,7 +488,7 @@ def _bench(args: argparse.Namespace) -> int:
     try:
         measurement = measure(service, base_url, decode_tokens=args.tokens)
     except (OSError, RuntimeError) as error:
-        print(f"ベンチマークに失敗しました: {error}", file=sys.stderr)
+        print(i18n.t("err.bench_measure", i18n.lang(), error=error), file=sys.stderr)
         return 1
     cache = load_cache()
     key = benchmark_key(service.model_id, service.quant, service.backend,
@@ -424,11 +508,14 @@ def _bench(args: argparse.Namespace) -> int:
         _print_json(result)
     else:
         marker = "~" if measurement.approximate else ""
-        Console().print(
-            f"median decode: {marker}{measurement.decode_tps} tok/s\n"
-            f"prefill:       {marker}{measurement.prefill_tps} tok/s\n"
-            f"TTFT:          {marker}{measurement.ttft_s} s"
-        )
+        language = i18n.lang()
+        Console(legacy_windows=False).print("\n".join((
+            i18n.t("label.median_decode", language, marker=marker,
+                   value=measurement.decode_tps),
+            i18n.t("label.prefill", language, marker=marker,
+                   value=measurement.prefill_tps),
+            i18n.t("label.ttft", language, marker=marker, value=measurement.ttft_s),
+        )))
     return 0
 
 
@@ -446,12 +533,13 @@ def _run_prompt(args: argparse.Namespace) -> int:
                 print(payload["choices"][0]["message"]["content"])
             return 0
     except (OSError, json.JSONDecodeError, KeyError, IndexError) as error:
-        output = f"gateway unavailable: {error}"
+        output = i18n.t("err.gateway_unavailable", i18n.lang(), error=error)
     print(output)
     return 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _configure_output()
     parser = argparse.ArgumentParser(prog="nmesh")
     parser.add_argument("--dry-run", action="store_true", dest="global_dry_run")
     parser.add_argument("--json", action="store_true", dest="global_json")
@@ -466,6 +554,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--context", type=int)
     plan.add_argument("--budget", choices=("total", "free"), default="total")
     plan.add_argument("--parallel-slots", type=int)
+    plan.add_argument("--lang")
     up_parser = sub.add_parser("up")
     up_parser.add_argument("--json", action="store_true")
     up_parser.add_argument("--dry-run", action="store_true")
@@ -473,6 +562,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--detach", action="store_true")
     up_parser.add_argument("--port", type=int, default=18000)
     up_parser.add_argument("--ignore-free-memory", action="store_true")
+    up_parser.add_argument("--lang")
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=18000)
     reload_parser = sub.add_parser("reload")
@@ -523,7 +613,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         layer_values = sorted({service.n_gpu_layers or 0, max((service.n_gpu_layers or 0) // 2, 0)})
         running = runtime_status()
         if not _service_running(service, running):
-            print("このサービスは起動していません。先に nmesh up を実行してください", file=sys.stderr)
+            print(i18n.t("err.autotune_up", i18n.lang()), file=sys.stderr)
             return 1
         base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
             f"http://127.0.0.1:{service.port}"
@@ -551,7 +641,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     runtime_up(tuned_plan, no_download=True)
                     result = measure(tuned, base_url)
                 except (OSError, RuntimeError) as error:
-                    print(f"オートチューンに失敗しました: {error}", file=sys.stderr)
+                    print(i18n.t("err.autotune_measure", i18n.lang(), error=error),
+                          file=sys.stderr)
                     runtime_down()
                     try:
                         runtime_up(plan, no_download=True)
@@ -591,7 +682,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         result = {"service": service.name, "context": best[0], "n_gpu_layers": best[1],
                   "decode_tps": best[2]}
-        _print_json(result) if args.json else Console().print(result)
+        _print_json(result) if args.json else Console(legacy_windows=False).print(result)
         return 0
     if args.command == "autostart":
         filename, text, install_command = service_unit(args.port)
