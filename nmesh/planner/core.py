@@ -258,9 +258,7 @@ def _launch(
         parallel = not known or any(
             flag in backend_flags for flag in ("-np", "--parallel")
         )
-        gpu_layers = not known or any(
-            flag in backend_flags for flag in ("-ngl", "--gpu-layers", "--n-gpu-layers")
-        )
+        gpu_layers = not known or _supports_gpu_layers(backend_flags)
         tensor_split = not known or "--tensor-split" in backend_flags
         argv = [
             "llama-server", "-m", ref, "-c",
@@ -276,7 +274,9 @@ def _launch(
         if gpu_layers:
             argv += ["-ngl", str(layers)]
         elif warnings is not None:
-            warnings.append("llamacpp: -ngl unsupported; omitting GPU-layer placement")
+            warnings.append(
+                "llamacpp: GPU-layer flags unsupported; using CPU placement"
+            )
         if tensor_parallel > 1 and tensor_split:
             argv += ["--tensor-split", ",".join(["1"] * tensor_parallel)]
         elif tensor_parallel > 1 and warnings is not None:
@@ -370,6 +370,15 @@ def _split_memory(memory: MemoryEstimate, model_layers: int, layers: int) -> tup
     return gpu_bytes, cpu_bytes
 
 
+GPU_LAYER_FLAGS = ("-ngl", "--gpu-layers", "--n-gpu-layers")
+
+
+def _supports_gpu_layers(
+    flags: frozenset[str] | tuple[str, ...] | None,
+) -> bool:
+    return flags is None or any(flag in flags for flag in GPU_LAYER_FLAGS)
+
+
 def _plan_group(group: list[str], pools: dict[str, list[_Candidate]]) -> _Candidate | None:
     if not group:
         return None
@@ -389,10 +398,25 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
     tensor_parallel = 1
     name = group[0]
     port = 18010 + len(services)
+    layers = candidate.n_gpu_layers
+    memory = candidate.memory
+    backend_flags = profile.backend_flags.get(candidate.backend)
+    if (
+        candidate.backend == "llamacpp"
+        and not _supports_gpu_layers(backend_flags)
+    ):
+        model_layers = max(
+            1, round(memory.weight_bytes / memory.per_layer_bytes)
+        )
+        layers = 0
+        gpu_bytes, cpu_bytes = _split_memory(memory, model_layers, layers)
+        memory = replace(
+            memory, n_gpu_layers=layers, gpu_bytes=gpu_bytes, cpu_bytes=cpu_bytes
+        )
     launch = _launch(
         candidate.backend, candidate.model, candidate.quant, candidate.context,
-        port, candidate.n_gpu_layers, tensor_parallel,
-        backend_flags=profile.backend_flags.get(candidate.backend),
+        port, layers or 0, tensor_parallel,
+        backend_flags=backend_flags,
         warnings=warnings,
     )
     if candidate.backend == "llamacpp" and "hf_gguf" in candidate.model.sources:
@@ -402,9 +426,9 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         candidate.model.sources.get("hf_gguf") or candidate.model.sources.get("hf"),
         candidate.quant, candidate.backend, candidate.context,
         11434 if candidate.backend == "ollama" else port, indices,
-        None if candidate.backend in {"vllm", "mlx"} else candidate.n_gpu_layers,
+        None if candidate.backend in {"vllm", "mlx"} else layers,
         profile.tier not in {Tier.T0_CPU, Tier.T1_LOW} or not services,
-        candidate.memory, candidate.decode_tps, candidate.estimated, launch,
+        memory, candidate.decode_tps, candidate.estimated, launch,
     )
     services.append(service)
     for role in group:
@@ -446,22 +470,42 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
         elif "--tensor-split" in argv:
             index = argv.index("--tensor-split")
             del argv[index:index + 2]
-        gpu_layer_flags = ("-ngl", "--gpu-layers", "--n-gpu-layers")
-        gpu_layers_supported = (
-            backend_flags is None
-            or any(flag in backend_flags for flag in gpu_layer_flags)
-        )
+        gpu_layer_flags = GPU_LAYER_FLAGS
+        gpu_layers_supported = _supports_gpu_layers(backend_flags)
         if layers is not None and gpu_layers_supported:
             for flag in gpu_layer_flags:
                 if flag in argv:
                     argv[argv.index(flag) + 1] = str(layers)
                     break
         elif not gpu_layers_supported:
+            removed = False
             for flag in gpu_layer_flags:
                 if flag in argv:
                     index = argv.index(flag)
                     del argv[index:index + 2]
+                    removed = True
+            if removed and warnings is not None:
+                warnings.append(
+                    "llamacpp: GPU-layer flags unsupported; using CPU placement"
+                )
     return replace(service.launch, argv=argv)
+
+
+def _cpu_llamacpp_service(
+    service: PlannedService,
+    backend_flags: frozenset[str] | tuple[str, ...] | None,
+    warnings: list[str],
+) -> PlannedService:
+    if service.backend != "llamacpp" or _supports_gpu_layers(backend_flags):
+        return service
+    model_layers = max(
+        1, round(service.memory.weight_bytes / service.memory.per_layer_bytes)
+    )
+    memory = replace(service.memory, n_gpu_layers=0)
+    gpu_bytes, cpu_bytes = _split_memory(memory, model_layers, 0)
+    memory = replace(memory, gpu_bytes=gpu_bytes, cpu_bytes=cpu_bytes)
+    launch = _rebuild_launch(service, 1, 0, backend_flags, warnings)
+    return replace(service, n_gpu_layers=0, memory=memory, launch=launch)
 
 
 def _place_services(
@@ -473,6 +517,12 @@ def _place_services(
 ) -> list[PlannedService]:
     if not profile.gpus:
         return services
+    services = [
+        _cpu_llamacpp_service(
+            service, profile.backend_flags.get(service.backend), warnings
+        )
+        for service in services
+    ]
     indices = [gpu.index for gpu in profile.gpus]
     budgets = {
         gpu.index: _gpu_budget(gpu, policy.budget_source) for gpu in profile.gpus
@@ -852,7 +902,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         datetime.now(timezone.utc).isoformat(), __version__, profile, profile.tier, selected,
         services, swap_group,
         RoutingRules("rules", role_to_service, {"nmesh-auto": role_to_service.get("chat", "")}),
-        warnings, list(dict.fromkeys(hints)), total_download, runnable,
+        list(dict.fromkeys(warnings)), list(dict.fromkeys(hints)),
+        total_download, runnable,
     )
 
 
@@ -876,7 +927,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
         {str(k): v if isinstance(v, str) else None for k, v in pd["available_backends"].items()},
         Tier(str(pd["tier"])), [str(x) for x in pd.get("warnings", [])],
         {
-            str(name): frozenset(str(flag) for flag in flags)
+            str(name): tuple(str(flag) for flag in flags)
             for name, flags in pd.get("backend_flags", {}).items()
         },
         {str(name): str(path) for name, path in pd.get("backend_paths", {}).items()},
@@ -933,11 +984,7 @@ def save_plan(plan: Plan, path: Path | None = None) -> Path:
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     try:
         payload = asdict(plan)
-        payload["profile"]["backend_flags"] = {
-            name: sorted(flags) for name, flags in plan.profile.backend_flags.items()
-        }
-        payload["profile"]["backend_paths"] = dict(plan.profile.backend_paths)
-        temporary.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(temporary, target)
     except OSError:
         try:

@@ -42,7 +42,7 @@ class HardwareProfile:
     available_backends: dict[str, str | None]
     tier: Tier
     warnings: list[str] = field(default_factory=list)
-    backend_flags: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    backend_flags: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     backend_paths: Mapping[str, str] = field(default_factory=dict)
 
 

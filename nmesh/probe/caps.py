@@ -100,7 +100,7 @@ def llamacpp_caps(
             [str(resolved), "--help"],
             capture_output=True,
             text=True,
-            timeout=3,
+            timeout=10,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -116,7 +116,7 @@ def llamacpp_caps(
             [str(resolved), "--version"],
             capture_output=True,
             text=True,
-            timeout=3,
+            timeout=10,
             check=False,
         )
         version_text = (version_result.stdout or version_result.stderr or "").strip()

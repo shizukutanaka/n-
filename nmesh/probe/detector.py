@@ -175,14 +175,14 @@ def _detect_rocm(warnings: list[str]) -> list[GPUInfo]:
 
 def _detect_backends(
     warnings: list[str],
-) -> tuple[dict[str, str | None], dict[str, frozenset[str]], dict[str, str]]:
+) -> tuple[dict[str, str | None], dict[str, tuple[str, ...]], dict[str, str]]:
     backends: dict[str, str | None] = {
         "ollama": None,
         "llamacpp": None,
         "vllm": None,
         "mlx": None,
     }
-    flags: dict[str, frozenset[str]] = {}
+    flags: dict[str, tuple[str, ...]] = {}
     paths: dict[str, str] = {}
     commands: dict[str, list[str]] = {
         "ollama": ["ollama", "--version"],
@@ -201,7 +201,7 @@ def _detect_backends(
         if name == "llamacpp":
             caps = llamacpp_caps(str(executable))
             if caps is not None:
-                flags[name] = caps.flags
+                flags[name] = tuple(sorted(caps.flags))
     python_executable = shutil.which("python") or shutil.which("python3")
     if python_executable:
         output, error = _run([python_executable, "-c", "import mlx_lm; print('installed')"])

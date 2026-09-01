@@ -49,9 +49,6 @@ def _doctor(as_json: bool) -> int:
     free_vram, free_ram = free_budgets(profile)
     if as_json:
         data = asdict(profile)
-        data["backend_flags"] = {
-            name: sorted(flags) for name, flags in profile.backend_flags.items()
-        }
         data["free_budgets"] = {"vram_bytes": free_vram, "ram_bytes": free_ram}
         _print_json(data)
         return 0
@@ -106,12 +103,7 @@ def _plan(args: argparse.Namespace) -> int:
     result = _make_plan(args)
     path = save_plan(result)
     if args.json:
-        data = asdict(result)
-        data["profile"]["backend_flags"] = {
-            name: sorted(flags) for name, flags in result.profile.backend_flags.items()
-        }
-        data["profile"]["backend_paths"] = dict(result.profile.backend_paths)
-        _print_json(data)
+        _print_json(asdict(result))
         return 0
     table = Table(title=f"nmesh plan ({result.tier.value})")
     for column in (
