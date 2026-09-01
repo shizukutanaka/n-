@@ -24,6 +24,7 @@ class ModelSpec:
     license: str
     sources: dict[str, str]
     languages: tuple[str, ...] = ("en",)
+    pooling: str = ""
 
 
 def _model_from_mapping(item: object) -> ModelSpec | None:
@@ -74,6 +75,7 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
             license=str(item["license"]),
             sources={str(key): str(value) for key, value in sources_value.items()},
             languages=languages,
+            pooling=str(item.get("pooling", "")),
         )
     except (TypeError, ValueError):
         return None

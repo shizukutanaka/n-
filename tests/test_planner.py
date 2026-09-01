@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
+from pathlib import Path
 
 import pytest
 
@@ -9,7 +10,8 @@ import nmesh.planner.core as planner_core
 from nmesh import i18n
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.planner import Policy, build_plan, estimate_memory, free_budgets, load_plan, save_plan
-from nmesh.probe import GPUInfo, HardwareProfile, Tier, classify_tier
+from nmesh.planner.core import _gpu_budget
+from nmesh.probe import GPUInfo, HardwareProfile, Tier, classify_tier, profile_from_dict
 
 GIB = 1024**3
 
@@ -242,6 +244,45 @@ def test_embedding_has_activation_memory_not_kv(catalog: list[ModelSpec]) -> Non
 def test_cpu_quality_preference_avoids_tiny_model(catalog: list[ModelSpec]) -> None:
     result = build_plan(profile(32), catalog, Policy(roles=["chat"]))
     assert result.services[0].model_id != "qwen2.5-0.5b-instruct"
+
+
+def test_sequential_selection_reserves_prior_service_capacity(tmp_path) -> None:
+    profile_path = Path(__file__).parents[1] / "profiles" / "t3-rtx4090-24gb.json"
+    hardware = profile_from_dict(
+        json.loads(profile_path.read_text(encoding="utf-8"))
+    )
+    catalog = load_catalog(user_path=tmp_path / "models.yaml")
+    result = build_plan(
+        hardware, catalog, Policy(roles=["chat", "embed"], min_decode_tps=0)
+    )
+    chat = next(service for service in result.services if service.name == "chat")
+    embed = next(service for service in result.services if service.name == "embed")
+
+    assert embed.memory.gpu_bytes <= max(
+        _gpu_budget(hardware.gpus[0]) - chat.memory.gpu_bytes, 0.0
+    ) + 1
+    assert embed.quant != "f16" or embed.n_gpu_layers == 0
+    assert any("capacity-forced tradeoff" in warning for warning in result.warnings)
+
+
+def test_zero_selection_reservation_is_a_noop(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    hardware = profile(32, (12,))
+    policy = Policy(roles=["chat"], min_decode_tps=0)
+    first = build_plan(hardware, [model], policy)
+    second = build_plan(hardware, [model], policy)
+    first_data = asdict(first)
+    second_data = asdict(second)
+    first_data.pop("created_at")
+    second_data.pop("created_at")
+    assert first_data == second_data
+
+    default = planner_core._candidate_for(model, hardware, policy, None)
+    explicit_zero = planner_core._candidate_for(
+        model, hardware, policy, None,
+        reserved_vram_bytes=0.0, reserved_ram_bytes=0.0,
+    )
+    assert default == explicit_zero
 
 
 def test_oversized_model_uses_tensor_parallel() -> None:
@@ -581,8 +622,12 @@ def test_swap_group_reserves_only_largest_member() -> None:
         [service.name for service in services], [],
     )
     assert all(service.gpu_indices == [0] for service in services)
-    largest = max(service.memory.gpu_bytes for service in services)
-    assert largest == max(service.memory.gpu_bytes for service in services)
+    reserved_vram, reserved_ram = planner_core._reserved_memory(
+        services, [service.name for service in services]
+    )
+    assert reserved_vram == max(service.memory.gpu_bytes for service in services)
+    assert reserved_ram == max(service.memory.cpu_bytes for service in services)
+    assert reserved_vram < sum(service.memory.gpu_bytes for service in services)
 
 
 def test_llamacpp_layers_are_resolved_against_assigned_card() -> None:
@@ -608,3 +653,157 @@ def test_llamacpp_layers_are_resolved_against_assigned_card() -> None:
     assert resolved.launch.argv[resolved.launch.argv.index("-ngl") + 1] == str(
         resolved.n_gpu_layers
     )
+
+
+def test_embedding_launch_flags_are_role_aware(catalog: list[ModelSpec]) -> None:
+    assert next(item for item in catalog if item.id == "bge-m3").pooling == "cls"
+    assert next(item for item in catalog if item.id == "nomic-embed-text-v1.5").pooling == "mean"
+    result = build_plan(
+        profile(64, (24,)),
+        catalog,
+        Policy(roles=["chat", "embed"], min_decode_tps=0),
+    )
+    embed = next(service for service in result.services if service.roles == ["embed"])
+    chat = next(service for service in result.services if "chat" in service.roles)
+    assert "--embeddings" in embed.launch.argv
+    assert embed.launch.argv[embed.launch.argv.index("--pooling") + 1] == "cls"
+    assert embed.launch.argv[embed.launch.argv.index("-b") + 1] == str(embed.context)
+    assert embed.launch.argv[embed.launch.argv.index("-ub") + 1] == str(embed.context)
+    assert not any(
+        flag in chat.launch.argv
+        for flag in ("--embeddings", "--embedding", "--pooling", "-b", "-ub")
+    )
+
+
+def test_embedding_capability_warnings_and_flags() -> None:
+    model = ModelSpec(
+        "embed-test", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
+        8192, ["embed"], 80.0, "apache", {"hf_gguf": "embed-test.gguf"},
+        pooling="mean",
+    )
+    no_embedding = replace(
+        profile(32, (12,)),
+        backend_flags={
+            "llamacpp": ("--parallel", "-ngl", "--pooling", "-b", "-ub"),
+        },
+    )
+    unsupported = build_plan(
+        no_embedding, [model], Policy(roles=["embed"], min_decode_tps=0)
+    )
+    unsupported_service = unsupported.services[0]
+    assert "--embeddings" not in unsupported_service.launch.argv
+    assert any("embedding flags are unsupported" in warning for warning in unsupported.warnings)
+
+    no_batch = replace(
+        profile(32, (12,)),
+        backend_flags={
+            "llamacpp": ("--parallel", "-ngl", "--embeddings", "--pooling"),
+        },
+    )
+    limited = build_plan(
+        no_batch, [model], Policy(roles=["embed"], min_decode_tps=0)
+    )
+    limited_service = limited.services[0]
+    assert "-b" not in limited_service.launch.argv
+    assert "-ub" not in limited_service.launch.argv
+    assert any("above 512 tokens may be rejected" in warning for warning in limited.warnings)
+
+
+def test_embedding_uses_supported_flag_aliases_without_warnings() -> None:
+    model = ModelSpec(
+        "embed-alias", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
+        8192, ["embed"], 80.0, "apache", {"hf_gguf": "embed-alias.gguf"},
+        pooling="mean",
+    )
+    aliases = replace(
+        profile(32, (12,)),
+        backend_flags={
+            "llamacpp": (
+                "--embedding",
+                "--batch-size",
+                "--ubatch-size",
+                "--pooling",
+                "--parallel",
+                "-ngl",
+            ),
+        },
+    )
+    result = build_plan(
+        aliases, [model], Policy(roles=["embed"], min_decode_tps=0)
+    )
+    argv = result.services[0].launch.argv
+    assert "--embedding" in argv
+    assert "--embeddings" not in argv
+    assert argv[argv.index("--batch-size") + 1] == "8192"
+    assert argv[argv.index("--ubatch-size") + 1] == "8192"
+    assert not result.warnings
+
+
+def test_embedding_warns_when_pooling_flag_is_unsupported() -> None:
+    model = ModelSpec(
+        "embed-no-pooling-flag", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
+        8192, ["embed"], 80.0, "apache", {"hf_gguf": "embed-test.gguf"},
+        pooling="mean",
+    )
+    no_pooling = replace(
+        profile(32, (12,)),
+        backend_flags={
+            "llamacpp": ("--embeddings", "-b", "-ub", "--parallel", "-ngl"),
+        },
+    )
+    result = build_plan(
+        no_pooling, [model], Policy(roles=["embed"], min_decode_tps=0)
+    )
+    assert "--pooling" not in result.services[0].launch.argv
+    assert any("pooling metadata is unknown" in warning for warning in result.warnings)
+
+
+def test_embedding_unknown_pooling_warns() -> None:
+    model = ModelSpec(
+        "embed-no-pooling", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
+        8192, ["embed"], 80.0, "apache", {"hf_gguf": "embed-test.gguf"},
+    )
+    result = build_plan(
+        profile(32, (12,)), [model], Policy(roles=["embed"], min_decode_tps=0)
+    )
+    assert any("pooling metadata is unknown" in warning for warning in result.warnings)
+
+
+def test_embedding_batch_flags_remain_at_context_after_slot_assignment(
+    catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(
+        profile(64, (24,)),
+        catalog,
+        Policy(roles=["embed"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert service.launch.argv[service.launch.argv.index("-b") + 1] == str(service.context)
+    assert service.launch.argv[service.launch.argv.index("-ub") + 1] == str(service.context)
+
+
+def test_embedding_backend_warnings_are_honest() -> None:
+    model = ModelSpec(
+        "embed-hf", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
+        8192, ["embed"], 80.0, "apache", {"hf": "test/embed"},
+        pooling="mean",
+    )
+    vllm = build_plan(
+        profile(128, (80, 80), os_name="linux"),
+        [model],
+        Policy(roles=["embed"], min_decode_tps=0),
+    )
+    assert any("not verified by nmesh" in warning for warning in vllm.warnings)
+
+    mlx = build_plan(
+        profile(
+            64,
+            (44,),
+            os_name="macos",
+            unified=True,
+            backends={"ollama": None, "llamacpp": None, "vllm": None, "mlx": "installed"},
+        ),
+        [model],
+        Policy(roles=["embed"], min_decode_tps=0),
+    )
+    assert any("does not provide an embedding endpoint" in warning for warning in mlx.warnings)

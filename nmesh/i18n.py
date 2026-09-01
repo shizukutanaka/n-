@@ -10,6 +10,11 @@ SUPPORTED = ("en", "ja")
 
 MESSAGES = {
     "en": {
+        "warn.embeddings_unsupported": "{model}: llama.cpp embedding flags are unsupported; /v1/embeddings may be unavailable.",
+        "warn.embeddings_pooling_unknown": "{model}: pooling metadata is unknown to nmesh or unsupported by this llama.cpp build; publisher/vendor may use pooling type 'none', which the OpenAI-compatible embedding endpoint rejects.",
+        "warn.embeddings_batch_limit": "{model}: embedding inputs above 512 tokens may be rejected because the physical batch-size flags are unavailable (planned context {context}).",
+        "warn.embeddings_backend_unsupported": "{model}: mlx_lm.server does not provide an embedding endpoint.",
+        "warn.embeddings_backend_unverified": "{model}: vLLM embedding and pooling behavior is not verified by nmesh; nmesh does not guess or inject settings.",
         "install.ollama": "Install Ollama: https://ollama.com/download",
         "install.llamacpp": "Install llama.cpp: winget install llama.cpp / brew install llama.cpp / build from source",
         "install.vllm": "Install vLLM: pip install vllm",
@@ -20,6 +25,7 @@ MESSAGES = {
         "warn.gpu_over_budget": "{service}: GPU placement needs {committed:.0f} bytes, over the {budget:.0f}-byte budget",
         "warn.backend_placement_estimate": "{service} uses {backend}, which manages its own placement; this RAM fallback is nmesh's estimate, not a controllable setting.",
         "warn.gpu_layers_cpu_fallback": "{service}: GPU layers did not fit on any card; it will run on the CPU.",
+        "warn.selection_capacity_tradeoff": "{role}: chose {chosen_model} {chosen_quant} instead of {empty_model} {empty_quant} because {reserved_vram_gib:.1f} GiB of GPU and {reserved_ram_gib:.1f} GiB of RAM are already committed; this is a capacity-forced tradeoff.",
         "warn.layers_reduced": "{service}: reduced GPU layers to {layers}; {previous} layers did not fit in RAM",
         "warn.slots_clamped": "{service}: parallel_slots {requested} exceeds available memory; using {slots}",
         "warn.no_source": "{model}: no Hugging Face or Ollama source is configured",
@@ -111,6 +117,11 @@ MESSAGES = {
         "label.backend_detail": "{service}: backend={backend} model_ref={model_ref} port={port} context={context} slots={slots} n_gpu_layers={layers} argv={argv}",
     },
     "ja": {
+        "warn.embeddings_unsupported": "{model}: llama.cpp は埋め込みフラグに対応していないため、/v1/embeddings は利用できない可能性があります。",
+        "warn.embeddings_pooling_unknown": "{model}: pooling のメタデータが nmesh に不明、またはこの llama.cpp ビルドで未対応です。publisher/vendor が pooling type 'none' を使うと、OpenAI 互換の埋め込みエンドポイントは拒否する可能性があります。",
+        "warn.embeddings_batch_limit": "{model}: 物理バッチサイズのフラグに対応していないため、512 トークンを超える入力は拒否される可能性があります（計画コンテキスト {context}）。",
+        "warn.embeddings_backend_unsupported": "{model}: mlx_lm.server には埋め込みエンドポイントがありません。",
+        "warn.embeddings_backend_unverified": "{model}: vLLM の埋め込みと pooling の挙動は nmesh で未検証です。nmesh は設定を推測して注入しません。",
         "install.ollama": "Ollamaをインストールしてください: https://ollama.com/download",
         "install.llamacpp": "llama.cppをインストールしてください: winget install llama.cpp / brew install llama.cpp / ソースからビルド",
         "install.vllm": "vLLMをインストールしてください: pip install vllm",
@@ -120,6 +131,7 @@ MESSAGES = {
         "warn.tensor_split_unsupported": "llama.cpp: --tensor-splitは未対応です。テンソル分割を省略します",
         "warn.gpu_over_budget": "{service}: GPU配置に{committed:.0f}バイト必要ですが、予算{budget:.0f}バイトを超えています",
         "warn.backend_placement_estimate": "{service} は {backend} を使用し、配置を独自に管理します。この RAM フォールバックは nmesh の推定であり、制御可能な設定ではありません。",
+        "warn.selection_capacity_tradeoff": "{role}: 空き容量だけの場合は {empty_model} {empty_quant} ですが、GPU {reserved_vram_gib:.1f} GiB / RAM {reserved_ram_gib:.1f} GiB が既に使用中のため、{chosen_model} {chosen_quant} を選択しました。これは容量によるトレードオフです。",
         "warn.layers_reduced": "{service}: GPUレイヤーを{layers}に減らしました。{previous}レイヤーはRAMに収まりません",
         "warn.slots_clamped": "{service}: parallel_slots {requested}は空きメモリを超えるため、{slots}にします",
         "warn.no_source": "{model}: Hugging FaceまたはOllamaのソースが設定されていません",
