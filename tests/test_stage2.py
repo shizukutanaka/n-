@@ -8,8 +8,10 @@ from nmesh.bench import benchmark, benchmark_key, load_cache, save_cache
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.gateway import route
 from nmesh.planner import Policy, build_plan, free_budgets
+from nmesh.planner import save_plan as planner_save_plan
 from nmesh.probe import HardwareProfile
 from nmesh.runtime import Supervisor
+from nmesh.runtime import supervisor as supervisor_module
 
 from .test_planner import profile
 
@@ -17,6 +19,15 @@ from .test_planner import profile
 @pytest.fixture
 def catalog() -> list[ModelSpec]:
     return load_catalog()
+
+
+@pytest.fixture(autouse=True)
+def isolate_saved_plan(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        supervisor_module,
+        "save_plan",
+        lambda plan: planner_save_plan(plan, tmp_path / "plan.json"),
+    )
 
 
 def test_route_rules(catalog: list[object]) -> None:
@@ -63,7 +74,7 @@ def test_supervisor_fallback_with_fake_launcher(tmp_path, catalog: list[object])
         return FakeProcess()
 
     supervisor = Supervisor(launcher, tmp_path / "state.json", health_timeout=0.01)
-    result = supervisor.up(plan, no_download=True)
+    result = supervisor.up(plan, no_download=True, admit=False)
     assert result.running
     assert len(calls) == 2
     supervisor.down()
@@ -102,6 +113,9 @@ def test_supervisor_admission_replans_against_free_memory(
         available_ram_bytes=16 * 1024**3,
         gpus=[replace(base.gpus[0], free_vram_bytes=8 * 1024**3)],
     )
+    plan_path = tmp_path / "plan.json"
+    planner_save_plan(plan, plan_path)
+    original_plan = plan_path.read_bytes()
     supervisor = Supervisor(
         lambda _service: _AdmissionProcess(),
         tmp_path / "admit.json",
@@ -114,7 +128,9 @@ def test_supervisor_admission_replans_against_free_memory(
     assert result.running
     assert supervisor.active_plan is not None
     assert any("再計画しました" in warning for warning in supervisor.active_plan.warnings)
+    assert supervisor.active_plan.services != plan.services
     assert supervisor.active_plan.services[0].memory.gpu_bytes <= free_budgets(starved)[0] + 1
+    assert plan_path.read_bytes() == original_plan
     supervisor.down()
 
 
@@ -175,4 +191,25 @@ def test_supervisor_admission_leaves_roomy_plan_unchanged(
     assert result.running
     assert supervisor.active_plan is not None
     assert supervisor.active_plan.services == plan.services
+    supervisor.down()
+
+
+def test_supervisor_admission_excludes_already_up_services(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    profile_now = profile(32, (24,))
+    plan = build_plan(profile_now, catalog, Policy(roles=["chat"]))
+    supervisor = Supervisor(
+        lambda _service: _AdmissionProcess(),
+        tmp_path / "already-up.json",
+        health_timeout=0.01,
+        probe=lambda: replace(
+            profile_now,
+            available_ram_bytes=1 * 1024**3,
+            gpus=[replace(profile_now.gpus[0], free_vram_bytes=1 * 1024**3)],
+        ),
+        catalog=lambda: catalog,
+    )
+    supervisor.processes[plan.services[0].name] = _AdmissionProcess()
+    assert supervisor._admit(plan) is plan
     supervisor.down()

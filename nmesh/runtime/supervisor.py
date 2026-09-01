@@ -60,12 +60,25 @@ class Supervisor:
         self._lock = RLock()
         atexit.register(self.down)
 
+    def _already_up(self, service: PlannedService) -> bool:
+        return (
+            service.name in self.processes
+            or (
+                service.launch.shared_daemon
+                and service.launch.health_url is not None
+                and self._healthy(service)
+            )
+        )
+
     def _admit(self, plan: Plan,
                bench_cache: Mapping[object, float] | None = None) -> Plan:
         profile = self.probe()
         vram, ram = free_budgets(profile)
-        resident = [service for service in plan.services if service.name not in plan.swap_group]
-        swapped = [service for service in plan.services if service.name in plan.swap_group]
+        pending = [service for service in plan.services if not self._already_up(service)]
+        if not pending:
+            return plan
+        resident = [service for service in pending if service.name not in plan.swap_group]
+        swapped = [service for service in pending if service.name in plan.swap_group]
         need_gpu = sum(service.memory.gpu_bytes for service in resident) + max(
             [service.memory.gpu_bytes for service in swapped], default=0.0
         )
@@ -198,16 +211,17 @@ class Supervisor:
             for attempt in range(1, 4):
                 try:
                     for service in current.services:
-                        if (service.launch.shared_daemon and service.launch.health_url is not None
-                                and self._healthy(service)):
-                            self.shared_services.add(service.name)
+                        if self._already_up(service):
+                            if service.launch.shared_daemon:
+                                self.shared_services.add(service.name)
                             continue
                         if not no_download:
                             acquire(service)
                         self.processes[service.name] = self.launcher(service)
                         if not self._wait_health(service):
                             raise RuntimeError(f"Service did not become healthy: {service.name}")
-                    save_plan(current)
+                    if current is plan:
+                        save_plan(current)
                     self._persist(current)
                     return self.status()
                 except (OSError, RuntimeError):
