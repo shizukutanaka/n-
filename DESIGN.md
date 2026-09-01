@@ -356,3 +356,30 @@ runtime heartbeat in a worker thread, continues after heartbeat exceptions,
 and cancels the task cleanly during shutdown. A request that encounters an
 upstream connection failure invokes `ensure_running` once and retries once
 before returning the existing 502 error.
+
+## 18. Concurrency slots
+
+The planner assigns `parallel_slots` after model placement. Extra slots are
+eligible only for fully GPU-resident decode services with nonzero KV bytes per
+token and a backend slot cap greater than one. CPU-only and partial-offload
+services stay at one slot: batching helps when the GPU is idle during
+memory-bound decode, while CPU and partially offloaded workloads are already
+limited by memory bandwidth and would only split that bottleneck. Embedding
+services also stay at one because their KV bytes per token are zero.
+
+The automatic allocator groups services by their GPU domain or the RAM budget.
+It starts with the bytes for one slot, reserves only half of leftover memory
+(`SLOT_SPARE_FRACTION = 0.5`) for additional slots, and processes services in
+plan order so the primary chat service receives spare capacity first. Services
+in a swap group count only the largest member because those services are
+mutually exclusive at runtime. A forced `Policy.parallel_slots` value is
+clamped to the backend cap and to the memory that actually fits; a warning
+reports a requested value that had to be reduced.
+
+llama.cpp receives explicit `--parallel N` and `-c context * slots`. Explicitly
+passing `--parallel 1` avoids llama-server's automatic slot selection and
+ensures each slot receives the planned context. vLLM receives
+`--max-num-seqs N` and `--gpu-memory-utilization`; its fraction is clamped to
+`[0.10, 0.95]` and derived from the service's GPU bytes divided by assigned
+GPUs' total VRAM. Total VRAM is used for this fraction even when planning uses
+free-memory budgets, because vLLM defines the option relative to total VRAM.

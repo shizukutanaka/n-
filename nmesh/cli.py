@@ -83,7 +83,8 @@ def _make_plan(args: argparse.Namespace) -> object:
     profile = detect_hardware()
     roles = [role.strip() for role in args.roles.split(",") if role.strip()]
     policy = Policy(roles=roles or ["chat", "code", "embed"], prefer=args.prefer,
-                    max_context=args.context, budget_source=getattr(args, "budget", "total"))
+                    max_context=args.context, budget_source=getattr(args, "budget", "total"),
+                    parallel_slots=getattr(args, "parallel_slots", None))
     live = bench_overlay()
     args._telemetry_keys = len(live)
     cache = {**load_cache(), **live}
@@ -97,11 +98,14 @@ def _plan(args: argparse.Namespace) -> int:
         _print_json(asdict(result))
         return 0
     table = Table(title=f"nmesh plan ({result.tier.value})")
-    for column in ("Service", "Roles", "Model", "Backend", "Context", "GPU layers", "tok/s"):
+    for column in (
+        "Service", "Roles", "Model", "Backend", "Context", "Slots", "GPU layers", "tok/s",
+    ):
         table.add_column(column)
     for service in result.services:
         table.add_row(service.name, ",".join(service.roles), service.model_id, service.backend,
-                      str(service.context), str(service.n_gpu_layers), f"{service.decode_tps:.1f}")
+                      str(service.context), str(service.memory.parallel_slots),
+                      str(service.n_gpu_layers), f"{service.decode_tps:.1f}")
     Console().print(table)
     Console().print(f"Saved to: {path}")
     if result.policy.budget_source == "free":
@@ -175,7 +179,7 @@ def _runtime(args: argparse.Namespace) -> int:
         for item in result.services:
             Console().print(
                 f"{item['service']}: backend={item['backend']} model_ref={item['model_ref']} "
-                f"port={item['port']} context={item['context']} "
+                f"port={item['port']} context={item['context']} slots={item['parallel_slots']} "
                 f"n_gpu_layers={item['n_gpu_layers']} argv={' '.join(str(x) for x in item['argv'])}"
             )
     else:
@@ -319,6 +323,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--roles", default="chat,code,embed")
     plan.add_argument("--context", type=int)
     plan.add_argument("--budget", choices=("total", "free"), default="total")
+    plan.add_argument("--parallel-slots", type=int)
     up_parser = sub.add_parser("up")
     up_parser.add_argument("--json", action="store_true")
     up_parser.add_argument("--dry-run", action="store_true")

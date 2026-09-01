@@ -44,6 +44,7 @@ class MemoryEstimate:
     cpu_bytes: float = 0.0
     gpu_bytes: float = 0.0
     n_gpu_layers: int = 0
+    parallel_slots: int = 1
 
 
 @dataclass
@@ -55,6 +56,7 @@ class Policy:
     allow_download_gb: float = 60.0
     kv_quant: str = "f16"
     budget_source: str = "total"
+    parallel_slots: int | None = None
 
 
 @dataclass(frozen=True)
@@ -226,20 +228,34 @@ def _has_source(backend: str, model: ModelSpec) -> bool:
     }.get(backend, "") in model.sources
 
 
-def _launch(backend: str, model: ModelSpec, quant: str, context: int, port: int,
-            layers: int, tensor_parallel: int) -> LaunchSpec:
+def _launch(
+    backend: str,
+    model: ModelSpec,
+    quant: str,
+    context: int,
+    port: int,
+    layers: int,
+    tensor_parallel: int,
+    slots: int = 1,
+    gpu_fraction: float | None = None,
+) -> LaunchSpec:
     ref = _source_for(backend, model, quant)
     if backend == "ollama":
         return LaunchSpec(["ollama", "serve"], {}, "http://127.0.0.1:11434/api/tags", True)
     if backend == "vllm":
         argv = ["vllm", "serve", ref, "--host", "127.0.0.1", "--port", str(port),
-                "--max-model-len", str(context)]
+                "--max-model-len", str(context), "--max-num-seqs", str(slots)]
         if tensor_parallel > 1:
             argv += ["--tensor-parallel-size", str(tensor_parallel)]
+        if gpu_fraction is not None:
+            argv += ["--gpu-memory-utilization", f"{gpu_fraction:.3f}"]
     elif backend == "mlx":
         argv = ["python", "-m", "mlx_lm.server", "--model", ref, "--port", str(port)]
     else:
-        argv = ["llama-server", "-m", ref, "-c", str(context), "--port", str(port), "-ngl", str(layers)]
+        argv = [
+            "llama-server", "-m", ref, "-c", str(context * slots),
+            "--parallel", str(slots), "--port", str(port), "-ngl", str(layers),
+        ]
         if tensor_parallel > 1:
             argv += ["--tensor-split", ",".join(["1"] * tensor_parallel)]
     health_path = "/health" if backend == "llamacpp" else "/v1/models"
@@ -298,13 +314,7 @@ def _candidate_for(model: ModelSpec, profile: HardwareProfile, policy: Policy,
             layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
             if profile.tier == Tier.T0_CPU:
                 layers = 0
-            on_gpu = layers > 0
-            gpu_bytes = base.per_layer_bytes * layers + (
-                base.kv_cache_bytes + base.compute_overhead if on_gpu else 0.0
-            )
-            cpu_bytes = base.per_layer_bytes * (model.n_layers - layers) + (
-                0.0 if on_gpu else base.kv_cache_bytes + base.compute_overhead
-            )
+            gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
             if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
                 continue
             backend, installed = _backend(profile, model, layers)
@@ -324,6 +334,17 @@ def _candidate_for(model: ModelSpec, profile: HardwareProfile, policy: Policy,
                                          backend, installed, score, bench is None))
             break
     return sorted(candidates, key=lambda item: item.score, reverse=True)
+
+
+def _split_memory(memory: MemoryEstimate, model_layers: int, layers: int) -> tuple[float, float]:
+    on_gpu = layers > 0
+    gpu_bytes = memory.per_layer_bytes * layers + (
+        memory.kv_cache_bytes + memory.compute_overhead if on_gpu else 0.0
+    )
+    cpu_bytes = memory.per_layer_bytes * (model_layers - layers) + (
+        0.0 if on_gpu else memory.kv_cache_bytes + memory.compute_overhead
+    )
+    return gpu_bytes, cpu_bytes
 
 
 def _plan_group(group: list[str], pools: dict[str, list[_Candidate]]) -> _Candidate | None:
@@ -382,6 +403,176 @@ def _replace_gpu(service: PlannedService, indices: list[int]) -> PlannedService:
                           service.estimated, service.launch)
 
 
+SLOT_CAPS = {"llamacpp": 8, "vllm": 32, "mlx": 1, "ollama": 1}
+SLOT_SPARE_FRACTION = 0.5
+
+
+def _assign_slots(
+    services: list[PlannedService],
+    profile: HardwareProfile,
+    policy: Policy,
+    swap_group: Sequence[str] = (),
+    warnings: list[str] | None = None,
+) -> list[PlannedService]:
+    vram_budget = {
+        gpu.index: _gpu_budget(gpu, policy.budget_source) for gpu in profile.gpus
+    }
+    ram_budget = _profile_budgets(profile, policy.budget_source)[1]
+    swap_names = set(swap_group)
+
+    def domain(service: PlannedService) -> tuple[str, tuple[int, ...]]:
+        if service.gpu_indices:
+            return "gpu", tuple(service.gpu_indices)
+        if profile.gpus and service.n_gpu_layers is not None and service.n_gpu_layers > 0:
+            return "gpu", tuple(gpu.index for gpu in profile.gpus)
+        return "cpu", ()
+
+    def budget(key: tuple[str, tuple[int, ...]]) -> float:
+        kind, indices = key
+        if kind == "cpu":
+            return ram_budget
+        return sum(vram_budget.get(index, 0.0) for index in indices)
+
+    grouped: dict[tuple[str, tuple[int, ...]], list[PlannedService]] = {}
+    for service in services:
+        grouped.setdefault(domain(service), []).append(service)
+    usage: dict[tuple[str, tuple[int, ...]], float] = {}
+    swap_usage: dict[tuple[str, tuple[int, ...]], dict[str, float]] = {}
+    swap_accounted: dict[tuple[str, tuple[int, ...]], float] = {}
+    for key, members in grouped.items():
+        resident = [item for item in members if item.name not in swap_names]
+        swapped = [item for item in members if item.name in swap_names]
+        usage[key] = sum(
+            item.memory.gpu_bytes if key[0] == "gpu" else item.memory.cpu_bytes
+            for item in resident
+        )
+        if swapped:
+            swap_usage[key] = {
+                item.name: (
+                    item.memory.gpu_bytes
+                    if key[0] == "gpu"
+                    else item.memory.cpu_bytes
+                )
+                for item in swapped
+            }
+            swap_accounted[key] = max(swap_usage[key].values(), default=0.0)
+            usage[key] += swap_accounted[key]
+
+    result: list[PlannedService] = []
+    for service in services:
+        cap = SLOT_CAPS.get(service.backend, 1)
+        model_layers = max(
+            1, round(service.memory.weight_bytes / service.memory.per_layer_bytes)
+        )
+        full_gpu = (
+            service.n_gpu_layers is None
+            or service.n_gpu_layers >= model_layers
+        )
+        eligible = (
+            cap > 1
+            and full_gpu
+            and service.memory.kv_bytes_per_tok > 0
+        )
+        requested = policy.parallel_slots
+        if requested is not None:
+            requested = max(1, requested)
+        slots = 1
+        key = domain(service)
+        leftover = max(budget(key) - usage[key], 0.0)
+        if eligible and requested != 1:
+            kv_per_slot = service.memory.kv_bytes_per_tok * service.context
+            if kv_per_slot > 0:
+                if requested is None:
+                    available_extra = math.floor(
+                        leftover * SLOT_SPARE_FRACTION / kv_per_slot
+                    )
+                    slots = min(cap, 1 + max(available_extra, 0))
+                else:
+                    available = math.floor(leftover / kv_per_slot)
+                    slots = min(cap, requested, 1 + max(available, 0))
+                if requested is not None and slots != requested and warnings is not None:
+                    warnings.append(
+                        f"parallel_slots requested {requested}, granted {slots} for {service.name}"
+                    )
+        slots = max(1, slots)
+        if slots > 1:
+            kv_cache_bytes = service.memory.kv_bytes_per_tok * service.context * slots
+            rewritten = replace(
+                service.memory,
+                kv_cache_bytes=kv_cache_bytes,
+                total_bytes=(
+                    service.memory.weight_bytes
+                    + kv_cache_bytes
+                    + service.memory.compute_overhead
+                ),
+                parallel_slots=slots,
+            )
+            layers = model_layers if service.n_gpu_layers is None else service.n_gpu_layers
+            gpu_bytes, cpu_bytes = _split_memory(rewritten, model_layers, layers)
+            domain_fit = gpu_bytes <= budget(key) + 1 if key[0] == "gpu" else True
+            if not domain_fit or cpu_bytes > ram_budget + 1:
+                slots = 1
+        if slots == 1:
+            rewritten = replace(service.memory, parallel_slots=1)
+            gpu_bytes, cpu_bytes = _split_memory(
+                rewritten,
+                model_layers,
+                model_layers if service.n_gpu_layers is None else service.n_gpu_layers,
+            )
+        rewritten = replace(rewritten, gpu_bytes=gpu_bytes, cpu_bytes=cpu_bytes)
+        gpu_fraction = None
+        if service.backend == "vllm" and profile.gpus:
+            indices = service.gpu_indices or [gpu.index for gpu in profile.gpus]
+            total_vram = sum(
+                gpu.total_vram_bytes for gpu in profile.gpus if gpu.index in indices
+            )
+            if total_vram > 0:
+                gpu_fraction = min(
+                    0.95, max(0.10, rewritten.gpu_bytes / total_vram)
+                )
+        launch = _rewrite_launch(service, slots, gpu_fraction)
+        result.append(replace(service, memory=rewritten, launch=launch))
+        old_bytes = (
+            service.memory.gpu_bytes if key[0] == "gpu" else service.memory.cpu_bytes
+        )
+        new_bytes = rewritten.gpu_bytes if key[0] == "gpu" else rewritten.cpu_bytes
+        if service.name in swap_names:
+            swap_usage.setdefault(key, {})[service.name] = new_bytes
+            new_accounted = max(swap_usage[key].values())
+            usage[key] += new_accounted - swap_accounted.get(key, 0.0)
+            swap_accounted[key] = new_accounted
+        else:
+            usage[key] += new_bytes - old_bytes
+    return result
+
+
+def _rewrite_launch(
+    service: PlannedService, slots: int, gpu_fraction: float | None
+) -> LaunchSpec:
+    argv = list(service.launch.argv)
+    if service.backend == "llamacpp":
+        if "-c" in argv:
+            argv[argv.index("-c") + 1] = str(service.context * slots)
+        else:
+            argv.extend(["-c", str(service.context * slots)])
+        if "--parallel" in argv:
+            argv[argv.index("--parallel") + 1] = str(slots)
+        else:
+            argv.extend(["--parallel", str(slots)])
+    elif service.backend == "vllm":
+        if "--max-num-seqs" in argv:
+            argv[argv.index("--max-num-seqs") + 1] = str(slots)
+        else:
+            argv.extend(["--max-num-seqs", str(slots)])
+        if gpu_fraction is not None:
+            formatted = f"{gpu_fraction:.3f}"
+            if "--gpu-memory-utilization" in argv:
+                argv[argv.index("--gpu-memory-utilization") + 1] = formatted
+            else:
+                argv.extend(["--gpu-memory-utilization", formatted])
+    return replace(service.launch, argv=argv)
+
+
 def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                policy: Policy | None = None,
                bench_cache: Mapping[object, float] | None = None) -> Plan:
@@ -431,6 +622,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                 profile.gpus[0], selected.budget_source
             ) + 1:
                 services[index] = _replace_gpu(service, [profile.gpus[index % len(profile.gpus)].index])
+    services = _assign_slots(services, profile, selected, swap_group, warnings)
     if total_download > selected.allow_download_gb * GIB:
         warnings.append("Planned downloads exceed policy.allow_download_gb.")
     covered = set(role_to_service)
@@ -469,7 +661,8 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
     policy = Policy([str(x) for x in pol["roles"]], float(pol["min_decode_tps"]),
                     int(pol["max_context"]) if pol["max_context"] is not None else None,
                     str(pol["prefer"]), float(pol["allow_download_gb"]),
-                    str(pol.get("kv_quant", "f16")), str(pol.get("budget_source", "total")))
+                    str(pol.get("kv_quant", "f16")), str(pol.get("budget_source", "total")),
+                    int(pol["parallel_slots"]) if pol.get("parallel_slots") is not None else None)
     services: list[PlannedService] = []
     for item in data["services"]:
         sd = item
@@ -480,6 +673,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             raise TypeError("Invalid nested data")
         memory_values = {str(k): v for k, v in md.items()}
         memory_values["n_gpu_layers"] = int(memory_values["n_gpu_layers"])
+        memory_values["parallel_slots"] = int(memory_values.get("parallel_slots", 1))
         memory = MemoryEstimate(**memory_values)
         launch = LaunchSpec(
             [str(x) for x in ld["argv"]], {str(k): str(v) for k, v in ld["env"].items()},

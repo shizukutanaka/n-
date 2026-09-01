@@ -217,3 +217,107 @@ def test_plan_save_load(tmp_path, catalog: list[ModelSpec]) -> None:
     assert loaded is not None
     assert loaded == result
     assert isinstance(loaded.services[0].memory.n_gpu_layers, int)
+
+
+def test_full_gpu_slots_expand_llamacpp_context_and_kv(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    result = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = result.services[0]
+    assert service.backend == "llamacpp"
+    assert service.memory.parallel_slots > 1
+    argv = service.launch.argv
+    slots = service.memory.parallel_slots
+    assert argv[argv.index("--parallel") + 1] == str(slots)
+    assert argv[argv.index("-c") + 1] == str(service.context * slots)
+    assert service.memory.kv_cache_bytes == pytest.approx(
+        service.memory.kv_bytes_per_tok * service.context * slots
+    )
+    gpu = next(item for item in result.profile.gpus if item.index == service.gpu_indices[0])
+    assert service.memory.gpu_bytes <= planner_core._gpu_budget(gpu) + 1
+
+
+def test_cpu_partial_offload_and_embedding_keep_one_slot(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    cpu = build_plan(profile(8), [model])
+    assert all(item.memory.parallel_slots == 1 for item in cpu.services)
+    llama = next(item for item in cpu.services if item.backend == "llamacpp")
+    assert llama.launch.argv[llama.launch.argv.index("--parallel") + 1] == "1"
+    assert llama.launch.argv[llama.launch.argv.index("-c") + 1] == str(llama.context)
+
+    partial = build_plan(profile(16, (4,)), [model], Policy(roles=["chat"]))
+    assert partial.services[0].memory.parallel_slots == 1
+
+    embed = build_plan(profile(32), catalog, Policy(roles=["embed"]))
+    assert embed.services[0].memory.parallel_slots == 1
+    assert embed.services[0].memory.kv_bytes_per_tok == 0
+
+
+def test_vllm_slots_and_total_vram_fraction() -> None:
+    model = ModelSpec(
+        "oversized", "test", 150_000_000_000, 100, 100, 100, 128,
+        12800, 4096, ["chat"], 99.0, "test", {"hf": "test/model"},
+    )
+    result = build_plan(
+        profile(128, (80, 80), os_name="linux"),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert service.backend == "vllm"
+    argv = service.launch.argv
+    assert "--max-num-seqs" in argv
+    fraction = float(argv[argv.index("--gpu-memory-utilization") + 1])
+    total_vram = sum(
+        gpu.total_vram_bytes for gpu in result.profile.gpus
+        if gpu.index in service.gpu_indices
+    )
+    assert 0.10 < fraction <= 0.95
+    assert fraction == round(
+        min(0.95, max(0.10, service.memory.gpu_bytes / total_vram)), 3
+    )
+
+
+def test_forced_slots_clamp_and_one_is_silent(catalog: list[ModelSpec]) -> None:
+    small = build_plan(
+        profile(32, (12,)), [
+            next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+        ],
+        Policy(roles=["chat"], parallel_slots=32),
+    )
+    service = small.services[0]
+    assert service.memory.parallel_slots < 32
+    assert any("requested 32" in warning and "granted" in warning
+               for warning in small.warnings)
+
+    large = build_plan(
+        profile(64, (24,)), [next(
+            item for item in catalog if item.id == "qwen2.5-7b-instruct"
+        )],
+        Policy(roles=["chat"], parallel_slots=1),
+    )
+    assert large.services[0].memory.parallel_slots == 1
+    assert not any("parallel_slots" in warning for warning in large.warnings)
+
+
+def test_parallel_slot_round_trip_and_old_memory_default(
+    tmp_path, catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(
+        profile(64, (24,)), [next(
+            item for item in catalog if item.id == "qwen2.5-7b-instruct"
+        )],
+        Policy(roles=["chat"], parallel_slots=2),
+    )
+    path = tmp_path / "slots.json"
+    save_plan(result, path)
+    loaded = load_plan(path)
+    assert loaded is not None
+    assert loaded.policy.parallel_slots == 2
+    assert loaded.services[0].memory.parallel_slots == 2
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["services"][0]["memory"].pop("parallel_slots")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    old = load_plan(path)
+    assert old is not None
+    assert old.services[0].memory.parallel_slots == 1
