@@ -1,0 +1,252 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import threading
+from dataclasses import replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import ClassVar
+
+from fastapi.testclient import TestClient
+
+import nmesh.gateway as gateway_module
+from nmesh.catalog import ModelSpec
+from nmesh.gateway import create_app
+from nmesh.gateway.limit import SlotLimiter
+from nmesh.planner import Policy, build_plan
+
+from .test_planner import profile
+
+
+def _llama_plan(slots: int):
+    model = ModelSpec(
+        "limited-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"},
+    )
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        memory=replace(plan.services[0].memory, parallel_slots=slots),
+    )
+    return replace(plan, services=[service])
+
+
+class _LimitHandler(BaseHTTPRequestHandler):
+    requests = 0
+    status = 200
+    block = False
+    stream = False
+    started: ClassVar[threading.Event] = threading.Event()
+    second_started: ClassVar[threading.Event] = threading.Event()
+    release: ClassVar[threading.Event] = threading.Event()
+
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = json.loads(self.rfile.read(length) or b"{}")
+        type(self).requests += 1
+        if type(self).requests >= 2:
+            type(self).second_started.set()
+        type(self).started.set()
+        if type(self).stream and body.get("stream"):
+            self.send_response(type(self).status)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n')
+            self.wfile.flush()
+            type(self).release.wait(timeout=5)
+            self.wfile.write(b"data: [DONE]\n\n")
+            return
+        if type(self).block:
+            type(self).release.wait(timeout=5)
+        payload = json.dumps({"model": "test", "choices": []}).encode()
+        self.send_response(type(self).status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def _limit_upstream() -> ThreadingHTTPServer:
+    _LimitHandler.requests = 0
+    _LimitHandler.status = 200
+    _LimitHandler.block = False
+    _LimitHandler.stream = False
+    _LimitHandler.started.clear()
+    _LimitHandler.second_started.clear()
+    _LimitHandler.release.clear()
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _LimitHandler)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    return upstream
+
+
+def test_slot_limiter_enforces_limits_and_releases() -> None:
+    plan = _llama_plan(1)
+    service = plan.services[0]
+
+    async def scenario() -> None:
+        limiter = SlotLimiter()
+        limiter.size(plan)
+        first = await limiter.acquire(service, 1.0)
+        assert first is not None
+        waiting = asyncio.create_task(limiter.acquire(service, 0.01))
+        await asyncio.sleep(0)
+        assert limiter.metrics()[service.name]["waiting"] == 1
+        assert await waiting is None
+        assert limiter.metrics()[service.name]["in_flight"] == 1
+        limiter.release(first)
+        second = await limiter.acquire(service, 1.0)
+        assert second is not None
+        limiter.release(second)
+        assert limiter.metrics()[service.name]["in_flight"] == 0
+
+    asyncio.run(scenario())
+
+
+def test_slot_limiter_releases_tokens_from_old_plan_after_resize() -> None:
+    old = _llama_plan(1)
+    new = _llama_plan(2)
+
+    async def scenario() -> None:
+        limiter = SlotLimiter()
+        limiter.size(old)
+        token = await limiter.acquire(old.services[0], 1.0)
+        assert token is not None
+        limiter.size(new)
+        limiter.release(token)
+        assert limiter.metrics()[new.services[0].name]["in_flight"] == 0
+        first = await limiter.acquire(new.services[0], 1.0)
+        second = await limiter.acquire(new.services[0], 1.0)
+        assert first is not None and second is not None
+        limiter.release(first)
+        limiter.release(second)
+
+    asyncio.run(scenario())
+
+
+def test_gateway_metrics_report_limited_services_only() -> None:
+    limited = _llama_plan(2)
+    with TestClient(create_app(limited)) as client:
+        metrics = client.get("/metrics")
+    assert metrics.status_code == 200
+    assert metrics.json()["concurrency"] == {
+        "chat": {"limit": 2, "in_flight": 0, "waiting": 0}
+    }
+
+    model = ModelSpec(
+        "ollama-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], 80.0, "test", {"ollama": "test:latest"},
+    )
+    unlimited = build_plan(profile(8), [model], Policy(roles=["chat"]))
+    with TestClient(create_app(unlimited)) as client:
+        metrics = client.get("/metrics")
+    assert metrics.json()["concurrency"] == {}
+
+
+def test_embeddings_skip_slot_limiter(monkeypatch) -> None:
+    model = ModelSpec(
+        "embed-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["embed"], 80.0, "test", {"hf_gguf": "test/repo"},
+    )
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["embed"]))
+    called = False
+
+    async def fail_acquire(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("embeddings must not acquire a slot")
+
+    monkeypatch.setattr(gateway_module.SlotLimiter, "acquire", fail_acquire)
+    with TestClient(create_app(plan)) as client:
+        response = client.post("/v1/embeddings", json={"input": "hello"})
+    assert response.status_code == 502
+    assert not called
+
+
+def test_gateway_slot_timeout_returns_retryable_503(monkeypatch) -> None:
+    upstream = _limit_upstream()
+    try:
+        plan = _llama_plan(1)
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        monkeypatch.setattr(gateway_module, "QUEUE_TIMEOUT", 0.01)
+        with TestClient(create_app(plan)) as client:
+            first_result: list[object] = []
+            first = threading.Thread(target=lambda: first_result.append(
+                client.post("/v1/chat/completions", json={"messages": []})
+            ))
+            _LimitHandler.block = True
+            first.start()
+            assert _LimitHandler.started.wait(timeout=2)
+            second = client.post("/v1/chat/completions", json={"messages": []})
+            assert second.status_code == 503
+            assert second.headers["Retry-After"] == "1"
+            assert "1 slots" in second.json()["detail"]
+            _LimitHandler.release.set()
+            first.join(timeout=5)
+            assert first_result[0].status_code == 200
+            _LimitHandler.block = False
+            assert client.post(
+                "/v1/chat/completions", json={"messages": []}
+            ).status_code == 200
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_upstream_error_releases_slot(monkeypatch) -> None:
+    upstream = _limit_upstream()
+    try:
+        plan = _llama_plan(1)
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        _LimitHandler.status = 500
+        with TestClient(create_app(plan)) as client:
+            failed = client.post("/v1/chat/completions", json={"messages": []})
+            assert failed.status_code == 500
+            assert client.get("/metrics").json()["concurrency"]["chat"] == {
+                "limit": 1, "in_flight": 0, "waiting": 0
+            }
+            _LimitHandler.status = 200
+            assert client.post(
+                "/v1/chat/completions", json={"messages": []}
+            ).status_code == 200
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_unlimited_ollama_requests_are_not_serialized(monkeypatch) -> None:
+    upstream = _limit_upstream()
+    try:
+        model = ModelSpec(
+            "ollama-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+            4096, ["chat"], 80.0, "test", {"ollama": "test:latest"},
+        )
+        plan = build_plan(profile(8), [model], Policy(roles=["chat"]))
+        monkeypatch.setattr(
+            gateway_module, "_base_url",
+            lambda _service: f"http://127.0.0.1:{upstream.server_address[1]}",
+        )
+        _LimitHandler.block = True
+        with TestClient(create_app(plan)) as client:
+            results: list[object] = []
+            threads = [
+                threading.Thread(target=lambda: results.append(
+                    client.post("/v1/chat/completions", json={"messages": []})
+                ))
+                for _ in range(2)
+            ]
+            for thread in threads:
+                thread.start()
+            assert _LimitHandler.second_started.wait(timeout=2)
+            _LimitHandler.release.set()
+            for thread in threads:
+                thread.join(timeout=5)
+            assert len(results) == 2
+            assert all(response.status_code == 200 for response in results)
+    finally:
+        upstream.shutdown()
+        upstream.server_close()

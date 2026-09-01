@@ -48,6 +48,8 @@ including sample count, median decode throughput, TTFT, and total latency.
 `~/.nmesh/plan.json` without restarting it.
 The gateway server enables a 15-second watchdog that revives failed services;
 use `create_app(..., watchdog=False)` when embedding it without supervision.
+Set `NMESH_QUEUE_TIMEOUT` to control how long chat requests wait for a backend
+concurrency slot before receiving a retryable 503 response.
 
 ## Concurrency slots
 

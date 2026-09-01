@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from collections.abc import AsyncIterator, Mapping
@@ -17,6 +18,12 @@ from nmesh.telemetry import record as record_telemetry
 from nmesh.telemetry import summary as telemetry_summary
 
 from .gate import SwapGate
+from .limit import SlotLimiter
+
+try:
+    QUEUE_TIMEOUT = float(os.environ.get("NMESH_QUEUE_TIMEOUT", "120.0"))
+except ValueError:
+    QUEUE_TIMEOUT = 120.0
 
 try:
     import httpx
@@ -90,13 +97,16 @@ def _upstream_body(request: Mapping[str, object], service: PlannedService) -> di
 
 
 class _PlanState:
-    def __init__(self, plan: Plan, explicit: bool, gate: SwapGate) -> None:
+    def __init__(
+        self, plan: Plan, explicit: bool, gate: SwapGate, limiter: SlotLimiter
+    ) -> None:
         self.plan = plan
         self.telemetry_keys: dict[str, str] = {}
         self.mtime: float | None = None
         self._mtime_ns: int | None = None
         self._explicit = explicit
         self._gate = gate
+        self._limiter = limiter
         self.reload(plan)
         if not explicit:
             stamp = self._plan_stamp()
@@ -115,6 +125,7 @@ class _PlanState:
             )
             for service in plan.services
         }
+        self._limiter.size(plan)
         self._gate.invalidate()
 
     def _plan_stamp(self) -> tuple[float, int] | None:
@@ -186,12 +197,27 @@ def create_app(
 
     app = FastAPI(title="nmesh gateway", lifespan=lifespan)
     gate = SwapGate()
-    plan_state = _PlanState(selected, explicit, gate)
+    limiter = SlotLimiter()
+    plan_state = _PlanState(selected, explicit, gate, limiter)
 
     async def proxy(request: dict[str, object], service: PlannedService,
                     plan_snapshot: Plan, telemetry_keys: Mapping[str, str],
-                    path: str, instrument: bool = True) -> object:
+                    path: str, instrument: bool = True,
+                    limit_slots: bool = False) -> object:
         started = time.perf_counter()
+        slot_token: object | None = None
+        if limit_slots:
+            slot_token = await limiter.acquire(service, QUEUE_TIMEOUT)
+            if slot_token is None:
+                slots = max(1, service.memory.parallel_slots)
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"Service {service.name} is at its concurrency limit "
+                        f"({slots} slots)"
+                    ),
+                    headers={"Retry-After": "1"},
+                )
         locked = service.name in plan_snapshot.swap_group
         if locked:
             try:
@@ -226,11 +252,15 @@ def create_app(
                 await client.aclose()
                 if locked:
                     gate.release()
+                if limit_slots:
+                    limiter.release(slot_token)
                 raise
             except httpx.HTTPError as error:
                 await client.aclose()
                 if locked:
                     gate.release()
+                if limit_slots:
+                    limiter.release(slot_token)
                 raise HTTPException(status_code=502, detail=str(error)) from error
             if upstream.status_code >= 400:
                 content = await upstream.aread()
@@ -238,6 +268,8 @@ def create_app(
                 await client.aclose()
                 if locked:
                     gate.release()
+                if limit_slots:
+                    limiter.release(slot_token)
                 return Response(content=content, status_code=upstream.status_code,
                                 media_type=upstream.headers.get("content-type"))
 
@@ -265,6 +297,8 @@ def create_app(
                     await client.aclose()
                     if locked:
                         gate.release()
+                    if limit_slots:
+                        limiter.release(slot_token)
                     if instrument:
                         span = (last_line_time - first_line_time
                                 if first_line_time is not None and last_line_time is not None
@@ -299,6 +333,8 @@ def create_app(
             await client.aclose()
             if locked:
                 gate.release()
+            if limit_slots:
+                limiter.release(slot_token)
         if isinstance(data, dict) and "model" in data:
             data["model"] = request.get("model", data["model"])
         if instrument:
@@ -347,7 +383,10 @@ def create_app(
 
     @app.get("/metrics")
     async def metrics() -> dict[str, object]:
-        return {"services": telemetry_summary()}
+        return {
+            "services": telemetry_summary(),
+            "concurrency": limiter.metrics(),
+        }
 
     @app.post("/v1/chat/completions")
     async def completions(request: dict[str, object]) -> object:
@@ -355,7 +394,8 @@ def create_app(
         selected, telemetry_keys = plan_state.snapshot()
         service = _service(selected, route(request, selected))
         return await proxy(
-            request, service, selected, telemetry_keys, "/v1/chat/completions"
+            request, service, selected, telemetry_keys, "/v1/chat/completions",
+            limit_slots=True,
         )
 
     @app.post("/v1/embeddings")
