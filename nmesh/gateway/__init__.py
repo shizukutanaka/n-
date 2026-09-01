@@ -645,8 +645,8 @@ def create_app(
                         tokens += 1
                         first_line_time = first_line_time or now
                         last_line_time = now
-                    if "model" in payload and "model" in request:
-                        payload["model"] = request.get("model")
+                    if "model" in payload:
+                        payload["model"] = request.get("model", service.model_id)
                         content = (
                             b"data: "
                             + json.dumps(payload, separators=(",", ":")).encode()
@@ -661,8 +661,6 @@ def create_app(
                             output = transform(line + b"\n")
                             if output is not None:
                                 yield output
-                        if buffer == b"":
-                            continue
                     if buffer:
                         output = transform(buffer)
                         if output is not None:
@@ -730,7 +728,7 @@ def create_app(
             if limit_slots:
                 limiter.release(slot_token)
         if isinstance(data, dict) and "model" in data:
-            data["model"] = request.get("model", data["model"])
+            data["model"] = request.get("model", service.model_id)
         if instrument:
             usage = data.get("usage") if isinstance(data, dict) else None
             completion_tokens = (

@@ -43,6 +43,13 @@ class _CompatStreamHandler(BaseHTTPRequestHandler):
         length = int(self.headers["Content-Length"])
         self.__class__.request_body = json.loads(self.rfile.read(length))
         self.send_response(200)
+        if not self.__class__.request_body.get("stream"):
+            body = b'{"model":"upstream-model","choices":[],"usage":{"completion_tokens":1}}'
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         for chunk in (
@@ -158,6 +165,40 @@ def test_gateway_stream_rewrites_model_and_preserves_sse_frames() -> None:
             and line != "data: {not-json}"
         ]
         assert payloads[0]["model"] == "client-model"
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_defaults_omitted_model_to_catalog_id_for_all_responses() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _CompatStreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec("compat-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+        stream = client.post("/v1/chat/completions", json={
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        nonstream = client.post("/v1/chat/completions", json={
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert stream.status_code == 200
+        assert nonstream.status_code == 200
+        assert service.model_ref not in stream.text
+        assert service.model_ref not in nonstream.text
+        assert all(
+            payload["model"] == service.model_id
+            for line in stream.text.splitlines()
+            if line.startswith("data: ") and line != "data: [DONE]"
+            and line != "data: {not-json}"
+            for payload in [json.loads(line[6:])]
+        )
+        assert nonstream.json()["model"] == service.model_id
     finally:
         upstream.shutdown()
         upstream.server_close()
