@@ -16,6 +16,7 @@ from typing import Protocol
 
 import psutil
 
+from nmesh import i18n
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.planner import BPW, Plan, PlannedService, build_plan, free_budgets, load_plan, save_plan
 from nmesh.probe import HardwareProfile, detect_hardware
@@ -228,7 +229,7 @@ class Supervisor:
         )
         self.notes[service.name] = (
             f"{service.quant} -> {quant}" if quant != service.quant
-            else f"resolved GGUF: {Path(model_ref).name}"
+            else i18n.t("info.resolved_gguf", i18n.lang(), name=Path(model_ref).name)
         )
         updated_services = [
             updated if item.name == service.name else item for item in plan.services
@@ -255,10 +256,10 @@ class Supervisor:
         replanned = build_plan(
             profile, self.catalog(), replace(plan.policy, budget_source="free"), bench_cache
         )
-        warning = (
-            f"空きメモリ不足: 必要 {need_gpu / GIB:.2f}GiB VRAM / "
-            f"{need_cpu / GIB:.2f}GiB RAM、利用可能 {vram / GIB:.2f}GiB VRAM / "
-            f"{ram / GIB:.2f}GiB RAM に合わせて再計画しました"
+        warning = i18n.t(
+            "warn.free_admission", i18n.lang(),
+            need_gpu=need_gpu / GIB, need_cpu=need_cpu / GIB,
+            vram=vram / GIB, ram=ram / GIB,
         )
         if replanned.services:
             return replace(replanned, warnings=[*replanned.warnings, warning])
@@ -266,7 +267,7 @@ class Supervisor:
             plan,
             warnings=[
                 *plan.warnings,
-                warning + "。再計画でサービスを選べなかったため既存のfallbackを試みます",
+                warning + " " + i18n.t("warn.runtime_fallback", i18n.lang(), attempt=0),
             ],
         )
 
@@ -440,7 +441,8 @@ class Supervisor:
             services.append(replace(service, quant=quant, context=context,
                                     model_ref=model_ref, n_gpu_layers=layers, launch=launch))
         return replace(plan, services=services,
-                       warnings=[*plan.warnings, f"Runtime fallback attempt {attempt}"])
+                        warnings=[*plan.warnings,
+                                  i18n.t("warn.runtime_fallback", i18n.lang(), attempt=attempt)])
 
     def up(self, plan: Plan, no_download: bool = False, dry_run: bool = False,
            admit: bool = True,
@@ -465,7 +467,8 @@ class Supervisor:
                 except Exception as error:  # noqa: BLE001
                     current = replace(
                         plan,
-                        warnings=[*plan.warnings, f"Free-memory admission skipped: {error}"],
+                         warnings=[*plan.warnings,
+                                   i18n.t("warn.admission_skipped", i18n.lang(), error=error)],
                     )
             self.active_plan = current
             for attempt in range(1, 4):
@@ -483,9 +486,12 @@ class Supervisor:
                             continue
                         if dead:
                             if not self._restart_budget(service.name):
-                                self.failed[service.name] = "Restart budget exhausted"
+                                self.failed[service.name] = i18n.t(
+                                    "err.restart_budget", i18n.lang(), service=service.name
+                                )
                                 raise RuntimeError(
-                                    f"Restart budget exhausted: {service.name}"
+                                    i18n.t("err.restart_budget", i18n.lang(),
+                                           service=service.name)
                                 )
                             self._record_restart(service.name)
                         if not no_download:
@@ -498,7 +504,9 @@ class Supervisor:
                         self._arm_atexit()
                         self.failed.pop(service.name, None)
                         if not self._wait_health(service):
-                            raise RuntimeError(f"Service did not become healthy: {service.name}")
+                            raise RuntimeError(i18n.t(
+                                "err.service_unhealthy", i18n.lang(), service=service.name
+                            ))
                     if current is plan or actualized:
                         save_plan(current)
                     self._persist(current)
@@ -508,7 +516,7 @@ class Supervisor:
                     if attempt == 3:
                         raise
                     current = self._fallback(current, attempt)
-            raise RuntimeError("Runtime startup failed")
+            raise RuntimeError(i18n.t("err.runtime_start", i18n.lang()))
 
     def down(self, foreign: bool = False) -> RuntimeStatus:
         with self._lock:
@@ -566,11 +574,13 @@ class Supervisor:
         with self._lock:
             selected = plan or self.active_plan
             if selected is None:
-                raise FileNotFoundError("No active plan")
+                raise FileNotFoundError(i18n.t("err.no_active_plan", i18n.lang()))
             self.active_plan = selected
             target = next((item for item in selected.services if item.name == service_name), None)
             if target is None:
-                raise KeyError(f"Unknown service: {service_name}")
+                raise KeyError(i18n.t(
+                    "err.unknown_service_key", i18n.lang(), service=service_name
+                ))
             actualized = False
             if service_name in selected.swap_group:
                 for name in list(self.processes):
@@ -587,9 +597,13 @@ class Supervisor:
             else:
                 if dead:
                     if not self._restart_budget(service_name):
-                        self.failed[service_name] = "Restart budget exhausted"
+                        self.failed[service_name] = i18n.t(
+                            "err.restart_budget", i18n.lang(), service=service_name
+                        )
                         self._persist(selected)
-                        raise RuntimeError(f"Restart budget exhausted: {service_name}")
+                        raise RuntimeError(i18n.t(
+                            "err.restart_budget", i18n.lang(), service=service_name
+                        ))
                     self._record_restart(service_name)
                 if service_name not in self.processes:
                     selected, target, actualized = self._apply_acquired(
@@ -600,7 +614,9 @@ class Supervisor:
                 self._arm_atexit()
                 if not self._wait_health(target):
                     self._stop_process(service_name)
-                    raise RuntimeError(f"Service did not become healthy: {service_name}")
+                    raise RuntimeError(i18n.t(
+                        "err.service_unhealthy", i18n.lang(), service=service_name
+                    ))
                 self.failed.pop(service_name, None)
             if actualized:
                 save_plan(selected)
@@ -733,7 +749,9 @@ class Supervisor:
                 if service.name in self.processes:
                     self.processes.pop(service.name, None)
                 if not self._restart_budget(service.name):
-                    self.failed[service.name] = "Restart budget exhausted"
+                    self.failed[service.name] = i18n.t(
+                        "err.restart_budget", i18n.lang(), service=service.name
+                    )
                     changed = True
                     continue
                 self._record_restart(service.name)
@@ -745,7 +763,8 @@ class Supervisor:
                         self._stop_process(service.name)
                         if not self._restart_budget(service.name):
                             self.failed[service.name] = (
-                                f"Service failed health check: {service.name}"
+                                i18n.t("warn.health_failed", i18n.lang(),
+                                       service=service.name)
                             )
                 except Exception as error:  # noqa: BLE001
                     self.processes.pop(service.name, None)
@@ -764,7 +783,7 @@ def up(plan: Plan | None = None, no_download: bool = False, dry_run: bool = Fals
        bench_cache: Mapping[object, float] | None = None) -> RuntimeStatus:
     selected = plan or load_plan()
     if selected is None:
-        raise FileNotFoundError("No plan found")
+        raise FileNotFoundError(i18n.t("err.no_plan_found", i18n.lang()))
     return _default.up(
         selected, no_download=no_download, dry_run=dry_run, admit=admit,
         bench_cache=bench_cache,

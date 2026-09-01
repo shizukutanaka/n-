@@ -10,6 +10,7 @@ from pathlib import Path
 
 from nmesh import __version__
 from nmesh.catalog import ModelSpec
+from nmesh.i18n import t
 from nmesh.probe import GPUInfo, HardwareProfile, Tier
 
 BPW = {
@@ -23,10 +24,10 @@ QUANT_PENALTY = {
 GIB = 1024**3
 PLAN_PATH = Path.home() / ".nmesh" / "plan.json"
 INSTALL_HINTS = {
-    "ollama": "Install Ollama: https://ollama.com/download",
-    "llamacpp": "Install llama.cpp: winget install llama.cpp / brew install llama.cpp / build from source",
-    "vllm": "Install vLLM: pip install vllm",
-    "mlx": "Install MLX-LM: pip install mlx-lm",
+    "ollama": "install.ollama",
+    "llamacpp": "install.llamacpp",
+    "vllm": "install.vllm",
+    "mlx": "install.mlx",
 }
 
 
@@ -57,6 +58,8 @@ class Policy:
     kv_quant: str = "f16"
     budget_source: str = "total"
     parallel_slots: int | None = None
+    lang: str = "en"
+    languages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,7 @@ class PlannedService:
     decode_tps: float
     estimated: bool
     launch: LaunchSpec
+    languages: tuple[str, ...] = ("en",)
 
 
 @dataclass(frozen=True)
@@ -240,6 +244,7 @@ def _launch(
     gpu_fraction: float | None = None,
     backend_flags: frozenset[str] | None = None,
     warnings: list[str] | None = None,
+    language: str = "en",
 ) -> LaunchSpec:
     ref = _source_for(backend, model, quant)
     if backend == "ollama":
@@ -268,19 +273,19 @@ def _launch(
             argv += ["--parallel", str(slots)]
         elif warnings is not None:
             warnings.append(
-                "llamacpp: --parallel unsupported; using one slot and plain context"
+                t("warn.parallel_unsupported", language)
             )
         argv += ["--port", str(port)]
         if gpu_layers:
             argv += ["-ngl", str(layers)]
         elif warnings is not None:
             warnings.append(
-                "llamacpp: GPU-layer flags unsupported; using CPU placement"
+                t("warn.gpu_layers_unsupported", language)
             )
         if tensor_parallel > 1 and tensor_split:
             argv += ["--tensor-split", ",".join(["1"] * tensor_parallel)]
         elif tensor_parallel > 1 and warnings is not None:
-            warnings.append("llamacpp: --tensor-split unsupported; omitting tensor split")
+            warnings.append(t("warn.tensor_split_unsupported", language))
     health_path = "/health" if backend == "llamacpp" else "/v1/models"
     return LaunchSpec(argv, {}, f"http://127.0.0.1:{port}{health_path}")
 
@@ -353,6 +358,9 @@ def _candidate_for(model: ModelSpec, profile: HardwareProfile, policy: Policy,
             wq, ws = {"quality": (1.0, 0.1), "speed": (0.5, 1.0),
                       "balanced": (1.0, 0.25)}.get(policy.prefer, (1.0, 0.25))
             score = (model.quality - QUANT_PENALTY[quant]) * wq + min(tps, 30) / 30 * 100 * ws
+            if policy.languages:
+                covers = set(policy.languages).issubset(model.languages)
+                score *= 1.0 if covers else 0.7
             candidates.append(_Candidate(model, quant, context, memory, layers, tps,
                                          backend, installed, score, bench is None))
             break
@@ -391,9 +399,10 @@ def _plan_group(group: list[str], pools: dict[str, list[_Candidate]]) -> _Candid
 def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfile,
                  services: list[PlannedService], swap_group: list[str],
                  role_to_service: dict[str, str], hints: list[str],
-                 budget_source: str, warnings: list[str]) -> None:
+                 budget_source: str, warnings: list[str],
+                 language: str = "en") -> None:
     if not candidate.installed:
-        hints.append(INSTALL_HINTS[candidate.backend])
+        hints.append(t(INSTALL_HINTS[candidate.backend], language))
     indices: list[int] = []
     tensor_parallel = 1
     name = group[0]
@@ -418,6 +427,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         port, layers or 0, tensor_parallel,
         backend_flags=backend_flags,
         warnings=warnings,
+        language=language,
     )
     if candidate.backend == "llamacpp" and "hf_gguf" in candidate.model.sources:
         launch = replace(launch, env={"NMESH_HF_REPO": candidate.model.sources["hf_gguf"]})
@@ -429,6 +439,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         None if candidate.backend in {"vllm", "mlx"} else layers,
         profile.tier not in {Tier.T0_CPU, Tier.T1_LOW} or not services,
         memory, candidate.decode_tps, candidate.estimated, launch,
+        candidate.model.languages,
     )
     services.append(service)
     for role in group:
@@ -440,7 +451,8 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
 def _rebuild_launch(service: PlannedService, tensor_parallel: int,
                     layers: int | None,
                     backend_flags: frozenset[str] | None = None,
-                    warnings: list[str] | None = None) -> LaunchSpec:
+                    warnings: list[str] | None = None,
+                    language: str = "en") -> LaunchSpec:
     argv = list(service.launch.argv)
     if service.backend == "vllm":
         if tensor_parallel > 1:
@@ -465,7 +477,7 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
                     del argv[index:index + 2]
                 if warnings is not None:
                     warnings.append(
-                        "llamacpp: --tensor-split unsupported; omitting tensor split"
+                        t("warn.tensor_split_unsupported", language)
                     )
         elif "--tensor-split" in argv:
             index = argv.index("--tensor-split")
@@ -486,7 +498,7 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
                     removed = True
             if removed and warnings is not None:
                 warnings.append(
-                    "llamacpp: GPU-layer flags unsupported; using CPU placement"
+                    t("warn.gpu_layers_unsupported", language)
                 )
     return replace(service.launch, argv=argv)
 
@@ -495,6 +507,7 @@ def _cpu_llamacpp_service(
     service: PlannedService,
     backend_flags: frozenset[str] | tuple[str, ...] | None,
     warnings: list[str],
+    language: str = "en",
 ) -> PlannedService:
     if service.backend != "llamacpp" or _supports_gpu_layers(backend_flags):
         return service
@@ -504,7 +517,7 @@ def _cpu_llamacpp_service(
     memory = replace(service.memory, n_gpu_layers=0)
     gpu_bytes, cpu_bytes = _split_memory(memory, model_layers, 0)
     memory = replace(memory, gpu_bytes=gpu_bytes, cpu_bytes=cpu_bytes)
-    launch = _rebuild_launch(service, 1, 0, backend_flags, warnings)
+    launch = _rebuild_launch(service, 1, 0, backend_flags, warnings, language)
     return replace(service, n_gpu_layers=0, memory=memory, launch=launch)
 
 
@@ -519,7 +532,7 @@ def _place_services(
         return services
     services = [
         _cpu_llamacpp_service(
-            service, profile.backend_flags.get(service.backend), warnings
+            service, profile.backend_flags.get(service.backend), warnings, policy.lang
         )
         for service in services
     ]
@@ -574,8 +587,8 @@ def _place_services(
             committed = service.memory.gpu_bytes
             remaining[target] -= committed
             warnings.append(
-                f"{service.name}: GPU 使用量 {committed:.0f} バイトが予算 "
-                f"{budgets[target]:.0f} バイトを超えています"
+                t("warn.gpu_over_budget", policy.lang, service=service.name,
+                  committed=committed, budget=budgets[target])
             )
 
         current = replace(service, gpu_indices=assigned)
@@ -616,8 +629,8 @@ def _place_services(
                         remaining[assigned[0]] += old_bytes - gpu_bytes
                 else:
                     warnings.append(
-                        f"{service.name}: レイヤーを {layers} に下げると RAM 予算を超えるため、"
-                        f"{current.n_gpu_layers} のままにします"
+                        t("warn.layers_reduced", policy.lang, service=service.name,
+                          layers=layers, previous=current.n_gpu_layers)
                     )
             else:
                 current = replace(
@@ -629,6 +642,7 @@ def _place_services(
                 launch=_rebuild_launch(
                     current, tensor_parallel, current.n_gpu_layers,
                     profile.backend_flags.get(current.backend), warnings,
+                    policy.lang,
                 ),
             )
         placed[service.name] = current
@@ -730,8 +744,8 @@ def _assign_slots(
                     slots = min(cap, requested, 1 + max(available, 0))
                 if requested is not None and slots != requested and warnings is not None:
                     warnings.append(
-                        f"{service.name}: parallel_slots {requested} は空き容量に収まらないため "
-                        f"{slots} に切り下げました"
+                        t("warn.slots_clamped", policy.lang, service=service.name,
+                          requested=requested, slots=slots)
                     )
         slots = max(1, slots)
         if slots > 1:
@@ -780,7 +794,7 @@ def _assign_slots(
                 )
         launch = _rewrite_launch(
             service, slots, gpu_fraction,
-            profile.backend_flags.get(service.backend), warnings,
+            profile.backend_flags.get(service.backend), warnings, policy.lang,
         )
         result.append(replace(service, memory=rewritten, launch=launch))
         old_bytes = (
@@ -801,6 +815,7 @@ def _rewrite_launch(
     service: PlannedService, slots: int, gpu_fraction: float | None,
     backend_flags: frozenset[str] | None = None,
     warnings: list[str] | None = None,
+    language: str = "en",
 ) -> LaunchSpec:
     argv = list(service.launch.argv)
     if service.backend == "llamacpp":
@@ -825,7 +840,8 @@ def _rewrite_launch(
             del argv[index:index + 2]
         if not parallel and warnings is not None and slots > 1:
             warnings.append(
-                "llamacpp: --parallel unsupported; clamped parallel_slots to 1"
+                t("warn.slots_clamped", language, service="llamacpp",
+                  requested=slots, slots=1)
             )
     elif service.backend == "vllm":
         if "--max-num-seqs" in argv:
@@ -846,7 +862,12 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                bench_cache: Mapping[object, float] | None = None) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
-    warnings = list(profile.warnings)
+    warnings = [
+        t("warn.nvidia_unavailable", selected.lang)
+        if warning == "NVIDIA detection unavailable"
+        else warning
+        for warning in profile.warnings
+    ]
     hints: list[str] = []
     for model in catalog:
         if (
@@ -854,7 +875,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             and not any(source in model.sources for source in ("hf", "hf_gguf", "ollama"))
         ):
             warnings.append(
-                f"{model.id}: no Hugging Face or Ollama source is configured"
+                t("warn.no_source", selected.lang, model=model.id)
             )
     pools = {role: sorted(
         (candidate for model in catalog if role in model.roles
@@ -879,23 +900,33 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     _add_service(
                         [role], role_candidate[0], profile, services, swap_group,
                         role_to_service, hints, selected.budget_source, warnings,
+                        selected.lang,
                     )
                     total_download += int(role_candidate[0].memory.disk_needed)
                 else:
-                    warnings.append(f"役割 {role} を満たす構成が見つかりません")
+                    warnings.append(t("warn.no_candidate", selected.lang, role=role))
             continue
         if candidate is None:
-            warnings.append(f"役割 {group[0]} を満たす構成が見つかりません")
+            warnings.append(t("warn.no_candidate", selected.lang, role=group[0]))
             continue
         _add_service(
             group, candidate, profile, services, swap_group, role_to_service, hints,
-            selected.budget_source, warnings,
+            selected.budget_source, warnings, selected.lang,
         )
         total_download += int(candidate.memory.disk_needed)
     services = _place_services(services, profile, selected, swap_group, warnings)
     services = _assign_slots(services, profile, selected, swap_group, warnings)
     if total_download > selected.allow_download_gb * GIB:
-        warnings.append("Planned downloads exceed policy.allow_download_gb.")
+        warnings.append(t("warn.download_budget", selected.lang))
+    if selected.languages:
+        requested = set(selected.languages)
+        for service in services:
+            missing = sorted(requested - set(service.languages))
+            if missing:
+                warnings.append(t(
+                    "warn.language_coverage", selected.lang,
+                    model=service.model_id, languages=", ".join(missing),
+                ))
     covered = set(role_to_service)
     runnable = bool(services) and covered >= set(roles) and not hints
     return Plan(
@@ -939,7 +970,10 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
                     int(pol["max_context"]) if pol["max_context"] is not None else None,
                     str(pol["prefer"]), float(pol["allow_download_gb"]),
                     str(pol.get("kv_quant", "f16")), str(pol.get("budget_source", "total")),
-                    int(pol["parallel_slots"]) if pol.get("parallel_slots") is not None else None)
+                    int(pol["parallel_slots"]) if pol.get("parallel_slots") is not None else None,
+                    str(pol.get("lang", "en")),
+                    tuple(str(x) for x in pol.get("languages", [])),
+                    )
     services: list[PlannedService] = []
     for item in data["services"]:
         sd = item
@@ -964,6 +998,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             int(sd["context"]), int(sd["port"]), [int(x) for x in sd["gpu_indices"]],
             int(sd["n_gpu_layers"]) if sd["n_gpu_layers"] is not None else None, bool(sd["resident"]),
             memory, float(sd["decode_tps"]), bool(sd["estimated"]), launch,
+            tuple(str(x) for x in sd.get("languages", ["en"])),
         ))
     rd = data["routing"]
     if not isinstance(rd, dict):

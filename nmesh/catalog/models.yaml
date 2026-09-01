@@ -10,6 +10,7 @@
   roles: [chat, code, tool]
   quality: 45
   license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "qwen2.5:0.5b-instruct"
     hf_gguf: "Qwen/Qwen2.5-0.5B-Instruct-GGUF"
@@ -26,6 +27,7 @@
   roles: [chat, code, tool]
   quality: 50
   license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "qwen2.5:1.5b-instruct"
     hf_gguf: "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
@@ -42,6 +44,7 @@
   roles: [chat, code, tool]
   quality: 58
   license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "qwen2.5:3b-instruct"
     hf_gguf: "Qwen/Qwen2.5-3B-Instruct-GGUF"
@@ -58,6 +61,7 @@
   roles: [chat, code, tool]
   quality: 68
   license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "qwen2.5:7b-instruct"
     hf_gguf: "Qwen/Qwen2.5-7B-Instruct-GGUF"
@@ -74,6 +78,7 @@
   roles: [chat, code, tool]
   quality: 75
   license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "qwen2.5:14b-instruct"
     hf: "Qwen/Qwen2.5-14B-Instruct"
@@ -89,6 +94,7 @@
   roles: [chat, code, tool]
   quality: 84
   license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "qwen2.5:32b-instruct"
     hf: "Qwen/Qwen2.5-32B-Instruct"
@@ -104,6 +110,7 @@
   roles: [code]
   quality: 52
   license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "qwen2.5-coder:1.5b"
     hf_gguf: "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF"
@@ -120,6 +127,7 @@
   roles: [code]
   quality: 70
   license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "qwen2.5-coder:7b"
     hf: "Qwen/Qwen2.5-Coder-7B-Instruct"
@@ -135,6 +143,7 @@
   roles: [code]
   quality: 77
   license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "qwen2.5-coder:14b"
     hf: "Qwen/Qwen2.5-Coder-14B-Instruct"
@@ -150,6 +159,7 @@
   roles: [chat, code]
   quality: 68
   license: llama3.1
+  languages: [en, de, fr, it, pt, hi, es, th]
   sources:
     ollama: "llama3.1:8b-instruct"
     hf: "meta-llama/Llama-3.1-8B-Instruct"
@@ -165,6 +175,7 @@
   roles: [chat, code]
   quality: 92
   license: llama3.3
+  languages: [en, de, fr, it, pt, hi, es, th]
   sources:
     ollama: "llama3.3:70b-instruct"
     hf: "meta-llama/Llama-3.3-70B-Instruct"
@@ -180,6 +191,7 @@
   roles: [chat, code]
   quality: 78
   license: mit
+  languages: [en]
   sources:
     ollama: "phi4"
     hf: "microsoft/phi-4"
@@ -195,6 +207,7 @@
   roles: [chat]
   quality: 55
   license: gemma
+  languages: [en]
   sources:
     ollama: "gemma2:2b"
     hf: "google/gemma-2-2b-it"
@@ -210,6 +223,7 @@
   roles: [chat]
   quality: 73
   license: gemma
+  languages: [en]
   sources:
     ollama: "gemma2:9b"
     hf: "google/gemma-2-9b-it"
@@ -225,6 +239,7 @@
   roles: [chat, code]
   quality: 67
   license: apache-2.0
+  languages: [en]
   sources:
     ollama: "mistral:7b-instruct"
     hf: "mistralai/Mistral-7B-Instruct-v0.3"
@@ -240,6 +255,7 @@
   roles: [embed]
   quality: 80
   license: apache-2.0
+  languages: [en]
   sources:
     ollama: "nomic-embed-text"
     hf_gguf: "nomic-ai/nomic-embed-text-v1.5-GGUF"
@@ -256,6 +272,7 @@
   roles: [embed]
   quality: 90
   license: mit
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
     ollama: "bge-m3"
     hf: "BAAI/bge-m3"
