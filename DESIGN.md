@@ -383,3 +383,18 @@ ensures each slot receives the planned context. vLLM receives
 `[0.10, 0.95]` and derived from the service's GPU bytes divided by assigned
 GPUs' total VRAM. Total VRAM is used for this fraction even when planning uses
 free-memory budgets, because vLLM defines the option relative to total VRAM.
+
+### 18.1 Capacity-aware GPU placement
+
+Multi-GPU plans place services with best-fit decreasing: resident services
+are considered before swap-group members, and each set is ordered from the
+largest GPU footprint to the smallest. A service uses the fitting card with
+the least remaining capacity, breaking ties by GPU index. Swap-group members
+reserve only the largest footprint assigned to a card because they are
+mutually exclusive. If no single card fits, a multi-GPU service falls back to
+tensor parallelism across all cards and divides its GPU footprint across them.
+
+After a llama.cpp service is assigned to one card, its GPU-layer count is
+re-solved against that card's budget rather than the aggregate VRAM budget.
+The memory split and launch arguments are rebuilt together, including `-ngl`;
+the tensor-parallel fallback retains its original aggregate layer solution.

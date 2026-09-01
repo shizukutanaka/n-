@@ -362,17 +362,8 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
                  budget_source: str) -> None:
     if not candidate.installed:
         hints.append(INSTALL_HINTS[candidate.backend])
-    indices = [gpu.index for gpu in profile.gpus]
+    indices: list[int] = []
     tensor_parallel = 1
-    if indices:
-        fit = [
-            gpu for gpu in profile.gpus
-            if candidate.memory.gpu_bytes <= _gpu_budget(gpu, budget_source) + 1
-        ]
-        if fit:
-            indices = [fit[0].index]
-        else:
-            tensor_parallel = len(indices)
     name = group[0]
     port = 18010 + len(services)
     launch = _launch(candidate.backend, candidate.model, candidate.quant, candidate.context,
@@ -395,12 +386,151 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         swap_group.append(name)
 
 
-def _replace_gpu(service: PlannedService, indices: list[int]) -> PlannedService:
-    return PlannedService(service.name, service.roles, service.model_id, service.model_ref,
-                          service.download_repo,
-                          service.quant, service.backend, service.context, service.port, indices,
-                          service.n_gpu_layers, service.resident, service.memory, service.decode_tps,
-                          service.estimated, service.launch)
+def _rebuild_launch(service: PlannedService, tensor_parallel: int,
+                    layers: int | None) -> LaunchSpec:
+    argv = list(service.launch.argv)
+    if service.backend == "vllm":
+        if tensor_parallel > 1:
+            if "--tensor-parallel-size" in argv:
+                argv[argv.index("--tensor-parallel-size") + 1] = str(tensor_parallel)
+            else:
+                argv.extend(["--tensor-parallel-size", str(tensor_parallel)])
+        elif "--tensor-parallel-size" in argv:
+            index = argv.index("--tensor-parallel-size")
+            del argv[index:index + 2]
+    elif service.backend == "llamacpp":
+        if tensor_parallel > 1:
+            value = ",".join(["1"] * tensor_parallel)
+            if "--tensor-split" in argv:
+                argv[argv.index("--tensor-split") + 1] = value
+            else:
+                argv.extend(["--tensor-split", value])
+        elif "--tensor-split" in argv:
+            index = argv.index("--tensor-split")
+            del argv[index:index + 2]
+        if layers is not None and "-ngl" in argv:
+            argv[argv.index("-ngl") + 1] = str(layers)
+    return replace(service.launch, argv=argv)
+
+
+def _place_services(
+    services: list[PlannedService],
+    profile: HardwareProfile,
+    policy: Policy,
+    swap_group: Sequence[str],
+    warnings: list[str],
+) -> list[PlannedService]:
+    if not profile.gpus:
+        return services
+    indices = [gpu.index for gpu in profile.gpus]
+    budgets = {
+        gpu.index: _gpu_budget(gpu, policy.budget_source) for gpu in profile.gpus
+    }
+    remaining = dict(budgets)
+    swap_reserved = {index: 0.0 for index in indices}
+    swap_names = set(swap_group)
+    ordered = sorted(
+        services,
+        key=lambda item: (item.name in swap_names, -item.memory.gpu_bytes),
+    )
+    placed: dict[str, PlannedService] = {}
+    for service in ordered:
+        if service.memory.gpu_bytes <= 0:
+            placed[service.name] = service
+            continue
+        is_swap = service.name in swap_names
+        fits = [
+            index for index in indices
+            if service.memory.gpu_bytes
+            <= remaining[index] + (swap_reserved[index] if is_swap else 0.0) + 1
+        ]
+        if fits:
+            target = min(fits, key=lambda index: (remaining[index], index))
+            assigned = [target]
+            tensor_parallel = 1
+            committed = service.memory.gpu_bytes
+            if is_swap:
+                committed = max(swap_reserved[target], committed)
+                remaining[target] -= committed - swap_reserved[target]
+                swap_reserved[target] = committed
+            else:
+                remaining[target] -= committed
+        elif len(indices) > 1:
+            assigned = indices
+            tensor_parallel = len(indices)
+            committed = service.memory.gpu_bytes / tensor_parallel
+            for index in indices:
+                if is_swap:
+                    new_reserved = max(swap_reserved[index], committed)
+                    remaining[index] -= new_reserved - swap_reserved[index]
+                    swap_reserved[index] = new_reserved
+                else:
+                    remaining[index] -= committed
+        else:
+            target = indices[0]
+            assigned = [target]
+            tensor_parallel = 1
+            committed = service.memory.gpu_bytes
+            remaining[target] -= committed
+            warnings.append(
+                f"{service.name}: GPU 使用量 {committed:.0f} バイトが予算 "
+                f"{budgets[target]:.0f} バイトを超えています"
+            )
+
+        current = replace(service, gpu_indices=assigned)
+        if (
+            current.backend == "llamacpp"
+            and current.n_gpu_layers is not None
+            and len(assigned) == 1
+        ):
+            model_layers = max(
+                1, round(
+                    current.memory.weight_bytes / current.memory.per_layer_bytes
+                ),
+            )
+            target_budget = budgets[assigned[0]]
+            card_memory = replace(current.memory, vram_budget=target_budget)
+            layers = solve_gpu_layers(card_memory, model_layers)
+            if layers < current.n_gpu_layers:
+                adjusted = replace(card_memory, n_gpu_layers=layers)
+                gpu_bytes, cpu_bytes = _split_memory(
+                    adjusted, model_layers, layers
+                )
+                if cpu_bytes <= adjusted.ram_budget + 1:
+                    old_bytes = current.memory.gpu_bytes
+                    current = replace(
+                        current,
+                        n_gpu_layers=layers,
+                        memory=replace(
+                            adjusted, gpu_bytes=gpu_bytes, cpu_bytes=cpu_bytes
+                        ),
+                    )
+                    if is_swap:
+                        committed = max(swap_reserved[assigned[0]], gpu_bytes)
+                        remaining[assigned[0]] += (
+                            swap_reserved[assigned[0]] - committed
+                        )
+                        swap_reserved[assigned[0]] = committed
+                    else:
+                        remaining[assigned[0]] += old_bytes - gpu_bytes
+                else:
+                    warnings.append(
+                        f"{service.name}: レイヤーを {layers} に下げると RAM 予算を超えるため、"
+                        f"{current.n_gpu_layers} のままにします"
+                    )
+            else:
+                current = replace(
+                    current, memory=card_memory
+                )
+        if tensor_parallel != 1 or current.n_gpu_layers != service.n_gpu_layers:
+            current = replace(
+                current,
+                launch=_rebuild_launch(
+                    current, tensor_parallel, current.n_gpu_layers
+                ),
+            )
+        placed[service.name] = current
+    return [placed[service.name] for service in services]
 
 
 SLOT_CAPS = {"llamacpp": 8, "vllm": 32, "mlx": 1, "ollama": 1}
@@ -617,12 +747,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             selected.budget_source,
         )
         total_download += int(candidate.memory.disk_needed)
-    if len(profile.gpus) > 1:
-        for index, service in enumerate(services):
-            if service.memory.gpu_bytes <= _gpu_budget(
-                profile.gpus[0], selected.budget_source
-            ) + 1:
-                services[index] = _replace_gpu(service, [profile.gpus[index % len(profile.gpus)].index])
+    services = _place_services(services, profile, selected, swap_group, warnings)
     services = _assign_slots(services, profile, selected, swap_group, warnings)
     if total_download > selected.allow_download_gb * GIB:
         warnings.append("Planned downloads exceed policy.allow_download_gb.")
