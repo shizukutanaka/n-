@@ -333,7 +333,7 @@ def create_app(
             authorization = request.headers.get("authorization", "")
             prefix = "Bearer "
             presented = authorization[len(prefix):] if authorization.startswith(prefix) else ""
-            if not secrets.compare_digest(presented.encode("utf-8"), api_key_bytes):
+            if not secrets.compare_digest(presented.encode("latin-1"), api_key_bytes):
                 return Response(
                     content=json.dumps({"detail": "Invalid or missing API key"}),
                     status_code=401,

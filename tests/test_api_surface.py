@@ -232,14 +232,10 @@ def test_api_key_authentication(monkeypatch) -> None:
 
 def test_non_ascii_api_key_authentication(monkeypatch) -> None:
     secret = "caf\u00e9"
-    monkeypatch.setattr(
-        gateway_module.os.environ,
-        "get",
-        lambda name, default=None: secret if name == "NMESH_API_KEY" else default,
-    )
+    monkeypatch.setenv("NMESH_API_KEY", secret)
     app = create_app(_completion_plan(1))
     assert _asgi_get(app, b"Bearer wrong") == 401
-    assert _asgi_get(app, b"Bearer caf\xe9") == 200
+    assert _asgi_get(app, b"Bearer caf\xc3\xa9") == 200
 
 
 def test_prometheus_metrics_have_help_type_labels_and_escaping() -> None:
