@@ -49,6 +49,11 @@ including sample count, median decode throughput, TTFT, and total latency.
 The gateway server enables a 15-second watchdog that revives failed services;
 use `create_app(..., watchdog=False)` when embedding it without supervision.
 
+## Concurrency slots
+
+Plans automatically size concurrency slots from memory left after placement;
+`Policy.parallel_slots` can force a specific slot count.
+
 ## Memory budget controls
 
 `nmesh plan --budget free --explain` plans against currently free VRAM and RAM
