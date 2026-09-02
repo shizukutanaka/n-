@@ -682,7 +682,7 @@ def _eval(args: argparse.Namespace) -> int:
     except OSError as error:
         print(i18n.t("err.eval_save", i18n.lang(), error=error), file=sys.stderr)
         return 1
-    divergence = _eval_divergence(result, load_eval_cache())
+    divergence = _eval_divergence(result, cached)
     key = f"{result.model_id}|{result.quant}|{result.backend}"
     failed = [{"id": outcome.id, "output": outcome.output}
               for outcome in result.outcomes if not outcome.passed]
