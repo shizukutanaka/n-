@@ -32,6 +32,7 @@ class Calibration:
     other_per_char: float
     samples: int
     measured: bool
+    overhead: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,9 @@ class Sums:
     s_oo: float = 0.0
     s_ct: float = 0.0
     s_ot: float = 0.0
+    s_c: float = 0.0
+    s_o: float = 0.0
+    s_t: float = 0.0
 
 
 _LOCK = threading.Lock()
@@ -70,23 +74,53 @@ def estimate_tokens(text: str, calibration: Calibration | None = None) -> int:
     selected = calibration or _defaults()
     cjk, other = split_chars(text)
     return max(1, math.ceil(
-        cjk * selected.cjk_per_char + other * selected.other_per_char
+        cjk * selected.cjk_per_char
+        + other * selected.other_per_char
+        + selected.overhead
     ))
 
 
 def fit(sums: Sums) -> Calibration:
     if sums.n < MIN_SAMPLES:
         return _defaults(sums.n)
-    determinant = sums.s_cc * sums.s_oo - sums.s_co * sums.s_co
+    a11, a12, a13 = sums.s_cc, sums.s_co, sums.s_c
+    a22, a23 = sums.s_oo, sums.s_o
+    a33 = sums.n
+    b1, b2, b3 = sums.s_ct, sums.s_ot, sums.s_t
+    determinant = (
+        a11 * (a22 * a33 - a23 * a23)
+        - a12 * (a12 * a33 - a23 * a13)
+        + a13 * (a12 * a23 - a22 * a13)
+    )
     if abs(determinant) < 1e-9:
         return _defaults(sums.n)
-    cjk = (sums.s_ct * sums.s_oo - sums.s_ot * sums.s_co) / determinant
-    other = (sums.s_ot * sums.s_cc - sums.s_ct * sums.s_co) / determinant
+    cjk = (
+        b1 * (a22 * a33 - a23 * a23)
+        - a12 * (b2 * a33 - a23 * b3)
+        + a13 * (b2 * a23 - a22 * b3)
+    ) / determinant
+    other = (
+        a11 * (b2 * a33 - a23 * b3)
+        - b1 * (a12 * a33 - a23 * a13)
+        + a13 * (a12 * b3 - b2 * a13)
+    ) / determinant
+    overhead = (
+        a11 * (a22 * b3 - b2 * a23)
+        - a12 * (a12 * b3 - b2 * a13)
+        + b1 * (a12 * a23 - a22 * a13)
+    ) / determinant
     clamped_cjk = min(2.0, max(0.05, cjk))
     clamped_other = min(2.0, max(0.05, other))
-    if clamped_cjk != cjk or clamped_other != other:
+    clamped_overhead = min(512.0, max(0.0, overhead))
+    if (
+        clamped_cjk != cjk
+        or clamped_other != other
+        or clamped_overhead != overhead
+    ):
         return _defaults(sums.n)
-    return Calibration(clamped_cjk, clamped_other, sums.n, True)
+    return Calibration(
+        clamped_cjk, clamped_other, sums.n, True, clamped_overhead
+    )
 
 
 def _path() -> Path:
@@ -96,6 +130,11 @@ def _path() -> Path:
 def _coerce_sums(value: object) -> Sums:
     if not isinstance(value, dict):
         return Sums()
+    required = {
+        "n", "s_cc", "s_co", "s_oo", "s_ct", "s_ot", "s_c", "s_o", "s_t",
+    }
+    if not required.issubset(value):
+        return Sums()
     try:
         return Sums(
             n=max(0, int(value.get("n", 0))),
@@ -104,6 +143,9 @@ def _coerce_sums(value: object) -> Sums:
             s_oo=float(value.get("s_oo", 0.0)),
             s_ct=float(value.get("s_ct", 0.0)),
             s_ot=float(value.get("s_ot", 0.0)),
+            s_c=float(value.get("s_c", 0.0)),
+            s_o=float(value.get("s_o", 0.0)),
+            s_t=float(value.get("s_t", 0.0)),
         )
     except (TypeError, ValueError):
         return Sums()
@@ -172,6 +214,9 @@ def record(model_id: str, text: str, exact_tokens: int) -> None:
             s_oo=previous.s_oo + other * other,
             s_ct=previous.s_ct + cjk * exact_tokens,
             s_ot=previous.s_ot + other * exact_tokens,
+            s_c=previous.s_c + cjk,
+            s_o=previous.s_o + other,
+            s_t=previous.s_t + exact_tokens,
         )
         _write(values)
 
