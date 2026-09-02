@@ -1294,6 +1294,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                 for other in catalog:
                     if other.id == service.model_id or role not in other.roles:
                         continue
+                    if not any(key[0] == other.id for key in measured):
+                        continue
                     candidates = _candidate_for(other, profile, selected, bench_cache)
                     if not candidates:
                         continue
