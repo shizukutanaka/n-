@@ -115,6 +115,10 @@ MESSAGES = {
         "label.prefill": "prefill:       {marker}{value} tok/s",
         "label.ttft": "TTFT:          {marker}{value} s",
         "label.backend_detail": "{service}: backend={backend} model_ref={model_ref} port={port} context={context} slots={slots} n_gpu_layers={layers} argv={argv}",
+        "label.launcher_written": "Launcher written to: {path}",
+        "label.gateway_env": "Gateway environment file: {path}",
+        "label.autostart_limitation": "Limitation: {text}",
+        "autostart.windows_limitations": "Windows: /sc onlogon starts only after a user logs on. Boot startup requires /sc onstart and SYSTEM or saved credentials. The current simple Task Scheduler setup has no gateway self-crash restart.",
     },
     "ja": {
         "warn.embeddings_unsupported": "{model}: llama.cpp は埋め込みフラグに対応していないため、/v1/embeddings は利用できない可能性があります。",
@@ -224,6 +228,13 @@ MESSAGES = {
         "label.gateway_log": "ゲートウェイログ: {path}",
     },
 }
+
+MESSAGES["ja"].update({
+    "label.launcher_written": "\u30e9\u30f3\u30c1\u30e3\u30fc\u3092\u66f8\u304d\u8fbc\u307f\u307e\u3057\u305f: {path}",
+    "label.gateway_env": "\u30b2\u30fc\u30c8\u30a6\u30a7\u30a4\u74b0\u5883\u30d5\u30a1\u30a4\u30eb: {path}",
+    "label.autostart_limitation": "\u5236\u7d04: {text}",
+    "autostart.windows_limitations": "Windows: /sc onlogon \u306f\u30e6\u30fc\u30b6\u30fc\u304c\u30ed\u30b0\u30aa\u30f3\u3059\u308b\u307e\u3067\u8d77\u52d5\u3057\u307e\u305b\u3093\u3002\u30d6\u30fc\u30c8\u6642\u306e\u8d77\u52d5\u306b\u306f /sc onstart \u3068 SYSTEM \u307e\u305f\u306f\u4fdd\u5b58\u6e08\u307f\u8cc7\u683c\u60c5\u5831\u304c\u5fc5\u8981\u3067\u3059\u3002\u73fe\u5728\u306e\u5358\u7d14\u306a\u30bf\u30b9\u30af \u30b9\u30b1\u30b8\u30e5\u30fc\u30e9\u8a2d\u5b9a\u306b\u306f\u30b2\u30fc\u30c8\u30a6\u30a7\u30a4\u81ea\u8eab\u306e\u30af\u30e9\u30c3\u30b7\u30e5\u518d\u8d77\u52d5\u6a5f\u80fd\u304c\u3042\u308a\u307e\u305b\u3093\u3002",
+})
 
 _PRIMARY_SUBTAG = re.compile(r"^[A-Za-z]+")
 

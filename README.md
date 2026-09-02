@@ -208,6 +208,32 @@ measurements. The decode-throughput family is named
 HTTP response bodies remain English because `/v1/*` errors and authentication
 details are machine-facing API contracts for clients.
 
+## Resident operation and restart recovery
+
+`nmesh autostart --install` writes a launcher and, when absent, a
+`gateway.env` file under `NMESH_HOME`. The launcher reads `KEY=VALUE` entries
+from that sibling file, sets `NMESH_HOME` to its own directory before Python
+starts, and runs `python -m nmesh.gateway.server --port 18000` (with the
+configured port). The API key belongs only in `gateway.env`; it is not embedded
+in a service unit or Task Scheduler command line. Existing `gateway.env` files
+are never overwritten. On POSIX systems the launcher is mode `0700` and the
+environment file is mode `0600`.
+
+After a restart, the gateway watchdog reloads the saved plan and recovers
+resident services, services recorded in `state.json`, and already-listening
+services. Other services remain on demand until a request needs them.
+
+The generated service definitions intentionally reflect platform differences:
+
+* systemd uses `Restart=on-failure`, so the gateway is restarted after a
+  failure;
+* launchd uses both `RunAtLoad` and `KeepAlive`, so it is loaded at login and
+  restarted after a crash;
+* Windows output uses `schtasks /sc onlogon`: it does not start until a user
+  logs on. Boot startup requires changing this to `/sc onstart` and choosing
+  SYSTEM or saved credentials. The current simple Task Scheduler setup does
+  not restart the gateway after a self-crash.
+
 ### Prompt token accounting
 
 Context-length routing needs a prompt-token count. The built-in heuristic

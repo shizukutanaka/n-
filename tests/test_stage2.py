@@ -555,6 +555,91 @@ def test_supervisor_heartbeat_adopts_healthy_service_past_restart_budget(
     assert supervisor.failed == {}
 
 
+def test_supervisor_boot_heartbeat_recovers_resident_and_persisted_services(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    base = _recovery_plan(catalog).services[0]
+    resident = replace(base, name="resident", resident=True)
+    persisted = replace(base, name="persisted", resident=False)
+    lazy = replace(base, name="lazy", resident=False)
+    plan = replace(_recovery_plan(catalog), services=[resident, persisted, lazy])
+    planner_save_plan(plan, tmp_path / "plan.json")
+    (tmp_path / "state.json").write_text(
+        json.dumps({"version": 2, "services": [{"service": "persisted"}]}),
+        encoding="utf-8",
+    )
+    launched: list[str] = []
+
+    class Process:
+        pid = 1234
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+        def wait(self, timeout=None):
+            return None
+
+    supervisor = Supervisor(
+        lambda service: launched.append(service.name) or Process(),
+        tmp_path / "state.json",
+        health_timeout=0.01,
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+
+    supervisor.heartbeat()
+
+    assert launched == ["resident", "persisted"]
+    assert supervisor.active_plan is not None
+    assert "lazy" not in supervisor.processes
+    supervisor.ensure_running("resident")
+    supervisor.heartbeat()
+    assert launched == ["resident", "persisted"]
+    supervisor.down()
+
+
+def test_supervisor_boot_heartbeat_adopts_listening_service(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        resident=False,
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    planner_save_plan(replace(plan, services=[service]), tmp_path / "plan.json")
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("listening service should be adopted"),
+        tmp_path / "state.json",
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+
+    supervisor.heartbeat()
+
+    assert supervisor.external_shared == {service.name}
+    supervisor.down()
+
+
+def test_supervisor_boot_heartbeat_without_plan_returns_status(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+
+    result = supervisor.heartbeat()
+
+    assert supervisor.active_plan is None
+    assert result.running is False
+
+
 def test_supervisor_admission_replans_against_free_memory(
     tmp_path, catalog: list[ModelSpec]
 ) -> None:
