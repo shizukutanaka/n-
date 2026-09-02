@@ -31,7 +31,7 @@ from nmesh.runtime import RuntimeStatus, clear_gateway, disarm_atexit, record_ga
 from nmesh.runtime import down as runtime_down
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime import up as runtime_up
-from nmesh.runtime.service_unit import service_unit
+from nmesh.runtime.service_unit import launcher_script, service_unit
 from nmesh.telemetry import bench_overlay
 from nmesh.telemetry import summary as telemetry_summary
 
@@ -609,6 +609,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     auto.add_argument("--json", action="store_true")
     autostart = sub.add_parser("autostart")
     autostart.add_argument("--port", type=int, default=18000)
+    autostart.add_argument("--install", action="store_true")
     autostart.add_argument("--json", action="store_true")
     models = sub.add_parser("models")
     models.add_argument("--role")
@@ -715,15 +716,47 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "autostart":
         filename, text, install_command = service_unit(args.port)
+        launcher_filename, launcher_text = launcher_script(args.port)
+        home = nmesh_home()
+        launcher_path = home / launcher_filename
+        env_path = home / "gateway.env"
+        installed = False
+        if args.install:
+            home.mkdir(parents=True, exist_ok=True)
+            launcher_path.write_text(launcher_text, encoding="utf-8", newline="")
+            if os.name != "nt":
+                launcher_path.chmod(0o700)
+            if not env_path.exists():
+                api_key = os.environ.get("NMESH_API_KEY", "")
+                env_path.write_text(
+                    f"NMESH_API_KEY={api_key}\nNMESH_HOME=\n",
+                    encoding="utf-8",
+                    newline="",
+                )
+                if os.name != "nt":
+                    env_path.chmod(0o600)
+            installed = True
+        limitations = []
+        if os.name == "nt":
+            limitations.append(i18n.t("autostart.windows_limitations", i18n.lang()))
         data = {
             "filename": filename,
             "text": text,
             "install_command": install_command,
+            "launcher_path": str(launcher_path),
+            "env_path": str(env_path),
+            "installed": installed,
+            "limitations": limitations,
         }
         if args.json:
             _print_json(data)
         else:
             print(f"Filename: {filename}\n\n{text}\nInstall with:\n{install_command}")
+            if args.install:
+                print(i18n.t("label.launcher_written", i18n.lang(), path=launcher_path))
+                print(i18n.t("label.gateway_env", i18n.lang(), path=env_path))
+            for limitation in limitations:
+                print(i18n.t("label.autostart_limitation", i18n.lang(), text=limitation))
         return 0
     if args.command == "run":
         return _run_prompt(args)

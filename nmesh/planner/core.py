@@ -1333,7 +1333,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
 
 
 def save_plan(plan: Plan, path: Path | None = None) -> Path:
-    target = path or PLAN_PATH
+    target = path or (nmesh_home() / "plan.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     try:
@@ -1350,7 +1350,7 @@ def save_plan(plan: Plan, path: Path | None = None) -> Path:
 
 
 def load_plan(path: Path | None = None) -> Plan | None:
-    target = path or PLAN_PATH
+    target = path or (nmesh_home() / "plan.json")
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
         return _plan_from_dict(payload) if isinstance(payload, dict) else None

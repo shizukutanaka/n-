@@ -12,7 +12,7 @@ from nmesh import cli
 from nmesh.catalog import load_catalog
 from nmesh.planner import Policy, build_plan
 from nmesh.runtime import service_unit as service_unit_module
-from nmesh.runtime.service_unit import service_unit
+from nmesh.runtime.service_unit import launcher_script, service_unit
 from nmesh.runtime.supervisor import Supervisor
 
 from .test_planner import profile
@@ -249,24 +249,71 @@ def test_fallback_only_scales_context_with_parallel_flag(tmp_path: Path) -> None
     assert plain.launch.argv[plain.launch.argv.index("-c") + 1] == str(plain.context)
 
 
-def test_service_units_are_pure_and_platform_specific(monkeypatch) -> None:
+def test_service_units_are_pure_and_platform_specific(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("nmesh.runtime.service_unit.sys.executable", "/resolved/python")
+    monkeypatch.setattr(service_unit_module, "nmesh_home", lambda: tmp_path)
+
+    launcher_name, launcher = launcher_script(19000, "posix")
+    assert launcher_name.endswith(".sh")
+    assert launcher.startswith("#!/bin/sh\n")
+    assert "gateway.env" in launcher
+    assert 'NMESH_HOME="$script_dir"' in launcher
+    assert "exec /resolved/python -m nmesh.gateway.server --port 19000" in launcher
 
     filename, text, command = service_unit(19000, "posix")
     assert filename.endswith(".service")
-    assert "/resolved/python" in text
-    assert "19000" in text
+    assert "ExecStart=" in text
+    assert "nmesh-gateway.sh" in text
     assert command.startswith("systemctl --user")
 
     monkeypatch.setattr(service_unit_module.os, "name", "posix")
     monkeypatch.setattr(service_unit_module.sys, "platform", "darwin")
     filename, text, command = service_unit(19001)
     assert filename.endswith(".plist")
-    assert "/resolved/python" in text
-    assert "19001" in text
+    assert "nmesh-gateway.sh" in text
+    assert "<key>KeepAlive</key><true/>" in text
     assert command.startswith("launchctl")
+
+    launcher_name, launcher = launcher_script(19002, "nt")
+    assert launcher_name.endswith(".cmd")
+    assert "gateway.env" in launcher
+    assert "set \"NMESH_HOME=%~dp0\"" in launcher
+    assert "-m nmesh.gateway.server --port 19002" in launcher
 
     filename, text, command = service_unit(19002, "nt")
     assert filename.endswith(".cmd")
     assert "schtasks" in text
-    assert "19002" in command
+    assert "nmesh-gateway.cmd" in text
+
+
+def test_autostart_install_writes_launcher_and_preserves_environment(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(service_unit_module, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setenv("NMESH_API_KEY", "do-not-print")
+
+    assert cli.main(["autostart", "--install", "--json"]) == 0
+    output = capsys.readouterr().out
+    data = json.loads(output)
+    launcher_path = Path(data["launcher_path"])
+    env_path = Path(data["env_path"])
+    assert data["installed"] is True
+    assert data["limitations"]
+    assert "/sc onlogon" in data["limitations"][0]
+    assert "self-crash" in data["limitations"][0]
+    assert launcher_path.exists()
+    assert env_path.read_text(encoding="utf-8") == (
+        "NMESH_API_KEY=do-not-print\nNMESH_HOME=\n"
+    )
+    assert "do-not-print" not in output
+
+    env_path.write_text("NMESH_API_KEY=existing\n", encoding="utf-8")
+    assert cli.main(["autostart", "--install", "--json"]) == 0
+    capsys.readouterr()
+    assert env_path.read_text(encoding="utf-8") == "NMESH_API_KEY=existing\n"
+
+    assert cli.main(["autostart"]) == 0
+    output = capsys.readouterr().out
+    assert "/sc onlogon" in output
+    assert "self-crash" in output

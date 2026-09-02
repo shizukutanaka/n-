@@ -6,26 +6,64 @@ import shlex
 import subprocess
 import sys
 
+from nmesh.paths import nmesh_home
+
+
+def launcher_script(
+    port: int = 18000, os_name: str | None = None
+) -> tuple[str, str]:
+    """Return a launcher filename and script that carries gateway.env."""
+    windows = os.name == "nt" if os_name is None else os_name == "nt"
+    if windows:
+        filename = "nmesh-gateway.cmd"
+        executable = subprocess.list2cmdline((sys.executable,))
+        text = f"""@echo off
+setlocal
+if exist "%~dp0gateway.env" (
+  for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%~dp0gateway.env") do (
+    if not "%%A"=="" set "%%A=%%B"
+  )
+)
+set "NMESH_HOME=%~dp0"
+{executable} -m nmesh.gateway.server --port {port}
+"""
+        return filename, text
+    filename = "nmesh-gateway.sh"
+    executable = shlex.quote(sys.executable)
+    text = f"""#!/bin/sh
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -f "$script_dir/gateway.env" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+      *=*) key=${{line%%=*}}; value=${{line#*=}}; export "$key=$value" ;;
+    esac
+  done < "$script_dir/gateway.env"
+fi
+export NMESH_HOME="$script_dir"
+exec {executable} -m nmesh.gateway.server --port {port}
+"""
+    return filename, text
+
 
 def service_unit(
     port: int = 18000, os_name: str | None = None
 ) -> tuple[str, str, str]:
     """Return the filename, unit text, and explicit install command."""
     current = os_name
-    executable = sys.executable
     windows = os.name == "nt" if current is None else current == "nt"
     macos = (
         sys.platform.startswith("darwin")
         if current is None
         else current.startswith("darwin")
     )
+    launcher, _ = launcher_script(port, current)
+    launcher_path = str(nmesh_home() / launcher)
     if windows:
-        task_command = subprocess.list2cmdline(
-            (executable, "-m", "nmesh.gateway.server", "--port", str(port))
-        )
+        task_command = subprocess.list2cmdline((launcher_path,))
         command = (
             f'schtasks /create /tn nmesh-gateway /sc onlogon '
-            f'/tr "{task_command}"'
+            f'/tr {task_command}'
         )
         return "nmesh-gateway.cmd", command + "\n", command
     if macos:
@@ -37,10 +75,9 @@ def service_unit(
 <dict>
   <key>Label</key><string>{label}</string>
   <key>ProgramArguments</key>
-  <array><string>{html.escape(executable)}</string>
-    <string>-m</string><string>nmesh.gateway.server</string>
-    <string>--port</string><string>{port}</string></array>
+  <array><string>{html.escape(launcher_path)}</string></array>
   <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
 </dict>
 </plist>
 """
@@ -50,7 +87,7 @@ Description=nmesh gateway
 After=network.target
 
 [Service]
-ExecStart={shlex.join((executable, "-m", "nmesh.gateway.server", "--port", str(port)))}
+ExecStart={shlex.join((launcher_path,))}
 Restart=on-failure
 
 [Install]

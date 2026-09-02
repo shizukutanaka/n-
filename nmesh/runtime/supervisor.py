@@ -94,6 +94,7 @@ class Supervisor:
         self.restarts: dict[str, list[float]] = {}
         self.failed: dict[str, str] = {}
         self.active_plan: Plan | None = None
+        self._boot_recovery = False
         self.notes: dict[str, str] = {}
         self._lock = RLock()
         self._atexit_armed = False
@@ -545,6 +546,7 @@ class Supervisor:
             } for item in plan.services])
         with self._lock:
             current = plan
+            self._boot_recovery = False
             actualized = False
             if admit:
                 try:
@@ -692,6 +694,7 @@ class Supervisor:
             if selected is None:
                 raise FileNotFoundError(i18n.t("err.no_active_plan", i18n.lang()))
             self.active_plan = selected
+            self._boot_recovery = False
             target = next((item for item in selected.services if item.name == service_name), None)
             if target is None:
                 raise KeyError(i18n.t(
@@ -870,8 +873,23 @@ class Supervisor:
 
     def heartbeat(self) -> RuntimeStatus:
         with self._lock:
+            boot_recovery = self._boot_recovery
             if self.active_plan is None:
-                return self.status()
+                loaded = load_plan()
+                if loaded is None:
+                    return self.status()
+                self.active_plan = loaded
+                self._boot_recovery = True
+                boot_recovery = True
+            persisted_names: set[str] = set()
+            if boot_recovery:
+                state = self._load_state()
+                if state is not None:
+                    persisted_names = {
+                        str(entry.get("service"))
+                        for entry in state.get("services", [])
+                        if isinstance(entry, dict) and entry.get("service") is not None
+                    }
             changed = False
             for service in self.active_plan.services:
                 if (
@@ -885,6 +903,10 @@ class Supervisor:
                     changed = True
                     continue
                 if self._already_up(service):
+                    continue
+                if boot_recovery and (
+                    not service.resident and service.name not in persisted_names
+                ):
                     continue
                 if service.name in self.failed:
                     continue
