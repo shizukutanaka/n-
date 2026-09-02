@@ -17,6 +17,8 @@ from rich.table import Table
 from nmesh import i18n
 from nmesh.bench import benchmark_key, load_cache, measure, save_cache
 from nmesh.catalog import load_catalog
+from nmesh.eval import CATEGORIES, TASKS, load_eval_cache, save_eval
+from nmesh.eval import run as eval_run
 from nmesh.paths import nmesh_home
 from nmesh.planner import (
     PlannedService,
@@ -176,7 +178,16 @@ def _make_plan(args: argparse.Namespace) -> object:
     live = bench_overlay()
     args._telemetry_keys = len(live)
     cache = {**load_cache(), **live}
-    return build_plan(profile, load_catalog(), policy, cache)
+    return build_plan(profile, load_catalog(), policy, cache, _eval_rates())
+
+
+def _eval_rates() -> dict[str, float]:
+    latest: dict[str, tuple[float, float]] = {}
+    for record in load_eval_cache().values():
+        previous = latest.get(record.model_id)
+        if previous is None or record.at > previous[0]:
+            latest[record.model_id] = (record.at, record.pass_rate)
+    return {model_id: value for model_id, (_, value) in latest.items()}
 
 
 def _plan(args: argparse.Namespace) -> int:
@@ -286,6 +297,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 replace(plan.policy, lang=i18n.lang(),
                         languages=_parse_languages(args.lang)),
                 {**load_cache(), **bench_overlay()},
+                _eval_rates(),
             )
             save_plan(plan)
         cache = {**load_cache(), **bench_overlay()}
@@ -546,6 +558,86 @@ def _bench(args: argparse.Namespace) -> int:
     return 0
 
 
+def _eval(args: argparse.Namespace) -> int:
+    plan = load_plan()
+    if plan is None or not plan.services:
+        return 1
+    service = next((item for item in plan.services if item.name == args.service), None)
+    if service is None:
+        print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
+              file=sys.stderr)
+        return 1
+    if not _service_running(service, runtime_status()):
+        print(i18n.t("err.eval_up", i18n.lang()), file=sys.stderr)
+        return 1
+    requested = {item.strip() for item in args.categories.split(",") if item.strip()}
+    tasks = (
+        tuple(task for task in TASKS if task.category in requested)
+        if args.categories.strip()
+        else ()
+    )
+    if not tasks:
+        print(i18n.t("err.eval_categories", i18n.lang()), file=sys.stderr)
+        return 1
+    base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
+        f"http://127.0.0.1:{service.port}"
+    )
+    try:
+        result = eval_run(tasks, base_url, service.model_ref)
+    except RuntimeError as error:
+        print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
+        return 1
+    result = replace(
+        result, model_id=service.model_id, quant=service.quant, backend=service.backend,
+    )
+    try:
+        save_eval(result)
+    except OSError as error:
+        print(i18n.t("err.eval_save", i18n.lang(), error=error), file=sys.stderr)
+        return 1
+    key = f"{result.model_id}|{result.quant}|{result.backend}"
+    failed = [{"id": outcome.id, "output": outcome.output}
+              for outcome in result.outcomes if not outcome.passed]
+    language = i18n.lang()
+    note = i18n.t("note.eval_scope", language, tasks=result.n_tasks)
+    output = {
+        "key": key,
+        "model_id": result.model_id,
+        "quant": result.quant,
+        "backend": result.backend,
+        "n_tasks": result.n_tasks,
+        "passed": result.passed,
+        "pass_rate": result.pass_rate,
+        "by_category": result.by_category,
+        "failed": failed,
+        "note": note,
+    }
+    if args.json:
+        _print_json(output)
+        return 0
+    table = Table(title=i18n.t("label.eval_title", language))
+    for column in (
+        i18n.t("label.eval_category", language),
+        i18n.t("label.eval_passed", language),
+        i18n.t("label.eval_total", language),
+        i18n.t("label.eval_pass_rate", language),
+    ):
+        table.add_column(column)
+    for category, rate in result.by_category.items():
+        category_outcomes = [item for item in result.outcomes if item.category == category]
+        category_passed = sum(item.passed for item in category_outcomes)
+        table.add_row(category, str(category_passed), str(len(category_outcomes)), f"{rate:.1%}")
+    _console().print(table)
+    _console().print(note)
+    _console().print(i18n.t(
+        "label.eval_overall", language, passed=result.passed, total=result.n_tasks,
+        rate=result.pass_rate,
+    ))
+    failed_ids = ", ".join(item["id"] for item in failed) or "-"
+    _console().print(i18n.t("label.eval_failed", language, ids=failed_ids))
+    return 0
+
+
 def _run_prompt(args: argparse.Namespace) -> int:
     payload = json.dumps({"model": f"nmesh-{args.role}",
                           "messages": [{"role": "user", "content": args.prompt}]}).encode()
@@ -608,6 +700,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     bench_parser.add_argument("--service", default="chat")
     bench_parser.add_argument("--tokens", type=int, default=128)
     bench_parser.add_argument("--json", action="store_true")
+    eval_parser = sub.add_parser("eval")
+    eval_parser.add_argument("--service", default="chat")
+    eval_parser.add_argument("--json", action="store_true")
+    eval_parser.add_argument("--categories", default=",".join(CATEGORIES))
     auto = sub.add_parser("autotune")
     auto.add_argument("--json", action="store_true")
     autostart = sub.add_parser("autostart")
@@ -634,6 +730,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _models(args)
     if args.command == "bench":
         return _bench(args)
+    if args.command == "eval":
+        return _eval(args)
     if args.command == "autotune":
         plan = load_plan()
         if plan is None or not plan.services:

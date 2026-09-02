@@ -736,7 +736,9 @@ def test_embedding_uses_supported_flag_aliases_without_warnings() -> None:
     assert "--embeddings" not in argv
     assert argv[argv.index("--batch-size") + 1] == "8192"
     assert argv[argv.index("--ubatch-size") + 1] == "8192"
-    assert not result.warnings
+    assert result.warnings == [
+        "Model ranking uses unverified catalog quality claims; nmesh eval measures them."
+    ]
 
 
 def test_embedding_warns_when_pooling_flag_is_unsupported() -> None:

@@ -1106,7 +1106,8 @@ def _rewrite_launch(
 
 def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                policy: Policy | None = None,
-               bench_cache: Mapping[object, float] | None = None) -> Plan:
+               bench_cache: Mapping[object, float] | None = None,
+               eval_cache: Mapping[str, float] | None = None) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
     warning_params = profile.warning_params
@@ -1118,6 +1119,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         )
         for index, warning in enumerate(profile.warnings)
     ]
+    warnings.append(t("warn.quality_prior", selected.lang))
     if profile.backend_gpu_devices.get("llamacpp") == () and profile.gpus:
         warnings.append(
             t("warn.backend_no_gpu", selected.lang)
@@ -1218,6 +1220,49 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         total_download += int(candidate.memory.disk_needed)
     services = _place_services(services, profile, selected, swap_group, warnings)
     services = _assign_slots(services, profile, selected, swap_group, warnings)
+    if eval_cache is not None:
+        measured = {
+            model_id: value for model_id, value in eval_cache.items()
+            if isinstance(model_id, str)
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and 0.0 <= value <= 1.0
+        }
+        catalog_by_id = {model.id: model for model in catalog}
+        contradiction_pairs: set[tuple[str, str]] = set()
+        for service in services:
+            selected_model = catalog_by_id.get(service.model_id)
+            selected_rate = measured.get(service.model_id)
+            if selected_model is None or selected_rate is None:
+                continue
+            for role in service.roles:
+                for other in catalog:
+                    if other.id == service.model_id or role not in other.roles:
+                        continue
+                    if measured.get(other.id) is None:
+                        continue
+                    if not _candidate_for(other, profile, selected, bench_cache):
+                        continue
+                    other_rate = measured[other.id]
+                    if (
+                        other_rate > selected_rate + 0.05
+                        and other.quality < selected_model.quality
+                    ):
+                        pair = (other.id, service.model_id)
+                        if pair in contradiction_pairs:
+                            continue
+                        contradiction_pairs.add(pair)
+                        warnings.append(t(
+                            "warn.quality_contradiction",
+                            selected.lang,
+                            role=role,
+                            other=other.id,
+                            other_rate=other_rate,
+                            selected=service.model_id,
+                            selected_rate=selected_rate,
+                            other_prior=other.quality,
+                            selected_prior=selected_model.quality,
+                        ))
     if total_download > selected.allow_download_gb * GIB:
         warnings.append(t("warn.download_budget", selected.lang))
     if selected.languages:

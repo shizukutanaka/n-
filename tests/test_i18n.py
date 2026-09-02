@@ -100,5 +100,5 @@ def test_language_preference_does_not_filter_uncovered_role() -> None:
     plan = build_plan(profile(32), [model], Policy(roles=["embed"], languages=("ja",)))
     assert plan.runnable
     assert plan.services[0].model_id == "english-embed"
-    assert "english-embed" in plan.warnings[0]
-    assert "publisher/vendor" in plan.warnings[0]
+    assert any("english-embed" in warning for warning in plan.warnings)
+    assert any("publisher/vendor" in warning for warning in plan.warnings)
