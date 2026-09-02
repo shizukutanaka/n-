@@ -70,6 +70,16 @@ def _bytes(value: float) -> str:
     return f"{value:.2f} B"
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer of at least 1") from error
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
 def _print_json(value: object) -> None:
     print(json.dumps(value, indent=2, default=str))
 
@@ -522,7 +532,9 @@ def _bench(args: argparse.Namespace) -> int:
         f"http://127.0.0.1:{service.port}"
     )
     try:
-        measurement = measure(service, base_url, decode_tokens=args.tokens)
+        measurement = measure(
+            service, base_url, decode_tokens=args.tokens, runs=args.runs
+        )
     except (OSError, RuntimeError) as error:
         print(i18n.t("err.bench_measure", i18n.lang(), error=error), file=sys.stderr)
         return 1
@@ -536,12 +548,21 @@ def _bench(args: argparse.Namespace) -> int:
     except OSError as error:
         print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
         return 1
+    decode_spread = (
+        (measurement.decode_tps_max - measurement.decode_tps_min)
+        / measurement.decode_tps
+        if measurement.decode_tps else 0.0
+    )
     result = {"key": key, "prefill_tokens": 512, "decode_tokens": args.tokens,
               "median_tps": cache[key], "prefill_tps": measurement.prefill_tps,
               "ttft_s": measurement.ttft_s, "approximate": measurement.approximate,
               "prompt_tokens": measurement.prompt_tokens,
               "prefill_source": measurement.prefill_source,
-              "cached_prompt_tokens": measurement.cached_prompt_tokens}
+              "cached_prompt_tokens": measurement.cached_prompt_tokens,
+              "runs": measurement.runs,
+              "decode_tps_min": measurement.decode_tps_min,
+              "decode_tps_max": measurement.decode_tps_max,
+              "decode_spread": decode_spread}
     if args.json:
         _print_json(result)
     else:
@@ -551,10 +572,22 @@ def _bench(args: argparse.Namespace) -> int:
         _console().print("\n".join((
             i18n.t("label.median_decode", language, marker=marker,
                    value=measurement.decode_tps),
+            i18n.t("label.decode_range", language,
+                   minimum=measurement.decode_tps_min,
+                   maximum=measurement.decode_tps_max,
+                   spread=decode_spread),
             i18n.t("label.prefill", language, marker=prefill_marker,
                    value=measurement.prefill_tps),
             i18n.t("label.ttft", language, marker=marker, value=measurement.ttft_s),
         )))
+        if decode_spread > 0.25:
+            _console().print(i18n.t(
+                "warn.bench_reproducibility",
+                language,
+                minimum=measurement.decode_tps_min,
+                maximum=measurement.decode_tps_max,
+                spread=decode_spread,
+            ))
     return 0
 
 
@@ -699,6 +732,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     bench_parser = sub.add_parser("bench")
     bench_parser.add_argument("--service", default="chat")
     bench_parser.add_argument("--tokens", type=int, default=128)
+    bench_parser.add_argument("--runs", type=_positive_int, default=3)
     bench_parser.add_argument("--json", action="store_true")
     eval_parser = sub.add_parser("eval")
     eval_parser.add_argument("--service", default="chat")

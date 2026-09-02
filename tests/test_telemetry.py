@@ -265,6 +265,37 @@ def test_gateway_records_upstream_stream_timings(tmp_path, monkeypatch) -> None:
         upstream.server_close()
 
 
+def test_gateway_keeps_partially_cached_prefill_timing(tmp_path, monkeypatch) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    monkeypatch.setattr(telemetry, "_default", store)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _TelemetryHandler.stream = True
+        _TelemetryHandler.include_usage = True
+        _TelemetryHandler.timings = {
+            "cache_n": 24,
+            "prompt_n": 314,
+            "prompt_ms": 816.236,
+            "predicted_n": 16,
+            "predicted_ms": 381.695,
+        }
+        client = TestClient(create_app(_gateway_plan(upstream.server_address[1])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert store.samples()[-1].prefill_tps == pytest.approx(384.9, rel=1e-3)
+    finally:
+        _TelemetryHandler.timings = None
+        _TelemetryHandler.include_usage = False
+        upstream.shutdown()
+        upstream.server_close()
+
+
 def test_gateway_omits_cached_prefill_timing(tmp_path, monkeypatch) -> None:
     store = Telemetry(tmp_path / "telemetry.json")
     monkeypatch.setattr(telemetry, "_default", store)

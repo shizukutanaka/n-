@@ -80,13 +80,13 @@ def _timing_metrics(timings: object) -> tuple[float | None, float | None]:
         and predicted_ms is not None and predicted_ms > 0 else None
     )
     cache_n = _upstream_int(timings.get("cache_n"))
-    cache_valid = "cache_n" not in timings or cache_n == 0
     prompt_n = _upstream_int(timings.get("prompt_n"))
     prompt_ms = _upstream_float(timings.get("prompt_ms"))
+    # Partial cache leaves enough prompt_n/prompt_ms for an exact prefill rate.
+    cached = max(cache_n or 0, 0)
     prefill = (
         prompt_n / (prompt_ms / 1000)
-        if cache_valid
-        and prompt_n is not None and prompt_n >= 16
+        if prompt_n is not None and prompt_n >= 16 and cached < prompt_n
         and prompt_ms is not None and prompt_ms > 0 else None
     )
     return decode, prefill

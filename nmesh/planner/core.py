@@ -187,6 +187,16 @@ def _gpu_bandwidth(gpu: GPUInfo) -> float:
 
 def _throughput(model: ModelSpec, memory: MemoryEstimate, layers: int,
                 profile: HardwareProfile) -> float:
+    """Estimate decode throughput from effective memory bandwidth.
+
+    On this machine, q4_k_m predicted 32.1 versus a 30.1 tok/s median
+    (about 7% high), q4_0 predicted 34.3 versus 35.0 (about 2% low), and
+    f16 predicted 30.4 versus 40.2 (about 24% pessimistic because f16 needs
+    no dequantization). The 40 GB/s CPU value is a memory-bandwidth stand-in
+    validated to about 7% for quantized CPU inference here. GPU bandwidth
+    table values are unvalidated; these measurements do not promise
+    generalization.
+    """
     gpu_frac = layers / model.n_layers
     if gpu_frac == 0 or not profile.gpus:
         effective = 40.0
@@ -406,6 +416,7 @@ def _candidate_for(
     cache: Mapping[object, float] | None,
     reserved_vram_bytes: float = 0.0,
     reserved_ram_bytes: float = 0.0,
+    excluded: list[dict[str, str]] | None = None,
 ) -> list[_Candidate]:
     initial = min(model.max_context, policy.max_context or 8192)
     contexts = list(dict.fromkeys(context for context in (initial, 4096, 2048) if context <= initial))
@@ -451,6 +462,15 @@ def _candidate_for(
                                        "gpu_bytes": gpu_bytes, "n_gpu_layers": layers})
             tps = bench if bench is not None else _throughput(model, memory, layers, profile)
             if tps < policy.min_decode_tps:
+                if bench is not None and excluded is not None:
+                    estimate = _throughput(model, memory, layers, profile)
+                    if estimate >= policy.min_decode_tps:
+                        excluded.append({
+                            "model": model.id,
+                            "quant": quant,
+                            "tps": f"{bench:.2f}",
+                            "threshold": f"{policy.min_decode_tps:.2f}",
+                        })
                 continue
             wq, ws = {"quality": (1.0, 0.1), "speed": (0.5, 1.0),
                       "balanced": (1.0, 0.25)}.get(policy.prefer, (1.0, 0.25))
@@ -1141,6 +1161,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     services: list[PlannedService] = []
     swap_group: list[str] = []
     role_to_service: dict[str, str] = {}
+    bench_excluded: list[dict[str, str]] = []
     total_download = 0
     for group in [item for item in groups if item]:
         reserved_vram, reserved_ram = _reserved_memory(services, swap_group)
@@ -1150,6 +1171,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                  model, profile, selected, bench_cache,
                  reserved_vram_bytes=reserved_vram,
                  reserved_ram_bytes=reserved_ram,
+                 excluded=bench_excluded,
              )),
             key=lambda item: item.score, reverse=True,
         ) for role in group}
@@ -1218,6 +1240,20 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             selected.budget_source, warnings, selected.lang,
         )
         total_download += int(candidate.memory.disk_needed)
+    seen_excluded: set[str] = set()
+    for exclusion in bench_excluded:
+        model_id = exclusion["model"]
+        if model_id in seen_excluded:
+            continue
+        seen_excluded.add(model_id)
+        warnings.append(t(
+            "warn.bench_excluded",
+            selected.lang,
+            model=model_id,
+            quant=exclusion["quant"],
+            tps=exclusion["tps"],
+            threshold=exclusion["threshold"],
+        ))
     services = _place_services(services, profile, selected, swap_group, warnings)
     services = _assign_slots(services, profile, selected, swap_group, warnings)
     if eval_cache is not None:

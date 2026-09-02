@@ -10,6 +10,7 @@ from typing import ClassVar
 import pytest
 from fastapi.testclient import TestClient
 
+import nmesh.bench.runner as bench_runner
 import nmesh.gateway as gateway_module
 from nmesh import telemetry
 from nmesh.bench import benchmark_key, measure
@@ -322,9 +323,12 @@ def test_bench_runner_uses_streaming_endpoint() -> None:
                           4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
         plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
         result = measure(plan.services[0], f"http://127.0.0.1:{upstream.server_address[1]}",
-                         prefill_tokens=8, decode_tokens=2, runs=3)
+                         prefill_tokens=8, decode_tokens=2, runs=1)
         assert result.prefill_tps > 0
         assert result.decode_tps > 0
+        assert result.decode_tps_min == result.decode_tps
+        assert result.decode_tps_max == result.decode_tps
+        assert result.runs == 1
         assert result.approximate is True
         assert result.prefill_source == "ttft"
         assert _UpstreamHandler.request_body["max_tokens"] == 2
@@ -382,6 +386,9 @@ def test_bench_runner_uses_upstream_timings_and_unique_prompts() -> None:
         assert result.prefill_source == "timings"
         assert result.prefill_tps == pytest.approx(404.29, rel=1e-3)
         assert result.decode_tps == pytest.approx(41.92, rel=1e-3)
+        assert result.decode_tps_min == pytest.approx(41.92, rel=1e-3)
+        assert result.decode_tps_max == pytest.approx(41.92, rel=1e-3)
+        assert result.runs == 3
         assert result.approximate is False
         assert result.cached_prompt_tokens == 0
         prompts = [body["messages"][0]["content"] for body in _UsageHandler.request_bodies]
@@ -401,13 +408,13 @@ def test_bench_runner_reports_cached_upstream_prompt() -> None:
     thread.start()
     try:
         _UsageHandler.timings = {
-            "cache_n": 329,
-            "prompt_n": 1,
-            "prompt_ms": 3.0,
+            "cache_n": 24,
+            "prompt_n": 314,
+            "prompt_ms": 816.236,
             "predicted_n": 16,
             "predicted_ms": 381.695,
         }
-        _UsageHandler.cached_tokens = 329
+        _UsageHandler.cached_tokens = 24
         model = ModelSpec("cached-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
                           4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
         plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
@@ -415,13 +422,63 @@ def test_bench_runner_reports_cached_upstream_prompt() -> None:
             plan.services[0], f"http://127.0.0.1:{upstream.server_address[1]}",
             prefill_tokens=512, decode_tokens=17, runs=1,
         )
-        assert result.prefill_source == "cached"
-        assert result.cached_prompt_tokens == 329
+        assert result.prefill_source == "timings"
+        assert result.cached_prompt_tokens == 24
     finally:
         _UsageHandler.timings = None
         _UsageHandler.cached_tokens = None
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_bench_runner_prefill_source_handles_partial_cache() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UsageHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec(
+            "prefill-source-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+            4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"},
+        )
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        cases = (
+            ({"cache_n": 0, "prompt_n": 330, "prompt_ms": 816.236}, 0, "timings"),
+            ({"cache_n": 24, "prompt_n": 314, "prompt_ms": 816.236}, 24, "timings"),
+            ({"cache_n": 329, "prompt_n": 1, "prompt_ms": 3.0}, 329, "cached"),
+            ({"cache_n": 5, "prompt_n": 10, "prompt_ms": 3.0}, 5, "cached"),
+            (None, None, "ttft"),
+        )
+        for timings, cached, expected in cases:
+            _UsageHandler.timings = timings
+            _UsageHandler.cached_tokens = cached
+            result = measure(
+                plan.services[0], f"http://127.0.0.1:{upstream.server_address[1]}",
+                prefill_tokens=512, decode_tokens=17, runs=1,
+            )
+            assert result.prefill_source == expected
+    finally:
+        _UsageHandler.timings = None
+        _UsageHandler.cached_tokens = None
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_bench_runner_aggregates_decode_spread(monkeypatch) -> None:
+    model = ModelSpec("spread-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    values = iter((12.0, 30.0, 18.0))
+
+    def fake_measure_once(*_args, **_kwargs):
+        decode_tps = next(values)
+        return bench_runner.BenchResult(100.0, decode_tps, 0.2, False)
+
+    monkeypatch.setattr(bench_runner, "_measure_once", fake_measure_once)
+    result = measure(plan.services[0], "http://unused", runs=3)
+    assert result.decode_tps == 18.0
+    assert result.decode_tps_min == 12.0
+    assert result.decode_tps_max == 30.0
+    assert result.runs == 3
 
 
 def test_explicit_service_model_wins_over_code_heuristic() -> None:

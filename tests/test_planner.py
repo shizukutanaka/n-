@@ -8,6 +8,7 @@ import pytest
 
 import nmesh.planner.core as planner_core
 from nmesh import i18n
+from nmesh.bench import benchmark_key
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.planner import Policy, build_plan, estimate_memory, free_budgets, load_plan, save_plan
 from nmesh.planner.core import _gpu_budget
@@ -283,6 +284,39 @@ def test_zero_selection_reservation_is_a_noop(catalog: list[ModelSpec]) -> None:
         reserved_vram_bytes=0.0, reserved_ram_bytes=0.0,
     )
     assert default == explicit_zero
+
+
+def test_bench_exclusion_warning_reports_estimate_admission() -> None:
+    model = ModelSpec(
+        "bench-excluded", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"},
+    )
+    policy = Policy(roles=["chat"])
+    hardware = profile(64)
+    assert planner_core._candidate_for(model, hardware, policy, None)
+    cache = {
+        benchmark_key(model.id, quant, "llamacpp", "cpu", 0): 1.0
+        for quant in planner_core.BPW
+    }
+    result = build_plan(hardware, [model], policy, cache)
+    excluded = [warning for warning in result.warnings if "bench-excluded" in warning]
+    assert len(excluded) == 1
+    assert "excluded" in excluded[0]
+    assert not result.services
+
+
+def test_bench_exclusion_warning_requires_passing_estimate() -> None:
+    model = ModelSpec(
+        "bench-not-admitted", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"},
+    )
+    policy = Policy(roles=["chat"], min_decode_tps=1000.0)
+    cache = {
+        benchmark_key(model.id, quant, "llamacpp", "cpu", 0): 1.0
+        for quant in planner_core.BPW
+    }
+    result = build_plan(profile(64), [model], policy, cache)
+    assert not any("bench-not-admitted" in warning for warning in result.warnings)
 
 
 def test_oversized_model_uses_tensor_parallel() -> None:

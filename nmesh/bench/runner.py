@@ -20,6 +20,9 @@ class BenchResult:
     prompt_tokens: int | None = None
     prefill_source: str = "ttft"
     cached_prompt_tokens: int = 0
+    decode_tps_min: float = 0.0
+    decode_tps_max: float = 0.0
+    runs: int = 1
 
 
 _FILLER = "benchmark filler text "
@@ -118,7 +121,10 @@ def _measure_once(service: PlannedService, base_url: str, prefill_tokens: int,
         prompt_count = prompt_n
     if prompt_n is not None and prompt_n > 0 and prompt_ms is not None and prompt_ms > 0:
         prefill_tps = prompt_n / (prompt_ms / 1000)
-        prefill_source = "cached" if cached > 0 else "timings"
+        # Partial cache use still leaves prompt_n/prompt_ms as exact processed work.
+        prefill_source = (
+            "timings" if prompt_n >= 16 and cached < prompt_n else "cached"
+        )
     else:
         prefill_count = prompt_count if prompt_count is not None else prefill_tokens
         prefill_tps = prefill_count / ttft
@@ -142,11 +148,16 @@ def _measure_once(service: PlannedService, base_url: str, prefill_tokens: int,
         prompt_count,
         prefill_source,
         cached,
+        decode_tps,
+        decode_tps,
+        1,
     )
 
 
 def measure(service: PlannedService, base_url: str, prefill_tokens: int = 512,
             decode_tokens: int = 128, runs: int = 3) -> BenchResult:
+    if runs < 1:
+        raise ValueError("runs must be at least 1")
     results = [_measure_once(service, base_url, prefill_tokens, decode_tokens) for _ in range(runs)]
     sources = {item.prefill_source for item in results}
     source = (
@@ -168,4 +179,7 @@ def measure(service: PlannedService, base_url: str, prefill_tokens: int = 512,
         ),
         source,
         max(item.cached_prompt_tokens for item in results),
+        min(item.decode_tps for item in results),
+        max(item.decode_tps for item in results),
+        len(results),
     )
