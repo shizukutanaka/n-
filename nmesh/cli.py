@@ -219,7 +219,7 @@ def _eval_divergence(
             task_id for task_id in comparable
             if record.task_results[task_id] != current[task_id]
         )
-        if not comparable and not disagreeing:
+        if not comparable:
             continue
         divergence.append({
             "config": f"{record.quant}|{record.backend}",
