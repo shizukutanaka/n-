@@ -372,6 +372,24 @@ def test_auto_and_unknown_model_use_heuristics() -> None:
     )
 
 
+def test_tools_route_to_singular_tool_role_with_chat_fallback() -> None:
+    model = ModelSpec("routing-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    plan = replace(
+        plan,
+        routing=replace(
+            plan.routing,
+            role_to_service={"chat": "chat-service", "tool": "tool-service"},
+        ),
+    )
+    assert route({"tools": [{"type": "function"}]}, plan) == "tool-service"
+    assert route({"tools": [{"type": "function"}]}, replace(
+        plan,
+        routing=replace(plan.routing, role_to_service={"chat": "chat-service"}),
+    )) == "chat-service"
+
+
 class _ReloadHandler(BaseHTTPRequestHandler):
     bodies: ClassVar[list[dict[str, object]]] = []
     block: ClassVar[bool] = False

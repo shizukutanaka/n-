@@ -59,9 +59,24 @@ def _get(request: Mapping[str, object], key: str, default: object = None) -> obj
 def _content(request: Mapping[str, object]) -> str:
     messages = _get(request, "messages", [])
     if isinstance(messages, list) and messages:
-        return " ".join(
-            str(item.get("content", "")) for item in messages if isinstance(item, Mapping)
-        )
+        parts: list[str] = []
+        for item in messages:
+            if not isinstance(item, Mapping):
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                parts.extend(
+                    part.get("text", "")
+                    for part in content
+                    if (
+                        isinstance(part, Mapping)
+                        and part.get("type") == "text"
+                        and isinstance(part.get("text"), str)
+                    )
+                )
+        return " ".join(parts)
     prompt = _get(request, "prompt", "")
     if isinstance(prompt, str):
         return prompt
@@ -79,7 +94,11 @@ def route(
     if explicit is not None:
         return explicit
     if _get(request, "tools"):
-        return plan.routing.role_to_service.get("tools", plan.routing.role_to_service.get("chat", ""))
+        return (
+            plan.routing.role_to_service.get("tool")
+            or plan.routing.role_to_service.get("tools")
+            or plan.routing.role_to_service.get("chat", "")
+        )
     content = _content(request)
     if re.search(r"(?:```|^\s*(?:def |class |function |SELECT |import ))", content, re.MULTILINE):
         return plan.routing.role_to_service.get("code", plan.routing.role_to_service.get("chat", ""))
@@ -198,6 +217,8 @@ async def _record_prompt_calibration(
     request: Mapping[str, object],
     usage: object,
 ) -> None:
+    if "tools" in request or "functions" in request:
+        return
     if not isinstance(usage, Mapping):
         return
     value = usage.get("prompt_tokens")
