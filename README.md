@@ -268,6 +268,16 @@ running llama.cpp service, nmesh asks that backend for the exact count through
 estimate and never fails the request. The vLLM tokenizer endpoint is
 deliberately not used because its shape is unverified here.
 
+### Model quality micro-evaluation
+
+`nmesh eval` runs a deterministic 16-task micro-evaluation covering instruction
+following, output format, extraction, and translation direction. It is not a
+knowledge benchmark and its pass rate must not be compared with MMLU-style
+scores. The catalog `quality` field remains an unverified prior used for
+planning; measured results are saved in `eval.json`. When an evaluation
+contradicts that prior, `nmesh plan` keeps the original ranking but emits a
+warning naming both measurements and catalog claims.
+
 CLI commands return `0` only when the requested operation succeeds. A failed
 plan, unavailable gateway/backend, failed benchmark, missing plan, or non-zero
 foreground server exit returns `1`. `status` and `down` remain idempotent:
