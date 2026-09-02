@@ -527,16 +527,19 @@ def _bench(args: argparse.Namespace) -> int:
     result = {"key": key, "prefill_tokens": 512, "decode_tokens": args.tokens,
               "median_tps": cache[key], "prefill_tps": measurement.prefill_tps,
               "ttft_s": measurement.ttft_s, "approximate": measurement.approximate,
-              "prompt_tokens": measurement.prompt_tokens}
+              "prompt_tokens": measurement.prompt_tokens,
+              "prefill_source": measurement.prefill_source,
+              "cached_prompt_tokens": measurement.cached_prompt_tokens}
     if args.json:
         _print_json(result)
     else:
         marker = "~" if measurement.approximate else ""
+        prefill_marker = "~" if measurement.prefill_source != "timings" else ""
         language = i18n.lang()
         _console().print("\n".join((
             i18n.t("label.median_decode", language, marker=marker,
                    value=measurement.decode_tps),
-            i18n.t("label.prefill", language, marker=marker,
+            i18n.t("label.prefill", language, marker=prefill_marker,
                    value=measurement.prefill_tps),
             i18n.t("label.ttft", language, marker=marker, value=measurement.ttft_s),
         )))

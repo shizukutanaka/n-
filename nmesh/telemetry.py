@@ -21,6 +21,7 @@ class Sample:
     completion_tokens: int
     at: float
     approximate: bool = True
+    prefill_tps: float | None = None
 
 
 class Telemetry:
@@ -40,6 +41,7 @@ class Telemetry:
                 float(item["ttft_s"]) if item.get("ttft_s") is not None else None,
                 float(item["total_s"]), int(item["completion_tokens"]), float(item["at"]),
                 bool(item.get("approximate", True)),
+                float(item["prefill_tps"]) if item.get("prefill_tps") is not None else None,
             ) for item in values if isinstance(item, dict)]
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             return []
@@ -73,10 +75,13 @@ class Telemetry:
     def _summarize(values: list[Sample]) -> dict[str, float]:
         item: dict[str, float] = {"samples": float(len(values))}
         decode = [value.decode_tps for value in values if value.decode_tps is not None]
+        prefill = [value.prefill_tps for value in values if value.prefill_tps is not None]
         ttft = [value.ttft_s for value in values if value.ttft_s is not None]
         total = [value.total_s for value in values]
         if decode:
             item["decode_tps_median"] = statistics.median(decode)
+        if prefill:
+            item["prefill_tps_median"] = statistics.median(prefill)
         if ttft:
             ordered = sorted(ttft)
             item["ttft_s_median"] = statistics.median(ordered)
