@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from nmesh import i18n
+from nmesh.artifact import service_fingerprint
 from nmesh.bench import benchmark_key, load_cache, measure, save_cache
 from nmesh.catalog import load_catalog
 from nmesh.eval import CATEGORIES, TASKS, EvalRun, load_eval_cache, save_eval
@@ -223,6 +224,7 @@ def _eval_divergence(
             continue
         divergence.append({
             "config": f"{record.quant}|{record.backend}",
+            "artifact": record.artifact or None,
             "pass_rate": record.pass_rate,
             "compared": len(comparable),
             "disagreeing": disagreeing,
@@ -651,8 +653,30 @@ def _eval(args: argparse.Namespace) -> int:
         print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
         return 1
     result = replace(
-        result, model_id=service.model_id, quant=service.quant, backend=service.backend,
+        result,
+        model_id=service.model_id,
+        quant=service.quant,
+        backend=service.backend,
+        artifact=service_fingerprint(service.backend, service.model_ref) or "",
     )
+    cached = load_eval_cache()
+    previous = cached.get(f"{result.model_id}|{result.quant}|{result.backend}")
+    artifact_warning = None
+    if (
+        previous is not None
+        and previous.artifact
+        and result.artifact
+        and previous.artifact != result.artifact
+    ):
+        artifact_warning = i18n.t(
+            "warn.eval_artifact_changed",
+            i18n.lang(),
+            model=result.model_id,
+            quant=result.quant,
+            backend=result.backend,
+            previous=previous.artifact,
+            current=result.artifact,
+        )
     try:
         save_eval(result)
     except OSError as error:
@@ -676,6 +700,7 @@ def _eval(args: argparse.Namespace) -> int:
         "model_id": result.model_id,
         "quant": result.quant,
         "backend": result.backend,
+        "artifact": result.artifact or None,
         "n_tasks": result.n_tasks,
         "passed": result.passed,
         "pass_rate": result.pass_rate,
@@ -684,6 +709,7 @@ def _eval(args: argparse.Namespace) -> int:
         "note": note,
         "config_note": config_note,
         "divergence": divergence,
+        "artifact_warning": artifact_warning,
     }
     if args.json:
         _print_json(output)
@@ -703,6 +729,8 @@ def _eval(args: argparse.Namespace) -> int:
     _console().print(table)
     _console().print(note)
     _console().print(config_note)
+    if artifact_warning is not None:
+        _console().print(artifact_warning)
     for item in divergence:
         ids = ", ".join(item["disagreeing"]) or "-"
         _console().print(i18n.t(

@@ -29,6 +29,7 @@ class EvalRun:
     by_category: dict[str, float]
     outcomes: list[TaskOutcome]
     at: float
+    artifact: str = ""
 
 
 def _output(value: object) -> str:
