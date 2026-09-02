@@ -598,6 +598,7 @@ def test_supervisor_boot_heartbeat_recovers_resident_and_persisted_services(
     assert launched == ["resident", "persisted"]
     assert supervisor.active_plan is not None
     assert "lazy" not in supervisor.processes
+    supervisor.ensure_running("resident")
     supervisor.heartbeat()
     assert launched == ["resident", "persisted"]
     supervisor.down()

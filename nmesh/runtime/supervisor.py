@@ -694,7 +694,6 @@ class Supervisor:
             if selected is None:
                 raise FileNotFoundError(i18n.t("err.no_active_plan", i18n.lang()))
             self.active_plan = selected
-            self._boot_recovery = False
             target = next((item for item in selected.services if item.name == service_name), None)
             if target is None:
                 raise KeyError(i18n.t(

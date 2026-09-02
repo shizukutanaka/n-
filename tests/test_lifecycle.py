@@ -256,6 +256,7 @@ def test_service_units_are_pure_and_platform_specific(monkeypatch, tmp_path: Pat
     launcher_name, launcher = launcher_script(19000, "posix")
     assert launcher_name.endswith(".sh")
     assert launcher.startswith("#!/bin/sh\n")
+    assert "\r" not in launcher
     assert "gateway.env" in launcher
     assert 'NMESH_HOME="$script_dir"' in launcher
     assert "exec /resolved/python -m nmesh.gateway.server --port 19000" in launcher
@@ -263,19 +264,21 @@ def test_service_units_are_pure_and_platform_specific(monkeypatch, tmp_path: Pat
     filename, text, command = service_unit(19000, "posix")
     assert filename.endswith(".service")
     assert "ExecStart=" in text
-    assert "nmesh-gateway.sh" in text
+    assert "nmesh-gateway-launcher.sh" in text
     assert command.startswith("systemctl --user")
 
     monkeypatch.setattr(service_unit_module.os, "name", "posix")
     monkeypatch.setattr(service_unit_module.sys, "platform", "darwin")
     filename, text, command = service_unit(19001)
     assert filename.endswith(".plist")
-    assert "nmesh-gateway.sh" in text
+    assert "nmesh-gateway-launcher.sh" in text
     assert "<key>KeepAlive</key><true/>" in text
     assert command.startswith("launchctl")
 
     launcher_name, launcher = launcher_script(19002, "nt")
     assert launcher_name.endswith(".cmd")
+    assert launcher.endswith("\r\n")
+    assert "\n" not in launcher.replace("\r\n", "")
     assert "gateway.env" in launcher
     assert "set \"NMESH_HOME=%~dp0\"" in launcher
     assert "-m nmesh.gateway.server --port 19002" in launcher
@@ -283,7 +286,7 @@ def test_service_units_are_pure_and_platform_specific(monkeypatch, tmp_path: Pat
     filename, text, command = service_unit(19002, "nt")
     assert filename.endswith(".cmd")
     assert "schtasks" in text
-    assert "nmesh-gateway.cmd" in text
+    assert "nmesh-gateway-launcher.cmd" in text
 
 
 def test_autostart_install_writes_launcher_and_preserves_environment(
@@ -304,7 +307,8 @@ def test_autostart_install_writes_launcher_and_preserves_environment(
     assert "self-crash" in data["limitations"][0]
     assert launcher_path.exists()
     assert env_path.read_text(encoding="utf-8") == (
-        "NMESH_API_KEY=do-not-print\nNMESH_HOME=\n"
+        "NMESH_API_KEY=do-not-print\n"
+        "# NMESH_HOME is set by the launcher to its own directory.\n"
     )
     assert "do-not-print" not in output
 

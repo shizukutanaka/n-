@@ -15,7 +15,7 @@ def launcher_script(
     """Return a launcher filename and script that carries gateway.env."""
     windows = os.name == "nt" if os_name is None else os_name == "nt"
     if windows:
-        filename = "nmesh-gateway.cmd"
+        filename = "nmesh-gateway-launcher.cmd"
         executable = subprocess.list2cmdline((sys.executable,))
         text = f"""@echo off
 setlocal
@@ -27,8 +27,8 @@ if exist "%~dp0gateway.env" (
 set "NMESH_HOME=%~dp0"
 {executable} -m nmesh.gateway.server --port {port}
 """
-        return filename, text
-    filename = "nmesh-gateway.sh"
+        return filename, text.replace("\n", "\r\n")
+    filename = "nmesh-gateway-launcher.sh"
     executable = shlex.quote(sys.executable)
     text = f"""#!/bin/sh
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
