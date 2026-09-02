@@ -26,6 +26,10 @@ DEFAULT_OTHER_PER_CHAR = 0.25
 MIN_SAMPLES = 20
 
 
+def calibration_key(model_id: str, chat: bool) -> str:
+    return f"{model_id}|{'chat' if chat else 'text'}"
+
+
 @dataclass(frozen=True)
 class Calibration:
     cjk_per_char: float
