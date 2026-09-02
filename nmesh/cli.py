@@ -191,13 +191,14 @@ def _make_plan(args: argparse.Namespace) -> object:
     return build_plan(profile, load_catalog(), policy, cache, _eval_rates())
 
 
-def _eval_rates() -> dict[str, float]:
-    latest: dict[str, tuple[float, float]] = {}
+def _eval_rates() -> dict[tuple[str, str, str], float]:
+    latest: dict[tuple[str, str, str], tuple[float, float]] = {}
     for record in load_eval_cache().values():
-        previous = latest.get(record.model_id)
+        key = (record.model_id, record.quant, record.backend)
+        previous = latest.get(key)
         if previous is None or record.at > previous[0]:
-            latest[record.model_id] = (record.at, record.pass_rate)
-    return {model_id: value for model_id, (_, value) in latest.items()}
+            latest[key] = (record.at, record.pass_rate)
+    return {key: value for key, (_, value) in latest.items()}
 
 
 def _plan(args: argparse.Namespace) -> int:
@@ -633,6 +634,13 @@ def _eval(args: argparse.Namespace) -> int:
               for outcome in result.outcomes if not outcome.passed]
     language = i18n.lang()
     note = i18n.t("note.eval_scope", language, tasks=result.n_tasks)
+    config_note = i18n.t(
+        "note.eval_config",
+        language,
+        model=result.model_id,
+        quant=result.quant,
+        backend=result.backend,
+    )
     output = {
         "key": key,
         "model_id": result.model_id,
@@ -644,6 +652,7 @@ def _eval(args: argparse.Namespace) -> int:
         "by_category": result.by_category,
         "failed": failed,
         "note": note,
+        "config_note": config_note,
     }
     if args.json:
         _print_json(output)
@@ -662,6 +671,7 @@ def _eval(args: argparse.Namespace) -> int:
         table.add_row(category, str(category_passed), str(len(category_outcomes)), f"{rate:.1%}")
     _console().print(table)
     _console().print(note)
+    _console().print(config_note)
     _console().print(i18n.t(
         "label.eval_overall", language, passed=result.passed, total=result.n_tasks,
         rate=result.pass_rate,

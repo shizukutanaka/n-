@@ -278,6 +278,16 @@ planning; measured results are saved in `eval.json`. When an evaluation
 contradicts that prior, `nmesh plan` keeps the original ranking but emits a
 warning naming both measurements and catalog claims.
 
+Evaluation results are specific to the tuple `(model, quant, backend)`, not
+just the model ID. On one CPU machine, the same Q4_K_M label for the same
+Qwen 1.5B model scored 12/16 with llama.cpp and 13/16 with Ollama; the
+disagreeing `extraction.date` result was verbose under llama.cpp
+(`The date in YYYY-MM-DD form is: 2024-03-03`) and bare under Ollama
+(`2024-03-03`). Injecting Ollama's system prompt into the llama.cpp requests
+did not change that result, so the system-prompt hypothesis was rejected.
+These measurements compare different weight artifacts and were taken on one
+model on one CPU machine; they do not generalize.
+
 CLI commands return `0` only when the requested operation succeeds. A failed
 plan, unavailable gateway/backend, failed benchmark, missing plan, or non-zero
 foreground server exit returns `1`. `status` and `down` remain idempotent:

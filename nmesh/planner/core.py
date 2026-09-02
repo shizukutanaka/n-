@@ -1127,7 +1127,7 @@ def _rewrite_launch(
 def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                policy: Policy | None = None,
                bench_cache: Mapping[object, float] | None = None,
-               eval_cache: Mapping[str, float] | None = None) -> Plan:
+               eval_cache: Mapping[tuple[str, str, str], float] | None = None) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
     warning_params = profile.warning_params
@@ -1258,28 +1258,51 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     services = _assign_slots(services, profile, selected, swap_group, warnings)
     if eval_cache is not None:
         measured = {
-            model_id: value for model_id, value in eval_cache.items()
-            if isinstance(model_id, str)
+            key: value for key, value in eval_cache.items()
+            if isinstance(key, tuple)
+            and len(key) == 3
+            and all(isinstance(item, str) for item in key)
             and isinstance(value, (int, float))
             and not isinstance(value, bool)
             and 0.0 <= value <= 1.0
         }
         catalog_by_id = {model.id: model for model in catalog}
         contradiction_pairs: set[tuple[str, str]] = set()
+        eval_mismatch_models: set[str] = set()
         for service in services:
             selected_model = catalog_by_id.get(service.model_id)
-            selected_rate = measured.get(service.model_id)
-            if selected_model is None or selected_rate is None:
+            if selected_model is None:
+                continue
+            selected_rate = measured.get(
+                (service.model_id, service.quant, service.backend)
+            )
+            if selected_rate is None:
+                if (
+                    service.model_id not in eval_mismatch_models
+                    and any(key[0] == service.model_id for key in measured)
+                ):
+                    eval_mismatch_models.add(service.model_id)
+                    warnings.append(t(
+                        "warn.eval_config_mismatch",
+                        selected.lang,
+                        model=service.model_id,
+                        quant=service.quant,
+                        backend=service.backend,
+                    ))
                 continue
             for role in service.roles:
                 for other in catalog:
                     if other.id == service.model_id or role not in other.roles:
                         continue
-                    if measured.get(other.id) is None:
+                    candidates = _candidate_for(other, profile, selected, bench_cache)
+                    if not candidates:
                         continue
-                    if not _candidate_for(other, profile, selected, bench_cache):
+                    best = max(candidates, key=lambda candidate: candidate.score)
+                    other_rate = measured.get(
+                        (other.id, best.quant, best.backend)
+                    )
+                    if other_rate is None:
                         continue
-                    other_rate = measured[other.id]
                     if (
                         other_rate > selected_rate + 0.05
                         and other.quality < selected_model.quality
