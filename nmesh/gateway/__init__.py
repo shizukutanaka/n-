@@ -57,6 +57,41 @@ def _get(request: Mapping[str, object], key: str, default: object = None) -> obj
     return request.get(key, default)
 
 
+def _upstream_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _upstream_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _timing_metrics(timings: object) -> tuple[float | None, float | None]:
+    if not isinstance(timings, dict):
+        return None, None
+    predicted_n = _upstream_int(timings.get("predicted_n"))
+    predicted_ms = _upstream_float(timings.get("predicted_ms"))
+    decode = (
+        predicted_n / (predicted_ms / 1000)
+        if predicted_n is not None and predicted_n >= 1
+        and predicted_ms is not None and predicted_ms > 0 else None
+    )
+    cache_n = _upstream_int(timings.get("cache_n"))
+    cache_valid = "cache_n" not in timings or cache_n == 0
+    prompt_n = _upstream_int(timings.get("prompt_n"))
+    prompt_ms = _upstream_float(timings.get("prompt_ms"))
+    prefill = (
+        prompt_n / (prompt_ms / 1000)
+        if cache_valid
+        and prompt_n is not None and prompt_n >= 16
+        and prompt_ms is not None and prompt_ms > 0 else None
+    )
+    return decode, prefill
+
+
 def _is_chat_request(request: Mapping[str, object]) -> bool:
     return "messages" in request
 
@@ -312,6 +347,11 @@ def _prometheus_text(
             "gauge",
             [],
         ),
+        "nmesh_telemetry_prefill_tokens_per_second_median": (
+            "Median measured prefill throughput in tokens per second.",
+            "gauge",
+            [],
+        ),
         "nmesh_telemetry_ttft_seconds_median": (
             "Median measured or approximate time to first token in seconds.",
             "gauge",
@@ -364,6 +404,7 @@ def _prometheus_text(
             families["nmesh_telemetry_samples"][2].append((labels, metrics["samples"]))
             metric_names = {
                 "decode_tps_median": "nmesh_telemetry_decode_tokens_per_second_median",
+                "prefill_tps_median": "nmesh_telemetry_prefill_tokens_per_second_median",
                 "ttft_s_median": "nmesh_telemetry_ttft_seconds_median",
                 "ttft_s_p95": "nmesh_telemetry_ttft_seconds_p95",
                 "total_s_median": "nmesh_telemetry_total_seconds_median",
@@ -646,11 +687,12 @@ def create_app(
                 buffer = b""
                 tokens = 0
                 usage: dict[str, object] | None = None
+                timings: dict[str, object] | None = None
                 first_line_time: float | None = None
                 last_line_time: float | None = None
 
                 def transform(line: bytes) -> bytes | None:
-                    nonlocal first_line_time, last_line_time, tokens, usage
+                    nonlocal first_line_time, last_line_time, tokens, usage, timings
                     ending = b""
                     content = line
                     if content.endswith(b"\n"):
@@ -672,6 +714,7 @@ def create_app(
                         last_line_time = now
                         return line
                     candidate_usage = payload.get("usage")
+                    candidate_timings = payload.get("timings")
                     usage_only = (
                         isinstance(candidate_usage, dict)
                         and isinstance(payload.get("choices"), list)
@@ -679,9 +722,18 @@ def create_app(
                     )
                     if isinstance(candidate_usage, dict):
                         usage = candidate_usage
+                    if isinstance(candidate_timings, dict):
+                        timings = candidate_timings
                     if usage_only and not request_wants_usage:
                         return None
-                    if not usage_only:
+                    timing_only = (
+                        isinstance(candidate_timings, dict)
+                        and (
+                            not isinstance(payload.get("choices"), list)
+                            or not payload["choices"]
+                        )
+                    )
+                    if not usage_only and not timing_only:
                         now = time.perf_counter()
                         tokens += 1
                         first_line_time = first_line_time or now
@@ -719,25 +771,37 @@ def create_app(
                         span = (last_line_time - first_line_time
                                 if first_line_time is not None and last_line_time is not None
                                 else 0.0)
+                        timing_decode, timing_prefill = _timing_metrics(timings)
+                        usage_completion = (
+                            _upstream_int(usage.get("completion_tokens"))
+                            if usage is not None else None
+                        )
                         exact = (
                             usage is not None
+                            and usage_completion is not None
                             and "completion_tokens" in usage
                             and (service.backend == "llamacpp" or request_wants_usage)
                         )
                         completion_tokens = (
-                            int(usage["completion_tokens"]) if exact
+                            usage_completion if exact and usage_completion is not None
                             else tokens
                         )
                         decode = (
-                            max(completion_tokens - 1, 0) / span
-                            if completion_tokens >= 16 and span > 0 else None
+                            timing_decode
+                            if timing_decode is not None else (
+                                max(completion_tokens - 1, 0) / span
+                                if completion_tokens >= 16 and span > 0 else None
+                            )
                         )
+                        if timing_decode is not None:
+                            exact = True
                         try:
                             await asyncio.to_thread(record_telemetry, Sample(
                                 service.name, telemetry_keys[service.name], decode,
                                 first_line_time - started if first_line_time is not None else None,
                                 time.perf_counter() - started, completion_tokens, time.time(),
                                 not exact,
+                                timing_prefill,
                             ))
                         except Exception:  # noqa: BLE001, S110
                             pass
@@ -772,16 +836,28 @@ def create_app(
             data["model"] = request.get("model", service.model_id)
         if instrument:
             usage = data.get("usage") if isinstance(data, dict) else None
-            completion_tokens = (
-                int(usage.get("completion_tokens", 0))
-                if isinstance(usage, dict) else 0
+            timings = data.get("timings") if isinstance(data, dict) else None
+            timing_decode, timing_prefill = _timing_metrics(timings)
+            usage_completion = (
+                _upstream_int(usage.get("completion_tokens"))
+                if isinstance(usage, dict) else None
             )
-            exact = isinstance(usage, dict) and "completion_tokens" in usage
+            completion_tokens = (
+                usage_completion if usage_completion is not None else 0
+            )
+            exact = (
+                isinstance(usage, dict)
+                and usage_completion is not None
+                and "completion_tokens" in usage
+            )
+            if timing_decode is not None:
+                exact = True
             try:
                 await asyncio.to_thread(record_telemetry, Sample(
-                    service.name, telemetry_keys[service.name], None, None,
+                    service.name, telemetry_keys[service.name], timing_decode, None,
                     time.perf_counter() - started, completion_tokens, time.time(),
                     not exact,
+                    timing_prefill,
                 ))
             except Exception:  # noqa: BLE001, S110
                 pass

@@ -7,6 +7,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
+import pytest
 from fastapi.testclient import TestClient
 
 import nmesh.gateway as gateway_module
@@ -68,11 +69,15 @@ class _CompatStreamHandler(BaseHTTPRequestHandler):
 
 class _UsageHandler(BaseHTTPRequestHandler):
     request_body: ClassVar[dict[str, object]] = {}
+    request_bodies: ClassVar[list[dict[str, object]]] = []
     usage_on_every_chunk: ClassVar[bool] = False
+    timings: ClassVar[dict[str, object] | None] = None
+    cached_tokens: ClassVar[int | None] = None
 
     def do_POST(self) -> None:
         length = int(self.headers["Content-Length"])
         self.__class__.request_body = json.loads(self.rfile.read(length))
+        self.__class__.request_bodies.append(self.__class__.request_body)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
@@ -88,10 +93,18 @@ class _UsageHandler(BaseHTTPRequestHandler):
             payload = json.dumps(data).encode()
             self.wfile.write(b"data: " + payload + b"\n\n")
             self.wfile.flush()
-        payload = json.dumps({
+        usage: dict[str, object] = {"prompt_tokens": 23, "completion_tokens": 17}
+        if self.__class__.cached_tokens is not None:
+            usage["prompt_tokens_details"] = {
+                "cached_tokens": self.__class__.cached_tokens,
+            }
+        final: dict[str, object] = {
             "choices": [],
-            "usage": {"prompt_tokens": 23, "completion_tokens": 17},
-        }).encode()
+            "usage": usage,
+        }
+        if self.__class__.timings is not None:
+            final["timings"] = self.__class__.timings
+        payload = json.dumps(final).encode()
         self.wfile.write(b"data: " + payload + b"\n\n")
         self.wfile.write(b"data: [DONE]\n\n")
 
@@ -313,6 +326,7 @@ def test_bench_runner_uses_streaming_endpoint() -> None:
         assert result.prefill_tps > 0
         assert result.decode_tps > 0
         assert result.approximate is True
+        assert result.prefill_source == "ttft"
         assert _UpstreamHandler.request_body["max_tokens"] == 2
     finally:
         upstream.shutdown()
@@ -339,6 +353,73 @@ def test_bench_runner_uses_upstream_usage_counts() -> None:
         }
     finally:
         _UsageHandler.usage_on_every_chunk = False
+        _UsageHandler.timings = None
+        _UsageHandler.cached_tokens = None
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_bench_runner_uses_upstream_timings_and_unique_prompts() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UsageHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _UsageHandler.request_bodies = []
+        _UsageHandler.timings = {
+            "cache_n": 0,
+            "prompt_n": 330,
+            "prompt_ms": 816.236,
+            "predicted_n": 16,
+            "predicted_ms": 381.695,
+        }
+        model = ModelSpec("timing-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        result = measure(
+            plan.services[0], f"http://127.0.0.1:{upstream.server_address[1]}",
+            prefill_tokens=512, decode_tokens=17, runs=3,
+        )
+        assert result.prefill_source == "timings"
+        assert result.prefill_tps == pytest.approx(404.29, rel=1e-3)
+        assert result.decode_tps == pytest.approx(41.92, rel=1e-3)
+        assert result.approximate is False
+        assert result.cached_prompt_tokens == 0
+        prompts = [body["messages"][0]["content"] for body in _UsageHandler.request_bodies]
+        assert len(prompts) == 3
+        assert len(set(prompts)) == 3
+        assert all(not prompt.startswith("benchmark filler text ") for prompt in prompts)
+    finally:
+        _UsageHandler.timings = None
+        _UsageHandler.request_bodies = []
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_bench_runner_reports_cached_upstream_prompt() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UsageHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _UsageHandler.timings = {
+            "cache_n": 329,
+            "prompt_n": 1,
+            "prompt_ms": 3.0,
+            "predicted_n": 16,
+            "predicted_ms": 381.695,
+        }
+        _UsageHandler.cached_tokens = 329
+        model = ModelSpec("cached-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        result = measure(
+            plan.services[0], f"http://127.0.0.1:{upstream.server_address[1]}",
+            prefill_tokens=512, decode_tokens=17, runs=1,
+        )
+        assert result.prefill_source == "cached"
+        assert result.cached_prompt_tokens == 329
+    finally:
+        _UsageHandler.timings = None
+        _UsageHandler.cached_tokens = None
         upstream.shutdown()
         upstream.server_close()
 

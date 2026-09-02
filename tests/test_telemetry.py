@@ -7,6 +7,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
+import pytest
 from fastapi.testclient import TestClient
 
 from nmesh import telemetry
@@ -26,8 +27,10 @@ def sample(
     total_s: float = 1.0,
     at: float = 1.0,
     approximate: bool = True,
+    prefill_tps: float | None = None,
 ) -> Sample:
-    return Sample(service, key, decode_tps, ttft_s, total_s, 20, at, approximate)
+    return Sample(service, key, decode_tps, ttft_s, total_s, 20, at, approximate,
+                  prefill_tps)
 
 
 def test_record_round_trip_and_trim(tmp_path) -> None:
@@ -52,6 +55,13 @@ def test_summary_medians_and_p95(tmp_path) -> None:
     assert result["ttft_s_median"] == 0.3
     assert result["ttft_s_p95"] == 0.5
     assert result["total_s_median"] == 4.5
+
+
+def test_summary_includes_prefill_median(tmp_path) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    store.record(sample(prefill_tps=400.0))
+    store.record(sample(prefill_tps=420.0))
+    assert store.summary()["chat"]["prefill_tps_median"] == 410.0
 
 
 def test_bench_overlay_min_samples_and_ignores_missing_decode(tmp_path) -> None:
@@ -82,7 +92,9 @@ def test_old_telemetry_samples_default_to_approximate(tmp_path) -> None:
         "completion_tokens": 20,
         "at": 1,
     }]}), encoding="utf-8")
-    assert Telemetry(path).samples()[0].approximate is True
+    loaded = Telemetry(path).samples()[0]
+    assert loaded.approximate is True
+    assert loaded.prefill_tps is None
 
 
 def test_bench_overlay_prefers_exact_samples(tmp_path) -> None:
@@ -111,6 +123,7 @@ class _TelemetryHandler(BaseHTTPRequestHandler):
     usage_on_every_chunk: ClassVar[bool] = False
     chunks: ClassVar[int] = 20
     completion_tokens: ClassVar[int] = 17
+    timings: ClassVar[dict[str, object] | None] = None
 
     def do_POST(self) -> None:
         length = int(self.headers["Content-Length"])
@@ -122,6 +135,14 @@ class _TelemetryHandler(BaseHTTPRequestHandler):
                 "choices": [{"message": {"role": "assistant", "content": "ok"}}],
                 "usage": {"completion_tokens": 7},
             }).encode()
+            if self.__class__.timings is not None:
+                payload = json.dumps({
+                    "id": "completion", "object": "chat.completion",
+                    "model": self.request_body["model"],
+                    "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                    "usage": {"completion_tokens": 7},
+                    "timings": self.__class__.timings,
+                }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -144,14 +165,17 @@ class _TelemetryHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"data: " + payload + b"\n\n")
             self.wfile.flush()
             time.sleep(0.002)
-        if self.__class__.include_usage:
-            payload = json.dumps({
+        if self.__class__.include_usage or self.__class__.timings is not None:
+            final: dict[str, object] = {
                 "choices": [],
                 "usage": {
                     "completion_tokens": self.__class__.completion_tokens,
                     "prompt_tokens": 23,
                 },
-            }).encode()
+            }
+            if self.__class__.timings is not None:
+                final["timings"] = self.__class__.timings
+            payload = json.dumps(final).encode()
             self.wfile.write(b"data: " + payload + b"\n\n")
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
@@ -198,6 +222,109 @@ def test_gateway_records_stream_and_nonstream_telemetry(tmp_path, monkeypatch) -
         assert client.get("/metrics").json()["services"]["chat"]["samples"] == 2
         assert not (tmp_path / "bench.json").exists()
     finally:
+        _TelemetryHandler.timings = None
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_records_upstream_stream_timings(tmp_path, monkeypatch) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    monkeypatch.setattr(telemetry, "_default", store)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _TelemetryHandler.stream = True
+        _TelemetryHandler.include_usage = True
+        _TelemetryHandler.timings = {
+            "cache_n": 0,
+            "prompt_n": 330,
+            "prompt_ms": 816.236,
+            "predicted_n": 16,
+            "predicted_ms": 381.695,
+        }
+        client = TestClient(create_app(_gateway_plan(upstream.server_address[1])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        sample = store.samples()[-1]
+        assert sample.decode_tps == pytest.approx(41.92, rel=1e-3)
+        assert sample.prefill_tps == pytest.approx(404.29, rel=1e-3)
+        assert sample.approximate is False
+        assert "nmesh_telemetry_prefill_tokens_per_second_median" in (
+            client.get("/metrics/prometheus").text
+        )
+    finally:
+        _TelemetryHandler.timings = None
+        _TelemetryHandler.include_usage = False
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_omits_cached_prefill_timing(tmp_path, monkeypatch) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    monkeypatch.setattr(telemetry, "_default", store)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _TelemetryHandler.stream = True
+        _TelemetryHandler.include_usage = True
+        _TelemetryHandler.timings = {
+            "cache_n": 329,
+            "prompt_n": 1,
+            "prompt_ms": 3.0,
+            "predicted_n": 16,
+            "predicted_ms": 381.695,
+        }
+        client = TestClient(create_app(_gateway_plan(upstream.server_address[1])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert store.samples()[-1].prefill_tps is None
+    finally:
+        _TelemetryHandler.timings = None
+        _TelemetryHandler.include_usage = False
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_records_upstream_nonstream_timings(tmp_path, monkeypatch) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    monkeypatch.setattr(telemetry, "_default", store)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _TelemetryHandler.stream = False
+        _TelemetryHandler.timings = {
+            "cache_n": 0,
+            "prompt_n": 330,
+            "prompt_ms": 816.236,
+            "predicted_n": 16,
+            "predicted_ms": 381.695,
+        }
+        client = TestClient(create_app(_gateway_plan(upstream.server_address[1])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "stream": False,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        sample = store.samples()[-1]
+        assert sample.decode_tps == pytest.approx(41.92, rel=1e-3)
+        assert sample.prefill_tps == pytest.approx(404.29, rel=1e-3)
+        assert sample.ttft_s is None
+    finally:
+        _TelemetryHandler.stream = True
+        _TelemetryHandler.timings = None
         upstream.shutdown()
         upstream.server_close()
 
