@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
@@ -30,6 +31,9 @@ def test_normalize_and_representative_verifiers() -> None:
         task = next(task for task in TASKS if task.id == task_id)
         assert task.check(correct)
         assert not task.check(wrong)
+    arithmetic = next(task for task in TASKS if task.id == "arithmetic.add")
+    assert arithmetic.check("17 + 25 = 42")
+    assert not arithmetic.check("17 + 25 = 41")
 
 
 class _EvalHandler(BaseHTTPRequestHandler):
@@ -168,7 +172,7 @@ def test_planner_quality_warning_and_unchanged_selection() -> None:
 def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
     result = EvalRun(
-        "prior-high", "q4_k_m", "llamacpp", 16, 12, 0.75,
+        "prior-high", "q4_k_m", "llamacpp", 1, 1, 1.0,
         {category: 0.75 for category in CATEGORIES},
         [TaskOutcome("failed", "instruction", False, "bad")],
         3.0,
@@ -183,8 +187,18 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     assert cli.main(["eval", "--json"]) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["key"] == "prior-high|f16|llamacpp"
-    assert output["note"]
+    assert output["note"].startswith("1-task")
     assert output["failed"] == [{"id": "failed", "output": "bad"}]
+
+
+def test_planner_deduplicates_multi_role_contradiction_warning() -> None:
+    models = [replace(model, roles=["chat", "code"]) for model in _quality_models()]
+    plan = build_plan(
+        profile(8), models, Policy(roles=["chat", "code"]),
+        eval_cache={"prior-high": 0.4, "measured-high": 0.8},
+    )
+    contradictions = [warning for warning in plan.warnings if "pass rate ranks" in warning]
+    assert len(contradictions) == 1
 
 
 def test_eval_cli_category_filter(monkeypatch) -> None:

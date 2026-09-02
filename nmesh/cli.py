@@ -599,7 +599,7 @@ def _eval(args: argparse.Namespace) -> int:
     failed = [{"id": outcome.id, "output": outcome.output}
               for outcome in result.outcomes if not outcome.passed]
     language = i18n.lang()
-    note = i18n.t("note.eval_scope", language)
+    note = i18n.t("note.eval_scope", language, tasks=result.n_tasks)
     output = {
         "key": key,
         "model_id": result.model_id,

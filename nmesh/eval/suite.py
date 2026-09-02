@@ -1,10 +1,12 @@
 """Deterministic micro-eval used to falsify the catalog's quality priors.
 
 Every task is graded by a self-contained verifier: no LLM judge, no reference
-model, no network. The suite is small and mechanical on purpose — it measures
-instruction following, output format discipline, extraction and translation
-direction, not knowledge. A pass rate here is not MMLU and must never be
-presented as one.
+model, no network. Numeric tasks use ``_number`` to grade the value while
+tolerating surrounding prose. String-extraction tasks and instruction/format
+tasks are strict because output discipline is what they measure. The suite is
+small and mechanical on purpose: it measures instruction following, output
+format discipline, extraction and translation direction, not knowledge. A pass
+rate here is not MMLU and must never be presented as one.
 """
 
 from __future__ import annotations
@@ -58,7 +60,7 @@ def _exact(expected: str) -> Callable[[str], bool]:
 def _number(expected: int) -> Callable[[str], bool]:
     def check(text: str) -> bool:
         digits = re.findall(r"-?\d+", text.replace(",", ""))
-        return len(digits) >= 1 and int(digits[0]) == expected
+        return len(digits) >= 1 and int(digits[-1]) == expected
     return check
 
 

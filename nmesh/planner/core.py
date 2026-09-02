@@ -1229,6 +1229,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             and 0.0 <= value <= 1.0
         }
         catalog_by_id = {model.id: model for model in catalog}
+        contradiction_pairs: set[tuple[str, str]] = set()
         for service in services:
             selected_model = catalog_by_id.get(service.model_id)
             selected_rate = measured.get(service.model_id)
@@ -1247,6 +1248,10 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         other_rate > selected_rate + 0.05
                         and other.quality < selected_model.quality
                     ):
+                        pair = (other.id, service.model_id)
+                        if pair in contradiction_pairs:
+                            continue
+                        contradiction_pairs.add(pair)
                         warnings.append(t(
                             "warn.quality_contradiction",
                             selected.lang,
