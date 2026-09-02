@@ -36,6 +36,36 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
         return
 
 
+class _CompatStreamHandler(BaseHTTPRequestHandler):
+    request_body: ClassVar[dict[str, object]] = {}
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.__class__.request_body = json.loads(self.rfile.read(length))
+        self.send_response(200)
+        if not self.__class__.request_body.get("stream"):
+            body = b'{"model":"upstream-model","choices":[],"usage":{"completion_tokens":1}}'
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        for chunk in (
+            b": keep-alive\n\n",
+            b'data: {"model":"upstream-model","choices":[{"delta":{"content":"ok"}}]}\r\n',
+            b"\r\n",
+            b"data: {not-json}\n\n",
+            b"data: [DONE]\n\n",
+        ):
+            self.wfile.write(chunk)
+            self.wfile.flush()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 class _UsageHandler(BaseHTTPRequestHandler):
     request_body: ClassVar[dict[str, object]] = {}
     usage_on_every_chunk: ClassVar[bool] = False
@@ -69,6 +99,22 @@ class _UsageHandler(BaseHTTPRequestHandler):
         return
 
 
+class _RawErrorHandler(BaseHTTPRequestHandler):
+    body = b'{"error":{"code":400,"message":"upstream failure","type":"invalid_request_error"}}'
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.rfile.read(length)
+        self.send_response(400)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(self.body)))
+        self.end_headers()
+        self.wfile.write(self.body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 def test_gateway_proxy_rewrites_model_and_forwards_sse() -> None:
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
     thread = threading.Thread(target=upstream.serve_forever, daemon=True)
@@ -87,6 +133,168 @@ def test_gateway_proxy_rewrites_model_and_forwards_sse() -> None:
         assert response.status_code == 200
         assert _UpstreamHandler.request_body["model"] == service.model_ref
         assert "data: [DONE]" in response.text
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_stream_rewrites_model_and_preserves_sse_frames() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _CompatStreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec("compat-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "client-model",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert b": keep-alive\n\n" in response.content
+        assert b"\r\n\r\n" in response.content
+        assert b"data: {not-json}\n\n" in response.content
+        assert b"data: [DONE]\n\n" in response.content
+        payloads = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: ") and line != "data: [DONE]"
+            and line != "data: {not-json}"
+        ]
+        assert payloads[0]["model"] == "client-model"
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_defaults_omitted_model_to_catalog_id_for_all_responses() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _CompatStreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec("compat-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+        stream = client.post("/v1/chat/completions", json={
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        nonstream = client.post("/v1/chat/completions", json={
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert stream.status_code == 200
+        assert nonstream.status_code == 200
+        assert service.model_ref not in stream.text
+        assert service.model_ref not in nonstream.text
+        assert all(
+            payload["model"] == service.model_id
+            for line in stream.text.splitlines()
+            if line.startswith("data: ") and line != "data: [DONE]"
+            and line != "data: {not-json}"
+            for payload in [json.loads(line[6:])]
+        )
+        assert nonstream.json()["model"] == service.model_id
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_llamacpp_stream_injects_usage_filters_unrequested_chunk_and_records_exact(
+    monkeypatch,
+) -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UsageHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    samples = []
+    monkeypatch.setattr(gateway_module, "record_telemetry", samples.append)
+    try:
+        model = ModelSpec("usage-proxy-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+
+        without_usage = client.post("/v1/chat/completions", json={
+            "model": "client-model", "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert without_usage.status_code == 200
+        assert '"choices":[]' not in without_usage.text
+        assert _UsageHandler.request_body["stream_options"] == {
+            "include_usage": True,
+        }
+        assert samples[-1].approximate is False
+        assert samples[-1].completion_tokens == 17
+
+        with_usage = client.post("/v1/chat/completions", json={
+            "model": "client-model", "stream": True,
+            "stream_options": {"include_usage": True},
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert with_usage.status_code == 200
+        assert any(
+            json.loads(line[6:]).get("choices") == []
+            for line in with_usage.text.splitlines()
+            if line.startswith("data: ") and line != "data: [DONE]"
+        )
+        assert samples[-1].approximate is False
+        assert samples[-1].completion_tokens == 17
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_non_llamacpp_stream_does_not_inject_usage(monkeypatch) -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    original_base_url = gateway_module._base_url
+    monkeypatch.setattr(
+        gateway_module,
+        "_base_url",
+        lambda service: f"http://127.0.0.1:{upstream.server_address[1]}",
+    )
+    try:
+        model = ModelSpec("backend-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        for backend in ("ollama", "vllm"):
+            service = replace(plan.services[0], backend=backend)
+            client = TestClient(create_app(replace(plan, services=[service])))
+            response = client.post("/v1/chat/completions", json={
+                "model": "client-model",
+                "stream": True,
+                "messages": [{"role": "user", "content": "hello"}],
+            })
+            assert response.status_code == 200
+            assert "stream_options" not in _UpstreamHandler.request_body
+    finally:
+        monkeypatch.setattr(gateway_module, "_base_url", original_base_url)
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_upstream_openai_error_is_passed_through_unchanged() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _RawErrorHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec("error-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "client-model",
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 400
+        assert response.content == _RawErrorHandler.body
     finally:
         upstream.shutdown()
         upstream.server_close()
@@ -338,6 +546,8 @@ def test_gateway_retries_once_after_connect_error(monkeypatch) -> None:
         "model": "nmesh-auto", "messages": [{"role": "user", "content": "hello"}],
     })
     assert response.status_code == 502
+    assert response.json()["error"]["type"] == "server_error"
+    assert response.json()["error"]["code"] == 502
     assert len(calls) == 1
     assert calls[0] == (service.name, plan)
     assert client.get("/metrics").json()["concurrency"][service.name]["in_flight"] == 0

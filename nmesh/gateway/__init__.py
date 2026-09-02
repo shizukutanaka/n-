@@ -9,6 +9,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from datetime import datetime, timezone
 
 from nmesh.bench import benchmark_key
 from nmesh.planner import PLAN_PATH, Plan, PlannedService, load_plan
@@ -84,11 +85,7 @@ def route(
         return plan.routing.role_to_service.get("code", plan.routing.role_to_service.get("chat", ""))
     chat_name = plan.routing.role_to_service.get("chat", "")
     chat = next((item for item in plan.services if item.name == chat_name), None)
-    max_tokens = request.get("max_tokens") or 0
-    try:
-        reserved = int(max_tokens)
-    except (TypeError, ValueError):
-        reserved = 0
+    reserved = _reserved_tokens(request)
     token_count = estimate_tokens(content) if token_hint is None else token_hint
     if chat and token_count + reserved > chat.context * 0.8:
         return max(plan.services, key=lambda item: item.context, default=chat).name
@@ -126,11 +123,29 @@ def _upstream_body(request: Mapping[str, object], service: PlannedService) -> di
 
 
 def _reserved_tokens(request: Mapping[str, object]) -> int:
-    value = request.get("max_tokens") or 0
+    values = [0]
+    for key in ("max_tokens", "max_completion_tokens"):
+        value = request.get(key)
+        if value is None:
+            continue
+        try:
+            values.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return max(values)
+
+
+def _created_timestamp(plan: Plan) -> int:
     try:
-        return int(value)
+        return int(float(plan.created_at))
     except (TypeError, ValueError):
-        return 0
+        try:
+            created = datetime.fromisoformat(plan.created_at.replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            return int(created.timestamp())
+        except (TypeError, ValueError):
+            return int(time.time())
 
 
 def _chat_service(plan: Plan) -> PlannedService | None:
@@ -446,6 +461,29 @@ def create_app(
                 await asyncio.gather(task, return_exceptions=True)
 
     app = FastAPI(title="nmesh gateway", lifespan=lifespan)
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(
+        _request: Request, error: HTTPException
+    ) -> Response:
+        status_code = error.status_code
+        error_type = (
+            "invalid_request_error" if status_code < 500 else "server_error"
+        )
+        payload = {
+            "error": {
+                "message": str(error.detail),
+                "type": error_type,
+                "code": status_code,
+            }
+        }
+        return Response(
+            content=json.dumps(payload),
+            status_code=status_code,
+            media_type="application/json",
+            headers=dict(error.headers or {}),
+        )
+
     gate = SwapGate()
     limiter = SlotLimiter()
     plan_state = _PlanState(selected, explicit, gate, limiter)
@@ -463,7 +501,13 @@ def create_app(
             presented = authorization[len(prefix):] if authorization.startswith(prefix) else ""
             if not secrets.compare_digest(presented.encode("latin-1"), api_key_bytes):
                 return Response(
-                    content=json.dumps({"detail": "Invalid or missing API key"}),
+                    content=json.dumps({
+                        "error": {
+                            "message": "Invalid or missing API key",
+                            "type": "invalid_request_error",
+                            "code": 401,
+                        }
+                    }),
                     status_code=401,
                     media_type="application/json",
                     headers={"WWW-Authenticate": "Bearer"},
@@ -510,6 +554,12 @@ def create_app(
                 isinstance(stream_options, Mapping)
                 and bool(stream_options.get("include_usage"))
             )
+            if service.backend == "llamacpp":
+                upstream_stream_options = (
+                    dict(stream_options) if isinstance(stream_options, Mapping) else {}
+                )
+                upstream_stream_options["include_usage"] = True
+                body["stream_options"] = upstream_stream_options
             try:
                 upstream_request = client.build_request("POST", url, json=body)
                 try:
@@ -557,31 +607,64 @@ def create_app(
                 usage: dict[str, object] | None = None
                 first_line_time: float | None = None
                 last_line_time: float | None = None
+
+                def transform(line: bytes) -> bytes | None:
+                    nonlocal first_line_time, last_line_time, tokens, usage
+                    ending = b""
+                    content = line
+                    if content.endswith(b"\n"):
+                        content = content[:-1]
+                        ending = b"\n"
+                        if content.endswith(b"\r"):
+                            content = content[:-1]
+                            ending = b"\r\n"
+                    if not content.startswith(b"data: ") or content == b"data: [DONE]":
+                        return line
+                    try:
+                        payload = json.loads(content[6:])
+                    except json.JSONDecodeError:
+                        payload = None
+                    if not isinstance(payload, dict):
+                        now = time.perf_counter()
+                        tokens += 1
+                        first_line_time = first_line_time or now
+                        last_line_time = now
+                        return line
+                    candidate_usage = payload.get("usage")
+                    usage_only = (
+                        isinstance(candidate_usage, dict)
+                        and isinstance(payload.get("choices"), list)
+                        and not payload["choices"]
+                    )
+                    if isinstance(candidate_usage, dict):
+                        usage = candidate_usage
+                    if usage_only and not request_wants_usage:
+                        return None
+                    if not usage_only:
+                        now = time.perf_counter()
+                        tokens += 1
+                        first_line_time = first_line_time or now
+                        last_line_time = now
+                    if "model" in payload:
+                        payload["model"] = request.get("model", service.model_id)
+                        content = (
+                            b"data: "
+                            + json.dumps(payload, separators=(",", ":")).encode()
+                        )
+                    return content + ending
+
                 try:
                     async for chunk in upstream.aiter_bytes():
-                        yield chunk
                         buffer += chunk
                         while b"\n" in buffer:
                             line, buffer = buffer.split(b"\n", 1)
-                            line = line.rstrip(b"\r")
-                            if line.startswith(b"data: ") and line != b"data: [DONE]":
-                                try:
-                                    payload = json.loads(line[6:])
-                                except json.JSONDecodeError:
-                                    payload = {}
-                                candidate_usage = (
-                                    payload.get("usage")
-                                    if isinstance(payload, dict) else None
-                                )
-                                if isinstance(candidate_usage, dict):
-                                    usage = candidate_usage
-                                    choices = payload.get("choices")
-                                    if isinstance(choices, list) and not choices:
-                                        continue
-                                now = time.perf_counter()
-                                tokens += 1
-                                first_line_time = first_line_time or now
-                                last_line_time = now
+                            output = transform(line + b"\n")
+                            if output is not None:
+                                yield output
+                    if buffer:
+                        output = transform(buffer)
+                        if output is not None:
+                            yield output
                 except httpx.HTTPError as error:
                     raise HTTPException(status_code=502, detail=str(error)) from error
                 finally:
@@ -596,10 +679,9 @@ def create_app(
                                 if first_line_time is not None and last_line_time is not None
                                 else 0.0)
                         exact = (
-                            request_wants_usage
-                            and
                             usage is not None
                             and "completion_tokens" in usage
+                            and (service.backend == "llamacpp" or request_wants_usage)
                         )
                         completion_tokens = (
                             int(usage["completion_tokens"]) if exact
@@ -646,7 +728,7 @@ def create_app(
             if limit_slots:
                 limiter.release(slot_token)
         if isinstance(data, dict) and "model" in data:
-            data["model"] = request.get("model", data["model"])
+            data["model"] = request.get("model", service.model_id)
         if instrument:
             usage = data.get("usage") if isinstance(data, dict) else None
             completion_tokens = (
@@ -682,9 +764,32 @@ def create_app(
         plan_state.maybe_reload()
         selected, _ = plan_state.snapshot()
         ids = ["nmesh-auto"] + [f"nmesh-{service.name}" for service in selected.services]
+        created = _created_timestamp(selected)
         return {"object": "list", "data": [
-            {"id": item, "object": "model", "owned_by": "nmesh"} for item in ids
+            {
+                "id": item,
+                "object": "model",
+                "owned_by": "nmesh",
+                "created": created,
+            }
+            for item in ids
         ]}
+
+    @app.get("/v1/models/{model_id}")
+    async def model(model_id: str) -> dict[str, object]:
+        plan_state.maybe_reload()
+        selected, _ = plan_state.snapshot()
+        ids = {"nmesh-auto"} | {
+            f"nmesh-{service.name}" for service in selected.services
+        }
+        if model_id not in ids:
+            raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
+        return {
+            "id": model_id,
+            "object": "model",
+            "owned_by": "nmesh",
+            "created": _created_timestamp(selected),
+        }
 
     @app.post("/admin/reload")
     async def reload_endpoint() -> dict[str, object]:
