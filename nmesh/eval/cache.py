@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
@@ -21,6 +21,7 @@ class EvalRecord:
     pass_rate: float
     by_category: dict[str, float]
     at: float
+    task_results: dict[str, bool] = field(default_factory=dict)
 
 
 def _record(data: object) -> EvalRecord | None:
@@ -42,6 +43,7 @@ def _record(data: object) -> EvalRecord | None:
         passed = data["passed"]
         pass_rate = data["pass_rate"]
         at = data["at"]
+        task_results = data.get("task_results", {})
         if (
             isinstance(n_tasks, bool)
             or not isinstance(n_tasks, int)
@@ -57,6 +59,11 @@ def _record(data: object) -> EvalRecord | None:
             or isinstance(at, bool)
             or not isinstance(at, (int, float))
             or not math.isfinite(at)
+            or not isinstance(task_results, dict)
+            or any(
+                not isinstance(key, str) or not isinstance(value, bool)
+                for key, value in task_results.items()
+            )
         ):
             return None
         categories = {}
@@ -79,6 +86,7 @@ def _record(data: object) -> EvalRecord | None:
             float(pass_rate),
             categories,
             float(at),
+            dict(task_results),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -107,6 +115,7 @@ def save_eval(run: EvalRun, path: Path | None = None) -> Path:
     records[key] = EvalRecord(
         run.model_id, run.quant, run.backend, run.n_tasks, run.passed,
         run.pass_rate, run.by_category, run.at,
+        {outcome.id: outcome.passed for outcome in run.outcomes},
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")

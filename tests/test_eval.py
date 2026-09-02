@@ -128,13 +128,39 @@ def test_runner_all_transport_failures_raise() -> None:
 
 def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
     path = tmp_path / "eval.json"
-    result = EvalRun("model", "q4_k_m", "llamacpp", 2, 1, 0.5, {"chat": 0.5}, [], 3.0)
+    result = EvalRun(
+        "model", "q4_k_m", "llamacpp", 2, 1, 0.5, {"chat": 0.5},
+        [TaskOutcome("one", "chat", True, "yes"), TaskOutcome("two", "chat", False, "no")],
+        3.0,
+    )
     save_eval(result, path)
     loaded = load_eval_cache(path)
     assert loaded["model|q4_k_m|llamacpp"].pass_rate == 0.5
+    assert loaded["model|q4_k_m|llamacpp"].task_results == {
+        "one": True, "two": False,
+    }
     assert "outcomes" not in json.loads(path.read_text(encoding="utf-8"))["results"][
         "model|q4_k_m|llamacpp"
     ]
+    legacy = {
+        "results": {
+            "legacy": {
+                "model_id": "model",
+                "quant": "f16",
+                "backend": "llamacpp",
+                "n_tasks": 1,
+                "passed": 1,
+                "pass_rate": 1.0,
+                "by_category": {},
+                "at": 4.0,
+            },
+        },
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    assert load_eval_cache(path)["legacy"].task_results == {}
+    legacy["results"]["legacy"]["task_results"] = {"one": "yes"}
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    assert load_eval_cache(path) == {}
     path.write_text("{broken", encoding="utf-8")
     assert load_eval_cache(path) == {}
     assert load_eval_cache(tmp_path / "missing.json") == {}
@@ -252,3 +278,32 @@ def test_eval_cli_category_filter(monkeypatch) -> None:
     assert cli.main(["eval", "--json", "--categories", "format"]) == 0
     assert captured
     assert {task.category for task in captured} == {"format"}
+
+
+def test_eval_divergence_reports_disagreeing_tasks() -> None:
+    result = EvalRun(
+        "model", "f16", "llamacpp", 2, 1, 0.5, {},
+        [
+            TaskOutcome("arithmetic.subtract", "arithmetic", True, "747"),
+            TaskOutcome("multilingual.ja_translate", "multilingual", False, "sleeping"),
+        ],
+        2.0,
+    )
+    records = {
+        "other": EvalRecord(
+            "model", "f16", "ollama", 2, 1, 0.5, {}, 1.0,
+            {
+                "arithmetic.subtract": False,
+                "multilingual.ja_translate": True,
+            },
+        ),
+    }
+    assert cli._eval_divergence(result, records) == [{
+        "config": "f16|ollama",
+        "pass_rate": 0.5,
+        "compared": 2,
+        "disagreeing": [
+            "arithmetic.subtract",
+            "multilingual.ja_translate",
+        ],
+    }]
