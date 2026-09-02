@@ -230,8 +230,9 @@ back into the calibration.
 
 The calibration is exposed on `/metrics` and on `/metrics/prometheus` as
 `nmesh_token_calibration_cjk_per_char`, `nmesh_token_calibration_other_per_char`
-and `nmesh_token_calibration_samples`, labelled with both `service` and `model`
-and with `measured="true|false"`. `measured="false"` means you are looking at
+and `nmesh_token_calibration_samples`, labelled with `service`, `model`, and
+`kind="chat|text"`, and with `measured="true|false"`. `measured="false"` means
+you are looking at
 the default guess, not a measurement.
 
 Near the routing boundary only - when the calibrated estimate lies between half

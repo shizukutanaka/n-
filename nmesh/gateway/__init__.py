@@ -25,6 +25,7 @@ from .tokens import (
     Sums,
     all_sums,
     calibration_for,
+    calibration_key,
     estimate_tokens,
     exact_tokens,
     fit,
@@ -54,6 +55,10 @@ except ImportError:
 
 def _get(request: Mapping[str, object], key: str, default: object = None) -> object:
     return request.get(key, default)
+
+
+def _is_chat_request(request: Mapping[str, object]) -> bool:
+    return "messages" in request
 
 
 def _content(request: Mapping[str, object]) -> str:
@@ -105,7 +110,14 @@ def route(
     chat_name = plan.routing.role_to_service.get("chat", "")
     chat = next((item for item in plan.services if item.name == chat_name), None)
     reserved = _reserved_tokens(request)
-    token_count = estimate_tokens(content) if token_hint is None else token_hint
+    calibration = (
+        calibration_for(calibration_key(chat.model_id, _is_chat_request(request)))
+        if chat is not None
+        else None
+    )
+    token_count = (
+        estimate_tokens(content, calibration) if token_hint is None else token_hint
+    )
     if chat and token_count + reserved > chat.context * 0.8:
         return max(plan.services, key=lambda item: item.context, default=chat).name
     return chat_name or (plan.services[0].name if plan.services else "")
@@ -194,7 +206,10 @@ async def _routing_token_hint(
     if chat is None:
         return None
     content = _content(request)
-    count = estimate_tokens(content, calibration_for(chat.model_id))
+    count = estimate_tokens(
+        content,
+        calibration_for(calibration_key(chat.model_id, _is_chat_request(request))),
+    )
     threshold = chat.context * 0.8 - _reserved_tokens(request)
     if (
         threshold > 0
@@ -231,7 +246,7 @@ async def _record_prompt_calibration(
     try:
         await asyncio.to_thread(
             record_token_calibration,
-            service.model_id,
+            calibration_key(service.model_id, _is_chat_request(request)),
             _content(request),
             prompt_tokens,
         )
@@ -268,14 +283,18 @@ def _calibration_metrics(services: list[PlannedService]) -> dict[str, dict[str, 
     sums = all_sums()
     metrics: dict[str, dict[str, object]] = {}
     for service in services:
-        calibration = fit(sums.get(service.model_id, Sums()))
-        metrics[service.name] = {
-            "model": service.model_id,
-            "cjk_per_char": calibration.cjk_per_char,
-            "other_per_char": calibration.other_per_char,
-            "samples": calibration.samples,
-            "measured": calibration.measured,
-        }
+        for kind, chat in (("chat", True), ("text", False)):
+            calibration = fit(
+                sums.get(calibration_key(service.model_id, chat), Sums())
+            )
+            metrics[f"{service.name}|{kind}"] = {
+                "model": service.model_id,
+                "kind": kind,
+                "cjk_per_char": calibration.cjk_per_char,
+                "other_per_char": calibration.other_per_char,
+                "samples": calibration.samples,
+                "measured": calibration.measured,
+            }
     return metrics
 
 
@@ -357,11 +376,12 @@ def _prometheus_text(
         families["nmesh_concurrency_limit"][2].append((labels, metrics["limit"]))
         families["nmesh_concurrency_in_flight"][2].append((labels, metrics["in_flight"]))
         families["nmesh_concurrency_waiting"][2].append((labels, metrics["waiting"]))
-    for service, metrics in _calibration_metrics(services or []).items():
+    for service_kind, metrics in _calibration_metrics(services or []).items():
         labels = {
+            "kind": metrics["kind"],
             "measured": str(metrics["measured"]).lower(),
             "model": metrics["model"],
-            "service": service,
+            "service": service_kind.rsplit("|", 1)[0],
         }
         families["nmesh_token_calibration_cjk_per_char"][2].append(
             (labels, metrics["cjk_per_char"])
