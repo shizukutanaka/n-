@@ -344,6 +344,21 @@ Model selection is unchanged: these results only gate the contradiction
 warning and report underpowered evidence. A measured quality *floor* for the
 planner's score is not yet possible at this suite size.
 
+#### Extending the evaluation suite
+
+The extension is enumerated without RNG and uses code-only verifiers: 16 core
+tasks plus 80 generated tasks make 96 tasks. The measured exact resolving-power
+limit improves from `0.3125` at 16 tasks to `0.0625` at 96 tasks, while the
+Wilson interval width at a 0.75 pass rate shrinks from `0.393` to `0.171`.
+The 96-task category mix is instruction 18 / format 19 / arithmetic 30 /
+extraction 23 / multilingual 6.
+
+The default remains the `core` suite, so historical records and runtime
+behaviour are unchanged; `nmesh eval --suite extended` is opt-in. The extended
+suite has not yet been run against a model. Tasks within one family are not
+independent samples, so the effective sample size is below 96 and the exact
+tests are optimistic to that extent.
+
 ### Speed preference saturation
 
 The planner's simulated bundled profiles show that the speed term is already

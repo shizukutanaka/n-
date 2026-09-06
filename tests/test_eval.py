@@ -12,6 +12,9 @@ from nmesh import cli
 from nmesh.catalog import ModelSpec
 from nmesh.eval import (
     CATEGORIES,
+    EXTENDED_TASKS,
+    GENERATED_TASKS,
+    SUITES,
     TASKS,
     EvalRun,
     EvalSummary,
@@ -20,6 +23,24 @@ from nmesh.eval import (
     normalize,
 )
 from nmesh.eval.cache import EvalRecord, load_eval_cache, save_eval
+from nmesh.eval.generated import (
+    _ADDITIONS,
+    _CHAR_WORDS,
+    _DATES,
+    _ECHO,
+    _EMAILS,
+    _ITEM_COUNTS,
+    _JAPANESE,
+    _LETTER_WORDS,
+    _LOWERCASE,
+    _MAXIMA,
+    _PARITY,
+    _PEOPLE,
+    _PRODUCTS,
+    _SUBSTRINGS,
+    _SUBTRACTIONS,
+    _UPPERCASE,
+)
 from nmesh.eval.runner import run
 from nmesh.eval.stats import (
     fisher_two_sided,
@@ -111,6 +132,65 @@ def test_exact_eval_statistics() -> None:
     assert mcnemar_two_sided(0, 0) == pytest.approx(1.0)
     assert min_resolvable_difference(16) == 5 / 16
     assert wilson_interval(12, 16) == pytest.approx((0.505, 0.898), abs=0.0005)
+
+
+def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
+    expected: dict[str, str] = {}
+    for left, right, total in _ADDITIONS:
+        expected[f"arithmetic.add.{left}_{right}"] = str(total)
+    for left, right, total in _SUBTRACTIONS:
+        expected[f"arithmetic.subtract.{left}_{right}"] = str(total)
+    for left, right, total in _PRODUCTS:
+        expected[f"arithmetic.multiply.{left}_{right}"] = str(total)
+    for word in _LETTER_WORDS:
+        expected[f"arithmetic.count.{word}"] = str(len(word))
+    for word in _UPPERCASE:
+        expected[f"instruction.upper.{word}"] = word.upper()
+    for word in _LOWERCASE:
+        expected[f"instruction.lower.{word}"] = word.lower()
+    for word in _ECHO:
+        expected[f"instruction.echo.{word}"] = word
+    for count in _ITEM_COUNTS:
+        expected[f"instruction.items.{count}"] = ", ".join(["cat"] * count)
+    for name, age in _PEOPLE:
+        expected[f"format.json_person.{name.lower()}"] = json.dumps(
+            {"name": name, "age": int(age)}
+        )
+    for word in _CHAR_WORDS:
+        expected[f"format.json_count.{word}"] = json.dumps({"count": len(word)})
+    for number, even in _PARITY:
+        expected[f"format.json_even.{number}"] = json.dumps({"even": even})
+    for index, (_, address) in enumerate(_EMAILS):
+        expected[f"extraction.email.{index}"] = address
+    for index, (_, iso) in enumerate(_DATES):
+        expected[f"extraction.date.{index}"] = iso
+    for index, (_, largest) in enumerate(_MAXIMA):
+        expected[f"extraction.max.{index}"] = str(largest)
+    for index, (_, span) in enumerate(_SUBSTRINGS):
+        expected[f"extraction.span.{index}"] = span
+    for index, (_, required) in enumerate(_JAPANESE):
+        expected[f"multilingual.ja.{index}"] = f"\u3053\u308c\u306f{required}\u3067\u3059"
+
+    wrong = {
+        "arithmetic": "0",
+        "instruction": "Sure! Here is the answer: nope.",
+        "format": '{"unexpected": 1}',
+        "extraction": "I cannot find it.",
+        "multilingual": "It is a cat.",
+    }
+    assert len(GENERATED_TASKS) == 80
+    assert len(TASKS) == 16
+    assert len(EXTENDED_TASKS) == 96
+    assert SUITES == {"core": TASKS, "extended": EXTENDED_TASKS}
+    assert len({task.id for task in EXTENDED_TASKS}) == 96
+    assert not {task.id for task in TASKS} & {task.id for task in GENERATED_TASKS}
+    assert min_resolvable_difference(96) == pytest.approx(0.0625)
+
+    for task in GENERATED_TASKS:
+        answer = expected[task.id]
+        assert task.check(answer), task.id
+        assert task.check(f"```\n{answer}\n```"), task.id
+        assert not task.check(wrong[task.category]), task.id
 
 
 def test_runner_mixed_and_transport_failure_continue() -> None:
@@ -250,10 +330,12 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     assert cli.main(["eval", "--json"]) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["key"] == "prior-high|f16|llamacpp"
+    assert output["suite"] == "core"
     assert output["note"].startswith("1-task")
     assert output["pass_rate_ci"] == pytest.approx((0.2065, 1.0), abs=0.0001)
     assert output["min_resolvable_difference"] == 1.0
     assert output["uncertainty_note"].startswith("95% Wilson interval")
+    assert output["suite_upgrade_note"].startswith("The 96-task extended suite")
     assert output["config_note"].startswith("This pass rate applies")
     assert output["failed"] == [{"id": "failed", "output": "bad"}]
 
@@ -295,7 +377,11 @@ def test_planner_reports_underpowered_eval_evidence() -> None:
         },
     )
     assert not any("pass rate ranks" in warning for warning in plan.warnings)
-    assert any("neither confirmed nor contradicted" in note for note in plan.warnings)
+    assert any(
+        "neither confirmed nor contradicted" in note
+        and "96-task extended suite" in note
+        for note in plan.warnings
+    )
 
 
 def test_planner_warns_for_significant_eval_gap() -> None:
@@ -386,6 +472,27 @@ def test_eval_cli_category_filter(monkeypatch) -> None:
     assert cli.main(["eval", "--json", "--categories", "format"]) == 0
     assert captured
     assert {task.category for task in captured} == {"format"}
+
+
+def test_eval_cli_extended_suite(monkeypatch, capsys) -> None:
+    service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
+    captured: list[Task] = []
+    result = EvalRun(
+        "prior-high", "f16", "llamacpp", 96, 96, 1.0,
+        {category: 1.0 for category in CATEGORIES}, [], 3.0,
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref: (
+        captured.extend(tasks) or result
+    ))
+    monkeypatch.setattr(cli, "save_eval", lambda value: None)
+    assert cli.main(["eval", "--json", "--suite", "extended"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert len(captured) == 96
+    assert output["suite"] == "extended"
+    assert output["n_tasks"] == 96
+    assert output["suite_upgrade_note"] is None
 
 
 def test_eval_divergence_reports_disagreeing_tasks() -> None:

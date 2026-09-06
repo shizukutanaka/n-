@@ -11,6 +11,7 @@ from pathlib import Path
 from nmesh import __version__
 from nmesh.catalog import ModelSpec
 from nmesh.eval.cache import EvalSummary
+from nmesh.eval.generated import EXTENDED_TASKS
 from nmesh.eval.stats import (
     fisher_two_sided,
     mcnemar_two_sided,
@@ -1464,14 +1465,29 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         ))
                     elif not underpowered_emitted:
                         underpowered_emitted = True
+                        note_key = (
+                            "note.eval_underpowered"
+                            if suite_size < len(EXTENDED_TASKS)
+                            else "note.eval_underpowered_full"
+                        )
+                        note_params = {
+                            "tasks": suite_size,
+                            "other_rate": other_rate,
+                            "selected_rate": selected_rate,
+                            "p_value": p_value,
+                            "minimum": min_resolvable_difference(suite_size),
+                        }
+                        if suite_size < len(EXTENDED_TASKS):
+                            note_params.update({
+                                "upgrade_tasks": len(EXTENDED_TASKS),
+                                "upgrade_minimum": min_resolvable_difference(
+                                    len(EXTENDED_TASKS),
+                                ),
+                            })
                         warnings.append(t(
-                            "note.eval_underpowered",
+                            note_key,
                             selected.lang,
-                            tasks=suite_size,
-                            other_rate=other_rate,
-                            selected_rate=selected_rate,
-                            p_value=p_value,
-                            minimum=min_resolvable_difference(suite_size),
+                            **note_params,
                         ))
     if total_download > selected.allow_download_gb * GIB:
         warnings.append(t("warn.download_budget", selected.lang))
