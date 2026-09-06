@@ -307,14 +307,24 @@ def _launch(
     gpu_devices: tuple[str, ...] | None = None,
     language: str = "en",
     roles: Sequence[str] = (),
+    *,
+    binary: str | None = None,
 ) -> LaunchSpec:
     embed_only = list(roles) == ["embed"]
     ref = _source_for(backend, model, quant)
     if backend == "ollama":
-        return LaunchSpec(["ollama", "serve"], {}, "http://127.0.0.1:11434/api/tags", True)
+        return LaunchSpec(
+            [binary or "ollama", "serve"],
+            {},
+            "http://127.0.0.1:11434/api/tags",
+            True,
+        )
     if backend == "vllm":
-        argv = ["vllm", "serve", ref, "--host", "127.0.0.1", "--port", str(port),
-                "--max-model-len", str(context), "--max-num-seqs", str(slots)]
+        argv = [
+            binary or "vllm", "serve", ref, "--host", "127.0.0.1",
+            "--port", str(port), "--max-model-len", str(context),
+            "--max-num-seqs", str(slots),
+        ]
         if tensor_parallel > 1:
             argv += ["--tensor-parallel-size", str(tensor_parallel)]
         if gpu_fraction is not None:
@@ -340,7 +350,7 @@ def _launch(
         )
         tensor_split = not known or "--tensor-split" in backend_flags
         argv = [
-            "llama-server", "-m", ref, "-c",
+            binary or "llama-server", "-m", ref, "-c",
             str(context * slots if parallel else context),
         ]
         if parallel:
@@ -655,6 +665,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         gpu_devices=gpu_devices,
         language=language,
         roles=group,
+        binary=profile.backend_paths.get(candidate.backend),
     )
     if candidate.backend == "llamacpp" and "hf_gguf" in candidate.model.sources:
         launch = replace(launch, env={"NMESH_HF_REPO": candidate.model.sources["hf_gguf"]})
