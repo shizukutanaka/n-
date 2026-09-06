@@ -34,6 +34,8 @@ class EvalRecord:
     artifact: str = ""
     suite: str = "core"
     digest: str = ""
+    unscorable: int = 0
+    reasoning_allowance: int = 0
 
 
 def _record(data: object) -> EvalRecord | None:
@@ -59,6 +61,8 @@ def _record(data: object) -> EvalRecord | None:
         artifact = data.get("artifact", "")
         suite = data.get("suite", "core")
         digest = data.get("digest", "")
+        unscorable = data.get("unscorable", 0)
+        allowance = data.get("reasoning_allowance", 0)
         if (
             isinstance(n_tasks, bool)
             or not isinstance(n_tasks, int)
@@ -78,6 +82,12 @@ def _record(data: object) -> EvalRecord | None:
             or not isinstance(artifact, str)
             or not isinstance(suite, str)
             or not isinstance(digest, str)
+            or isinstance(unscorable, bool)
+            or not isinstance(unscorable, int)
+            or not 0 <= unscorable <= n_tasks
+            or isinstance(allowance, bool)
+            or not isinstance(allowance, int)
+            or allowance < 0
             or any(
                 not isinstance(key, str) or not isinstance(value, bool)
                 for key, value in task_results.items()
@@ -108,9 +118,20 @@ def _record(data: object) -> EvalRecord | None:
             artifact,
             suite,
             digest,
+            unscorable,
+            allowance,
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def eval_key(
+    model_id: str, quant: str, backend: str, suite: str, digest: str, allowance: int = 0,
+) -> str:
+    """Identify a measurement. A token budget change is a measurement change, so
+    runs made with a reasoning allowance never land on an allowance-free key."""
+    suffix = f"|a{allowance}" if allowance else ""
+    return f"{model_id}|{quant}|{backend}|{suite}|{digest}{suffix}"
 
 
 def load_eval_cache(path: Path | None = None) -> dict[str, EvalRecord]:
@@ -132,7 +153,10 @@ def load_eval_cache(path: Path | None = None) -> dict[str, EvalRecord]:
 def save_eval(run: EvalRun, path: Path | None = None) -> Path:
     target = path or (nmesh_home() / "eval.json")
     records = load_eval_cache(target)
-    key = f"{run.model_id}|{run.quant}|{run.backend}|{run.suite}|{run.digest}"
+    key = eval_key(
+        run.model_id, run.quant, run.backend, run.suite, run.digest,
+        run.reasoning_allowance,
+    )
     records[key] = EvalRecord(
         run.model_id, run.quant, run.backend, run.n_tasks, run.passed,
         run.pass_rate, run.by_category, run.at,
@@ -140,6 +164,8 @@ def save_eval(run: EvalRun, path: Path | None = None) -> Path:
         run.artifact,
         run.suite,
         run.digest,
+        run.unscorable,
+        run.reasoning_allowance,
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")

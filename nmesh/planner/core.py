@@ -69,6 +69,33 @@ class Policy:
     parallel_slots: int | None = None
     lang: str = "en"
     languages: tuple[str, ...] = ()
+    model_ids: tuple[str, ...] = ()
+    eval_evidence: bool = True
+
+
+def _evidence_p_value(
+    better: EvalSummary, worse: EvalSummary,
+) -> tuple[float, int]:
+    shared = set(better.task_results) & set(worse.task_results)
+    if better.task_results and worse.task_results and shared:
+        b = sum(
+            better.task_results[task_id] and not worse.task_results[task_id]
+            for task_id in shared
+        )
+        c = sum(
+            worse.task_results[task_id] and not better.task_results[task_id]
+            for task_id in shared
+        )
+        return mcnemar_two_sided(b, c), len(shared)
+    return (
+        fisher_two_sided(
+            better.passed,
+            better.n_tasks - better.passed,
+            worse.passed,
+            worse.n_tasks - worse.passed,
+        ),
+        min(better.n_tasks, worse.n_tasks),
+    )
 
 
 @dataclass(frozen=True)
@@ -430,6 +457,8 @@ def _candidate_for(
     reserved_vram_bytes: float = 0.0,
     reserved_ram_bytes: float = 0.0,
     excluded: list[dict[str, str]] | None = None,
+    *,
+    allow_unmeasured: bool = False,
 ) -> list[_Candidate]:
     """Build candidates using the intentionally unchanged score.
 
@@ -445,6 +474,8 @@ def _candidate_for(
     0.5B q2_k candidate at 3654.6 tok/s, so a scale-free speed term requires a
     quality floor; the catalog quality prior is unvalidated.
     """
+    if model.quality is None and not allow_unmeasured:
+        return []
     initial = min(model.max_context, policy.max_context or 8192)
     contexts = list(dict.fromkeys(context for context in (initial, 4096, 2048) if context <= initial))
     candidates: list[_Candidate] = []
@@ -501,9 +532,11 @@ def _candidate_for(
                 continue
             wq, ws = {"quality": (1.0, 0.1), "speed": (0.5, 1.0),
                       "balanced": (1.0, 0.25)}.get(policy.prefer, (1.0, 0.25))
+            speed_score = min(tps, SPEED_REFERENCE_TPS) / SPEED_REFERENCE_TPS * 100 * ws
             score = (
-                (model.quality - QUANT_PENALTY[quant]) * wq
-                + min(tps, SPEED_REFERENCE_TPS) / SPEED_REFERENCE_TPS * 100 * ws
+                speed_score
+                if model.quality is None
+                else (model.quality - QUANT_PENALTY[quant]) * wq + speed_score
             )
             if policy.languages:
                 covers = set(policy.languages).issubset(model.languages)
@@ -1214,6 +1247,28 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                ] | None = None) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
+    requested_model_ids = {
+        model_id.casefold() for model_id in selected.model_ids if model_id.strip()
+    }
+    catalog_models = [
+        model for model in catalog
+        if not requested_model_ids or model.id.casefold() in requested_model_ids
+    ]
+    measured = {
+        tuple(item.casefold() for item in key): value
+        for key, value in (eval_cache or {}).items()
+        if isinstance(key, tuple)
+        and len(key) == 3
+        and all(isinstance(item, str) for item in key)
+        and (
+            isinstance(value, EvalSummary)
+            or (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and 0.0 <= value <= 1.0
+            )
+        )
+    }
     warning_params = profile.warning_params
     warnings = [
         t(
@@ -1224,12 +1279,38 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         for index, warning in enumerate(profile.warnings)
     ]
     warnings.append(t("warn.quality_prior", selected.lang))
+    known_model_ids = {model.id.casefold() for model in catalog}
+    for model_id in selected.model_ids:
+        if model_id.casefold() not in known_model_ids:
+            warnings.append(t("warn.model_unknown", selected.lang, model=model_id))
+    unmeasured = sorted(
+        model.id
+        for model in catalog
+        if model.quality is None
+        and any(role in model.roles for role in roles)
+        and model.id.casefold() not in requested_model_ids
+    )
+    if unmeasured:
+        shown = ", ".join(unmeasured[:5])
+        remaining = (
+            f"; {len(unmeasured) - 5} more"
+            if len(unmeasured) > 5
+            else ""
+        )
+        warnings.append(
+            t(
+                "warn.quality_unmeasured",
+                selected.lang,
+                models=shown,
+                remaining=remaining,
+            )
+        )
     if profile.backend_gpu_devices.get("llamacpp") == () and profile.gpus:
         warnings.append(
             t("warn.backend_no_gpu", selected.lang)
         )
     hints: list[str] = []
-    for model in catalog:
+    for model in catalog_models:
         if (
             any(role in model.roles for role in roles)
             and not any(source in model.sources for source in ("hf", "hf_gguf", "ollama"))
@@ -1250,22 +1331,111 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     for group in [item for item in groups if item]:
         reserved_vram, reserved_ram = _reserved_memory(services, swap_group)
         pools = {role: sorted(
-            (candidate for model in catalog if role in model.roles
+            (candidate for model in catalog_models if role in model.roles
              for candidate in _candidate_for(
                  model, profile, selected, bench_cache,
                  reserved_vram_bytes=reserved_vram,
                  reserved_ram_bytes=reserved_ram,
                  excluded=bench_excluded,
+                 allow_unmeasured=model.id.casefold() in requested_model_ids,
              )),
             key=lambda item: item.score, reverse=True,
         ) for role in group}
         empty_pools = None
         if reserved_vram or reserved_ram:
             empty_pools = {role: sorted(
-                (candidate for model in catalog if role in model.roles
-                 for candidate in _candidate_for(model, profile, selected, bench_cache)),
+                (candidate for model in catalog_models if role in model.roles
+                 for candidate in _candidate_for(
+                     model,
+                     profile,
+                     selected,
+                     bench_cache,
+                     allow_unmeasured=model.id.casefold() in requested_model_ids,
+                 )),
                 key=lambda item: item.score, reverse=True,
             ) for role in group}
+
+        def apply_eval_override(
+            current_group: list[str], current: _Candidate,
+            source_pools: dict[str, list[_Candidate]] = pools,
+        ) -> _Candidate:
+            if not selected.eval_evidence:
+                return current
+            selected_evidence = measured.get(
+                (
+                    current.model.id.casefold(),
+                    current.quant.casefold(),
+                    current.backend.casefold(),
+                )
+            )
+            if not isinstance(selected_evidence, EvalSummary):
+                return current
+            alternatives: list[
+                tuple[_Candidate, EvalSummary, float, int]
+            ] = []
+            alternative_ids = sorted({
+                candidate.model.id
+                for pool in source_pools.values()
+                for candidate in pool
+                if candidate.model.id != current.model.id
+            })
+            for model_id in alternative_ids:
+                restricted = {
+                    role: [
+                        candidate for candidate in pool
+                        if candidate.model.id == model_id
+                    ]
+                    for role, pool in source_pools.items()
+                }
+                alternative = _plan_group(current_group, restricted)
+                if alternative is None:
+                    continue
+                alternative_evidence = measured.get(
+                    (
+                        alternative.model.id.casefold(),
+                        alternative.quant.casefold(),
+                        alternative.backend.casefold(),
+                    )
+                )
+                if not isinstance(alternative_evidence, EvalSummary):
+                    continue
+                if alternative_evidence.pass_rate <= selected_evidence.pass_rate:
+                    continue
+                p_value, compared = _evidence_p_value(
+                    alternative_evidence, selected_evidence,
+                )
+                if p_value < 0.05:
+                    alternatives.append((
+                        alternative, alternative_evidence, p_value, compared,
+                    ))
+            if not alternatives:
+                return current
+            alternative, evidence, p_value, compared = alternatives[0]
+            for option in alternatives[1:]:
+                if (
+                    option[1].pass_rate,
+                    option[0].score,
+                    option[0].model.id,
+                ) > (
+                    evidence.pass_rate,
+                    alternative.score,
+                    alternative.model.id,
+                ):
+                    alternative, evidence, p_value, compared = option
+            warnings.append(t(
+                "warn.eval_evidence_override",
+                selected.lang,
+                role=current_group[0],
+                other=alternative.model.id,
+                other_rate=evidence.pass_rate,
+                selected=current.model.id,
+                selected_rate=selected_evidence.pass_rate,
+                other_prior=alternative.model.quality,
+                selected_prior=current.model.quality,
+                p_value=p_value,
+                compared=compared,
+            ))
+            return alternative
 
         def warn_capacity_tradeoff(
             role: str, chosen: _Candidate, empty: _Candidate | None,
@@ -1299,6 +1469,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                 role_candidate = pools.get(role, [])
                 if role_candidate:
                     role_candidate = role_candidate[0]
+                    role_candidate = apply_eval_override([role], role_candidate)
                     saturation_warning = _speed_saturation_warning(
                         role, role_candidate, pools[role], selected,
                     )
@@ -1320,6 +1491,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         if candidate is None:
             warnings.append(t("warn.no_candidate", selected.lang, role=group[0]))
             continue
+        candidate = apply_eval_override(group, candidate)
         saturation_warning = _speed_saturation_warning(
             group[0], candidate, pools[group[0]], selected,
         )
@@ -1350,21 +1522,23 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         ))
     services = _place_services(services, profile, selected, swap_group, warnings)
     services = _assign_slots(services, profile, selected, swap_group, warnings)
-    if eval_cache is not None:
-        measured = {
-            key: value for key, value in eval_cache.items()
-            if isinstance(key, tuple)
-            and len(key) == 3
-            and all(isinstance(item, str) for item in key)
-            and (
-                isinstance(value, EvalSummary)
-                or (
-                    isinstance(value, (int, float))
-                    and not isinstance(value, bool)
-                    and 0.0 <= value <= 1.0
-                )
+    selected_unmeasured: set[str] = set()
+    for service in services:
+        if service.model_id.casefold() in requested_model_ids:
+            model = next(
+                (
+                    item for item in catalog_models
+                    if item.id.casefold() == service.model_id.casefold()
+                ),
+                None,
             )
-        }
+            if model is not None and model.quality is None:
+                selected_unmeasured.add(model.id)
+    for model_id in sorted(selected_unmeasured):
+        warnings.append(
+            t("warn.quality_unmeasured_selected", selected.lang, model=model_id)
+        )
+    if eval_cache is not None:
         catalog_by_id = {model.id: model for model in catalog}
         contradiction_pairs: set[tuple[str, str]] = set()
         eval_mismatch_models: set[str] = set()
@@ -1374,12 +1548,19 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             if selected_model is None:
                 continue
             selected_evidence = measured.get(
-                (service.model_id, service.quant, service.backend)
+                (
+                    service.model_id.casefold(),
+                    service.quant.casefold(),
+                    service.backend.casefold(),
+                )
             )
             if selected_evidence is None:
                 if (
                     service.model_id not in eval_mismatch_models
-                    and any(key[0] == service.model_id for key in measured)
+                    and any(
+                        key[0] == service.model_id.casefold()
+                        for key in measured
+                    )
                 ):
                     eval_mismatch_models.add(service.model_id)
                     warnings.append(t(
@@ -1399,52 +1580,37 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                 for other in catalog:
                     if other.id == service.model_id or role not in other.roles:
                         continue
-                    if not any(key[0] == other.id for key in measured):
+                    if not any(
+                        key[0] == other.id.casefold() for key in measured
+                    ):
                         continue
                     candidates = _candidate_for(other, profile, selected, bench_cache)
                     if not candidates:
                         continue
                     best = max(candidates, key=lambda candidate: candidate.score)
                     other_evidence = measured.get(
-                        (other.id, best.quant, best.backend)
+                        (
+                            other.id.casefold(),
+                            best.quant.casefold(),
+                            best.backend.casefold(),
+                        )
                     )
                     if not isinstance(selected_evidence, EvalSummary) or not isinstance(
                         other_evidence, EvalSummary
                     ):
                         continue
                     other_rate = other_evidence.pass_rate
-                    if other_rate <= selected_rate or other.quality >= selected_model.quality:
+                    if (
+                        other_rate <= selected_rate
+                        or other.quality is None
+                        or selected_model.quality is None
+                        or other.quality >= selected_model.quality
+                    ):
                         continue
-                    shared = (
-                        set(selected_evidence.task_results)
-                        & set(other_evidence.task_results)
+                    p_value, compared = _evidence_p_value(
+                        other_evidence, selected_evidence,
                     )
-                    if selected_evidence.task_results and other_evidence.task_results and shared:
-                        b = sum(
-                            other_evidence.task_results[task_id]
-                            and not selected_evidence.task_results[task_id]
-                            for task_id in shared
-                        )
-                        c = sum(
-                            selected_evidence.task_results[task_id]
-                            and not other_evidence.task_results[task_id]
-                            for task_id in shared
-                        )
-                        p_value = mcnemar_two_sided(b, c)
-                        compared = len(shared)
-                        suite_size = compared
-                    else:
-                        p_value = fisher_two_sided(
-                            other_evidence.passed,
-                            other_evidence.n_tasks - other_evidence.passed,
-                            selected_evidence.passed,
-                            selected_evidence.n_tasks - selected_evidence.passed,
-                        )
-                        compared = min(
-                            other_evidence.n_tasks,
-                            selected_evidence.n_tasks,
-                        )
-                        suite_size = compared
+                    suite_size = compared
                     if p_value < 0.05:
                         pair = (other.id, service.model_id)
                         if pair in contradiction_pairs:
@@ -1563,6 +1729,8 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
                     int(pol["parallel_slots"]) if pol.get("parallel_slots") is not None else None,
                     str(pol.get("lang", "en")),
                     tuple(str(x) for x in pol.get("languages", [])),
+                    tuple(str(x) for x in pol.get("model_ids", [])),
+                    bool(pol.get("eval_evidence", True)),
                     )
     services: list[PlannedService] = []
     for item in data["services"]:

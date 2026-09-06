@@ -20,7 +20,7 @@ class ModelSpec:
     hidden_size: int
     max_context: int
     roles: list[str]
-    quality: float
+    quality: float | None
     license: str
     sources: dict[str, str]
     languages: tuple[str, ...] = ("en",)
@@ -60,6 +60,8 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
             for value in languages_value
             if str(value).strip()
         ) or ("en",)
+        quality_value = item["quality"]
+        quality = None if quality_value is None else float(quality_value)
         return ModelSpec(
             id=str(item["id"]),
             family=str(item["family"]),
@@ -71,7 +73,7 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
             hidden_size=int(item["hidden_size"]),
             max_context=int(item["max_context"]),
             roles=[str(role) for role in roles_value],
-            quality=float(item["quality"]),
+            quality=quality,
             license=str(item["license"]),
             sources={str(key): str(value) for key, value in sources_value.items()},
             languages=languages,

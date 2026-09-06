@@ -78,6 +78,7 @@ class _EvalHandler(BaseHTTPRequestHandler):
     responses: ClassVar[dict[str, tuple[int, str]]] = {}
     default_status: ClassVar[int] = 200
     bodies: ClassVar[list[dict[str, object]]] = []
+    finish_reasons: ClassVar[dict[str, str]] = {}
 
     def do_POST(self) -> None:
         length = int(self.headers["Content-Length"])
@@ -88,7 +89,10 @@ class _EvalHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         payload = json.dumps({
-            "choices": [{"message": {"content": text}}],
+            "choices": [{
+                "message": {"content": text},
+                "finish_reason": self.__class__.finish_reasons.get(prompt, "stop"),
+            }],
         }).encode()
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -292,6 +296,98 @@ def test_runner_mixed_and_transport_failure_continue() -> None:
     assert result.outcomes[-1].output
 
 
+def test_runner_marks_answerless_truncation_unscorable() -> None:
+    tasks = (
+        Task("empty", "instruction", "empty", 8, lambda text: text == "yes"),
+        Task("cut", "instruction", "cut", 8, lambda text: text == "yes"),
+        Task("ok", "format", "ok", 8, lambda text: text == "yes"),
+    )
+    _EvalHandler.responses = {
+        "empty": (200, ""),
+        "cut": (200, "ye"),
+        "ok": (200, "yes"),
+    }
+    _EvalHandler.finish_reasons = {"empty": "length", "cut": "length"}
+    server = _serve()
+    try:
+        result = run(tasks, f"http://127.0.0.1:{server.server_address[1]}", "model")
+    finally:
+        _EvalHandler.finish_reasons = {}
+        server.shutdown()
+        server.server_close()
+    unscorable = {outcome.id: outcome.unscorable for outcome in result.outcomes}
+    assert unscorable == {"empty": True, "cut": False, "ok": False}
+    assert result.unscorable == 1
+    assert result.passed == 1
+
+
+def test_runner_reasoning_allowance_raises_every_budget() -> None:
+    tasks = (Task("one", "instruction", "one", 8, lambda text: text == "yes"),)
+    _EvalHandler.responses = {"one": (200, "yes")}
+    _EvalHandler.bodies = []
+    server = _serve()
+    try:
+        result = run(
+            tasks, f"http://127.0.0.1:{server.server_address[1]}", "model",
+            reasoning_allowance=504,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert _EvalHandler.bodies[0]["max_tokens"] == 512
+    assert result.reasoning_allowance == 504
+    assert result.unscorable == 0
+
+
+def test_eval_cache_separates_reasoning_allowances(tmp_path) -> None:
+    path = tmp_path / "eval.json"
+    digest = suite_digest(TASKS)
+    strict = EvalRun("model", "f16", "llamacpp", 2, 0, 0.0, {}, [], 1.0,
+                     "", "core", digest, 2, 0)
+    generous = EvalRun("model", "f16", "llamacpp", 2, 2, 1.0, {}, [], 2.0,
+                       "", "core", digest, 0, 504)
+    save_eval(strict, path)
+    save_eval(generous, path)
+    records = load_eval_cache(path)
+    assert set(records) == {
+        f"model|f16|llamacpp|core|{digest}",
+        f"model|f16|llamacpp|core|{digest}|a504",
+    }
+    assert records[f"model|f16|llamacpp|core|{digest}"].unscorable == 2
+    rates = cli._eval_rates(records)
+    assert rates[("model", "f16", "llamacpp")].pass_rate == 1.0
+
+
+def test_eval_rates_drop_runs_with_unscorable_tasks() -> None:
+    digest = suite_digest(TASKS)
+    records = {
+        "only": EvalRecord(
+            "model", "f16", "llamacpp", 104, 0, 0.0, {}, 1.0, {}, "", "core", digest, 104, 0,
+        ),
+    }
+    assert cli._eval_rates(records) == {}
+
+
+def test_eval_cli_reports_unscorable_run(monkeypatch, capsys) -> None:
+    service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
+    result = EvalRun(
+        "prior-high", "q4_k_m", "llamacpp", 1, 0, 0.0, {"instruction": 0.0},
+        [TaskOutcome("cut", "instruction", False, "", True)],
+        3.0,
+        unscorable=1,
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: result)
+    monkeypatch.setattr(cli, "save_eval", lambda value: None)
+    assert cli.main(["eval", "--json", "--reasoning-allowance", "504"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["unscorable"] == 1
+    assert output["reasoning_allowance"] == 504
+    assert "not used as planning evidence" in output["unscorable_note"]
+    assert output["failed"] == [{"id": "cut", "output": "", "unscorable": True}]
+
+
 def test_runner_all_transport_failures_raise() -> None:
     tasks = (Task("one", "instruction", "one", 8, lambda text: True),)
     _EvalHandler.responses = {}
@@ -378,7 +474,7 @@ def _quality_models() -> list[ModelSpec]:
     ]
 
 
-def test_planner_quality_warning_and_unchanged_selection() -> None:
+def test_planner_eval_evidence_override_and_prior_fallback() -> None:
     models = _quality_models()
     policy = Policy(roles=["chat"])
     ordinary = build_plan(profile(8), models, policy)
@@ -396,12 +492,27 @@ def test_planner_quality_warning_and_unchanged_selection() -> None:
             ("measured-high", "f16", "llamacpp"): EvalSummary(0.7, 11, 16, {}),
         },
     )
-    assert contradictory.services[0].model_id == ordinary.services[0].model_id
+    assert contradictory.services[0].model_id == "measured-high"
     assert consistent.services[0].model_id == ordinary.services[0].model_id
-    assert any("measured-high" in warning and "prior-high" in warning
-               for warning in contradictory.warnings)
+    assert any(
+        "measurement outranks" in warning
+        and "measured-high" in warning
+        and "prior-high" in warning
+        and "p=0.00" in warning
+        for warning in contradictory.warnings
+    )
+    assert not any("pass rate ranks" in warning for warning in contradictory.warnings)
     assert not any("pass rate ranks" in warning for warning in consistent.warnings)
     assert any("unverified" in warning for warning in ordinary.warnings)
+    prior_only = build_plan(
+        profile(8), models, replace(policy, eval_evidence=False),
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): EvalSummary(0.25, 4, 16, {}),
+            ("measured-high", "f16", "llamacpp"): EvalSummary(14 / 16, 14, 16, {}),
+        },
+    )
+    assert prior_only.services[0].model_id == "prior-high"
+    assert any("pass rate ranks" in warning for warning in prior_only.warnings)
 
 
 def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
@@ -417,7 +528,7 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
         True, [{"service": "chat", "running": True}],
     ))
     monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
-    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref: result)
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: result)
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
     assert cli.main(["eval", "--json"]) == 0
     output = json.loads(capsys.readouterr().out)
@@ -430,10 +541,12 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     assert output["uncertainty_note"].startswith("95% Wilson interval")
     assert output["suite_upgrade_note"].startswith("The 104-task extended suite")
     assert output["config_note"].startswith("This pass rate applies")
-    assert output["failed"] == [{"id": "failed", "output": "bad"}]
+    assert output["failed"] == [
+        {"id": "failed", "output": "bad", "unscorable": False},
+    ]
 
 
-def test_planner_deduplicates_multi_role_contradiction_warning() -> None:
+def test_planner_deduplicates_multi_role_eval_override_warning() -> None:
     models = [replace(model, roles=["chat", "code"]) for model in _quality_models()]
     plan = build_plan(
         profile(8), models, Policy(roles=["chat", "code"]),
@@ -442,8 +555,9 @@ def test_planner_deduplicates_multi_role_contradiction_warning() -> None:
             ("measured-high", "f16", "llamacpp"): EvalSummary(14 / 16, 14, 16, {}),
         },
     )
-    contradictions = [warning for warning in plan.warnings if "pass rate ranks" in warning]
-    assert len(contradictions) == 1
+    overrides = [warning for warning in plan.warnings if "measurement outranks" in warning]
+    assert len(overrides) == 1
+    assert not any("pass rate ranks" in warning for warning in plan.warnings)
 
 
 def test_planner_warns_when_eval_configuration_does_not_match() -> None:
@@ -477,7 +591,7 @@ def test_planner_reports_underpowered_eval_evidence() -> None:
     )
 
 
-def test_planner_warns_for_significant_eval_gap() -> None:
+def test_planner_overrides_for_significant_eval_gap() -> None:
     models = _quality_models()
     plan = build_plan(
         profile(8), models, Policy(roles=["chat"]),
@@ -486,9 +600,9 @@ def test_planner_warns_for_significant_eval_gap() -> None:
             ("measured-high", "f16", "llamacpp"): EvalSummary(14 / 16, 14, 16, {}),
         },
     )
-    contradiction = next(item for item in plan.warnings if "pass rate ranks" in item)
-    assert "p=" in contradiction
-    assert "16 tasks" in contradiction
+    override = next(item for item in plan.warnings if "measurement outranks" in item)
+    assert "p=" in override
+    assert "16 tasks" in override
 
 
 def test_planner_uses_paired_eval_evidence() -> None:
@@ -506,7 +620,11 @@ def test_planner_uses_paired_eval_evidence() -> None:
             ),
         },
     )
-    assert any("pass rate ranks" in warning for warning in significant.warnings)
+    assert significant.services[0].model_id == "measured-high"
+    assert any(
+        "measurement outranks" in warning and "16 tasks" in warning
+        for warning in significant.warnings
+    )
 
     selected_balanced = {f"task-{index}": index % 2 == 0 for index in range(16)}
     other_balanced = {f"task-{index}": index % 2 == 1 for index in range(16)}
@@ -534,8 +652,85 @@ def test_planner_ignores_bare_float_eval_evidence() -> None:
             ("measured-high", "f16", "llamacpp"): 0.875,
         },
     )
+    assert plan.services[0].model_id == "prior-high"
+    assert not any("measurement outranks" in warning for warning in plan.warnings)
     assert not any("pass rate ranks" in warning for warning in plan.warnings)
     assert not any("neither confirmed nor contradicted" in note for note in plan.warnings)
+
+
+def test_planner_does_not_override_without_significance() -> None:
+    models = _quality_models()
+    plan = build_plan(
+        profile(8), models, Policy(roles=["chat"]),
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): EvalSummary(0.5, 8, 16, {}),
+            ("measured-high", "f16", "llamacpp"): EvalSummary(11 / 16, 11, 16, {}),
+        },
+    )
+    assert plan.services[0].model_id == "prior-high"
+    assert not any("measurement outranks" in warning for warning in plan.warnings)
+
+
+def test_planner_requires_the_planned_eval_configuration() -> None:
+    models = _quality_models()
+    plan = build_plan(
+        profile(8), models, Policy(roles=["chat"]),
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): EvalSummary(0.25, 4, 16, {}),
+            ("measured-high", "q4_k_m", "llamacpp"): EvalSummary(
+                14 / 16, 14, 16, {},
+            ),
+            ("measured-high", "f16", "ollama"): EvalSummary(
+                14 / 16, 14, 16, {},
+            ),
+        },
+    )
+    assert plan.services[0].model_id == "prior-high"
+    assert not any("measurement outranks" in warning for warning in plan.warnings)
+
+
+def test_planner_does_not_override_an_unmeasured_choice() -> None:
+    models = [
+        replace(_quality_models()[0], quality=None),
+        replace(_quality_models()[1], quality=0.0),
+    ]
+    plan = build_plan(
+        profile(8), models,
+        Policy(
+            roles=["chat"],
+            model_ids=("prior-high", "measured-high"),
+            min_decode_tps=0,
+        ),
+        eval_cache={
+            ("measured-high", "f16", "llamacpp"): EvalSummary(1.0, 16, 16, {}),
+        },
+    )
+    assert plan.services[0].model_id == "prior-high"
+    assert not any("measurement outranks" in warning for warning in plan.warnings)
+
+
+def test_cli_plan_ignore_eval_evidence_sets_policy(monkeypatch, capsys) -> None:
+    models = _quality_models()
+    captured = []
+    monkeypatch.setattr(cli, "detect_hardware", lambda: profile(8))
+    monkeypatch.setattr(cli, "load_catalog", lambda: models)
+    monkeypatch.setattr(cli, "load_cache", dict)
+    monkeypatch.setattr(cli, "bench_overlay", dict)
+    monkeypatch.setattr(cli, "_eval_rates", dict)
+    monkeypatch.setattr(cli, "save_plan", captured.append)
+    assert cli.main(["plan", "--roles", "chat", "--ignore-eval-evidence"]) == 0
+    capsys.readouterr()
+    assert captured
+    assert captured[0].policy.eval_evidence is False
+
+
+def test_cli_up_ignore_eval_evidence_parses(monkeypatch) -> None:
+    parsed = {}
+    monkeypatch.setattr(
+        cli, "_runtime", lambda args: parsed.update(vars(args)) or 0,
+    )
+    assert cli.main(["up", "--ignore-eval-evidence"]) == 0
+    assert parsed["ignore_eval_evidence"] is True
 
 
 def test_eval_rates_are_keyed_by_configuration(monkeypatch) -> None:
@@ -555,6 +750,75 @@ def test_eval_rates_are_keyed_by_configuration(monkeypatch) -> None:
     }
 
 
+def test_mixed_case_eval_quant_matches_planned_configuration() -> None:
+    digest = suite_digest(TASKS)
+    records = {
+        "prior": EvalRecord(
+            "prior-high", "f16", "llamacpp", 16, 4, 0.25, {}, 1.0,
+            {}, "", "core", digest,
+        ),
+        "measured": EvalRecord(
+            "measured-high", "Q4_K_M", "llamacpp", 16, 14, 14 / 16, {}, 2.0,
+            {}, "", "core", digest,
+        ),
+    }
+    cache = cli._eval_rates(records)
+    bench_cache = {
+        (model_id, quant, "llamacpp", "cpu", 0): 0.0
+        for model_id in ("prior-high", "measured-high")
+        for quant in ("f16", "q8_0", "q6_k", "q5_k_m", "q4_k_m", "q4_0", "q3_k_m", "q2_k")
+    }
+    bench_cache[("measured-high", "q4_k_m", "llamacpp", "cpu", 0)] = 200.0
+    plan = build_plan(
+        profile(8), _quality_models(),
+        Policy(roles=["chat"], min_decode_tps=0),
+        bench_cache,
+        cache,
+    )
+    assert plan.services[0].model_id == "measured-high"
+    assert not any("configuration" in warning for warning in plan.warnings)
+
+
+def test_mismatched_eval_backend_still_warns_without_override() -> None:
+    digest = suite_digest(TASKS)
+    cache = cli._eval_rates({
+        "prior": EvalRecord(
+            "prior-high", "f16", "ollama", 16, 4, 0.25, {}, 1.0,
+            {}, "", "core", digest,
+        ),
+        "measured": EvalRecord(
+            "measured-high", "f16", "ollama", 16, 14, 14 / 16, {}, 2.0,
+            {}, "", "core", digest,
+        ),
+    })
+    plan = build_plan(
+        profile(8), _quality_models(), Policy(roles=["chat"]), None, cache,
+    )
+    assert plan.services[0].model_id == "prior-high"
+    assert any(
+        "prior-high" in warning and "configuration" in warning
+        for warning in plan.warnings
+    )
+    assert not any("measurement outranks" in warning for warning in plan.warnings)
+
+
+def test_eval_rates_casefolded_quant_keeps_newest_record() -> None:
+    digest = suite_digest(TASKS)
+    records = {
+        "old": EvalRecord(
+            "model", "Q4_K_M", "llamacpp", 16, 4, 0.25, {}, 1.0,
+            {}, "", "core", digest,
+        ),
+        "new": EvalRecord(
+            "model", "q4_k_m", "llamacpp", 16, 14, 14 / 16, {}, 2.0,
+            {}, "", "core", digest,
+        ),
+    }
+    assert cli._eval_rates(records) == {
+        ("model", "q4_k_m", "llamacpp"): EvalSummary(14 / 16, 14, 16, {}),
+    }
+
+
 def test_eval_rates_drops_stale_grader_records() -> None:
     stale = EvalRecord(
         "model", "f16", "llamacpp", 16, 16, 1.0, {}, 3.0,
@@ -569,7 +833,7 @@ def test_eval_cli_category_filter(monkeypatch) -> None:
     result = EvalRun("prior-high", "f16", "llamacpp", 1, 1, 1.0, {"format": 1.0}, [], 3.0)
     monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
     monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
-    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref: (
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: (
         captured.extend(tasks) or result
     ))
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
@@ -585,7 +849,7 @@ def test_eval_cli_default_and_compliance_categories(monkeypatch) -> None:
     result = EvalRun("prior-high", "f16", "llamacpp", 1, 1, 1.0, {}, [], 3.0)
     monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
     monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
-    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref: (
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: (
         captured.extend(tasks) or result
     ))
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
@@ -608,7 +872,7 @@ def test_eval_cli_extended_suite(monkeypatch, capsys) -> None:
     )
     monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
     monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
-    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref: (
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: (
         captured.extend(tasks) or result
     ))
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
@@ -667,7 +931,7 @@ def test_eval_cli_warns_when_artifact_changes(monkeypatch, capsys) -> None:
         True, [{"service": "chat", "running": True}],
     ))
     monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
-    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref: result)
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: result)
     monkeypatch.setattr(cli, "service_fingerprint", lambda backend, model_ref: "new-artifact")
     monkeypatch.setattr(
         cli,

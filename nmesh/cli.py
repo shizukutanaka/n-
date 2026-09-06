@@ -30,7 +30,7 @@ from nmesh.eval import (
     suite_digest,
 )
 from nmesh.eval import run as eval_run
-from nmesh.eval.cache import EvalRecord
+from nmesh.eval.cache import EvalRecord, eval_key
 from nmesh.eval.stats import min_resolvable_difference, wilson_interval
 from nmesh.paths import nmesh_home
 from nmesh.planner import (
@@ -54,7 +54,7 @@ from nmesh.watch import fetch_qiita, fetch_x, fetch_zenn
 from nmesh.watch.draft import write_draft
 from nmesh.watch.sources import SourceItem, SourceStatus
 from nmesh.watch.state import WatchState, load_state, now_iso, save_state
-from nmesh.watch.verify import caps_available, verify
+from nmesh.watch.verify import Finding, caps_available, verify
 
 
 def _console() -> Console:
@@ -79,6 +79,49 @@ def _parse_languages(value: str | None) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _parse_model_ids(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    result: list[str] = []
+    for item in value.split(","):
+        model_id = item.strip()
+        if model_id and model_id.casefold() not in {entry.casefold() for entry in result}:
+            result.append(model_id)
+    return tuple(result)
+
+
+def _candidate_fit(finding: Finding, budget_bytes: float) -> str:
+    verified = finding.verified
+    weight_sets = verified.get("weight_sets")
+    if not isinstance(weight_sets, dict) or not weight_sets:
+        return "no_weights"
+    if verified.get("gated"):
+        return "gated"
+    pipeline_tag = verified.get("pipeline_tag")
+    if not isinstance(pipeline_tag, str) or not pipeline_tag:
+        return "role_unknown"
+    if pipeline_tag not in {"text-generation", "text2text-generation"}:
+        return "not_text"
+    smallest = verified.get("smallest_weight_bytes")
+    if (
+        isinstance(smallest, (int, float))
+        and not isinstance(smallest, bool)
+        and smallest > budget_bytes
+    ):
+        return "too_large"
+    return "fits"
+
+
+def _watch_budget() -> tuple[float, str]:
+    profile = detect_hardware()
+    vram, ram = free_budgets(profile)
+    return (
+        (ram, "planner.free_budgets.ram_bytes")
+        if not profile.gpus
+        else (vram, "planner.free_budgets.vram_bytes")
+    )
+
+
 def _bytes(value: float) -> str:
     units = ("B", "KiB", "MiB", "GiB", "TiB")
     number = value
@@ -96,6 +139,16 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError("must be an integer of at least 1") from error
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def _non_negative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer of at least 0") from error
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be at least 0")
     return parsed
 
 
@@ -203,7 +256,9 @@ def _make_plan(args: argparse.Namespace) -> object:
                     max_context=args.context, budget_source=getattr(args, "budget", "total"),
                     parallel_slots=getattr(args, "parallel_slots", None),
                     lang=i18n.lang(),
-                    languages=_parse_languages(getattr(args, "lang", None)))
+                    languages=_parse_languages(getattr(args, "lang", None)),
+                    model_ids=_parse_model_ids(getattr(args, "model", None)),
+                    eval_evidence=not getattr(args, "ignore_eval_evidence", False))
     live, skipped = overlay_report()
     args._telemetry_keys = len(live)
     args._telemetry_under_load = skipped
@@ -213,8 +268,8 @@ def _make_plan(args: argparse.Namespace) -> object:
 
 def _eval_records(
     records: Mapping[str, EvalRecord],
-) -> tuple[dict[tuple[str, str, str, str, str], EvalRecord], list[EvalRecord]]:
-    valid: dict[tuple[str, str, str, str, str], EvalRecord] = {}
+) -> tuple[dict[tuple[str, str, str, str, str, int], EvalRecord], list[EvalRecord]]:
+    valid: dict[tuple[str, str, str, str, str, int], EvalRecord] = {}
     stale: list[EvalRecord] = []
     for record in records.values():
         tasks = SUITES.get(record.suite)
@@ -227,6 +282,7 @@ def _eval_records(
             record.backend,
             record.suite,
             record.digest,
+            record.reasoning_allowance,
         )
         previous = valid.get(key)
         if previous is None or record.at > previous.at:
@@ -240,7 +296,13 @@ def _eval_rates(
     valid, _ = _eval_records(records if records is not None else load_eval_cache())
     latest: dict[tuple[str, str, str], EvalRecord] = {}
     for record in valid.values():
-        key = (record.model_id, record.quant, record.backend)
+        if record.unscorable:
+            continue
+        key = (
+            record.model_id.casefold(),
+            record.quant.casefold(),
+            record.backend.casefold(),
+        )
         previous = latest.get(key)
         if previous is None or record.at > previous.at:
             latest[key] = record
@@ -281,6 +343,9 @@ def _eval_divergence(
             record.model_id != result.model_id
             or (record.quant, record.backend) == (result.quant, result.backend)
             or record.digest != result.digest
+            or record.reasoning_allowance != result.reasoning_allowance
+            or record.unscorable
+            or result.unscorable
             or not record.task_results
         ):
             continue
@@ -404,17 +469,29 @@ def _runtime(args: argparse.Namespace) -> int:
             if _plan(argparse.Namespace(
                 roles="chat,code,embed", prefer="balanced", context=None,
                 budget="total", parallel_slots=None, json=False, explain=False,
-                lang=None,
+                lang=None, model=getattr(args, "model", None),
+                ignore_eval_evidence=getattr(args, "ignore_eval_evidence", False),
             )) != 0:
                 return 1
             plan = load_plan()
         if plan is None or not plan.services or not plan.runnable:
             return 1
-        if getattr(args, "lang", None):
+        if (
+            getattr(args, "lang", None)
+            or _parse_model_ids(getattr(args, "model", None))
+            or getattr(args, "ignore_eval_evidence", False)
+        ):
+            updates: dict[str, object] = {}
+            if getattr(args, "lang", None):
+                updates["lang"] = i18n.lang()
+                updates["languages"] = _parse_languages(args.lang)
+            if _parse_model_ids(getattr(args, "model", None)):
+                updates["model_ids"] = _parse_model_ids(args.model)
+            if getattr(args, "ignore_eval_evidence", False):
+                updates["eval_evidence"] = False
             plan = build_plan(
                 detect_hardware(), load_catalog(),
-                replace(plan.policy, lang=i18n.lang(),
-                        languages=_parse_languages(args.lang)),
+                replace(plan.policy, **updates),
                 {**load_cache(), **bench_overlay()},
                 _eval_rates(),
             )
@@ -727,8 +804,11 @@ def _eval(args: argparse.Namespace) -> int:
     base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
     )
+    allowance = max(0, getattr(args, "reasoning_allowance", 0) or 0)
     try:
-        result = eval_run(tasks, base_url, service.model_ref)
+        result = eval_run(
+            tasks, base_url, service.model_ref, reasoning_allowance=allowance,
+        )
     except RuntimeError as error:
         print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
         return 1
@@ -740,11 +820,12 @@ def _eval(args: argparse.Namespace) -> int:
         artifact=service_fingerprint(service.backend, service.model_ref) or "",
         suite=args.suite,
         digest=suite_digest(tasks),
+        reasoning_allowance=allowance,
     )
     cached = load_eval_cache()
-    key = (
-        f"{result.model_id}|{result.quant}|{result.backend}|"
-        f"{result.suite}|{result.digest}"
+    key = eval_key(
+        result.model_id, result.quant, result.backend, result.suite, result.digest,
+        result.reasoning_allowance,
     )
     previous = cached.get(key)
     artifact_warning = None
@@ -770,7 +851,7 @@ def _eval(args: argparse.Namespace) -> int:
         return 1
     divergence = _eval_divergence(result, cached)
     stale_grader_notes = _stale_grader_notes(cached)
-    failed = [{"id": outcome.id, "output": outcome.output}
+    failed = [{"id": outcome.id, "output": outcome.output, "unscorable": outcome.unscorable}
               for outcome in result.outcomes if not outcome.passed]
     language = i18n.lang()
     note = i18n.t("note.eval_scope", language, tasks=result.n_tasks)
@@ -792,6 +873,15 @@ def _eval(args: argparse.Namespace) -> int:
             tasks=len(EXTENDED_TASKS),
             minimum=min_resolvable_difference(len(EXTENDED_TASKS)),
         )
+    unscorable_note = None
+    if result.unscorable:
+        unscorable_note = i18n.t(
+            "warn.eval_unscorable",
+            language,
+            count=result.unscorable,
+            tasks=result.n_tasks,
+            allowance=allowance,
+        )
     config_note = i18n.t(
         "note.eval_config",
         language,
@@ -809,6 +899,9 @@ def _eval(args: argparse.Namespace) -> int:
         "artifact": result.artifact or None,
         "n_tasks": result.n_tasks,
         "passed": result.passed,
+        "unscorable": result.unscorable,
+        "reasoning_allowance": result.reasoning_allowance,
+        "unscorable_note": unscorable_note,
         "pass_rate": result.pass_rate,
         "pass_rate_ci": list(pass_rate_ci),
         "min_resolvable_difference": minimum_difference,
@@ -845,6 +938,8 @@ def _eval(args: argparse.Namespace) -> int:
     if suite_upgrade_note is not None:
         _console().print(suite_upgrade_note)
     _console().print(config_note)
+    if unscorable_note is not None:
+        _console().print(unscorable_note)
     if artifact_warning is not None:
         _console().print(artifact_warning)
     for item in divergence:
@@ -1029,6 +1124,23 @@ def _watch(args: argparse.Namespace) -> int:
             if finding.kind == "catalog_gap"
         }),
     }
+    budget_bytes, budget_source = _watch_budget()
+    candidate_findings = [finding for finding in findings if finding.kind == "catalog_gap"]
+    fit_counts = {
+        fit: sum(_candidate_fit(finding, budget_bytes) == fit for finding in candidate_findings)
+        for fit in ("no_weights", "gated", "role_unknown", "not_text", "too_large", "fits")
+    }
+    candidates = {
+        "total": len(candidate_findings),
+        "counts": fit_counts,
+        "fits": [
+            finding.value
+            for finding in candidate_findings
+            if _candidate_fit(finding, budget_bytes) == "fits"
+        ],
+        "budget_bytes": budget_bytes,
+        "budget_source": budget_source,
+    }
     output = {
         "sources": [asdict(status) for status in statuses],
         "items": len(items),
@@ -1038,6 +1150,7 @@ def _watch(args: argparse.Namespace) -> int:
         "drafts": drafts,
         "notes": notes,
         "catalog": catalog_metrics,
+        "candidates": candidates,
     }
     if args.json:
         _print_json(output)
@@ -1084,6 +1197,19 @@ def _watch(args: argparse.Namespace) -> int:
             str(catalog_metrics["absent_repo_ids"]),
         )
         _console().print(catalog_table)
+        candidate_table = Table(title=i18n.t("label.watch_candidates_title", language))
+        candidate_table.add_column(i18n.t("label.watch_fit_class", language))
+        candidate_table.add_column(i18n.t("label.watch_value", language))
+        for fit, count in fit_counts.items():
+            candidate_table.add_row(
+                i18n.t(f"label.watch_fit_{fit}", language),
+                str(count),
+            )
+        candidate_table.add_row(
+            i18n.t("label.watch_candidate_budget", language),
+            f"{budget_bytes:.0f} ({budget_source})",
+        )
+        _console().print(candidate_table)
         for finding in findings:
             _console().print(i18n.t(
                 "label.watch_finding",
@@ -1133,6 +1259,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--context", type=int)
     plan.add_argument("--budget", choices=("total", "free"), default="total")
     plan.add_argument("--parallel-slots", type=int)
+    plan.add_argument("--model", help="comma-separated model IDs")
+    plan.add_argument("--ignore-eval-evidence", action="store_true")
     plan.add_argument("--lang")
     plan.add_argument("--profile")
     up_parser = sub.add_parser("up")
@@ -1143,6 +1271,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--port", type=int, default=18000)
     up_parser.add_argument("--ignore-free-memory", action="store_true")
     up_parser.add_argument("--lang")
+    up_parser.add_argument("--model", help="comma-separated model IDs")
+    up_parser.add_argument("--ignore-eval-evidence", action="store_true")
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=18000)
     reload_parser = sub.add_parser("reload")
@@ -1170,6 +1300,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"({','.join(EXTENDED_CATEGORIES)})",
     )
     eval_parser.add_argument("--suite", choices=("core", "extended"), default="core")
+    eval_parser.add_argument(
+        "--reasoning-allowance",
+        type=_non_negative_int,
+        default=0,
+        dest="reasoning_allowance",
+        help="extra output tokens per task for models that emit reasoning "
+        "before the answer (recorded with the result)",
+    )
     watch_parser = sub.add_parser("watch")
     watch_parser.add_argument("--sources", default="zenn,qiita")
     watch_parser.add_argument(

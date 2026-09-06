@@ -425,6 +425,24 @@ while current discussion includes Qwen3.x, gemma-4, MiniMax-H3, llm-jp-4, and
 Nemotron. Mention counts indicate popularity, not quality — quality still
 requires `nmesh eval`, so drafts carry `quality: null`.
 
+Before the candidate path was added, all 28 verified `catalog_gap` drafts were
+rejected by the catalog loader. A hand-completed candidate with
+`quality: null` was rejected too: `float(None)` raised `TypeError` and the
+entry was silently dropped. There was no `--model` path, so measuring a
+candidate before planning required inventing quality.
+
+The same 28 candidates included 20 with no primary GGUF. The eight smallest
+complete weight sets measured 0.08 / 0.64 / 6.19 / 14.25 / 17.65 / 72.55 /
+93.09 / 397.26 GB. Per-file minima are invalid because repositories contain
+`mmproj`, MTP/draft heads, imatrix files, vocabulary files, and multi-part
+shards; `dzannotti/Qwen3.8-Flash-Next-MTP-GGUF` and
+`cdiamond/Qwen3.8-27B-iMatrix-NVFP4-MTP-GGUF` are auxiliary-only examples.
+Watch groups primary GGUF shards before reporting feasibility.
+
+Unmeasured entries are never ranked automatically. Explicit `--model` selection
+is the path to planning one, and `nmesh eval` is the only path to a legitimate
+quality value. Quality is never invented.
+
 Noise IDs such as `docs/hub`, `papers/2504.13181`, `datasets/leemeng`, and
 `blog/nvidia` are filtered by the Hugging Face 401/404 gate. GGUF mirror
 repositories commonly return 404 for `config.json`, including
@@ -434,6 +452,54 @@ from this box, so there is deliberately no releases source. X is unavailable
 without `NMESH_X_BEARER_TOKEN`. `--offline` accepts saved source items for
 reproducible extraction and verification, and bounded state prevents repeated
 findings from growing without limit. No finding is auto-applied to the product.
+
+### Answerless truncation is not a failure
+
+A suite task budget (16 to 48 tokens) is an answer budget. A model that emits
+separate reasoning output spends that budget before the answer, returns
+`finish_reason=length` with empty `content`, and grading the empty string
+measures the budget. Measured on this box with
+`gemma-4-26B-A4B-it-qat-UD-Q4_K_XL` on llama.cpp: **0/104** at the suite budget
+with every task returning empty content, and **104/104** at
+`--reasoning-allowance 464`. Such responses are now counted as `unscorable`
+instead of failed, unscorable runs are never used as planning evidence or for
+task-level divergence, and the allowance is part of the record identity
+(`model|quant|backend|suite|digest|a464`), so a wider budget never overwrites a
+narrower one.
+
+The 104/104 also fixes the suite's upper limit: with a ceiling of 1.000 the
+extended suite cannot rank two models that both saturate it, exactly as
+`instruction`/`multilingual` saturated for the smaller Qwen2.5 pair.
+
+### Measurement can outrank the catalog prior
+
+Until now `nmesh eval` could prove the catalog `quality` prior wrong and the
+planner would only say so: the ranking still came from the prior, and a
+regression test asserted that the selection stayed the same. Measured pass
+rates now decide instead, under a gate that never mixes the two scales:
+
+- the planned candidate and the alternative must each have a measured pass rate
+  for **their own** planned `(quant, backend)` under the same grader digest and
+  reasoning allowance;
+- the alternative's rate must be higher, and the exact test must reach
+  `p < 0.05` — paired McNemar over the shared task ids when task-level results
+  exist for both, otherwise unpaired Fisher;
+- a measured candidate never outranks an unmeasured one, and aggregate-only
+  records (a bare rate with no task counts) never participate.
+
+Nothing else changed: with no eval cache the plans are bit-identical, and
+`--ignore-eval-evidence` on `plan`/`up` restores prior-based ranking while
+keeping the contradiction warning. The mechanism is proven by fixtures with
+`p=0.0010`; on this box no real reversal has been observed yet, because the two
+models measured here (Qwen2.5 1.5B `q4_k_m` 89/104 and 0.5B `f16` 70/104) are
+ranked the same way by their priors.
+
+Measurement-to-plan identity is case-insensitive on model id, quant, and
+backend because record quants come from artifact names (`Q4_K_M`,
+`UD-Q4_K_XL`) while the catalog spells them lowercase. On this box the
+existing 89/104 record was keyed `Q4_K_M` and was silently treated as a
+different configuration before this change. The chat service here plans the
+`ollama` backend, so llama.cpp evidence legitimately does not apply.
 
 ### Speed preference saturation
 

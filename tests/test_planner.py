@@ -10,6 +10,7 @@ import nmesh.planner.core as planner_core
 from nmesh import i18n
 from nmesh.bench import benchmark_key
 from nmesh.catalog import ModelSpec, load_catalog
+from nmesh.catalog.loader import _model_from_mapping
 from nmesh.planner import Policy, build_plan, estimate_memory, free_budgets, load_plan, save_plan
 from nmesh.planner.core import _gpu_budget
 from nmesh.probe import GPUInfo, HardwareProfile, Tier, classify_tier, profile_from_dict
@@ -74,6 +75,93 @@ def test_memory_regression(catalog: list[ModelSpec]) -> None:
     assert estimate.weight_bytes == pytest.approx(4.62e9, rel=0.01)
 
 
+def test_catalog_quality_null_is_explicit_and_invalid_quality_is_rejected() -> None:
+    base = {
+        "id": "candidate",
+        "family": "Candidate",
+        "params": 1,
+        "n_layers": 1,
+        "n_heads": 1,
+        "n_kv_heads": 1,
+        "head_dim": 1,
+        "hidden_size": 1,
+        "max_context": 1,
+        "roles": ["chat"],
+        "quality": None,
+        "license": "apache",
+        "sources": {"hf": "org/candidate"},
+    }
+    model = _model_from_mapping(base)
+    assert model is not None
+    assert model.quality is None
+    assert _model_from_mapping({**base, "quality": "unknown"}) is None
+    missing = dict(base)
+    del missing["quality"]
+    assert _model_from_mapping(missing) is None
+
+
+def test_unmeasured_models_require_explicit_selection() -> None:
+    model = ModelSpec(
+        "candidate", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], None, "apache", {"hf_gguf": "org/candidate"},
+    )
+    hardware = profile(64)
+    policy = Policy(roles=["chat"], min_decode_tps=0)
+    assert planner_core._candidate_for(model, hardware, policy, None) == []
+    candidates = planner_core._candidate_for(
+        model, hardware, policy, None, allow_unmeasured=True,
+    )
+    assert candidates
+    candidate = candidates[0]
+    speed_weight = {"quality": 0.1, "speed": 1.0, "balanced": 0.25}[policy.prefer]
+    expected = min(candidate.decode_tps, planner_core.SPEED_REFERENCE_TPS) / (
+        planner_core.SPEED_REFERENCE_TPS
+    ) * 100 * speed_weight
+    assert candidate.score == pytest.approx(expected)
+
+
+def test_explicit_models_restrict_roles_and_warn_for_unknown() -> None:
+    selected = ModelSpec(
+        "selected", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat", "code"], 80.0, "apache", {"hf_gguf": "org/selected"},
+    )
+    other = ModelSpec(
+        "other", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat", "code"], 99.0, "apache", {"hf_gguf": "org/other"},
+    )
+    result = build_plan(
+        profile(64),
+        [selected, other],
+        Policy(roles=["chat", "code"], model_ids=("SELECTED", "missing")),
+    )
+    assert result.services
+    assert {service.model_id for service in result.services} == {"selected"}
+    assert any("missing" in warning for warning in result.warnings)
+
+
+def test_unmeasured_warnings_distinguish_automatic_and_selected() -> None:
+    automatic = ModelSpec(
+        "automatic", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], None, "apache", {"hf_gguf": "org/automatic"},
+    )
+    selected = ModelSpec(
+        "selected", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], None, "apache", {"hf_gguf": "org/selected"},
+    )
+    excluded = build_plan(profile(64), [automatic], Policy(roles=["chat"]))
+    assert not excluded.services
+    assert any("automatic" in warning and "nmesh eval" in warning
+               for warning in excluded.warnings)
+    planned = build_plan(
+        profile(64),
+        [automatic, selected],
+        Policy(roles=["chat"], model_ids=("selected",), min_decode_tps=0),
+    )
+    assert planned.services[0].model_id == "selected"
+    assert any("selected" in warning and "speed term only" in warning
+               for warning in planned.warnings)
+
+
 def test_free_budget_source_limits_gpu_layers_and_old_plans_load(
     tmp_path, catalog: list[ModelSpec]
 ) -> None:
@@ -102,6 +190,28 @@ def test_free_budget_source_limits_gpu_layers_and_old_plans_load(
     loaded = load_plan(path)
     assert loaded is not None
     assert loaded.policy.budget_source == "total"
+
+
+def test_plan_round_trip_preserves_explicit_model_ids(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    result = build_plan(
+        profile(32),
+        catalog,
+        Policy(
+            roles=["chat"],
+            model_ids=("qwen2.5-7b-instruct",),
+            eval_evidence=False,
+        ),
+    )
+    path = tmp_path / "plan.json"
+    save_plan(result, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["policy"]["eval_evidence"] is False
+    loaded = load_plan(path)
+    assert loaded is not None
+    assert loaded.policy.model_ids == ("qwen2.5-7b-instruct",)
+    assert loaded.policy.eval_evidence is False
 
 
 def test_cpu_case(catalog: list[ModelSpec]) -> None:

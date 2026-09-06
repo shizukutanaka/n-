@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import threading
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -82,6 +83,12 @@ def _limit_upstream() -> ThreadingHTTPServer:
     return upstream
 
 
+def _reserved_port() -> socket.socket:
+    reserved = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    reserved.bind(("127.0.0.1", 0))
+    return reserved
+
+
 def test_slot_limiter_enforces_limits_and_releases() -> None:
     plan = _llama_plan(1)
     service = plan.services[0]
@@ -159,8 +166,11 @@ def test_embeddings_skip_slot_limiter(monkeypatch) -> None:
         raise AssertionError("embeddings must not acquire a slot")
 
     monkeypatch.setattr(gateway_module.SlotLimiter, "acquire", fail_acquire)
-    with TestClient(create_app(plan)) as client:
-        response = client.post("/v1/embeddings", json={"input": "hello"})
+    with _reserved_port() as reserved:
+        service = replace(plan.services[0], port=reserved.getsockname()[1])
+        isolated_plan = replace(plan, services=[service])
+        with TestClient(create_app(isolated_plan)) as client:
+            response = client.post("/v1/embeddings", json={"input": "hello"})
     assert response.status_code == 502
     assert not called
 

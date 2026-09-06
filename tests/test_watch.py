@@ -5,7 +5,7 @@ from pathlib import Path
 
 import httpx
 
-from nmesh.cli import main
+from nmesh.cli import _candidate_fit, main
 from nmesh.watch.draft import write_draft
 from nmesh.watch.extract import Mention, extract
 from nmesh.watch.sources import (
@@ -18,7 +18,7 @@ from nmesh.watch.sources import (
     fetch_zenn,
 )
 from nmesh.watch.state import WatchState, load_state, save_state
-from nmesh.watch.verify import Finding, verify
+from nmesh.watch.verify import Finding, _weight_sets, verify
 
 
 def _client(handler: object) -> httpx.Client:
@@ -146,6 +146,41 @@ def test_gguf_config_fallback_records_source(monkeypatch) -> None:
     assert findings[0].verified["config_repo"] == "acme/Thing"
 
 
+def test_huggingface_metadata_and_weight_sets_are_verified(monkeypatch) -> None:
+    monkeypatch.setattr("nmesh.watch.verify.load_catalog", lambda: ())
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/models/acme/model":
+            return httpx.Response(200, json={
+                "pipeline_tag": "text-generation",
+                "gated": False,
+                "cardData": {"license": "apache-2.0"},
+                "safetensors": {"total": 123},
+                "siblings": [{"rfilename": "model.Q4_K_M.gguf"}],
+            })
+        if "/tree/main" in str(request.url):
+            return httpx.Response(200, json=[
+                {"path": "model.Q4_K_M-00001-of-00002.gguf", "size": 4},
+                {"path": "model.Q4_K_M-00002-of-00002.gguf", "lfs": {"size": 6}},
+            ])
+        if request.url.path.endswith("/raw/main/config.json"):
+            return httpx.Response(200, json={
+                "architectures": ["ModelForCausalLM"],
+                "num_hidden_layers": 2,
+            })
+        raise AssertionError(request.url)
+
+    mention = Mention("model_repo", "acme/model", 1, ("u",))
+    with _client(handler) as client:
+        finding = verify((mention,), client)[0]
+    assert finding.verified["pipeline_tag"] == "text-generation"
+    assert finding.verified["gated"] is False
+    assert finding.verified["license"] == "apache-2.0"
+    assert finding.verified["params"] == 123
+    assert finding.verified["weight_sets"] == {".:Q4_K_M": 10}
+    assert finding.verified["smallest_weight_bytes"] == 10
+
+
 def test_catalog_gap_is_suppressed_for_existing_source(monkeypatch) -> None:
     class Spec:
         def __init__(self) -> None:
@@ -181,6 +216,8 @@ def test_catalog_metrics_partition_mentioned_repositories(monkeypatch) -> None:
             return httpx.Response(404)
         if request.url.path.endswith("/raw/main/config.json"):
             return httpx.Response(404)
+        if "/tree/main" in str(request.url):
+            return httpx.Response(200, json=[])
         raise AssertionError("catalog-known repository should not query Hugging Face")
 
     with _client(handler) as client:
@@ -270,6 +307,79 @@ def test_draft_quality_is_null_and_missing_fields_are_explicit(tmp_path: Path) -
     assert "head_dim_derived: true" in text
 
 
+def test_weight_sets_sum_shards_and_exclude_auxiliaries() -> None:
+    payload = [
+        {"path": "Q4_K_M/model.Q4_K_M-00001-of-00002.gguf", "size": 10},
+        {"path": "Q4_K_M/model.Q4_K_M-00002-of-00002.gguf", "lfs": {"size": 12}},
+        {"path": "Q4_K_M/model-mmproj-f16.gguf", "size": 1},
+        {"path": "Q4_K_M/model-imatrix.gguf", "size": 1},
+        {"path": "Q4_K_M/model-MTP.gguf", "size": 1},
+        {"path": "Q4_K_M/model-draft.gguf", "size": 1},
+        {"path": "Q4_K_M/model-vocab.gguf", "size": 1},
+    ]
+    assert _weight_sets(payload) == {"Q4_K_M:Q4_K_M": 22}
+    assert _weight_sets([
+        {"path": "model-mmproj-f16.gguf", "size": 1},
+        {"path": "model-vocab.gguf", "size": 1},
+    ]) == {}
+
+
+def test_draft_includes_verified_metadata_without_quality(tmp_path: Path) -> None:
+    finding = Finding(
+        "catalog_gap",
+        "acme/thing",
+        1,
+        ("u",),
+        {
+            "architectures": "ThingForCausalLM",
+            "params": 123,
+            "license": "apache-2.0",
+            "pipeline_tag": "text-generation",
+            "gated": False,
+            "smallest_weight_bytes": 456,
+            "config_repo": "acme/thing",
+        },
+    )
+    text = write_draft(finding, tmp_path).read_text(encoding="utf-8")
+    assert "params: 123" in text
+    assert 'license: "apache-2.0"' in text
+    assert 'roles: ["chat"]' in text
+    assert "quality: null" in text
+    assert "# pipeline_tag: \"text-generation\"" in text
+    assert "# gated: false" in text
+    assert "# smallest_weight_bytes: 456" in text
+
+
+def test_candidate_fit_order_is_explicit() -> None:
+    def finding(verified: dict[str, object]) -> Finding:
+        return Finding("catalog_gap", "org/model", 1, ("u",), verified)
+
+    assert _candidate_fit(finding({"weight_sets": {}}), 10) == "no_weights"
+    assert _candidate_fit(
+        finding({"weight_sets": {"q": 1}, "gated": True}), 10
+    ) == "gated"
+    assert _candidate_fit(finding({"weight_sets": {"q": 1}}), 10) == "role_unknown"
+    assert _candidate_fit(
+        finding({"weight_sets": {"q": 1}, "pipeline_tag": "image-to-text"}), 10
+    ) == "not_text"
+    assert _candidate_fit(
+        finding({
+            "weight_sets": {"q": 20},
+            "pipeline_tag": "text-generation",
+            "smallest_weight_bytes": 20,
+        }),
+        10,
+    ) == "too_large"
+    assert _candidate_fit(
+        finding({
+            "weight_sets": {"q": 1},
+            "pipeline_tag": "text-generation",
+            "smallest_weight_bytes": 1,
+        }),
+        10,
+    ) == "fits"
+
+
 def test_route_findings_use_app_routes(monkeypatch) -> None:
     class Route:
         def __init__(self, path: str) -> None:
@@ -306,6 +416,7 @@ def test_cli_offline_json_shape_and_all_sources_unreachable(
         "drafts",
         "notes",
         "catalog",
+        "candidates",
     }
     assert set(payload["catalog"]) == {
         "entries",
@@ -314,6 +425,9 @@ def test_cli_offline_json_shape_and_all_sources_unreachable(
         "in_catalog",
         "resolved_repo_ids",
         "absent_repo_ids",
+    }
+    assert set(payload["candidates"]) == {
+        "total", "counts", "fits", "budget_bytes", "budget_source",
     }
     monkeypatch.setattr(
         "nmesh.cli.fetch_zenn",
