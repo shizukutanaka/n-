@@ -15,7 +15,15 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-from .suite import Task, _exact, _japanese_only, _only_date, normalize
+from .suite import (
+    Task,
+    _contains_ci,
+    _exact,
+    _japanese_only,
+    _only_date,
+    _yes_no_value,
+    normalize,
+)
 
 _CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
 _KATAKANA_ONLY = re.compile(r"^[\u30a0-\u30ff\u30fc\s]+$")
@@ -110,37 +118,41 @@ HARD_TASKS: tuple[Task, ...] = (
     Task(
         "instruction.words.5", "instruction",
         "Answer in exactly 5 words, with no punctuation at all: what does a "
-        "compiler do?", 48, _word_count(5),
+        "compiler do?", 48, _word_count(5), grades="form",
     ),
     Task(
         "instruction.words.3", "instruction",
         "Answer in exactly 3 words, with no punctuation at all: describe the "
-        "ocean.", 48, _word_count(3),
+        "ocean.", 48, _word_count(3), grades="form",
     ),
     Task(
         "instruction.words.7", "instruction",
         "Answer in exactly 7 words, with no punctuation at all: why do people "
-        "read books?", 48, _word_count(7),
+        "read books?", 48, _word_count(7), grades="form",
     ),
     Task(
         "instruction.devowel.orchestrator", "instruction",
         "Output only the word 'orchestrator' with every vowel removed. No "
         "explanation.", 24, _exact("rchstrtr"),
+        value_check=_contains_ci("rchstrtr"),
     ),
     Task(
         "instruction.devowel.gateway", "instruction",
         "Output only the word 'gateway' with every vowel removed. No explanation.",
         24, _exact("gtwy"),
+        value_check=_contains_ci("gtwy"),
     ),
     Task(
         "instruction.reverse.planner", "instruction",
         "Output only the word 'planner' spelled backwards, in lowercase. No "
         "explanation.", 24, _exact("rennalp"),
+        value_check=_contains_ci("rennalp"),
     ),
     Task(
         "instruction.reverse.slot", "instruction",
         "Output only the word 'slot' spelled backwards, in lowercase. No "
         "explanation.", 24, _exact("tols"),
+        value_check=_contains_ci("tols"),
     ),
     Task(
         "instruction.initials.quick_amber_fox", "instruction",
@@ -170,21 +182,25 @@ HARD_TASKS: tuple[Task, ...] = (
         "instruction.nth_word.3", "instruction",
         "Output only the third word of this sentence, nothing else: 'The planner "
         "selects a model for the machine.'", 24, _exact("selects"),
+        value_check=_contains_ci("selects"),
     ),
     Task(
         "instruction.nth_word.5", "instruction",
         "Output only the fifth word of this sentence, nothing else: 'The gateway "
         "routes every incoming request quickly.'", 24, _exact("incoming"),
+        value_check=_contains_ci("incoming"),
     ),
     Task(
         "arithmetic.prime.91", "arithmetic",
         "Answer with only the word yes or no, nothing else: is 91 a prime number?",
         16, _exact("no"),
+        value_check=_yes_no_value(False),
     ),
     Task(
         "arithmetic.prime.97", "arithmetic",
         "Answer with only the word yes or no, nothing else: is 97 a prime number?",
         16, _exact("yes"),
+        value_check=_yes_no_value(True),
     ),
     Task(
         "instruction.sort_desc.3_1_2", "instruction",
@@ -255,7 +271,8 @@ HARD_TASKS: tuple[Task, ...] = (
     Task(
         "multilingual.ja_extract.date", "multilingual",
         "次の文から日付だけを YYYY-MM-DD 形式で出力してください: "
-        "'監査は2021年7月9日に大阪で終わった。'", 32, _only_date("2021-07-09"),
+        "'監査は2021年7月9日に大阪で終わった。'", 32,
+        _only_date("2021-07-09"), grades="value",
     ),
 )
 

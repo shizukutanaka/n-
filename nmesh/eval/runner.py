@@ -18,6 +18,7 @@ class TaskOutcome:
     output: str
     unscorable: bool = False
     value_passed: bool | None = None
+    failure_kind: str = ""
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,21 @@ def _output(value: object) -> str:
 def _error(error: Exception) -> str:
     text = str(error).strip()
     return f"{type(error).__name__}: {text}"[:200]
+
+
+def _failure_kind(
+    task: Task,
+    passed: bool,
+    unscorable: bool,
+    value_passed: bool | None,
+) -> str:
+    if passed or unscorable:
+        return ""
+    if task.grades == "form":
+        return "form"
+    if task.grades == "value":
+        return "value"
+    return "form" if value_passed else "value"
 
 
 def run(
@@ -104,11 +120,12 @@ def run(
                     passed,
                     text[:200],
                     unscorable,
-                    (
+                    value_passed := (
                         None
                         if unscorable or task.value_check is None
                         else bool(task.value_check(text))
                     ),
+                    _failure_kind(task, passed, unscorable, value_passed),
                 )
             )
     if outcomes and transport_errors == len(outcomes):
