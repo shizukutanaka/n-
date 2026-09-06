@@ -928,6 +928,14 @@ def _assign_slots(
     swap_group: Sequence[str] = (),
     warnings: list[str] | None = None,
 ) -> list[PlannedService]:
+    """Assign memory-fitting parallel slots.
+
+    One CPU machine measured 46.2 tok/s alone, 38.69 per request at two
+    slots, 36.84 at four, and 23.30 at eight, with aggregate throughput of
+    71.04, 125.22, and 147.50 tok/s respectively. This is one model on one
+    CPU machine with llama.cpp and does not generalize. Slot counts are still
+    derived from free memory; that is not evidence of a throughput benefit.
+    """
     vram_budget = {
         gpu.index: _gpu_budget(gpu, policy.budget_source) for gpu in profile.gpus
     }
@@ -987,20 +995,29 @@ def _assign_slots(
             service.n_gpu_layers is None
             or service.n_gpu_layers >= model_layers
         )
-        eligible = (
+        supports_slots = (
             cap > 1
-            and full_gpu
-            and service.memory.kv_bytes_per_tok > 0
         )
         if service.backend == "llamacpp":
             flags = profile.backend_flags.get("llamacpp")
             if flags is not None and not any(
                 flag in flags for flag in ("-np", "--parallel")
             ):
-                eligible = False
+                supports_slots = False
         requested = policy.parallel_slots
         if requested is not None:
             requested = max(1, requested)
+        explicit = requested is not None and requested > 1
+        if explicit and not supports_slots and warnings is not None:
+            warnings.append(
+                t("warn.slots_unsupported", policy.lang, service=service.name,
+                  backend=service.backend, requested=requested)
+            )
+        eligible = (
+            supports_slots
+            and (full_gpu or explicit)
+            and service.memory.kv_bytes_per_tok > 0
+        )
         slots = 1
         key = domain(service)
         leftover = max(budget(key) - usage[key], 0.0)
@@ -1015,11 +1032,6 @@ def _assign_slots(
                 else:
                     available = math.floor(leftover / kv_per_slot)
                     slots = min(cap, requested, 1 + max(available, 0))
-                if requested is not None and slots != requested and warnings is not None:
-                    warnings.append(
-                        t("warn.slots_clamped", policy.lang, service=service.name,
-                          requested=requested, slots=slots)
-                    )
         slots = max(1, slots)
         if slots > 1:
             kv_cache_bytes = service.memory.kv_bytes_per_tok * service.context * slots
@@ -1038,6 +1050,16 @@ def _assign_slots(
             domain_fit = gpu_bytes <= budget(key) + 1 if key[0] == "gpu" else True
             if not domain_fit or cpu_bytes > ram_budget + 1:
                 slots = 1
+        if explicit and supports_slots and slots != requested and warnings is not None:
+            warnings.append(
+                t("warn.slots_clamped", policy.lang, service=service.name,
+                  requested=requested, slots=slots)
+            )
+        if slots > 1 and warnings is not None:
+            warnings.append(
+                t("warn.slots_tradeoff", policy.lang, service=service.name,
+                  slots=slots, tps=f"{service.decode_tps:.1f}")
+            )
         kv_cache_bytes = service.memory.kv_bytes_per_tok * service.context * slots
         rewritten = replace(
             service.memory,
