@@ -491,6 +491,54 @@ def test_cpu_partial_offload_and_embedding_keep_one_slot(catalog: list[ModelSpec
     assert embed.services[0].memory.kv_bytes_per_tok == 0
 
 
+def test_explicit_cpu_slots_scale_kv_cache_and_warn_tradeoff(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    result = build_plan(
+        profile(32), [model], Policy(roles=["chat"], parallel_slots=4)
+    )
+    service = result.services[0]
+    assert service.memory.parallel_slots > 1
+    assert service.memory.kv_cache_bytes == pytest.approx(
+        service.memory.kv_bytes_per_tok * service.context * service.memory.parallel_slots
+    )
+    assert any("parallel slots" in warning for warning in result.warnings)
+
+
+def test_automatic_cpu_slots_remain_one(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    result = build_plan(profile(32), [model], Policy(roles=["chat"]))
+    assert result.services[0].memory.parallel_slots == 1
+
+
+def test_explicit_ollama_slots_warn_when_unsupported(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    result = build_plan(
+        profile(32, backends={"ollama": "test"}),
+        [model],
+        Policy(roles=["chat"], parallel_slots=4),
+    )
+    service = result.services[0]
+    assert service.backend == "ollama"
+    assert service.memory.parallel_slots == 1
+    assert any("cannot serve 4 parallel slots" in warning for warning in result.warnings)
+
+
+def test_explicit_cpu_slots_clamp_when_ram_is_limited(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    result = build_plan(
+        profile(8), [model], Policy(roles=["chat"], parallel_slots=8)
+    )
+    service = result.services[0]
+    assert service.memory.parallel_slots < 8
+    assert any(
+        "parallel_slots 8" in warning
+        and str(service.memory.parallel_slots) in warning
+        for warning in result.warnings
+    )
+
+
 def test_llamacpp_caps_without_parallel_clamp_slots_and_context(
     catalog: list[ModelSpec],
 ) -> None:
