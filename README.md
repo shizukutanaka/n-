@@ -404,6 +404,48 @@ significant measurement rather than a hand-written prior, by both a paired and
 an unpaired exact test. It is two models on one CPU machine and does not
 establish a ranking for any other model pair.
 
+#### Deleting saturated tasks cannot buy resolution
+
+The obvious next step looked like deleting the two families that carried no
+discriminating power. It is arithmetically void, and the measurement says so:
+exact McNemar depends only on the discordant counts, so removing the 24
+`instruction`/`multilingual` tasks that both models passed leaves 80 tasks,
+the same `24`-versus-`5` discordance, and the same `p=0.000546`. Only the
+unpaired Fisher number moves (`0.003025` to `0.001860`) — because the rate gap
+looks larger once the shared successes are gone, which is a reporting artifact
+and not new evidence. A suite grows resolution only by adding tasks the two
+configurations answer *differently*.
+
+So the saturated families are kept and 26 harder tasks are added as an opt-in
+third tier, `nmesh eval --suite hard` (130 tasks; `core` stays the default and
+the 104-task `extended` digest is unchanged, so existing records stay valid).
+All 26 were authored before measuring anything and all 26 shipped: selecting
+tasks after seeing which ones separate the two models would tune the instrument
+to the answer it is supposed to test. Measured in one run on the same two
+artifacts, same binary, same machine:
+
+| model | extended (104) | hard (130) |
+| --- | --- | --- |
+| Qwen2.5 1.5B Q4_K_M | `89/104` = `0.856` | `99/130` = `0.762` [`0.681`, `0.827`] |
+| Qwen2.5 0.5B fp16 | `70/104` = `0.673` | `76/130` = `0.585` [`0.499`, `0.666`] |
+| paired discordance | `24`/`5`, `p=0.000546` | `28`/`5`, `p=0.000066` |
+
+The 26 new tasks contribute `4` discordant pairs (all favouring the 1.5B),
+`6` both-pass and **`16` both-fail**: they broke the saturation
+(`instruction` is now `22/33` versus `20/33`) but 62% of them are floored
+instead, which is the same zero-power condition seen from below. `p` improved
+by an order of magnitude off 4 tasks, and the remaining 16 are the next thing
+to fix, not a result.
+
+Both tests now report the power they actually realised. `nmesh eval` prints,
+per compared configuration, how many of the shared tasks disagreed, in which
+direction, and which families contributed nothing; the planner's underpowered
+note on paired data no longer quotes a Fisher-derived "minimum resolvable
+difference" from `n`, because on paired outcomes that number is meaningless:
+104 shared tasks with one discordant pair give `p=1.0` regardless of `n`. It
+states the discordant counts and that exact McNemar cannot reach `p<0.05` below
+`6` disagreeing tasks at any suite size.
+
 ### Periodic external watch
 
 `nmesh watch` treats external posts as claims and pointers, not evidence.
