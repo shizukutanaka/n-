@@ -305,6 +305,14 @@ artifact. Equal pass rates therefore do not imply equivalent behaviour.
 This is one model on one CPU machine and does not generalize; no underlying
 cause is established by this measurement.
 
+Each evaluation record also carries a grader digest. Records graded by an
+earlier rule version are not used for planning and must be re-measured; this
+exclusion is per record, not per task, including tasks whose grading did not
+change. The two core email/date tasks contain a single candidate value, so
+passing them proves that the value is right, not that the model selected it
+between candidates. The generated extraction family adds decoys and tests that
+selection directly.
+
 Further controlled checks scoped those eliminations to `arithmetic.subtract`:
 with the same fully expanded 48-token raw ChatML prompt, `top_k=1`,
 `repeat_penalty` pinned to both 1.0 and 1.1, and cold or warm llama.cpp

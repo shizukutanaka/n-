@@ -48,18 +48,33 @@ _PEOPLE = (("Yuki", "31"), ("Ada", "27"), ("Omar", "45"), ("Lena", "52"),
 _CHAR_WORDS = ("scheduler", "slot", "backend", "context")
 _PARITY = ((7, False), (18, True), (91, False), (250, True))
 _EMAILS = (
-    ("Ping build-team@example.org once the snapshot lands.", "build-team@example.org"),
-    ("Escalations go to sre.oncall@example.net after 18:00.", "sre.oncall@example.net"),
-    ("Invoices: billing+eu@example.com (no attachments).", "billing+eu@example.com"),
-    ("Ask maya_ito@example.co.jp for the key.", "maya_ito@example.co.jp"),
-    ("Reports are sent by nightly-report@example.io daily.", "nightly-report@example.io"),
+    ("Ping build-team@example.org once the snapshot lands; "
+     "noreply@example.org is unmonitored.",
+     "build-team@example.org", "address to ping"),
+    ("Escalations go to sre.oncall@example.net after 18:00; "
+     "daytime mail goes to help@example.net.",
+     "sre.oncall@example.net", "address for escalations after 18:00"),
+    ("Invoices: billing+eu@example.com (no attachments). "
+     "Refunds: refunds@example.com.",
+     "billing+eu@example.com", "address for invoices"),
+    ("Ask maya_ito@example.co.jp for the key; "
+     "kenji_sato@example.co.jp only handles hardware.",
+     "maya_ito@example.co.jp", "address to ask for the key"),
+    ("Reports are sent by nightly-report@example.io daily; "
+     "alerts come from pager@example.io.",
+     "nightly-report@example.io", "address that sends the reports"),
 )
 _DATES = (
-    ("The audit closed on July 9, 2021 in Osaka.", "2021-07-09"),
-    ("Support ends on December 31, 2025 worldwide.", "2025-12-31"),
-    ("She joined on February 14, 2019 as an intern.", "2019-02-14"),
-    ("The outage began on October 1, 2023 at noon.", "2023-10-01"),
-    ("Shipping resumes on April 5, 2022 in Berlin.", "2022-04-05"),
+    ("The audit closed on July 9, 2021 in Osaka after opening on "
+     "June 2, 2021.", "2021-07-09", "date the audit closed"),
+    ("Support ends on December 31, 2025 worldwide; the deprecation notice "
+     "went out on May 6, 2025.", "2025-12-31", "date support ends"),
+    ("She joined on February 14, 2019 as an intern and was promoted on "
+     "August 1, 2020.", "2019-02-14", "date she joined"),
+    ("The outage began on October 1, 2023 at noon and was resolved on "
+     "October 3, 2023.", "2023-10-01", "date the outage began"),
+    ("Shipping resumes on April 5, 2022 in Berlin; it was paused on "
+     "March 18, 2022.", "2022-04-05", "date shipping resumes"),
 )
 _MAXIMA = (
     ("512, 78, 4096, 33", 4096),
@@ -208,17 +223,16 @@ def _build() -> tuple[Task, ...]:
             f"{number} is even. No other text.",
             32, _json_value("even", even),
         ))
-    for index, (sentence, address) in enumerate(_EMAILS):
+    for index, (sentence, address, target) in enumerate(_EMAILS):
         tasks.append(Task(
             f"extraction.email.{index}", "extraction",
-            f"Extract the email address and output it alone: '{sentence}'",
+            f"Give the {target} from this text: '{sentence}'",
             32, _only_email(address),
         ))
-    for index, (sentence, iso) in enumerate(_DATES):
+    for index, (sentence, iso, target) in enumerate(_DATES):
         tasks.append(Task(
             f"extraction.date.{index}", "extraction",
-            "Extract the date in YYYY-MM-DD form and output it alone: "
-            f"'{sentence}'",
+            f"Give the {target} in YYYY-MM-DD form from this text: '{sentence}'",
             32, _only_date(iso),
         ))
     for index, (listing, largest) in enumerate(_MAXIMA):
@@ -232,16 +246,16 @@ def _build() -> tuple[Task, ...]:
             f"extraction.span.{index}", "extraction", prompt, 32,
             _only_span(expected, rivals),
         ))
-    for index, (sentence, address) in enumerate(_EMAILS[:3]):
+    for index, (sentence, address, target) in enumerate(_EMAILS[:3]):
         tasks.append(Task(
             f"compliance.email.{index}", "compliance",
-            f"Output only the email address, no other words: '{sentence}'",
+            f"Output only the {target}, no other words: '{sentence}'",
             32, _exact(address),
         ))
-    for index, (sentence, iso) in enumerate(_DATES[:3]):
+    for index, (sentence, iso, target) in enumerate(_DATES[:3]):
         tasks.append(Task(
             f"compliance.date.{index}", "compliance",
-            "Output only the date in YYYY-MM-DD form, no other words: "
+            f"Output only the {target} in YYYY-MM-DD form, no other words: "
             f"'{sentence}'",
             32, _exact(iso),
         ))

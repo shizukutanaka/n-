@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -162,17 +163,17 @@ def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
         expected[f"format.json_count.{word}"] = json.dumps({"count": len(word)})
     for number, even in _PARITY:
         expected[f"format.json_even.{number}"] = json.dumps({"even": even})
-    for index, (_, address) in enumerate(_EMAILS):
+    for index, (_, address, _target) in enumerate(_EMAILS):
         expected[f"extraction.email.{index}"] = address
-    for index, (_, iso) in enumerate(_DATES):
+    for index, (_, iso, _target) in enumerate(_DATES):
         expected[f"extraction.date.{index}"] = iso
     for index, (_, largest) in enumerate(_MAXIMA):
         expected[f"extraction.max.{index}"] = str(largest)
     for index, (_, span, _rivals) in enumerate(_SUBSTRINGS):
         expected[f"extraction.span.{index}"] = span
-    for index, (_, address) in enumerate(_EMAILS[:3]):
+    for index, (_, address, _target) in enumerate(_EMAILS[:3]):
         expected[f"compliance.email.{index}"] = address
-    for index, (_, iso) in enumerate(_DATES[:3]):
+    for index, (_, iso, _target) in enumerate(_DATES[:3]):
         expected[f"compliance.date.{index}"] = iso
     for index, (_, span, _rivals) in enumerate(_SUBSTRINGS[:2]):
         expected[f"compliance.span.{index}"] = span
@@ -213,6 +214,35 @@ def test_value_extraction_and_compliance_grading() -> None:
     assert not email.check("Contact wrong@example.com instead.")
     assert not date.check("The date is 2024-03-04.")
     assert number.check("The answer is 236.")
+    for index, (sentence, address, _target) in enumerate(_EMAILS):
+        task = next(
+            task for task in GENERATED_TASKS if task.id == f"extraction.email.{index}"
+        )
+        assert not task.check(sentence)
+        assert task.check(address)
+        assert task.check(f"The selected address is {address}.")
+        decoy = next(
+            match for match in re.findall(
+                r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", sentence
+            )
+            if match != address
+        )
+        assert not task.check(decoy)
+    date_decoys = (
+        "2021-06-02",
+        "2025-05-06",
+        "2020-08-01",
+        "2023-10-03",
+        "2022-03-18",
+    )
+    for index, (sentence, iso, _target) in enumerate(_DATES):
+        task = next(
+            task for task in GENERATED_TASKS if task.id == f"extraction.date.{index}"
+        )
+        assert not task.check(sentence)
+        assert task.check(iso)
+        assert task.check(f"The selected date is {iso}.")
+        assert not task.check(date_decoys[index])
     for task in GENERATED_TASKS:
         if task.category == "extraction" and task.id.startswith("extraction.span."):
             source = next(
