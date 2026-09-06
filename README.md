@@ -318,6 +318,27 @@ task's earlier divergence is not an artifact effect and remains unexplained at
 the chat layer. This remains one model on one CPU machine and does not
 generalize; eval records now carry an artifact fingerprint.
 
+### Speed preference saturation
+
+The planner's simulated bundled profiles show that the speed term is already
+at its 30 tok/s ceiling for 82 of 83 candidates on
+`t3-rtx4090-24gb`, 67 of 72 on `t2-rtx3060-12gb`, and 68 of 89 on
+`t4-rtx6000ada-48gb`. On t3 with `--prefer speed`, it ranks
+`qwen2.5-32b-instruct` `q4_k_m` at 38.49 tok/s (score 140.25) above
+`phi-4-14b` `q5_k_m` at 73.68 tok/s (score 138.00), so the slower model wins
+because both receive the same maximum speed points and the unvalidated quality
+prior decides. These are the planner's own `_throughput` estimates on bundled
+simulated profiles, not wall-clock measurements.
+
+Changing the speed reference does not solve that degeneracy: with
+`--prefer quality` and references 30/60/120/240, the selected candidates were
+32B `q4_k_m` at 38.5, `phi-4-14b` `q6_k` at 63.6, 32B `q4_k_m` at 38.5,
+and 32B `q5_k_m` at 9.0 tok/s, respectively. Removing the ceiling makes the
+fastest tiny candidate, `qwen2.5-0.5b-instruct` `q2_k` at 3654.6 tok/s, win
+regardless of quality. The formula was deliberately left unchanged: a
+scale-free speed term requires a quality floor, and the catalog quality prior
+is unvalidated.
+
 CLI commands return `0` only when the requested operation succeeds. A failed
 plan, unavailable gateway/backend, failed benchmark, missing plan, or non-zero
 foreground server exit returns `1`. `status` and `down` remain idempotent:

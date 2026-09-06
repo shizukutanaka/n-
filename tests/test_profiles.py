@@ -5,7 +5,7 @@ from pathlib import Path
 from nmesh import cli
 from nmesh.catalog import load_catalog
 from nmesh.planner import Policy, build_plan
-from nmesh.planner.core import _gpu_budget
+from nmesh.planner.core import _candidate_for, _gpu_budget, _speed_saturation_warning
 from nmesh.probe import profile_from_dict
 
 PROFILE_DIR = Path(__file__).parents[1] / "profiles"
@@ -82,3 +82,58 @@ def test_profile_plan_is_simulated_and_does_not_save(tmp_path, monkeypatch, caps
     output = json.loads(capsys.readouterr().out)
     assert output["simulated"] is True
     assert not plan_path.exists()
+
+
+def test_speed_preference_warns_when_speed_term_saturates(tmp_path) -> None:
+    catalog = load_catalog(user_path=tmp_path / "models.yaml")
+    profile = _profile(PROFILE_DIR / "t3-rtx4090-24gb.json")
+    plan = build_plan(profile, catalog, Policy(roles=["chat"], prefer="speed"))
+    service = plan.services[0]
+
+    assert service.model_id == "qwen2.5-32b-instruct"
+    warning = next(item for item in plan.warnings if "could not discriminate" in item)
+    assert "qwen2.5-32b-instruct" in warning
+    assert "qwen2.5-0.5b-instruct" in warning
+    assert "38.5 tok/s" in warning
+    assert "3654.6 tok/s" in warning
+
+
+def test_speed_saturation_warning_is_speed_preference_only(tmp_path) -> None:
+    catalog = load_catalog(user_path=tmp_path / "models.yaml")
+    profile = _profile(PROFILE_DIR / "t3-rtx4090-24gb.json")
+
+    for prefer in ("quality", "balanced"):
+        plan = build_plan(profile, catalog, Policy(roles=["chat"], prefer=prefer))
+        assert not any("could not discriminate" in item for item in plan.warnings)
+
+
+def test_speed_selection_regression_for_gpu_and_cpu_profiles(tmp_path) -> None:
+    catalog = load_catalog(user_path=tmp_path / "models.yaml")
+
+    gpu = build_plan(
+        _profile(PROFILE_DIR / "t3-rtx4090-24gb.json"),
+        catalog,
+        Policy(roles=["chat"], prefer="speed"),
+    )
+    cpu = build_plan(
+        _profile(PROFILE_DIR / "t0-cpu-32gb.json"),
+        catalog,
+        Policy(roles=["chat"], prefer="speed"),
+    )
+
+    assert gpu.services[0].model_id == "qwen2.5-32b-instruct"
+    assert cpu.services[0].model_id == "qwen2.5-1.5b-instruct"
+
+
+def test_speed_saturation_warning_requires_a_faster_candidate(tmp_path) -> None:
+    catalog = load_catalog(user_path=tmp_path / "models.yaml")
+    profile = _profile(PROFILE_DIR / "t3-rtx4090-24gb.json")
+    model = next(item for item in catalog if item.id == "qwen2.5-32b-instruct")
+    pool = _candidate_for(
+        model, profile, Policy(roles=["chat"], prefer="speed"), None,
+    )
+    chosen = pool[0]
+
+    assert _speed_saturation_warning(
+        "chat", chosen, [chosen], Policy(roles=["chat"], prefer="speed"),
+    ) is None
