@@ -750,6 +750,75 @@ def test_eval_rates_are_keyed_by_configuration(monkeypatch) -> None:
     }
 
 
+def test_mixed_case_eval_quant_matches_planned_configuration() -> None:
+    digest = suite_digest(TASKS)
+    records = {
+        "prior": EvalRecord(
+            "prior-high", "f16", "llamacpp", 16, 4, 0.25, {}, 1.0,
+            {}, "", "core", digest,
+        ),
+        "measured": EvalRecord(
+            "measured-high", "Q4_K_M", "llamacpp", 16, 14, 14 / 16, {}, 2.0,
+            {}, "", "core", digest,
+        ),
+    }
+    cache = cli._eval_rates(records)
+    bench_cache = {
+        (model_id, quant, "llamacpp", "cpu", 0): 0.0
+        for model_id in ("prior-high", "measured-high")
+        for quant in ("f16", "q8_0", "q6_k", "q5_k_m", "q4_k_m", "q4_0", "q3_k_m", "q2_k")
+    }
+    bench_cache[("measured-high", "q4_k_m", "llamacpp", "cpu", 0)] = 200.0
+    plan = build_plan(
+        profile(8), _quality_models(),
+        Policy(roles=["chat"], min_decode_tps=0),
+        bench_cache,
+        cache,
+    )
+    assert plan.services[0].model_id == "measured-high"
+    assert not any("configuration" in warning for warning in plan.warnings)
+
+
+def test_mismatched_eval_backend_still_warns_without_override() -> None:
+    digest = suite_digest(TASKS)
+    cache = cli._eval_rates({
+        "prior": EvalRecord(
+            "prior-high", "f16", "ollama", 16, 4, 0.25, {}, 1.0,
+            {}, "", "core", digest,
+        ),
+        "measured": EvalRecord(
+            "measured-high", "f16", "ollama", 16, 14, 14 / 16, {}, 2.0,
+            {}, "", "core", digest,
+        ),
+    })
+    plan = build_plan(
+        profile(8), _quality_models(), Policy(roles=["chat"]), None, cache,
+    )
+    assert plan.services[0].model_id == "prior-high"
+    assert any(
+        "prior-high" in warning and "configuration" in warning
+        for warning in plan.warnings
+    )
+    assert not any("measurement outranks" in warning for warning in plan.warnings)
+
+
+def test_eval_rates_casefolded_quant_keeps_newest_record() -> None:
+    digest = suite_digest(TASKS)
+    records = {
+        "old": EvalRecord(
+            "model", "Q4_K_M", "llamacpp", 16, 4, 0.25, {}, 1.0,
+            {}, "", "core", digest,
+        ),
+        "new": EvalRecord(
+            "model", "q4_k_m", "llamacpp", 16, 14, 14 / 16, {}, 2.0,
+            {}, "", "core", digest,
+        ),
+    }
+    assert cli._eval_rates(records) == {
+        ("model", "q4_k_m", "llamacpp"): EvalSummary(14 / 16, 14, 16, {}),
+    }
+
+
 def test_eval_rates_drops_stale_grader_records() -> None:
     stale = EvalRecord(
         "model", "f16", "llamacpp", 16, 16, 1.0, {}, 3.0,

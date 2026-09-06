@@ -471,6 +471,36 @@ The 104/104 also fixes the suite's upper limit: with a ceiling of 1.000 the
 extended suite cannot rank two models that both saturate it, exactly as
 `instruction`/`multilingual` saturated for the smaller Qwen2.5 pair.
 
+### Measurement can outrank the catalog prior
+
+Until now `nmesh eval` could prove the catalog `quality` prior wrong and the
+planner would only say so: the ranking still came from the prior, and a
+regression test asserted that the selection stayed the same. Measured pass
+rates now decide instead, under a gate that never mixes the two scales:
+
+- the planned candidate and the alternative must each have a measured pass rate
+  for **their own** planned `(quant, backend)` under the same grader digest and
+  reasoning allowance;
+- the alternative's rate must be higher, and the exact test must reach
+  `p < 0.05` — paired McNemar over the shared task ids when task-level results
+  exist for both, otherwise unpaired Fisher;
+- a measured candidate never outranks an unmeasured one, and aggregate-only
+  records (a bare rate with no task counts) never participate.
+
+Nothing else changed: with no eval cache the plans are bit-identical, and
+`--ignore-eval-evidence` on `plan`/`up` restores prior-based ranking while
+keeping the contradiction warning. The mechanism is proven by fixtures with
+`p=0.0010`; on this box no real reversal has been observed yet, because the two
+models measured here (Qwen2.5 1.5B `q4_k_m` 89/104 and 0.5B `f16` 70/104) are
+ranked the same way by their priors.
+
+Measurement-to-plan identity is case-insensitive on model id, quant, and
+backend because record quants come from artifact names (`Q4_K_M`,
+`UD-Q4_K_XL`) while the catalog spells them lowercase. On this box the
+existing 89/104 record was keyed `Q4_K_M` and was silently treated as a
+different configuration before this change. The chat service here plans the
+`ollama` backend, so llama.cpp evidence legitimately does not apply.
+
 ### Speed preference saturation
 
 The planner's simulated bundled profiles show that the speed term is already

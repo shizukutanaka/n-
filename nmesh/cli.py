@@ -298,7 +298,11 @@ def _eval_rates(
     for record in valid.values():
         if record.unscorable:
             continue
-        key = (record.model_id, record.quant, record.backend)
+        key = (
+            record.model_id.casefold(),
+            record.quant.casefold(),
+            record.backend.casefold(),
+        )
         previous = latest.get(key)
         if previous is None or record.at > previous.at:
             latest[key] = record

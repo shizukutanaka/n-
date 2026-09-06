@@ -1255,7 +1255,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         if not requested_model_ids or model.id.casefold() in requested_model_ids
     ]
     measured = {
-        key: value for key, value in (eval_cache or {}).items()
+        tuple(item.casefold() for item in key): value
+        for key, value in (eval_cache or {}).items()
         if isinstance(key, tuple)
         and len(key) == 3
         and all(isinstance(item, str) for item in key)
@@ -1361,7 +1362,11 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             if not selected.eval_evidence:
                 return current
             selected_evidence = measured.get(
-                (current.model.id, current.quant, current.backend)
+                (
+                    current.model.id.casefold(),
+                    current.quant.casefold(),
+                    current.backend.casefold(),
+                )
             )
             if not isinstance(selected_evidence, EvalSummary):
                 return current
@@ -1387,9 +1392,9 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     continue
                 alternative_evidence = measured.get(
                     (
-                        alternative.model.id,
-                        alternative.quant,
-                        alternative.backend,
+                        alternative.model.id.casefold(),
+                        alternative.quant.casefold(),
+                        alternative.backend.casefold(),
                     )
                 )
                 if not isinstance(alternative_evidence, EvalSummary):
@@ -1521,7 +1526,10 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     for service in services:
         if service.model_id.casefold() in requested_model_ids:
             model = next(
-                (item for item in catalog_models if item.id == service.model_id),
+                (
+                    item for item in catalog_models
+                    if item.id.casefold() == service.model_id.casefold()
+                ),
                 None,
             )
             if model is not None and model.quality is None:
@@ -1540,12 +1548,19 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             if selected_model is None:
                 continue
             selected_evidence = measured.get(
-                (service.model_id, service.quant, service.backend)
+                (
+                    service.model_id.casefold(),
+                    service.quant.casefold(),
+                    service.backend.casefold(),
+                )
             )
             if selected_evidence is None:
                 if (
                     service.model_id not in eval_mismatch_models
-                    and any(key[0] == service.model_id for key in measured)
+                    and any(
+                        key[0] == service.model_id.casefold()
+                        for key in measured
+                    )
                 ):
                     eval_mismatch_models.add(service.model_id)
                     warnings.append(t(
@@ -1565,14 +1580,20 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                 for other in catalog:
                     if other.id == service.model_id or role not in other.roles:
                         continue
-                    if not any(key[0] == other.id for key in measured):
+                    if not any(
+                        key[0] == other.id.casefold() for key in measured
+                    ):
                         continue
                     candidates = _candidate_for(other, profile, selected, bench_cache)
                     if not candidates:
                         continue
                     best = max(candidates, key=lambda candidate: candidate.score)
                     other_evidence = measured.get(
-                        (other.id, best.quant, best.backend)
+                        (
+                            other.id.casefold(),
+                            best.quant.casefold(),
+                            best.backend.casefold(),
+                        )
                     )
                     if not isinstance(selected_evidence, EvalSummary) or not isinstance(
                         other_evidence, EvalSummary
