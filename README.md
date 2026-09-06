@@ -426,16 +426,47 @@ artifacts, same binary, same machine:
 
 | model | extended (104) | hard (130) |
 | --- | --- | --- |
-| Qwen2.5 1.5B Q4_K_M | `89/104` = `0.856` | `99/130` = `0.762` [`0.681`, `0.827`] |
+| Qwen2.5 1.5B Q4_K_M | `89/104` = `0.856` | `100/130` = `0.769` [`0.690`, `0.833`] |
 | Qwen2.5 0.5B fp16 | `70/104` = `0.673` | `76/130` = `0.585` [`0.499`, `0.666`] |
-| paired discordance | `24`/`5`, `p=0.000546` | `28`/`5`, `p=0.000066` |
+| paired discordance | `24`/`5`, `p=0.000546` | `29`/`5`, `p=0.000039` |
 
-The 26 new tasks contribute `4` discordant pairs (all favouring the 1.5B),
-`6` both-pass and **`16` both-fail**: they broke the saturation
-(`instruction` is now `22/33` versus `20/33`) but 62% of them are floored
-instead, which is the same zero-power condition seen from below. `p` improved
-by an order of magnitude off 4 tasks, and the remaining 16 are the next thing
-to fix, not a result.
+The 26 new tasks contribute `5` discordant pairs (all favouring the 1.5B),
+`6` both-pass and **`15` both-fail**: they broke the saturation but 58% of them
+are floored instead, which is the same zero-power condition seen from below.
+`p` improved by an order of magnitude off 5 tasks, and the remaining 15 are the
+next thing to fix, not a result.
+
+#### Two of the 26 tasks were measuring the instrument, not the model
+
+Reading the actual outputs of the 16 tasks both models failed found two
+defective items rather than two hard items. `multilingual.kanji_number.17`
+accepted only `十七`, so the 1.5B's `壹拾柒` — a correct kanji numeral — was
+scored wrong; the item measured which kanji form a model happens to pick.
+`multilingual.lang_lock.seven` demanded `七` while its prompt only forbade
+Latin letters, so both models' `7` satisfied the stated constraint and failed
+anyway. Both were repaired (wider accepted set; prompt that forbids digits
+explicitly), which is why the 1.5B moved `99` → `100`.
+
+That repair exposed a hole in suite identity: `suite_digest` hashed only
+`(id, prompt, max_tokens)` plus a suite-wide `GRADER_VERSION`, so widening one
+verifier changes pass/fail without changing the digest, while bumping
+`GRADER_VERSION` invalidates every stored record including the 104-task ones
+the evidence override depends on. Tasks now carry a `rule` string that is
+hashed when set, so a repaired verifier invalidates only the suites containing
+it; the `extended` digest is byte-identical and the `hard` digest is now
+`v2:500f11b813a020c3`.
+
+The remaining floored tasks are also not one thing. On
+`instruction.initials.quick_amber_fox` the 1.5B answered `Q A F` — the right
+letters in a forbidden form — while the 0.5B answered `QWEN`; a single bit of
+pass/fail calls those the same failure. Tasks may now carry an optional
+`value_check` that grades the value while ignoring the required output form.
+It never affects pass/fail, the digest, or anything stored; `nmesh eval`
+reports how many failures were value-correct and form-wrong. On this run that
+was `3` of the 1.5B's `5` value-checked failures (`Q A F`, `Paris`, `7`) and
+`3` of the 0.5B's `10`. Those failures measure output discipline, not
+capability, and reporting them as capability is what PR #38 had already
+corrected one level up.
 
 Both tests now report the power they actually realised. `nmesh eval` prints,
 per compared configuration, how many of the shared tasks disagreed, in which
