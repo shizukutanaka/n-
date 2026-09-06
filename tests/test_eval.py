@@ -209,6 +209,16 @@ def test_hard_suite_and_graders() -> None:
     assert len({task.id for task in SUITES["hard"]}) == 130
     assert not {task.id for task in HARD_TASKS} & {task.id for task in EXTENDED_TASKS}
     assert suite_digest(SUITES["extended"]) == "v2:6d66196138326699"
+    assert suite_digest(HARD_SUITE_TASKS) == "v2:500f11b813a020c3"
+    assert suite_digest(EXTENDED_TASKS) == "v2:6d66196138326699"
+    assert all(
+        task.grades in {"value", "form", "value+form"}
+        for task in HARD_SUITE_TASKS
+    )
+    assert all(
+        (task.value_check is not None) == (task.grades == "value+form")
+        for task in HARD_SUITE_TASKS
+    )
 
     checks = {
         "instruction.initials.quick_amber_fox": ("QAF", "Q A F"),
@@ -412,28 +422,33 @@ def test_suite_digest_identity() -> None:
 
 def test_runner_reports_value_passed_separately_from_discipline() -> None:
     tasks = tuple(
-        next(task for task in HARD_TASKS if task.id == task_id)
+        next(task for task in HARD_SUITE_TASKS if task.id == task_id)
         for task_id in (
             "instruction.initials.quick_amber_fox",
             "multilingual.lang_lock.paris",
             "multilingual.lang_lock.seven",
+            "format.json_even.7",
+            "arithmetic.add.58_64",
+            "instruction.items.4",
+            "instruction.words.5",
+            "compliance.email.0",
         )
     ) + (
         Task(
             "quick-pass", "instruction", "quick-pass", 8,
-            next(task for task in HARD_TASKS
+            next(task for task in HARD_SUITE_TASKS
                  if task.id == "instruction.initials.quick_amber_fox").check,
             value_check=next(
-                task for task in HARD_TASKS
+                task for task in HARD_SUITE_TASKS
                 if task.id == "instruction.initials.quick_amber_fox"
             ).value_check,
         ),
         Task(
             "quick-wrong", "instruction", "quick-wrong", 8,
-            next(task for task in HARD_TASKS
+            next(task for task in HARD_SUITE_TASKS
                  if task.id == "instruction.initials.quick_amber_fox").check,
             value_check=next(
-                task for task in HARD_TASKS
+                task for task in HARD_SUITE_TASKS
                 if task.id == "instruction.initials.quick_amber_fox"
             ).value_check,
         ),
@@ -442,6 +457,11 @@ def test_runner_reports_value_passed_separately_from_discipline() -> None:
         tasks[0].prompt: (200, "Q A F"),
         tasks[1].prompt: (200, "Paris"),
         tasks[2].prompt: (200, "7"),
+        tasks[3].prompt: (200, '{"even": true}'),
+        tasks[4].prompt: (200, "58 + 64 = 112"),
+        tasks[5].prompt: (200, "1. Tigers\n2. Whales\n3. Elephants\n4. Pandas"),
+        tasks[6].prompt: (200, "A compiler translates source code into machine code."),
+        tasks[7].prompt: (200, "Ping build-team@example.org"),
         "quick-pass": (200, "QAF"),
         "quick-wrong": (200, "QWEN"),
     }
@@ -467,6 +487,12 @@ def test_runner_reports_value_passed_separately_from_discipline() -> None:
     assert (outcomes["quick-wrong"].passed, outcomes["quick-wrong"].value_passed) == (
         False, False,
     )
+    assert outcomes["format.json_even.7"].failure_kind == "value"
+    assert outcomes["arithmetic.add.58_64"].failure_kind == "value"
+    assert outcomes["instruction.items.4"].failure_kind == "form"
+    assert outcomes["instruction.words.5"].failure_kind == "form"
+    assert outcomes["compliance.email.0"].failure_kind == "form"
+    assert outcomes["quick-pass"].failure_kind == ""
 
 
 def test_runner_mixed_and_transport_failure_continue() -> None:
@@ -589,6 +615,7 @@ def test_eval_cli_reports_unscorable_run(monkeypatch, capsys) -> None:
         "output": "",
         "unscorable": True,
         "value_passed": None,
+        "failure_kind": "",
     }]
 
 
@@ -873,7 +900,10 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     result = EvalRun(
         "prior-high", "q4_k_m", "llamacpp", 1, 1, 1.0,
         {category: 0.75 for category in CATEGORIES},
-        [TaskOutcome("failed", "instruction", False, "bad", value_passed=True)],
+        [TaskOutcome(
+            "failed", "instruction", False, "bad",
+            value_passed=True, failure_kind="form",
+        )],
         3.0,
     )
     monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
@@ -897,12 +927,17 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     assert output["value_only_failures"] == 1
     assert output["value_checked_failures"] == 1
     assert "output form" in output["value_note"]
+    assert output["failures_by_kind"] == {"value": 0, "form": 1}
+    assert "1 failures: 0 wrong answers, 1 correct answers" in output[
+        "failure_kinds_note"
+    ]
     assert output["failed"] == [
         {
             "id": "failed",
             "output": "bad",
             "unscorable": False,
             "value_passed": True,
+            "failure_kind": "form",
         },
     ]
 

@@ -23,7 +23,11 @@ from .hard import HARD_TASKS
 from .suite import (
     TASKS,
     Task,
+    _bool_value,
+    _contains_cased,
+    _contains_ci,
     _exact,
+    _items_value,
     _japanese_only,
     _json_object,
     _number,
@@ -153,55 +157,63 @@ def _json_value(key: str, expected: bool | int):
     return check
 
 
+def _person_value(name: str, age: str):
+    return lambda text: name.casefold() in text.casefold() and age in text
+
+
 def _build() -> tuple[Task, ...]:
     tasks: list[Task] = []
     for left, right, total in _ADDITIONS:
         tasks.append(Task(
             f"arithmetic.add.{left}_{right}", "arithmetic",
             f"What is {left} + {right}? Answer with the number only.",
-            16, _number(total),
+            16, _number(total), grades="value",
         ))
     for left, right, total in _SUBTRACTIONS:
         tasks.append(Task(
             f"arithmetic.subtract.{left}_{right}", "arithmetic",
             f"What is {left} - {right}? Answer with the number only.",
-            16, _number(total),
+            16, _number(total), grades="value",
         ))
     for left, right, total in _PRODUCTS:
         tasks.append(Task(
             f"arithmetic.multiply.{left}_{right}", "arithmetic",
             f"What is {left} * {right}? Answer with the number only.",
-            16, _number(total),
+            16, _number(total), grades="value",
         ))
     for word in _LETTER_WORDS:
         tasks.append(Task(
             f"arithmetic.count.{word}", "arithmetic",
             f"How many letters are in the word '{word}'? Answer with the number only.",
-            16, _number(len(word)),
+            16, _number(len(word)), grades="value",
         ))
     for word in _UPPERCASE:
         tasks.append(Task(
             f"instruction.upper.{word}", "instruction",
             f"Output only the uppercase form of the word '{word}'. No explanation.",
             16, _exact(word.upper()),
+            value_check=_contains_cased(word.upper()),
         ))
     for word in _LOWERCASE:
         tasks.append(Task(
             f"instruction.lower.{word}", "instruction",
             f"Output only the lowercase form of the word '{word}'. No explanation.",
             16, _exact(word.lower()),
+            value_check=_contains_cased(word.lower()),
         ))
     for word in _ECHO:
         tasks.append(Task(
             f"instruction.echo.{word}", "instruction",
             f"Reply with exactly the word {word} and nothing else.",
             16, _exact(word),
+            value_check=_contains_ci(word),
         ))
     for count in _ITEM_COUNTS:
         tasks.append(Task(
             f"instruction.items.{count}", "instruction",
             f"List exactly {count} animals, comma-separated, with no other text.",
             48, _items(count),
+            value_check=_items_value(count),
         ))
     for name, age in _PEOPLE:
         tasks.append(Task(
@@ -209,6 +221,7 @@ def _build() -> tuple[Task, ...]:
             'Return only JSON with exactly the keys "name" and "age" for this '
             f"sentence: '{name} is {age} years old.' No markdown, no commentary.",
             48, _json_person(name, age),
+            value_check=_person_value(name, age),
         ))
     for word in _CHAR_WORDS:
         tasks.append(Task(
@@ -216,6 +229,7 @@ def _build() -> tuple[Task, ...]:
             'Return only JSON of the form {"count": <integer>} with the number of '
             f'characters in the word "{word}". No other text.',
             32, _json_value("count", len(word)),
+            value_check=_number(len(word)),
         ))
     for number, even in _PARITY:
         tasks.append(Task(
@@ -223,35 +237,37 @@ def _build() -> tuple[Task, ...]:
             'Return only JSON of the form {"even": <true or false>} stating whether '
             f"{number} is even. No other text.",
             32, _json_value("even", even),
+            value_check=_bool_value(even),
         ))
     for index, (sentence, address, target) in enumerate(_EMAILS):
         tasks.append(Task(
             f"extraction.email.{index}", "extraction",
             f"Give the {target} from this text: '{sentence}'",
-            32, _only_email(address),
+            32, _only_email(address), grades="value",
         ))
     for index, (sentence, iso, target) in enumerate(_DATES):
         tasks.append(Task(
             f"extraction.date.{index}", "extraction",
             f"Give the {target} in YYYY-MM-DD form from this text: '{sentence}'",
-            32, _only_date(iso),
+            32, _only_date(iso), grades="value",
         ))
     for index, (listing, largest) in enumerate(_MAXIMA):
         tasks.append(Task(
             f"extraction.max.{index}", "extraction",
             f"Output only the largest number in this list: {listing}.",
-            16, _number(largest),
+            16, _number(largest), grades="value",
         ))
     for index, (prompt, expected, rivals) in enumerate(_SUBSTRINGS):
         tasks.append(Task(
             f"extraction.span.{index}", "extraction", prompt, 32,
-            _only_span(expected, rivals),
+            _only_span(expected, rivals), grades="value",
         ))
     for index, (sentence, address, target) in enumerate(_EMAILS[:3]):
         tasks.append(Task(
             f"compliance.email.{index}", "compliance",
             f"Output only the {target}, no other words: '{sentence}'",
             32, _exact(address),
+            value_check=_only_email(address),
         ))
     for index, (sentence, iso, target) in enumerate(_DATES[:3]):
         tasks.append(Task(
@@ -259,17 +275,20 @@ def _build() -> tuple[Task, ...]:
             f"Output only the {target} in YYYY-MM-DD form, no other words: "
             f"'{sentence}'",
             32, _exact(iso),
+            value_check=_only_date(iso),
         ))
     for index, (prompt, expected, _rivals) in enumerate(_SUBSTRINGS[:2]):
         tasks.append(Task(
             f"compliance.span.{index}", "compliance",
             f"{prompt} Output only that value, no other words.",
             32, _exact(expected),
+            value_check=_only_span(expected, _rivals),
         ))
     for index, (prompt, required) in enumerate(_JAPANESE):
         tasks.append(Task(
             f"multilingual.ja.{index}", "multilingual", prompt, 48,
             _japanese_only(required),
+            value_check=_contains_ci(required),
         ))
     return tuple(tasks)
 

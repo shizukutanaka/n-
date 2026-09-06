@@ -477,6 +477,16 @@ difference" from `n`, because on paired outcomes that number is meaningless:
 states the discordant counts and that exact McNemar cannot reach `p<0.05` below
 `6` disagreeing tasks at any suite size.
 
+The eight-rung outputs show why this distinction matters. On the measurable
+`q4_k_m` → `q4_0` step, the 12 lost tasks split into 10 wrong answers and 2
+correct answers in the wrong output form. On `q3_k_m` → `q2_k`, the 37 lost
+tasks split into 27 wrong answers and 10 correct answers in the wrong output
+form. Previously only 14 of the 130 hard-suite tasks carried a value check;
+every failure is now classifiable as a wrong answer or a form failure through
+its declared grading scope. This split is one model on one machine with one
+binary and one suite; it does not generalize to other quantization ladders or
+hardware.
+
 ### Periodic external watch
 
 `nmesh watch` treats external posts as claims and pointers, not evidence.

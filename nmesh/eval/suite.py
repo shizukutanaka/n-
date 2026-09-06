@@ -52,6 +52,11 @@ class Task:
     verifier's accept/reject behavior changes, so only suites containing that
     task lose comparability. ``GRADER_VERSION`` remains for suite-wide scoring
     rule changes.
+
+    ``grades`` declares which failure dimension the task measures:
+    ``"value"`` means the primary checker tolerates surrounding form,
+    ``"form"`` means there is no separable value dimension, and
+    ``"value+form"`` means ``value_check`` must distinguish the two.
     """
 
     id: str
@@ -61,6 +66,7 @@ class Task:
     check: Callable[[str], bool]
     rule: str = ""
     value_check: Callable[[str], bool] | None = None
+    grades: str = "value+form"
 
 
 def _exact(expected: str) -> Callable[[str], bool]:
@@ -110,6 +116,42 @@ def _number(expected: int) -> Callable[[str], bool]:
     return check
 
 
+def _contains_ci(expected: str) -> Callable[[str], bool]:
+    """Value-level: the answer appears somewhere, ignoring case and prose."""
+    return lambda text: expected.casefold() in text.casefold()
+
+
+def _contains_cased(expected: str) -> Callable[[str], bool]:
+    """Value-level for case tasks: the exact casing must appear."""
+    return lambda text: expected in text
+
+
+def _bool_value(expected: bool) -> Callable[[str], bool]:
+    def check(text: str) -> bool:
+        found = re.findall(r"true|false", text.lower())
+        return bool(found) and (found[-1] == "true") is expected
+    return check
+
+
+def _yes_no_value(expected: bool) -> Callable[[str], bool]:
+    def check(text: str) -> bool:
+        found = re.findall(r"\byes\b|\bno\b", text.lower())
+        return bool(found) and (found[-1] == "yes") is expected
+    return check
+
+
+def _items_value(count: int) -> Callable[[str], bool]:
+    """Value-level for list tasks: the right number of items, any layout."""
+    def check(text: str) -> bool:
+        parts: list[str] = []
+        for line in text.splitlines():
+            stripped = re.sub(r"^\s*(?:\d+[.)]|[-*])\s*", "", line)
+            parts.extend(part.strip() for part in stripped.split(","))
+        entries = [part for part in parts if part and part.replace(" ", "").isalpha()]
+        return len(entries) == count
+    return check
+
+
 def _json_keys(expected: dict[str, str]) -> Callable[[str], bool]:
     def check(text: str) -> bool:
         parsed = _json_object(text)
@@ -142,6 +184,7 @@ TASKS: tuple[Task, ...] = (
         "Reply with exactly the word Acknowledged and nothing else.",
         16,
         _exact("Acknowledged"),
+        value_check=_contains_ci("Acknowledged"),
     ),
     Task(
         "instruction.single_word",
@@ -149,6 +192,7 @@ TASKS: tuple[Task, ...] = (
         "Answer with one word only: what colour is a ripe banana?",
         16,
         _exact("yellow"),
+        value_check=_contains_ci("yellow"),
     ),
     Task(
         "instruction.no_prose",
@@ -156,6 +200,7 @@ TASKS: tuple[Task, ...] = (
         "Output only the uppercase form of the word 'mesh'. No explanation.",
         16,
         _exact("MESH"),
+        value_check=_contains_cased("MESH"),
     ),
     Task(
         "instruction.three_items",
@@ -163,6 +208,7 @@ TASKS: tuple[Task, ...] = (
         "List exactly three fruits, comma-separated, with no other text.",
         32,
         _three_items,
+        value_check=_items_value(3),
     ),
     Task(
         "format.json_city",
@@ -171,6 +217,9 @@ TASKS: tuple[Task, ...] = (
         "capital of Japan. No markdown, no commentary.",
         48,
         _json_keys({"city": "Tokyo", "country": "Japan"}),
+        value_check=lambda text: (
+            "tokyo" in text.casefold() and "japan" in text.casefold()
+        ),
     ),
     Task(
         "format.json_bool",
@@ -179,6 +228,7 @@ TASKS: tuple[Task, ...] = (
         "12 is even. No other text.",
         32,
         lambda text: (_json_object(text) or {}).get("even") is True,
+        value_check=_bool_value(True),
     ),
     Task(
         "format.json_number",
@@ -187,6 +237,7 @@ TASKS: tuple[Task, ...] = (
         'characters in the word "orchestrator". No other text.',
         32,
         lambda text: (_json_object(text) or {}).get("count") == 12,
+        value_check=_number(12),
     ),
     Task(
         "arithmetic.add",
@@ -194,6 +245,7 @@ TASKS: tuple[Task, ...] = (
         "What is 17 + 25? Answer with the number only.",
         16,
         _number(42),
+        grades="value",
     ),
     Task(
         "arithmetic.multiply",
@@ -201,6 +253,7 @@ TASKS: tuple[Task, ...] = (
         "What is 12 * 12? Answer with the number only.",
         16,
         _number(144),
+        grades="value",
     ),
     Task(
         "arithmetic.subtract",
@@ -208,6 +261,7 @@ TASKS: tuple[Task, ...] = (
         "What is 1000 - 253? Answer with the number only.",
         16,
         _number(747),
+        grades="value",
     ),
     Task(
         "arithmetic.count",
@@ -215,6 +269,7 @@ TASKS: tuple[Task, ...] = (
         "How many letters are in the word 'benchmark'? Answer with the number only.",
         16,
         _number(9),
+        grades="value",
     ),
     Task(
         "extraction.email",
@@ -223,6 +278,7 @@ TASKS: tuple[Task, ...] = (
         "'Contact ops at nmesh-ops@example.com before Friday.'",
         32,
         _only_email("nmesh-ops@example.com"),
+        grades="value",
     ),
     Task(
         "extraction.date",
@@ -231,6 +287,7 @@ TASKS: tuple[Task, ...] = (
         "'The release shipped on March 3, 2024 in Tokyo.'",
         32,
         _only_date("2024-03-03"),
+        grades="value",
     ),
     Task(
         "extraction.number",
@@ -238,6 +295,7 @@ TASKS: tuple[Task, ...] = (
         "Output only the largest number in this list: 18, 4, 236, 97.",
         16,
         _number(236),
+        grades="value",
     ),
     Task(
         "multilingual.ja_translate",
@@ -245,6 +303,7 @@ TASKS: tuple[Task, ...] = (
         "次の英文を日本語に訳し、訳文だけを出力してください: 'The cat sleeps.'",
         48,
         _japanese_only("猫"),
+        value_check=_contains_ci("猫"),
     ),
     Task(
         "multilingual.ja_answer",
@@ -252,6 +311,7 @@ TASKS: tuple[Task, ...] = (
         "日本の首都はどこですか。地名だけを日本語で出力してください。",
         32,
         _japanese_only("東京"),
+        value_check=_contains_ci("東京"),
     ),
 )
 

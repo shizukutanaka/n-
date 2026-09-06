@@ -881,6 +881,7 @@ def _eval(args: argparse.Namespace) -> int:
             "output": outcome.output,
             "unscorable": outcome.unscorable,
             "value_passed": outcome.value_passed,
+            "failure_kind": outcome.failure_kind,
         }
         for outcome in failed_outcomes
     ]
@@ -890,6 +891,10 @@ def _eval(args: argparse.Namespace) -> int:
     value_checked_failures = sum(
         outcome.value_passed is not None for outcome in failed_outcomes
     )
+    failures_by_kind = {
+        "value": sum(outcome.failure_kind == "value" for outcome in failed_outcomes),
+        "form": sum(outcome.failure_kind == "form" for outcome in failed_outcomes),
+    }
     language = i18n.lang()
     note = i18n.t("note.eval_scope", language, tasks=result.n_tasks)
     pass_rate_ci = wilson_interval(result.passed, result.n_tasks)
@@ -927,6 +932,15 @@ def _eval(args: argparse.Namespace) -> int:
             checked=value_checked_failures,
             value_only=value_only_failures,
         )
+    failure_kinds_note = None
+    if failed_outcomes:
+        failure_kinds_note = i18n.t(
+            "note.eval_failure_kinds",
+            language,
+            failures=len(failed_outcomes),
+            value=failures_by_kind["value"],
+            form=failures_by_kind["form"],
+        )
     config_note = i18n.t(
         "note.eval_config",
         language,
@@ -952,9 +966,11 @@ def _eval(args: argparse.Namespace) -> int:
         "min_resolvable_difference": minimum_difference,
         "by_category": result.by_category,
         "failed": failed,
+        "failures_by_kind": failures_by_kind,
         "value_only_failures": value_only_failures,
         "value_checked_failures": value_checked_failures,
         "value_note": value_note,
+        "failure_kinds_note": failure_kinds_note,
         "note": note,
         "uncertainty_note": uncertainty_note,
         "suite_upgrade_note": suite_upgrade_note,
@@ -990,6 +1006,8 @@ def _eval(args: argparse.Namespace) -> int:
         _console().print(unscorable_note)
     if value_note is not None:
         _console().print(value_note)
+    if failure_kinds_note is not None:
+        _console().print(failure_kinds_note)
     if artifact_warning is not None:
         _console().print(artifact_warning)
     for item in divergence:
