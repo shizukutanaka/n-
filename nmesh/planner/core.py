@@ -22,6 +22,7 @@ QUANT_PENALTY = {
     "f16": 0.0, "q8_0": 0.5, "q6_k": 1.0, "q5_k_m": 2.0,
     "q4_k_m": 3.5, "q4_0": 5.0, "q3_k_m": 9.0, "q2_k": 16.0,
 }
+SPEED_REFERENCE_TPS = 30.0
 GIB = 1024**3
 PLAN_PATH = nmesh_home() / "plan.json"
 INSTALL_HINTS = {
@@ -423,6 +424,20 @@ def _candidate_for(
     reserved_ram_bytes: float = 0.0,
     excluded: list[dict[str, str]] | None = None,
 ) -> list[_Candidate]:
+    """Build candidates using the intentionally unchanged score.
+
+    On the bundled simulated profiles, the speed term is saturated for 82 of
+    83 candidates on t3-rtx4090-24gb, 67 of 72 on t2-rtx3060-12gb, and 68 of
+    89 on t4-rtx6000ada-48gb. On t3 with ``prefer="speed"``, qwen2.5-32b-
+    instruct q4_k_m at 38.49 tok/s scored 140.25 above phi-4-14b q5_k_m at
+    73.68 tok/s and score 138.00. With ``prefer="quality"`` and speed
+    references 30/60/120/240, the choices were 32B q4_k_m at 38.5, phi-4-14b
+    q6_k at 63.6, 32B q4_k_m at 38.5, and 32B q5_k_m at 9.0 tok/s,
+    respectively. These are the planner's own estimates on bundled simulated
+    profiles, not wall-clock measurements. Removing the clip would select the
+    0.5B q2_k candidate at 3654.6 tok/s, so a scale-free speed term requires a
+    quality floor; the catalog quality prior is unvalidated.
+    """
     initial = min(model.max_context, policy.max_context or 8192)
     contexts = list(dict.fromkeys(context for context in (initial, 4096, 2048) if context <= initial))
     candidates: list[_Candidate] = []
@@ -479,7 +494,10 @@ def _candidate_for(
                 continue
             wq, ws = {"quality": (1.0, 0.1), "speed": (0.5, 1.0),
                       "balanced": (1.0, 0.25)}.get(policy.prefer, (1.0, 0.25))
-            score = (model.quality - QUANT_PENALTY[quant]) * wq + min(tps, 30) / 30 * 100 * ws
+            score = (
+                (model.quality - QUANT_PENALTY[quant]) * wq
+                + min(tps, SPEED_REFERENCE_TPS) / SPEED_REFERENCE_TPS * 100 * ws
+            )
             if policy.languages:
                 covers = set(policy.languages).issubset(model.languages)
                 score *= 1.0 if covers else 0.7
@@ -516,6 +534,36 @@ def _plan_group(group: list[str], pools: dict[str, list[_Candidate]]) -> _Candid
     for role in group[1:]:
         ids &= {candidate.model.id for candidate in pools.get(role, [])}
     return next((candidate for candidate in pools[group[0]] if candidate.model.id in ids), None)
+
+
+def _speed_saturation_warning(
+    role: str,
+    chosen: _Candidate,
+    pool: list[_Candidate],
+    policy: Policy,
+) -> str | None:
+    if policy.prefer != "speed" or chosen.decode_tps < SPEED_REFERENCE_TPS:
+        return None
+    faster = [
+        candidate for candidate in pool
+        if candidate.decode_tps > chosen.decode_tps
+        and candidate.decode_tps >= SPEED_REFERENCE_TPS
+    ]
+    if not faster:
+        return None
+    other = max(faster, key=lambda candidate: candidate.decode_tps)
+    return t(
+        "warn.speed_saturated",
+        policy.lang,
+        role=role,
+        chosen=chosen.model.id,
+        chosen_quant=chosen.quant,
+        chosen_tps=f"{chosen.decode_tps:.1f}",
+        other=other.model.id,
+        other_quant=other.quant,
+        other_tps=f"{other.decode_tps:.1f}",
+        reference=f"{SPEED_REFERENCE_TPS:.1f}",
+    )
 
 
 def _reserved_memory(
@@ -1242,6 +1290,11 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                 role_candidate = pools.get(role, [])
                 if role_candidate:
                     role_candidate = role_candidate[0]
+                    saturation_warning = _speed_saturation_warning(
+                        role, role_candidate, pools[role], selected,
+                    )
+                    if saturation_warning is not None:
+                        warnings.append(saturation_warning)
                     empty_candidate = (
                         empty_pools.get(role, [None])[0] if empty_pools else None
                     )
@@ -1258,6 +1311,11 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         if candidate is None:
             warnings.append(t("warn.no_candidate", selected.lang, role=group[0]))
             continue
+        saturation_warning = _speed_saturation_warning(
+            group[0], candidate, pools[group[0]], selected,
+        )
+        if saturation_warning is not None:
+            warnings.append(saturation_warning)
         empty_candidate = (
             _plan_group(group, empty_pools) if empty_pools is not None else None
         )
