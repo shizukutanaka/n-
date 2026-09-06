@@ -18,9 +18,10 @@ from nmesh import i18n
 from nmesh.artifact import service_fingerprint
 from nmesh.bench import benchmark_key, load_cache, measure, save_cache
 from nmesh.catalog import load_catalog
-from nmesh.eval import CATEGORIES, TASKS, EvalRun, load_eval_cache, save_eval
+from nmesh.eval import CATEGORIES, TASKS, EvalRun, EvalSummary, load_eval_cache, save_eval
 from nmesh.eval import run as eval_run
 from nmesh.eval.cache import EvalRecord
+from nmesh.eval.stats import min_resolvable_difference, wilson_interval
 from nmesh.paths import nmesh_home
 from nmesh.planner import (
     PlannedService,
@@ -194,13 +195,21 @@ def _make_plan(args: argparse.Namespace) -> object:
     return build_plan(profile, load_catalog(), policy, cache, _eval_rates())
 
 
-def _eval_rates() -> dict[tuple[str, str, str], float]:
-    latest: dict[tuple[str, str, str], tuple[float, float]] = {}
+def _eval_rates() -> dict[tuple[str, str, str], EvalSummary]:
+    latest: dict[tuple[str, str, str], tuple[float, EvalSummary]] = {}
     for record in load_eval_cache().values():
         key = (record.model_id, record.quant, record.backend)
         previous = latest.get(key)
         if previous is None or record.at > previous[0]:
-            latest[key] = (record.at, record.pass_rate)
+            latest[key] = (
+                record.at,
+                EvalSummary(
+                    record.pass_rate,
+                    record.passed,
+                    record.n_tasks,
+                    record.task_results,
+                ),
+            )
     return {key: value for key, (_, value) in latest.items()}
 
 
@@ -697,6 +706,16 @@ def _eval(args: argparse.Namespace) -> int:
               for outcome in result.outcomes if not outcome.passed]
     language = i18n.lang()
     note = i18n.t("note.eval_scope", language, tasks=result.n_tasks)
+    pass_rate_ci = wilson_interval(result.passed, result.n_tasks)
+    minimum_difference = min_resolvable_difference(result.n_tasks)
+    uncertainty_note = i18n.t(
+        "note.eval_uncertainty",
+        language,
+        lo=pass_rate_ci[0],
+        hi=pass_rate_ci[1],
+        tasks=result.n_tasks,
+        minimum=minimum_difference,
+    )
     config_note = i18n.t(
         "note.eval_config",
         language,
@@ -713,9 +732,12 @@ def _eval(args: argparse.Namespace) -> int:
         "n_tasks": result.n_tasks,
         "passed": result.passed,
         "pass_rate": result.pass_rate,
+        "pass_rate_ci": list(pass_rate_ci),
+        "min_resolvable_difference": minimum_difference,
         "by_category": result.by_category,
         "failed": failed,
         "note": note,
+        "uncertainty_note": uncertainty_note,
         "config_note": config_note,
         "divergence": divergence,
         "artifact_warning": artifact_warning,
@@ -737,6 +759,7 @@ def _eval(args: argparse.Namespace) -> int:
         table.add_row(category, str(category_passed), str(len(category_outcomes)), f"{rate:.1%}")
     _console().print(table)
     _console().print(note)
+    _console().print(uncertainty_note)
     _console().print(config_note)
     if artifact_warning is not None:
         _console().print(artifact_warning)
