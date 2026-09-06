@@ -453,6 +453,24 @@ without `NMESH_X_BEARER_TOKEN`. `--offline` accepts saved source items for
 reproducible extraction and verification, and bounded state prevents repeated
 findings from growing without limit. No finding is auto-applied to the product.
 
+### Answerless truncation is not a failure
+
+A suite task budget (16 to 48 tokens) is an answer budget. A model that emits
+separate reasoning output spends that budget before the answer, returns
+`finish_reason=length` with empty `content`, and grading the empty string
+measures the budget. Measured on this box with
+`gemma-4-26B-A4B-it-qat-UD-Q4_K_XL` on llama.cpp: **0/104** at the suite budget
+with every task returning empty content, and **104/104** at
+`--reasoning-allowance 464`. Such responses are now counted as `unscorable`
+instead of failed, unscorable runs are never used as planning evidence or for
+task-level divergence, and the allowance is part of the record identity
+(`model|quant|backend|suite|digest|a464`), so a wider budget never overwrites a
+narrower one.
+
+The 104/104 also fixes the suite's upper limit: with a ceiling of 1.000 the
+extended suite cannot rank two models that both saturate it, exactly as
+`instruction`/`multilingual` saturated for the smaller Qwen2.5 pair.
+
 ### Speed preference saturation
 
 The planner's simulated bundled profiles show that the speed term is already
