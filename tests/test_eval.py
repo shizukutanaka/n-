@@ -239,12 +239,22 @@ def test_hard_suite_and_graders() -> None:
         assert kanji_17.check(answer)
     assert not kanji_17.check("十八")
     assert not kanji_17.check('17 を漢数字で書くと "壹柒" です。')
+    assert kanji_17.value_check is not None
+    assert kanji_17.value_check("壹拾柒")
+    assert kanji_17.value_check('17 を漢数字で書くと "壹柒" です。')
+    assert not kanji_17.value_check("壹柒")
+    assert not kanji_17.value_check("十八")
 
     kanji_30 = next(task for task in HARD_TASKS if task.id == "multilingual.kanji_number.30")
     assert kanji_30.rule == "kanji_number:v2"
     for answer in ("三十", "参拾", "參拾"):
         assert kanji_30.check(answer)
     assert not kanji_30.check("三十一")
+    assert kanji_30.value_check is not None
+    assert not kanji_30.value_check("三十一")
+    assert kanji_30.value_check('30 の漢数字は "30" です。')
+    assert kanji_30.value_check("三十")
+    assert kanji_30.value_check("参拾")
 
     seven = next(task for task in HARD_TASKS if task.id == "multilingual.lang_lock.seven")
     assert seven.prompt == (
@@ -254,7 +264,7 @@ def test_hard_suite_and_graders() -> None:
     assert seven.check("七")
     assert seven.check("七日")
     assert not seven.check("7")
-    assert suite_digest(SUITES["hard"]) != "v2:e1791a9996b13139"
+    assert suite_digest(SUITES["hard"]) == "v2:500f11b813a020c3"
 
 
 def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:

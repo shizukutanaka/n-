@@ -20,6 +20,9 @@ from .suite import Task, _exact, _japanese_only, _only_date, normalize
 _CJK = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
 _KATAKANA_ONLY = re.compile(r"^[\u30a0-\u30ff\u30fc\s]+$")
 _PUNCT = re.compile(r"[.,!?;:\"'`。、！？]")
+_KANJI_DIGITS = re.compile(
+    r"[〇零一二三四五六七八九十百千壱壹弐貳参參肆伍陸柒捌拾]+"
+)
 
 
 def _word_count(count: int) -> Callable[[str], bool]:
@@ -83,6 +86,17 @@ def _contains_any(required: tuple[str, ...]) -> Callable[[str], bool]:
     return lambda text: any(
         item.casefold() in normalize(text).casefold() for item in required
     )
+
+
+def _numeral_value(forms: tuple[str, ...], arabic: str) -> Callable[[str], bool]:
+    """True when the text names the target number, in kanji or in digits."""
+
+    def check(text: str) -> bool:
+        value = normalize(text)
+        runs = set(_KANJI_DIGITS.findall(value)) | set(re.findall(r"\d+", value))
+        return bool(runs & (set(forms) | {arabic}))
+
+    return check
 
 
 def _english_value(required: tuple[tuple[str, ...], ...]) -> Callable[[str], bool]:
@@ -215,7 +229,7 @@ HARD_TASKS: tuple[Task, ...] = (
         24,
         _kanji_number(("十七", "一十七", "壹拾柒", "壱拾七")),
         rule="kanji_number:v2",
-        value_check=_contains_any(("十七", "一十七", "壹拾柒", "壱拾七", "17")),
+        value_check=_numeral_value(("十七", "一十七", "壹拾柒", "壱拾七"), "17"),
     ),
     Task(
         "multilingual.kanji_number.30", "multilingual",
@@ -223,7 +237,7 @@ HARD_TASKS: tuple[Task, ...] = (
         24,
         _kanji_number(("三十", "参拾", "參拾")),
         rule="kanji_number:v2",
-        value_check=_contains_any(("三十", "参拾", "參拾", "30")),
+        value_check=_numeral_value(("三十", "参拾", "參拾"), "30"),
     ),
     Task(
         "multilingual.lang_lock.paris", "multilingual",
