@@ -18,7 +18,15 @@ from nmesh import i18n
 from nmesh.artifact import service_fingerprint
 from nmesh.bench import benchmark_key, load_cache, measure, save_cache
 from nmesh.catalog import load_catalog
-from nmesh.eval import CATEGORIES, TASKS, EvalRun, EvalSummary, load_eval_cache, save_eval
+from nmesh.eval import (
+    CATEGORIES,
+    EXTENDED_TASKS,
+    SUITES,
+    EvalRun,
+    EvalSummary,
+    load_eval_cache,
+    save_eval,
+)
 from nmesh.eval import run as eval_run
 from nmesh.eval.cache import EvalRecord
 from nmesh.eval.stats import min_resolvable_difference, wilson_interval
@@ -654,8 +662,9 @@ def _eval(args: argparse.Namespace) -> int:
         print(i18n.t("err.eval_up", i18n.lang()), file=sys.stderr)
         return 1
     requested = {item.strip() for item in args.categories.split(",") if item.strip()}
+    base_tasks = SUITES[args.suite]
     tasks = (
-        tuple(task for task in TASKS if task.category in requested)
+        tuple(task for task in base_tasks if task.category in requested)
         if args.categories.strip()
         else ()
     )
@@ -716,6 +725,14 @@ def _eval(args: argparse.Namespace) -> int:
         tasks=result.n_tasks,
         minimum=minimum_difference,
     )
+    suite_upgrade_note = None
+    if args.suite != "extended" and result.n_tasks < len(EXTENDED_TASKS):
+        suite_upgrade_note = i18n.t(
+            "note.eval_suite_upgrade",
+            language,
+            tasks=len(EXTENDED_TASKS),
+            minimum=min_resolvable_difference(len(EXTENDED_TASKS)),
+        )
     config_note = i18n.t(
         "note.eval_config",
         language,
@@ -728,6 +745,7 @@ def _eval(args: argparse.Namespace) -> int:
         "model_id": result.model_id,
         "quant": result.quant,
         "backend": result.backend,
+        "suite": args.suite,
         "artifact": result.artifact or None,
         "n_tasks": result.n_tasks,
         "passed": result.passed,
@@ -738,6 +756,7 @@ def _eval(args: argparse.Namespace) -> int:
         "failed": failed,
         "note": note,
         "uncertainty_note": uncertainty_note,
+        "suite_upgrade_note": suite_upgrade_note,
         "config_note": config_note,
         "divergence": divergence,
         "artifact_warning": artifact_warning,
@@ -760,6 +779,8 @@ def _eval(args: argparse.Namespace) -> int:
     _console().print(table)
     _console().print(note)
     _console().print(uncertainty_note)
+    if suite_upgrade_note is not None:
+        _console().print(suite_upgrade_note)
     _console().print(config_note)
     if artifact_warning is not None:
         _console().print(artifact_warning)
@@ -851,6 +872,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     eval_parser.add_argument("--service", default="chat")
     eval_parser.add_argument("--json", action="store_true")
     eval_parser.add_argument("--categories", default=",".join(CATEGORIES))
+    eval_parser.add_argument("--suite", choices=("core", "extended"), default="core")
     auto = sub.add_parser("autotune")
     auto.add_argument("--json", action="store_true")
     autostart = sub.add_parser("autostart")

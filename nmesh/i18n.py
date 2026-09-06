@@ -51,7 +51,8 @@ MESSAGES = {
         "warn.health_failed": "Service failed health check: {service}",
         "warn.quality_prior": "Model ranking uses unverified catalog quality claims; nmesh eval measures them.",
         "warn.quality_contradiction": "{role}: measured pass rate ranks {other} ({other_rate:.0%}) above {selected} ({selected_rate:.0%}) while the catalog prior does the opposite ({other_prior} < {selected_prior}); exact p={p_value:.4f} across {compared} tasks.",
-        "note.eval_underpowered": "The {tasks}-task suite cannot resolve this observed ranking: {other_rate:.1%} versus {selected_rate:.1%} (exact p={p_value:.4f}); its minimum resolvable difference at α=0.05 is {minimum:.1%}, so the ranking is neither confirmed nor contradicted.",
+        "note.eval_underpowered": "The {tasks}-task suite cannot resolve this observed ranking: {other_rate:.1%} versus {selected_rate:.1%} (exact p={p_value:.4f}); its minimum resolvable difference at α=0.05 is {minimum:.1%}, so the ranking is neither confirmed nor contradicted. The {upgrade_tasks}-task extended suite resolves down to {upgrade_minimum:.1%}.",
+        "note.eval_underpowered_full": "The {tasks}-task suite cannot resolve this observed ranking: {other_rate:.1%} versus {selected_rate:.1%} (exact p={p_value:.4f}); its minimum resolvable difference at α=0.05 is {minimum:.1%}, so the ranking is neither confirmed nor contradicted.",
         "warn.bench_excluded": "{model} {quant}: measured throughput ({tps} tok/s) excluded this model below the {threshold} tok/s threshold, although the estimate would admit it; re-benchmarking with more runs may change the plan.",
         "warn.bench_reproducibility": "Measured throughput is not reproducible on this machine (min {minimum:.2f}, max {maximum:.2f}, spread {spread:.1%}); the planner will treat the median as fact. Re-run with --runs higher.",
         "info.resolved_gguf": "resolved GGUF: {name}",
@@ -135,6 +136,7 @@ MESSAGES = {
         "autostart.windows_limitations": "Windows: /sc onlogon starts only after a user logs on. Boot startup requires /sc onstart and SYSTEM or saved credentials. The current simple Task Scheduler setup has no gateway self-crash restart.",
         "note.eval_scope": "{tasks}-task deterministic micro-eval: instruction following, output format, extraction, translation direction. Not a knowledge benchmark; do not compare with MMLU-style scores.",
         "note.eval_uncertainty": "95% Wilson interval for the overall pass rate: {lo:.1%}–{hi:.1%}; this {tasks}-task suite cannot resolve pass-rate differences below {minimum:.1%} (exact test, α=0.05).",
+        "note.eval_suite_upgrade": "The {tasks}-task extended suite lowers the minimum resolvable difference to {minimum:.1%} at α=0.05; run `nmesh eval --suite extended` to get it.",
         "warn.eval_config_mismatch": "{model}: an eval pass rate exists but not for the planned configuration ({quant}, {backend}); measured pass rates are not portable across quantizations or backends. Re-run nmesh eval against the running service.",
         "note.eval_config": "This pass rate applies to {model} at {quant} on {backend} only. Measured here: the same model at the same Q4_K_M label scored 12/16 on llama.cpp and 13/16 on Ollama.",
         "note.eval_divergence": "{config}: pass rate {other_rate} there vs {rate} here; {count} of the {compared} compared tasks disagree ({ids}). Measured here: two fp16 configurations of Qwen2.5 0.5B both scored 9/16 while disagreeing on 2 tasks in opposite directions, so an equal pass rate does not mean equivalent behaviour.",
@@ -288,6 +290,30 @@ MESSAGES["ja"].update({
     "label.eval_overall": "\u5168\u4f53\u5408\u683c\u7387: {passed}/{total} ({rate:.1%})",
     "label.eval_failed": "\u5931\u6557\u30bf\u30b9\u30afID: {ids}",
     "label.eval_title": "nmesh eval",
+})
+
+MESSAGES["ja"].update({
+    "note.eval_underpowered": (
+        "{tasks}\u554f\u306e\u30b9\u30a4\u30fc\u30c8\u3067\u306f\u3001\u3053\u306e\u89b3\u6e2c\u30e9\u30f3\u30ad\u30f3\u30b0\u3092"
+        "\u89e3\u6c7a\u3067\u304d\u307e\u305b\u3093: {other_rate:.1%} \u5bfe {selected_rate:.1%}"
+        "\uff08\u6b63\u78ba\u306ap\u5024={p_value:.4f}\uff09\u3002\u03b1=0.05\u3067\u306e\u6700\u5c0f"
+        "\u89e3\u6c7a\u53ef\u80fd\u5dee\u306f {minimum:.1%}\u3067\u3042\u308a\u3001\u3053\u306e\u30b5\u30a4\u30ba\u3067"
+        "\u30e9\u30f3\u30ad\u30f3\u30b0\u306f\u78ba\u8a8d\u3082\u53cd\u8a3c\u3082\u3067\u304d\u307e\u305b\u3093\u3002"
+        "{upgrade_tasks}\u554f\u306e\u62e1\u5f35\u30b9\u30a4\u30fc\u30c8\u306a\u3089{upgrade_minimum:.1%}\u307e\u3067"
+        "\u89e3\u6c7a\u3067\u304d\u307e\u3059\u3002"
+    ),
+    "note.eval_underpowered_full": (
+        "{tasks}\u554f\u306e\u30b9\u30a4\u30fc\u30c8\u3067\u306f\u3001\u3053\u306e\u89b3\u6e2c\u30e9\u30f3\u30ad\u30f3\u30b0\u3092"
+        "\u89e3\u6c7a\u3067\u304d\u307e\u305b\u3093: {other_rate:.1%} \u5bfe {selected_rate:.1%}"
+        "\uff08\u6b63\u78ba\u306ap\u5024={p_value:.4f}\uff09\u3002\u03b1=0.05\u3067\u306e\u6700\u5c0f"
+        "\u89e3\u6c7a\u53ef\u80fd\u5dee\u306f {minimum:.1%}\u3067\u3042\u308a\u3001\u3053\u306e\u30b5\u30a4\u30ba\u3067"
+        "\u30e9\u30f3\u30ad\u30f3\u30b0\u306f\u78ba\u8a8d\u3082\u53cd\u8a3c\u3082\u3067\u304d\u307e\u305b\u3093\u3002"
+    ),
+    "note.eval_suite_upgrade": (
+        "{tasks}\u554f\u306e\u62e1\u5f35\u30b9\u30a4\u30fc\u30c8\u3067\u306f\u3001\u03b1=0.05\u3067\u6700\u5c0f"
+        "\u89e3\u6c7a\u53ef\u80fd\u5dee\u304c{minimum:.1%}\u307e\u3067\u5c0f\u3055\u304f\u306a\u308a\u307e\u3059\u3002"
+        "`nmesh eval --suite extended` \u3092\u5b9f\u884c\u3057\u3066\u304f\u3060\u3055\u3044\u3002"
+    ),
 })
 
 _PRIMARY_SUBTAG = re.compile(r"^[A-Za-z]+")
