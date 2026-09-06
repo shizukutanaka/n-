@@ -318,6 +318,32 @@ task's earlier divergence is not an artifact effect and remains unexplained at
 the chat layer. This remains one model on one CPU machine and does not
 generalize; eval records now carry an artifact fingerprint.
 
+### Evaluation uncertainty and resolving power
+
+The evaluation gate and its resolving power were checked with exact
+binomial/Fisher calculations:
+
+- The contradiction gate of `0.05` equals `0.8` tasks out of 16, while one
+  task is `0.0625`; a single flipped task can trip the gate.
+- At `n=16`, unpaired exact Fisher at `α=0.05` cannot resolve a pass-rate
+  difference below `0.3125`; against `12/16`, the opponent must be at most
+  `5/16` (a `0.44` gap) to be significant.
+- The measured comparisons were non-significant: `12/16` versus `9/16`
+  yielded `p=0.4578`, and `13/16` versus `12/16` (the backend comparison)
+  yielded `p=1.0`.
+- Wilson 95% intervals are much wider than the gate: `9/16 = 0.562`
+  [`0.332`, `0.769`], `12/16 = 0.750` [`0.505`, `0.898`], and
+  `13/16 = 0.812` [`0.570`, `0.934`].
+- For paired task results, exact McNemar requires at least six discordant tasks
+  all in one direction for `p<0.05`; the measured `1`-versus-`1` discordance
+  gave `p=1.0`.
+- At 80% power and `α=0.05`, the suite needs at least 62 tasks to resolve a
+  `0.20` gap and 294 tasks to resolve a `0.10` gap.
+
+Model selection is unchanged: these results only gate the contradiction
+warning and report underpowered evidence. A measured quality *floor* for the
+planner's score is not yet possible at this suite size.
+
 ### Speed preference saturation
 
 The planner's simulated bundled profiles show that the speed term is already

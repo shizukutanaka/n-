@@ -3,12 +3,21 @@ from __future__ import annotations
 import json
 import math
 import os
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
 
 from .runner import EvalRun
+
+
+@dataclass(frozen=True)
+class EvalSummary:
+    pass_rate: float
+    passed: int
+    n_tasks: int
+    task_results: Mapping[str, bool]
 
 
 @dataclass(frozen=True)

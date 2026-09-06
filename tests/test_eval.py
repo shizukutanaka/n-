@@ -10,9 +10,23 @@ import pytest
 
 from nmesh import cli
 from nmesh.catalog import ModelSpec
-from nmesh.eval import CATEGORIES, TASKS, EvalRun, Task, TaskOutcome, normalize
+from nmesh.eval import (
+    CATEGORIES,
+    TASKS,
+    EvalRun,
+    EvalSummary,
+    Task,
+    TaskOutcome,
+    normalize,
+)
 from nmesh.eval.cache import EvalRecord, load_eval_cache, save_eval
 from nmesh.eval.runner import run
+from nmesh.eval.stats import (
+    fisher_two_sided,
+    mcnemar_two_sided,
+    min_resolvable_difference,
+    wilson_interval,
+)
 from nmesh.planner import Policy, build_plan
 from nmesh.runtime import RuntimeStatus
 
@@ -87,6 +101,16 @@ def test_runner_all_pass_and_category_rates() -> None:
     assert _EvalHandler.bodies[0]["stream"] is False
     assert _EvalHandler.bodies[0]["max_tokens"] == 8
     assert _EvalHandler.bodies[0]["messages"] == [{"role": "user", "content": "one"}]
+
+
+def test_exact_eval_statistics() -> None:
+    assert fisher_two_sided(12, 4, 9, 7) == pytest.approx(0.4578, abs=0.0001)
+    assert fisher_two_sided(13, 3, 12, 4) == pytest.approx(1.0)
+    assert mcnemar_two_sided(1, 1) == pytest.approx(1.0)
+    assert mcnemar_two_sided(6, 0) == pytest.approx(0.03125)
+    assert mcnemar_two_sided(0, 0) == pytest.approx(1.0)
+    assert min_resolvable_difference(16) == 5 / 16
+    assert wilson_interval(12, 16) == pytest.approx((0.505, 0.898), abs=0.0005)
 
 
 def test_runner_mixed_and_transport_failure_continue() -> None:
@@ -189,15 +213,15 @@ def test_planner_quality_warning_and_unchanged_selection() -> None:
     contradictory = build_plan(
         profile(8), models, policy,
         eval_cache={
-            ("prior-high", "f16", "llamacpp"): 0.4,
-            ("measured-high", "f16", "llamacpp"): 0.8,
+            ("prior-high", "f16", "llamacpp"): EvalSummary(0.25, 4, 16, {}),
+            ("measured-high", "f16", "llamacpp"): EvalSummary(14 / 16, 14, 16, {}),
         },
     )
     consistent = build_plan(
         profile(8), models, policy,
         eval_cache={
-            ("prior-high", "f16", "llamacpp"): 0.8,
-            ("measured-high", "f16", "llamacpp"): 0.7,
+            ("prior-high", "f16", "llamacpp"): EvalSummary(0.8, 13, 16, {}),
+            ("measured-high", "f16", "llamacpp"): EvalSummary(0.7, 11, 16, {}),
         },
     )
     assert contradictory.services[0].model_id == ordinary.services[0].model_id
@@ -227,6 +251,9 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     output = json.loads(capsys.readouterr().out)
     assert output["key"] == "prior-high|f16|llamacpp"
     assert output["note"].startswith("1-task")
+    assert output["pass_rate_ci"] == pytest.approx((0.2065, 1.0), abs=0.0001)
+    assert output["min_resolvable_difference"] == 1.0
+    assert output["uncertainty_note"].startswith("95% Wilson interval")
     assert output["config_note"].startswith("This pass rate applies")
     assert output["failed"] == [{"id": "failed", "output": "bad"}]
 
@@ -236,8 +263,8 @@ def test_planner_deduplicates_multi_role_contradiction_warning() -> None:
     plan = build_plan(
         profile(8), models, Policy(roles=["chat", "code"]),
         eval_cache={
-            ("prior-high", "f16", "llamacpp"): 0.4,
-            ("measured-high", "f16", "llamacpp"): 0.8,
+            ("prior-high", "f16", "llamacpp"): EvalSummary(0.25, 4, 16, {}),
+            ("measured-high", "f16", "llamacpp"): EvalSummary(14 / 16, 14, 16, {}),
         },
     )
     contradictions = [warning for warning in plan.warnings if "pass rate ranks" in warning]
@@ -258,6 +285,80 @@ def test_planner_warns_when_eval_configuration_does_not_match() -> None:
     assert not any("pass rate ranks" in warning for warning in plan.warnings)
 
 
+def test_planner_reports_underpowered_eval_evidence() -> None:
+    models = _quality_models()
+    plan = build_plan(
+        profile(8), models, Policy(roles=["chat"]),
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): EvalSummary(12 / 16, 12, 16, {}),
+            ("measured-high", "f16", "llamacpp"): EvalSummary(13 / 16, 13, 16, {}),
+        },
+    )
+    assert not any("pass rate ranks" in warning for warning in plan.warnings)
+    assert any("neither confirmed nor contradicted" in note for note in plan.warnings)
+
+
+def test_planner_warns_for_significant_eval_gap() -> None:
+    models = _quality_models()
+    plan = build_plan(
+        profile(8), models, Policy(roles=["chat"]),
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): EvalSummary(4 / 16, 4, 16, {}),
+            ("measured-high", "f16", "llamacpp"): EvalSummary(14 / 16, 14, 16, {}),
+        },
+    )
+    contradiction = next(item for item in plan.warnings if "pass rate ranks" in item)
+    assert "p=" in contradiction
+    assert "16 tasks" in contradiction
+
+
+def test_planner_uses_paired_eval_evidence() -> None:
+    models = _quality_models()
+    selected = {f"task-{index}": index >= 6 for index in range(16)}
+    other = {f"task-{index}": True for index in range(16)}
+    significant = build_plan(
+        profile(8), models, Policy(roles=["chat"]),
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): EvalSummary(
+                10 / 16, 10, 16, selected,
+            ),
+            ("measured-high", "f16", "llamacpp"): EvalSummary(
+                1.0, 16, 16, other,
+            ),
+        },
+    )
+    assert any("pass rate ranks" in warning for warning in significant.warnings)
+
+    selected_balanced = {f"task-{index}": index % 2 == 0 for index in range(16)}
+    other_balanced = {f"task-{index}": index % 2 == 1 for index in range(16)}
+    balanced = build_plan(
+        profile(8), models, Policy(roles=["chat"]),
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): EvalSummary(
+                0.5, 8, 16, selected_balanced,
+            ),
+            ("measured-high", "f16", "llamacpp"): EvalSummary(
+                0.5, 8, 16, other_balanced,
+            ),
+        },
+    )
+    assert not any("pass rate ranks" in warning for warning in balanced.warnings)
+    assert not any("neither confirmed nor contradicted" in note for note in balanced.warnings)
+
+
+def test_planner_ignores_bare_float_eval_evidence() -> None:
+    models = _quality_models()
+    plan = build_plan(
+        profile(8), models, Policy(roles=["chat"]),
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): 0.25,
+            ("measured-high", "f16", "llamacpp"): 0.875,
+        },
+    )
+    assert not any("pass rate ranks" in warning for warning in plan.warnings)
+    assert not any("neither confirmed nor contradicted" in note for note in plan.warnings)
+
+
 def test_eval_rates_are_keyed_by_configuration(monkeypatch) -> None:
     records = {
         "old": EvalRecord("model", "f16", "llamacpp", 16, 8, 0.5, {}, 1.0),
@@ -266,8 +367,8 @@ def test_eval_rates_are_keyed_by_configuration(monkeypatch) -> None:
     }
     monkeypatch.setattr(cli, "load_eval_cache", lambda: records)
     assert cli._eval_rates() == {
-        ("model", "f16", "llamacpp"): 0.75,
-        ("model", "q4_k_m", "ollama"): 0.8125,
+        ("model", "f16", "llamacpp"): EvalSummary(0.75, 12, 16, {}),
+        ("model", "q4_k_m", "ollama"): EvalSummary(0.8125, 13, 16, {}),
     }
 
 

@@ -10,6 +10,12 @@ from pathlib import Path
 
 from nmesh import __version__
 from nmesh.catalog import ModelSpec
+from nmesh.eval.cache import EvalSummary
+from nmesh.eval.stats import (
+    fisher_two_sided,
+    mcnemar_two_sided,
+    min_resolvable_difference,
+)
 from nmesh.i18n import t
 from nmesh.paths import nmesh_home
 from nmesh.probe import GPUInfo, HardwareProfile, Tier
@@ -1202,7 +1208,9 @@ def _rewrite_launch(
 def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                policy: Policy | None = None,
                bench_cache: Mapping[object, float] | None = None,
-               eval_cache: Mapping[tuple[str, str, str], float] | None = None) -> Plan:
+               eval_cache: Mapping[
+                   tuple[str, str, str], float | EvalSummary
+               ] | None = None) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
     warning_params = profile.warning_params
@@ -1347,21 +1355,27 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             if isinstance(key, tuple)
             and len(key) == 3
             and all(isinstance(item, str) for item in key)
-            and isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and 0.0 <= value <= 1.0
+            and (
+                isinstance(value, EvalSummary)
+                or (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and 0.0 <= value <= 1.0
+                )
+            )
         }
         catalog_by_id = {model.id: model for model in catalog}
         contradiction_pairs: set[tuple[str, str]] = set()
         eval_mismatch_models: set[str] = set()
+        underpowered_emitted = False
         for service in services:
             selected_model = catalog_by_id.get(service.model_id)
             if selected_model is None:
                 continue
-            selected_rate = measured.get(
+            selected_evidence = measured.get(
                 (service.model_id, service.quant, service.backend)
             )
-            if selected_rate is None:
+            if selected_evidence is None:
                 if (
                     service.model_id not in eval_mismatch_models
                     and any(key[0] == service.model_id for key in measured)
@@ -1375,6 +1389,11 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         backend=service.backend,
                     ))
                 continue
+            selected_rate = (
+                selected_evidence.pass_rate
+                if isinstance(selected_evidence, EvalSummary)
+                else selected_evidence
+            )
             for role in service.roles:
                 for other in catalog:
                     if other.id == service.model_id or role not in other.roles:
@@ -1385,15 +1404,47 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     if not candidates:
                         continue
                     best = max(candidates, key=lambda candidate: candidate.score)
-                    other_rate = measured.get(
+                    other_evidence = measured.get(
                         (other.id, best.quant, best.backend)
                     )
-                    if other_rate is None:
-                        continue
-                    if (
-                        other_rate > selected_rate + 0.05
-                        and other.quality < selected_model.quality
+                    if not isinstance(selected_evidence, EvalSummary) or not isinstance(
+                        other_evidence, EvalSummary
                     ):
+                        continue
+                    other_rate = other_evidence.pass_rate
+                    if other_rate <= selected_rate or other.quality >= selected_model.quality:
+                        continue
+                    shared = (
+                        set(selected_evidence.task_results)
+                        & set(other_evidence.task_results)
+                    )
+                    if selected_evidence.task_results and other_evidence.task_results and shared:
+                        b = sum(
+                            other_evidence.task_results[task_id]
+                            and not selected_evidence.task_results[task_id]
+                            for task_id in shared
+                        )
+                        c = sum(
+                            selected_evidence.task_results[task_id]
+                            and not other_evidence.task_results[task_id]
+                            for task_id in shared
+                        )
+                        p_value = mcnemar_two_sided(b, c)
+                        compared = len(shared)
+                        suite_size = compared
+                    else:
+                        p_value = fisher_two_sided(
+                            other_evidence.passed,
+                            other_evidence.n_tasks - other_evidence.passed,
+                            selected_evidence.passed,
+                            selected_evidence.n_tasks - selected_evidence.passed,
+                        )
+                        compared = min(
+                            other_evidence.n_tasks,
+                            selected_evidence.n_tasks,
+                        )
+                        suite_size = compared
+                    if p_value < 0.05:
                         pair = (other.id, service.model_id)
                         if pair in contradiction_pairs:
                             continue
@@ -1408,6 +1459,19 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                             selected_rate=selected_rate,
                             other_prior=other.quality,
                             selected_prior=selected_model.quality,
+                            p_value=p_value,
+                            compared=compared,
+                        ))
+                    elif not underpowered_emitted:
+                        underpowered_emitted = True
+                        warnings.append(t(
+                            "note.eval_underpowered",
+                            selected.lang,
+                            tasks=suite_size,
+                            other_rate=other_rate,
+                            selected_rate=selected_rate,
+                            p_value=p_value,
+                            minimum=min_resolvable_difference(suite_size),
                         ))
     if total_download > selected.allow_download_gb * GIB:
         warnings.append(t("warn.download_budget", selected.lang))
