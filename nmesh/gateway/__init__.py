@@ -69,6 +69,35 @@ def _upstream_float(value: object) -> float | None:
     return float(value)
 
 
+class _Ticket:
+    __slots__ = ("peak",)
+
+    def __init__(self) -> None:
+        self.peak = 1
+
+
+class _InFlight:
+    def __init__(self) -> None:
+        self._active: dict[str, set[_Ticket]] = {}
+
+    def enter(self, service: str) -> _Ticket:
+        ticket = _Ticket()
+        active = self._active.setdefault(service, set())
+        active.add(ticket)
+        current = len(active)
+        for item in active:
+            item.peak = max(item.peak, current)
+        return ticket
+
+    def leave(self, service: str, ticket: _Ticket) -> int:
+        active = self._active.get(service)
+        if active is not None:
+            active.discard(ticket)
+            if not active:
+                self._active.pop(service, None)
+        return ticket.peak
+
+
 def _timing_metrics(timings: object) -> tuple[float | None, float | None]:
     if not isinstance(timings, dict):
         return None, None
@@ -568,6 +597,7 @@ def create_app(
 
     gate = SwapGate()
     limiter = SlotLimiter()
+    in_flight = _InFlight()
     plan_state = _PlanState(selected, explicit, gate, limiter)
     api_key = os.environ.get("NMESH_API_KEY")
     api_key_bytes = api_key.encode("utf-8") if api_key is not None else None
@@ -630,6 +660,7 @@ def create_app(
         url = f"{_base_url(service)}{path}"
         assert httpx is not None
         client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0))
+        ticket = in_flight.enter(service.name)
         if request.get("stream"):
             stream_options = request.get("stream_options")
             request_wants_usage = (
@@ -657,6 +688,7 @@ def create_app(
                     upstream = await client.send(upstream_request, stream=True)
             except HTTPException:
                 await client.aclose()
+                in_flight.leave(service.name, ticket)
                 if locked:
                     gate.release()
                 if limit_slots:
@@ -664,6 +696,7 @@ def create_app(
                 raise
             except httpx.HTTPError as error:
                 await client.aclose()
+                in_flight.leave(service.name, ticket)
                 if locked:
                     gate.release()
                 if limit_slots:
@@ -673,6 +706,7 @@ def create_app(
                 content = await upstream.aread()
                 await upstream.aclose()
                 await client.aclose()
+                in_flight.leave(service.name, ticket)
                 if locked:
                     gate.release()
                 if limit_slots:
@@ -763,6 +797,7 @@ def create_app(
                 finally:
                     await upstream.aclose()
                     await client.aclose()
+                    in_flight_peak = in_flight.leave(service.name, ticket)
                     if locked:
                         gate.release()
                     if limit_slots:
@@ -802,6 +837,7 @@ def create_app(
                                 time.perf_counter() - started, completion_tokens, time.time(),
                                 not exact,
                                 timing_prefill,
+                                in_flight_peak,
                             ))
                         except Exception:  # noqa: BLE001, S110
                             pass
@@ -828,6 +864,7 @@ def create_app(
             raise HTTPException(status_code=502, detail=str(error)) from error
         finally:
             await client.aclose()
+            in_flight_peak = in_flight.leave(service.name, ticket)
             if locked:
                 gate.release()
             if limit_slots:
@@ -858,6 +895,7 @@ def create_app(
                     time.perf_counter() - started, completion_tokens, time.time(),
                     not exact,
                     timing_prefill,
+                    in_flight_peak,
                 ))
             except Exception:  # noqa: BLE001, S110
                 pass

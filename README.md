@@ -205,6 +205,13 @@ series carry an `approximate` label so estimated values are not presented as
 measurements. The decode-throughput family is named
 `nmesh_telemetry_decode_tokens_per_second_median`; time values use the
 `_seconds` base unit.
+Only telemetry samples recorded with one request in flight feed the planner's
+decode-rate overlay. Samples observed under load remain visible in
+`nmesh status` telemetry but never override the benchmark value. On one CPU
+machine with llama.cpp and one model, four and eight overlapping requests
+reduced the per-request decode rates to 36.64 and 23.30 tok/s versus about
+46.2 tok/s alone, while aggregate server throughput rose; this scope does not
+generalize.
 HTTP response bodies remain English because `/v1/*` errors and authentication
 details are machine-facing API contracts for clients.
 
