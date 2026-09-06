@@ -354,10 +354,30 @@ The 96-task category mix is instruction 18 / format 19 / arithmetic 30 /
 extraction 23 / multilingual 6.
 
 The default remains the `core` suite, so historical records and runtime
-behaviour are unchanged; `nmesh eval --suite extended` is opt-in. The extended
-suite has not yet been run against a model. Tasks within one family are not
-independent samples, so the effective sample size is below 96 and the exact
-tests are optimistic to that extent.
+behaviour are unchanged; `nmesh eval --suite extended` is opt-in. Tasks within
+one family are not independent samples, so the effective sample size is below
+96 and the exact tests are optimistic to that extent.
+
+The extended suite was run on one CPU machine, both models on llama.cpp so the
+backend and artifact effects found earlier are not in the way: Qwen2.5 1.5B
+Q4_K_M scored `72/96` (Wilson [`0.655`, `0.826`]) and Qwen2.5 0.5B fp16 scored
+`62/96` (Wilson [`0.546`, `0.734`]). The result is that the *pairing* carries
+the evidence, not the suite size alone:
+
+- unpaired exact Fisher on the same two totals is still not significant:
+  `p=0.1569` for a `0.104` gap, because `0.0625` is the minimum resolvable
+  difference only for the most extreme split;
+- exact McNemar on the 96 paired task outcomes *is* significant: 13 tasks
+  passed only on the 1.5B, 3 only on the 0.5B, 80 concordant, `p=0.0213`;
+- the same paired comparison restricted to the 16 core tasks gives `0` versus
+  `3` discordant tasks and `p=0.2500`, so this ranking became decidable only
+  after the suite grew.
+
+This is the first catalog quality ranking in this repository backed by a
+significant measurement rather than a hand-written prior. It also shows where
+the extension is wasteful: `extraction.*` fails on both models (`0.348` and
+`0.174` category rates), and tasks both models fail are concordant and carry
+no discriminating power.
 
 ### Speed preference saturation
 
