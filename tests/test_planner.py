@@ -24,6 +24,22 @@ def assert_memory_fit(result) -> None:
         assert service.memory.cpu_bytes <= service.memory.ram_budget + 1
 
 
+def test_launch_uses_resolved_backend_binary_when_present(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    resolved = planner_core._launch(
+        "llamacpp", model, "q4_k_m", 4096, 18010, 0, 1,
+        binary="C:/llamacpp/llama-server.exe",
+    )
+    default = planner_core._launch(
+        "llamacpp", model, "q4_k_m", 4096, 18010, 0, 1,
+    )
+
+    assert resolved.argv[0] == "C:/llamacpp/llama-server.exe"
+    assert default.argv[0] == "llama-server"
+
+
 def profile(
     ram_gib: int,
     gpu_gib: tuple[int, ...] = (),
