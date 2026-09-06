@@ -36,9 +36,16 @@ class SourceStatus:
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
-_ZENN_TOPICS = ("llm", "ollama", "llama.cpp", "vllm", "gguf", "localllm")
-_QIITA_TAGS = ("llm", "ollama", "llamacpp", "vllm", "gguf", "localllm")
-_ZENN_TOPIC_NAMES = {"llama.cpp": "llama-cpp", "localllm": "local-llm"}
+_ZENN_TOPICS = ("llm", "ollama", "llamacpp", "vllm", "gguf", "localllm")
+_QIITA_TAGS = (
+    "llm",
+    "ollama",
+    "llama.cpp",
+    "llamacpp",
+    "vllm",
+    "gguf",
+    "localllm",
+)
 
 
 def _failure(name: str, error: object, auth_required: bool = False) -> tuple[
@@ -55,11 +62,11 @@ def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _limit_items(items: Sequence[SourceItem], limit: int) -> tuple[SourceItem, ...]:
+def _unique_items(items: Sequence[SourceItem]) -> tuple[SourceItem, ...]:
     unique: dict[str, SourceItem] = {}
     for item in items:
         unique.setdefault(item.url, item)
-    return tuple(unique.values())[:limit]
+    return tuple(unique.values())
 
 
 def fetch_qiita(
@@ -100,7 +107,7 @@ def fetch_qiita(
                     _text(item.get("body")),
                     _text(item.get("created_at")),
                 ))
-        selected = _limit_items(items, limit)
+        selected = _unique_items(items)
         return SourceStatus("qiita", True, len(selected), True, False, ""), selected
     except (httpx.HTTPError, ValueError, TypeError) as error:
         return _failure("qiita", error)
@@ -123,11 +130,12 @@ def fetch_zenn(
     session = client or httpx.Client(timeout=10.0, follow_redirects=True)
     try:
         items: list[SourceItem] = []
+        yields: list[str] = []
         for topic in topics:
             response = session.get(
                 "https://zenn.dev/api/articles",
                 params={
-                    "topicname": _ZENN_TOPIC_NAMES.get(topic, topic),
+                    "topicname": topic,
                     "order": "latest",
                 },
             )
@@ -135,7 +143,9 @@ def fetch_zenn(
             payload = _mapping(response.json())
             if payload is None or not isinstance(payload.get("articles"), list):
                 raise ValueError("Zenn response did not contain articles")
-            for raw in payload["articles"]:
+            articles = payload["articles"][:limit]
+            yields.append(f"{topic}={len(articles)}")
+            for raw in articles:
                 article = _mapping(raw)
                 if article is None:
                     continue
@@ -152,12 +162,15 @@ def fetch_zenn(
                     _strip_html(page.text),
                     _text(article.get("published_at") or article.get("publishedAt")),
                 ))
-                if len(items) >= limit:
-                    break
-            if len(items) >= limit:
-                break
-        selected = _limit_items(items, limit)
-        return SourceStatus("zenn", True, len(selected), True, False, ""), selected
+        selected = _unique_items(items)
+        return SourceStatus(
+            "zenn",
+            True,
+            len(selected),
+            True,
+            False,
+            "; ".join(yields),
+        ), selected
     except (httpx.HTTPError, ValueError, TypeError) as error:
         return _failure("zenn", error)
     finally:

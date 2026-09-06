@@ -406,18 +406,34 @@ establish a ranking for any other model pair.
 
 ### Periodic external watch
 
-`nmesh watch` circulates through Zenn, Qiita, and optionally X to collect
-possible flags, model repositories, quantization labels, and gateway routes.
-An external post is only a pointer: every finding is checked against the
-Hugging Face API and config, recorded llama.cpp capabilities, the local
-catalog, or the gateway's actual routes. Nothing is auto-applied, and drafts
-are written only when the user supplies `--write-drafts`; model `quality` is
-never invented because only `nmesh eval` can measure it. X is reported as
-unavailable unless `NMESH_X_BEARER_TOKEN` is set. Zenn RSS carries summaries
-only, so the watcher uses the article API and fetches article HTML bodies.
-`--offline` accepts saved source items for reproducible extraction and
-verification, while bounded state prevents repeated findings from growing
-without limit.
+`nmesh watch` treats external posts as claims and pointers, not evidence.
+Zenn RSS: 120 items = 41,405 chars total → 0 CLI flags, 0 `/v1/` routes
+extractable, which is why bodies are fetched through the article API + HTML.
+The `--limit` value applies independently to every source tag or topic;
+per-URL deduplication still applies across the combined result.
+
+Qiita API bodies: 100 items = 1,052,406 chars → 190 distinct flags, of which
+132 (69%) are unknown to this machine's 331-flag llama-server. The top
+unknowns are vLLM flags:
+`--gpu-memory-utilization`, `--tensor-parallel-size`, `--max-model-len`,
+`--max-num-seqs`, `--enforce-eager`, and `--kv-cache-dtype`. Unknown means
+not this backend's flag, not that the feature is missing.
+
+41 distinct Hugging Face repo ids were mentioned across Zenn+Qiita; 0 of them
+appear among the 51 repo ids in the bundled catalog. The catalog is Qwen2.5-era
+while current discussion includes Qwen3.x, gemma-4, MiniMax-H3, llm-jp-4, and
+Nemotron. Mention counts indicate popularity, not quality — quality still
+requires `nmesh eval`, so drafts carry `quality: null`.
+
+Noise IDs such as `docs/hub`, `papers/2504.13181`, `datasets/leemeng`, and
+`blog/nvidia` are filtered by the Hugging Face 401/404 gate. GGUF mirror
+repositories commonly return 404 for `config.json`, including
+`Qwen/Qwen3-14B-GGUF` and `ggml-org/...-GGUF`; architecture numbers then come
+from the base repository recorded in `config_repo`. GitHub's API returned 403
+from this box, so there is deliberately no releases source. X is unavailable
+without `NMESH_X_BEARER_TOKEN`. `--offline` accepts saved source items for
+reproducible extraction and verification, and bounded state prevents repeated
+findings from growing without limit. No finding is auto-applied to the product.
 
 ### Speed preference saturation
 

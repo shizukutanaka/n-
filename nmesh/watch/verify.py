@@ -80,10 +80,14 @@ def _config_fields(payload: Mapping[str, object]) -> dict[str, object]:
 
 
 def _model_finding(
-    mention: Mention, client: httpx.Client
+    mention: Mention,
+    client: httpx.Client,
+    stats: dict[str, int] | None = None,
 ) -> Finding | None:
     repo = mention.value
     try:
+        if _catalog_contains(repo):
+            return None
         response = client.get(f"https://huggingface.co/api/models/{repo}")
         if response.status_code in {401, 404}:
             return None
@@ -91,6 +95,8 @@ def _model_finding(
         metadata = _mapping(response.json())
         if metadata is None:
             return None
+        if stats is not None:
+            stats["resolved_repo_ids"] = stats.get("resolved_repo_ids", 0) + 1
         siblings_value = metadata.get("siblings")
         siblings = (
             tuple(
@@ -130,28 +136,38 @@ def _model_finding(
             config_response.raise_for_status()
         verified.update(config_fields)
         verified["config_repo"] = config_repo if config_fields else ""
-        if _catalog_contains(repo):
-            return None
         return Finding("catalog_gap", repo, mention.count, mention.sources, verified)
     except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError):
         return None
 
 
-def _caps_flags() -> frozenset[str] | None:
+def _caps_flags() -> tuple[frozenset[str], tuple[dict[str, object], ...]] | None:
     path = nmesh_home() / _CAPS_PATH
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         entries = payload.get("entries") if isinstance(payload, dict) else None
         if not isinstance(entries, dict) or not entries:
             return None
-        flags = {
-            str(flag)
-            for entry in entries.values()
-            if isinstance(entry, dict)
-            for flag in entry.get("flags", [])
-            if isinstance(flag, str)
-        }
-        return frozenset(flags) if flags else None
+        combined: set[str] = set()
+        binaries: list[dict[str, object]] = []
+        for path, entry in entries.items():
+            if not isinstance(entry, dict):
+                continue
+            raw_flags = entry.get("flags")
+            if not isinstance(raw_flags, list):
+                continue
+            flags = {flag for flag in raw_flags if isinstance(flag, str)}
+            if not flags:
+                continue
+            combined.update(flags)
+            binary = entry.get("binary")
+            binaries.append({
+                "path": binary if isinstance(binary, str) else str(path),
+                "flag_count": len(flags),
+            })
+        if not combined:
+            return None
+        return frozenset(combined), tuple(binaries)
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
         return None
 
@@ -190,14 +206,16 @@ def _known_quant(value: str) -> bool:
 def verify(
     mentions: Sequence[Mention],
     client: httpx.Client,
+    catalog_stats: dict[str, int] | None = None,
 ) -> tuple[Finding, ...]:
     """Return only mentions confirmed against local or remote ground truth."""
     findings: list[Finding] = []
-    flags = _caps_flags()
+    flags_data = _caps_flags()
+    flags = flags_data[0] if flags_data is not None else None
     routes = _gateway_routes()
     for mention in mentions:
         if mention.kind == "model_repo":
-            finding = _model_finding(mention, client)
+            finding = _model_finding(mention, client, catalog_stats)
             if finding is not None:
                 findings.append(finding)
         elif mention.kind == "flag" and flags is not None and mention.value not in flags:
@@ -206,7 +224,10 @@ def verify(
                 mention.value,
                 mention.count,
                 mention.sources,
-                {"backend": "llamacpp", "flag_count": len(flags)},
+                {
+                    "binaries": list(flags_data[1]) if flags_data is not None else [],
+                    "flag_count": len(flags),
+                },
             ))
         elif (
             mention.kind == "route"

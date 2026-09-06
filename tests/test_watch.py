@@ -8,7 +8,15 @@ import httpx
 from nmesh.cli import main
 from nmesh.watch.draft import write_draft
 from nmesh.watch.extract import Mention, extract
-from nmesh.watch.sources import SourceItem, SourceStatus, fetch_x, fetch_zenn
+from nmesh.watch.sources import (
+    _QIITA_TAGS,
+    _ZENN_TOPICS,
+    SourceItem,
+    SourceStatus,
+    fetch_qiita,
+    fetch_x,
+    fetch_zenn,
+)
 from nmesh.watch.state import WatchState, load_state, save_state
 from nmesh.watch.verify import Finding, verify
 
@@ -30,6 +38,56 @@ def test_zenn_fetches_article_body_not_summary() -> None:
     assert status.reachable is True
     assert status.body_available is True
     assert items[0].body.strip() == "--gpu-memory-utilization"
+
+
+def test_source_topic_constants_use_verified_names() -> None:
+    assert _ZENN_TOPICS == ("llm", "ollama", "llamacpp", "vllm", "gguf", "localllm")
+    assert "llama.cpp" in _QIITA_TAGS
+    assert "llamacpp" in _QIITA_TAGS
+
+
+def test_zenn_limit_is_per_topic_and_zero_yields_are_visible() -> None:
+    topics: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        topic = request.url.params["topicname"]
+        topics.append(topic)
+        if topic == "empty":
+            return httpx.Response(200, json={"articles": []})
+        return httpx.Response(200, json={
+            "articles": [
+                {"path": f"/a/{topic}/one", "title": topic},
+                {"path": f"/a/{topic}/two", "title": topic},
+            ],
+        })
+
+    def combined(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/articles":
+            return handler(request)
+        return httpx.Response(200, text="<p>body</p>")
+
+    status, items = fetch_zenn(("llm", "empty", "gguf"), 1, _client(combined))
+    assert topics == ["llm", "empty", "gguf"]
+    assert len(items) == 2
+    assert status.detail == "llm=1; empty=0; gguf=1"
+
+
+def test_qiita_limit_is_per_tag() -> None:
+    tags: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        query = request.url.params["query"]
+        tag = query.removeprefix("tag:")
+        tags.append(tag)
+        assert request.url.params["per_page"] == "1"
+        return httpx.Response(200, json=[
+            {"url": f"https://qiita.com/{tag}/one", "title": tag, "body": ""},
+        ])
+
+    status, items = fetch_qiita(("llama.cpp", "llamacpp", "localllm"), 1, _client(handler))
+    assert tags == ["llama.cpp", "llamacpp", "localllm"]
+    assert status.items == 3
+    assert len(items) == 3
 
 
 def test_x_without_token_reports_auth_required(monkeypatch) -> None:
@@ -97,7 +155,7 @@ def test_catalog_gap_is_suppressed_for_existing_source(monkeypatch) -> None:
     mentions = (Mention("model_repo", "acme/thing", 1, ("u",)),)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"siblings": []})
+        raise AssertionError("catalog-known repository should not query Hugging Face")
 
     with _client(handler) as client:
         assert verify(mentions, client) == ()
@@ -108,13 +166,45 @@ def test_huggingface_extraction_is_anchored() -> None:
         "qiita",
         "https://example/item",
         "",
-        "日本語 prose org/name docs/hub https://huggingface.co/acme/thing",
+        "日本語 prose org/name https://huggingface.co/docs/hub "
+        "https://huggingface.co/papers/2504.13181 "
+        "https://huggingface.co/datasets/leemeng "
+        "https://huggingface.co/blog/nvidia "
+        "https://huggingface.co/acme/thing",
         "",
     ),)
     mentions = extract(items)
-    assert [(item.kind, item.value) for item in mentions] == [
-        ("model_repo", "acme/thing"),
+    assert [item.value for item in mentions] == [
+        "acme/thing",
+        "blog/nvidia",
+        "datasets/leemeng",
+        "docs/hub",
+        "papers/2504.13181",
     ]
+    with _client(lambda request: httpx.Response(404)) as client:
+        assert verify(mentions, client) == ()
+
+
+def test_flag_finding_records_caps_binaries(tmp_path: Path, monkeypatch) -> None:
+    caps = tmp_path / "caps.json"
+    caps.write_text(json.dumps({
+        "entries": {
+            "C:/llama-a.exe": {"flags": ["--known"]},
+            "C:/llama-b.exe": {"flags": ["--other", "--known"]},
+        },
+    }), encoding="utf-8")
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setattr("nmesh.watch.verify._gateway_routes", lambda: frozenset())
+    mentions = (Mention("flag", "--unknown", 1, ("u",)),)
+    with _client(lambda request: httpx.Response(500)) as client:
+        findings = verify(mentions, client)
+    assert findings[0].verified == {
+        "binaries": [
+            {"path": "C:/llama-a.exe", "flag_count": 1},
+            {"path": "C:/llama-b.exe", "flag_count": 2},
+        ],
+        "flag_count": 2,
+    }
 
 
 def test_state_round_trip_and_dedup(tmp_path: Path) -> None:
@@ -181,6 +271,7 @@ def test_cli_offline_json_shape_and_all_sources_unreachable(
         "new_findings",
         "drafts",
         "notes",
+        "catalog",
     }
     monkeypatch.setattr(
         "nmesh.cli.fetch_zenn",
@@ -208,7 +299,10 @@ def test_cli_state_deduplication_and_all_override(tmp_path: Path, monkeypatch, c
         ("https://example/item",),
         {"backend": "llamacpp", "flag_count": 1},
     )
-    monkeypatch.setattr("nmesh.cli.verify", lambda mentions, client: (finding,))
+    monkeypatch.setattr(
+        "nmesh.cli.verify",
+        lambda mentions, client, catalog_stats: (finding,),
+    )
     assert main(["watch", "--offline", str(items), "--json"]) == 0
     first = json.loads(capsys.readouterr().out)
     assert first["new_findings"] == 1

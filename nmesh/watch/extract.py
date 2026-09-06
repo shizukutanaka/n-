@@ -31,10 +31,7 @@ def _matches(kind: str, body: str) -> tuple[str, ...]:
     if kind == "flag":
         return tuple(_FLAG_RE.findall(body))
     if kind == "model_repo":
-        return tuple(
-            repo for repo in _HF_RE.findall(body)
-            if repo.lower() not in {"docs/hub", "blog/nvidia"}
-        )
+        return tuple(_HF_RE.findall(body))
     if kind == "quant":
         return tuple(_QUANT_RE.findall(body))
     return tuple(_ROUTE_RE.findall(body))

@@ -946,7 +946,16 @@ def _watch(args: argparse.Namespace) -> int:
                 statuses = tuple(result[0] for result in results.values())
                 items = tuple(item for result in results.values() for item in result[1])
             mentions = extract_mentions(items)
-            findings = verify(mentions, client)
+            mentioned_repo_ids = {
+                mention.value.casefold()
+                for mention in mentions
+                if mention.kind == "model_repo"
+            }
+            catalog_stats = {
+                "mentioned_repo_ids": len(mentioned_repo_ids),
+                "resolved_repo_ids": 0,
+            }
+            findings = verify(mentions, client, catalog_stats)
     except (
         OSError,
         TypeError,
@@ -1010,6 +1019,21 @@ def _watch(args: argparse.Namespace) -> int:
         "new_findings": len(new_keys),
         "drafts": drafts,
         "notes": notes,
+        "catalog": {
+            "entries": len(catalog := load_catalog()),
+            "repo_ids": len({
+                value.casefold()
+                for model in catalog
+                for value in model.sources.values()
+            }),
+            "mentioned_repo_ids": catalog_stats["mentioned_repo_ids"],
+            "resolved_repo_ids": catalog_stats["resolved_repo_ids"],
+            "absent_repo_ids": len({
+                finding.value.casefold()
+                for finding in findings
+                if finding.kind == "catalog_gap"
+            }),
+        },
     }
     if args.json:
         _print_json(output)
@@ -1018,13 +1042,40 @@ def _watch(args: argparse.Namespace) -> int:
         table.add_column(i18n.t("label.watch_source", language))
         table.add_column(i18n.t("label.watch_reachable", language))
         table.add_column(i18n.t("label.watch_items", language))
+        table.add_column(i18n.t("label.watch_detail", language))
         for status in statuses:
             table.add_row(
                 status.name,
                 str(status.reachable),
                 str(status.items),
+                status.detail,
             )
         _console().print(table)
+        catalog = output["catalog"]
+        catalog_table = Table(title=i18n.t("label.watch_catalog_title", language))
+        catalog_table.add_column(i18n.t("label.watch_metric", language))
+        catalog_table.add_column(i18n.t("label.watch_value", language))
+        catalog_table.add_row(
+            i18n.t("label.watch_catalog_entries", language),
+            str(catalog["entries"]),
+        )
+        catalog_table.add_row(
+            i18n.t("label.watch_catalog_repo_ids", language),
+            str(catalog["repo_ids"]),
+        )
+        catalog_table.add_row(
+            i18n.t("label.watch_catalog_mentioned", language),
+            str(catalog["mentioned_repo_ids"]),
+        )
+        catalog_table.add_row(
+            i18n.t("label.watch_catalog_resolved", language),
+            str(catalog["resolved_repo_ids"]),
+        )
+        catalog_table.add_row(
+            i18n.t("label.watch_catalog_absent", language),
+            str(catalog["absent_repo_ids"]),
+        )
+        _console().print(catalog_table)
         for finding in findings:
             _console().print(i18n.t(
                 "label.watch_finding",
@@ -1113,7 +1164,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     eval_parser.add_argument("--suite", choices=("core", "extended"), default="core")
     watch_parser = sub.add_parser("watch")
     watch_parser.add_argument("--sources", default="zenn,qiita")
-    watch_parser.add_argument("--limit", type=_positive_int, default=20)
+    watch_parser.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=20,
+        help="items per source tag/topic",
+    )
     watch_parser.add_argument("--all", action="store_true", dest="all")
     watch_parser.add_argument("--json", action="store_true")
     watch_parser.add_argument("--write-drafts")
