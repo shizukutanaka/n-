@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import threading
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -567,6 +568,12 @@ def _reload_plans(port: int) -> tuple[Plan, Plan]:
     return old, new
 
 
+def _reserved_port() -> socket.socket:
+    reserved = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    reserved.bind(("127.0.0.1", 0))
+    return reserved
+
+
 def _start_reload_upstream() -> ThreadingHTTPServer:
     _ReloadHandler.bodies = []
     _ReloadHandler.block = False
@@ -697,13 +704,17 @@ def test_gateway_retries_once_after_connect_error(monkeypatch) -> None:
         calls.append((name, snapshot))
 
     monkeypatch.setattr(gateway_module, "ensure_running", fake_ensure)
-    client = TestClient(create_app(plan))
-    response = client.post("/v1/chat/completions", json={
-        "model": "nmesh-auto", "messages": [{"role": "user", "content": "hello"}],
-    })
+    with _reserved_port() as reserved:
+        service = replace(service, port=reserved.getsockname()[1])
+        isolated_plan = replace(plan, services=[service])
+        with TestClient(create_app(isolated_plan)) as client:
+            response = client.post("/v1/chat/completions", json={
+                "model": "nmesh-auto",
+                "messages": [{"role": "user", "content": "hello"}],
+            })
+            assert client.get("/metrics").json()["concurrency"][service.name]["in_flight"] == 0
     assert response.status_code == 502
     assert response.json()["error"]["type"] == "server_error"
     assert response.json()["error"]["code"] == 502
     assert len(calls) == 1
-    assert calls[0] == (service.name, plan)
-    assert client.get("/metrics").json()["concurrency"][service.name]["in_flight"] == 0
+    assert calls[0] == (service.name, isolated_plan)
