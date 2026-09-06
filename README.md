@@ -297,17 +297,19 @@ artifact. Equal pass rates therefore do not imply equivalent behaviour.
 This is one model on one CPU machine and does not generalize; no underlying
 cause is established by this measurement.
 
-Further controlled checks found that the 0.5B fp16 answers remained different
-when both backends received the same fully expanded ChatML prompt, with
-`top_k=1` and `repeat_penalty` pinned to both 1.0 and 1.1, and with cold or
-warm llama.cpp prompt-cache state. The official GGUF has 291 tensors and a
-separate F16 `output.weight`, while the Ollama blob has 290 tensors and no
-separate `output.weight`; their sizes are 1,266,425,696 and 994,156,864
-bytes, respectively, a difference of 272,268,832 bytes matching the missing
-tensor size. These observations identify different artifacts, not an
-underlying cause: eval records now carry an artifact fingerprint, but no
-claim is made that the missing tensor or any other implementation detail
-causes the answer difference. This remains one model on one CPU machine.
+Further controlled checks scoped those eliminations to `arithmetic.subtract`:
+with the same fully expanded 48-token raw ChatML prompt, `top_k=1`,
+`repeat_penalty` pinned to both 1.0 and 1.1, and cold or warm llama.cpp
+prompt-cache state, the answer still differed. A single llama.cpp binary with
+the same `-c 4096 -t 8` flags and prompt, changing only the weights file,
+answered `767` with the official GGUF and `747` with the Ollama blob. This
+establishes the weights file as the variable that changes that answer, but not
+which in-file difference does so; the separate or missing `output.weight` is
+not asserted as the mechanism. With that same raw prompt, both artifacts
+answered `猫は sleeping です。` for `multilingual.ja_translate`, so that
+task's earlier divergence is not an artifact effect and remains unexplained at
+the chat layer. This remains one model on one CPU machine and does not
+generalize; eval records now carry an artifact fingerprint.
 
 CLI commands return `0` only when the requested operation succeeds. A failed
 plan, unavailable gateway/backend, failed benchmark, missing plan, or non-zero

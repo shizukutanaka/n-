@@ -195,7 +195,12 @@ def _throughput(model: ModelSpec, memory: MemoryEstimate, layers: int,
     no dequantization). The 40 GB/s CPU value is a memory-bandwidth stand-in
     validated to about 7% for quantized CPU inference here. GPU bandwidth
     table values are unvalidated; these measurements do not promise
-    generalization.
+    generalization. Two same-model artifacts differing by 272,268,832 bytes
+    (21%) decoded at 59.48 versus 59.43 tok/s median-of-5 on this machine,
+    within 0.1%; the larger file's separate output.weight duplicates the tied
+    embedding and adds no per-token work, so bytes on disk (and weight_bytes
+    derived from a params-by-bpw label) can overstate bytes actually read per
+    token for an artifact with an untied duplicate head.
     """
     gpu_frac = layers / model.n_layers
     if gpu_frac == 0 or not profile.gpus:
