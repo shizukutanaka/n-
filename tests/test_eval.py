@@ -132,6 +132,7 @@ def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
         "model", "q4_k_m", "llamacpp", 2, 1, 0.5, {"chat": 0.5},
         [TaskOutcome("one", "chat", True, "yes"), TaskOutcome("two", "chat", False, "no")],
         3.0,
+        "gguf:2:123:abcdef",
     )
     save_eval(result, path)
     loaded = load_eval_cache(path)
@@ -139,6 +140,7 @@ def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
     assert loaded["model|q4_k_m|llamacpp"].task_results == {
         "one": True, "two": False,
     }
+    assert loaded["model|q4_k_m|llamacpp"].artifact == "gguf:2:123:abcdef"
     assert "outcomes" not in json.loads(path.read_text(encoding="utf-8"))["results"][
         "model|q4_k_m|llamacpp"
     ]
@@ -158,7 +160,12 @@ def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
     }
     path.write_text(json.dumps(legacy), encoding="utf-8")
     assert load_eval_cache(path)["legacy"].task_results == {}
+    assert load_eval_cache(path)["legacy"].artifact == ""
     legacy["results"]["legacy"]["task_results"] = {"one": "yes"}
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    assert load_eval_cache(path) == {}
+    legacy["results"]["legacy"]["task_results"] = {}
+    legacy["results"]["legacy"]["artifact"] = 1
     path.write_text(json.dumps(legacy), encoding="utf-8")
     assert load_eval_cache(path) == {}
     path.write_text("{broken", encoding="utf-8")
@@ -300,6 +307,7 @@ def test_eval_divergence_reports_disagreeing_tasks() -> None:
     }
     assert cli._eval_divergence(result, records) == [{
         "config": "f16|ollama",
+        "artifact": None,
         "pass_rate": 0.5,
         "compared": 2,
         "disagreeing": [
@@ -307,3 +315,35 @@ def test_eval_divergence_reports_disagreeing_tasks() -> None:
             "multilingual.ja_translate",
         ],
     }]
+
+
+def test_eval_cli_warns_when_artifact_changes(monkeypatch, capsys) -> None:
+    service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
+    result = EvalRun(
+        "prior-high", "q4_k_m", "llamacpp", 1, 1, 1.0,
+        {"instruction": 1.0},
+        [TaskOutcome("one", "instruction", True, "yes")],
+        3.0,
+    )
+    previous = EvalRecord(
+        "prior-high", service_plan.services[0].quant, service_plan.services[0].backend,
+        1, 1, 1.0, {}, 2.0, {}, "old-artifact",
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: RuntimeStatus(
+        True, [{"service": "chat", "running": True}],
+    ))
+    monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref: result)
+    monkeypatch.setattr(cli, "service_fingerprint", lambda backend, model_ref: "new-artifact")
+    monkeypatch.setattr(
+        cli,
+        "load_eval_cache",
+        lambda: {f"prior-high|{service_plan.services[0].quant}|llamacpp": previous},
+    )
+    monkeypatch.setattr(cli, "save_eval", lambda value: None)
+    assert cli.main(["eval", "--json"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["artifact"] == "new-artifact"
+    assert output["artifact_warning"].count("old-artifact") == 1
+    assert output["artifact_warning"].count("new-artifact") == 1

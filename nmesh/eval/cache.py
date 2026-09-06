@@ -22,6 +22,7 @@ class EvalRecord:
     by_category: dict[str, float]
     at: float
     task_results: dict[str, bool] = field(default_factory=dict)
+    artifact: str = ""
 
 
 def _record(data: object) -> EvalRecord | None:
@@ -44,6 +45,7 @@ def _record(data: object) -> EvalRecord | None:
         pass_rate = data["pass_rate"]
         at = data["at"]
         task_results = data.get("task_results", {})
+        artifact = data.get("artifact", "")
         if (
             isinstance(n_tasks, bool)
             or not isinstance(n_tasks, int)
@@ -60,6 +62,7 @@ def _record(data: object) -> EvalRecord | None:
             or not isinstance(at, (int, float))
             or not math.isfinite(at)
             or not isinstance(task_results, dict)
+            or not isinstance(artifact, str)
             or any(
                 not isinstance(key, str) or not isinstance(value, bool)
                 for key, value in task_results.items()
@@ -87,6 +90,7 @@ def _record(data: object) -> EvalRecord | None:
             categories,
             float(at),
             dict(task_results),
+            artifact,
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -116,6 +120,7 @@ def save_eval(run: EvalRun, path: Path | None = None) -> Path:
         run.model_id, run.quant, run.backend, run.n_tasks, run.passed,
         run.pass_rate, run.by_category, run.at,
         {outcome.id: outcome.passed for outcome in run.outcomes},
+        run.artifact,
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")

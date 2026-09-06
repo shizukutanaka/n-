@@ -297,6 +297,18 @@ artifact. Equal pass rates therefore do not imply equivalent behaviour.
 This is one model on one CPU machine and does not generalize; no underlying
 cause is established by this measurement.
 
+Further controlled checks found that the 0.5B fp16 answers remained different
+when both backends received the same fully expanded ChatML prompt, with
+`top_k=1` and `repeat_penalty` pinned to both 1.0 and 1.1, and with cold or
+warm llama.cpp prompt-cache state. The official GGUF has 291 tensors and a
+separate F16 `output.weight`, while the Ollama blob has 290 tensors and no
+separate `output.weight`; their sizes are 1,266,425,696 and 994,156,864
+bytes, respectively, a difference of 272,268,832 bytes matching the missing
+tensor size. These observations identify different artifacts, not an
+underlying cause: eval records now carry an artifact fingerprint, but no
+claim is made that the missing tensor or any other implementation detail
+causes the answer difference. This remains one model on one CPU machine.
+
 CLI commands return `0` only when the requested operation succeeds. A failed
 plan, unavailable gateway/backend, failed benchmark, missing plan, or non-zero
 foreground server exit returns `1`. `status` and `down` remain idempotent:
