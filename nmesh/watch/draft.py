@@ -45,6 +45,13 @@ def _draft_text(finding: Finding) -> str:
         "sources": {"hf": repo},
         "quality": None,
     }
+    if verified.get("weight_sets"):
+        fields["sources"]["hf_gguf"] = repo
+    for key in ("params", "license"):
+        if key in verified:
+            fields[key] = verified[key]
+    if verified.get("pipeline_tag") == "text-generation":
+        fields["roles"] = ["chat"]
     config_map = {
         "architectures": "family",
         "num_hidden_layers": "n_layers",
@@ -74,6 +81,9 @@ def _draft_text(finding: Finding) -> str:
         f"# config_repo: {verified.get('config_repo', '') or 'not found'}",
         "# quality: null is intentional; run nmesh eval before planning can rank it.",
     ]
+    for key in ("pipeline_tag", "gated", "smallest_weight_bytes"):
+        if key in verified:
+            lines.append(f"# {key}: {_yaml(verified[key])}")
     if "head_dim" not in verified and "head_dim" in fields:
         lines.append("# head_dim_derived: true")
     if missing:

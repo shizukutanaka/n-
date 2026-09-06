@@ -33,6 +33,7 @@ MESSAGES = {
         "warn.speed_saturated": "{role}: --prefer speed could not discriminate — {chosen} {chosen_quant} at {chosen_tps} tok/s was ranked above {other} {other_quant} at {other_tps} tok/s because the score's speed term saturates at {reference} tok/s, so the unvalidated quality prior decided.",
         "warn.no_source": "{model}: no Hugging Face or Ollama source is configured",
         "warn.no_candidate": "No runnable model found for role {role}",
+        "warn.model_unknown": "Requested model {model} is not in the catalog.",
         "warn.nvidia_unavailable": "NVIDIA detection unavailable",
         "warn.parallel_clamped": "llama.cpp: --parallel unsupported; using one slot instead of {requested}",
         "warn.rocm_parse": "Unable to parse rocm-smi output",
@@ -50,6 +51,14 @@ MESSAGES = {
         "warn.admission_skipped": "Free-memory admission skipped: {error}",
         "warn.health_failed": "Service failed health check: {service}",
         "warn.quality_prior": "Model ranking uses unverified catalog quality claims; nmesh eval measures them.",
+        "warn.quality_unmeasured": (
+            "Unmeasured quality excluded these models from automatic ranking: "
+            "{models}{remaining}; nmesh eval measures it."
+        ),
+        "warn.quality_unmeasured_selected": (
+            "{model} was explicitly selected without a quality measurement; "
+            "its ranking used the speed term only."
+        ),
         "warn.quality_contradiction": "{role}: measured pass rate ranks {other} ({other_rate:.0%}) above {selected} ({selected_rate:.0%}) while the catalog prior does the opposite ({other_prior} < {selected_prior}); exact p={p_value:.4f} across {compared} tasks.",
         "note.eval_underpowered": "The {tasks}-task suite cannot resolve this observed ranking: {other_rate:.1%} versus {selected_rate:.1%} (exact p={p_value:.4f}); its minimum resolvable difference at α=0.05 is {minimum:.1%}, so the ranking is neither confirmed nor contradicted. The {upgrade_tasks}-task extended suite resolves down to {upgrade_minimum:.1%}.",
         "note.eval_underpowered_full": "The {tasks}-task suite cannot resolve this observed ranking: {other_rate:.1%} versus {selected_rate:.1%} (exact p={p_value:.4f}); its minimum resolvable difference at α=0.05 is {minimum:.1%}, so the ranking is neither confirmed nor contradicted.",
@@ -173,6 +182,15 @@ MESSAGES = {
         "label.watch_catalog_in_catalog": "Mentioned IDs already in catalog",
         "label.watch_catalog_resolved": "Resolved repo IDs",
         "label.watch_catalog_absent": "Resolved repo IDs absent from catalog",
+        "label.watch_candidates_title": "Candidate feasibility",
+        "label.watch_fit_class": "Fit class",
+        "label.watch_fit_no_weights": "No primary weights",
+        "label.watch_fit_gated": "Gated",
+        "label.watch_fit_role_unknown": "Role unknown",
+        "label.watch_fit_not_text": "Not text generation",
+        "label.watch_fit_too_large": "Too large",
+        "label.watch_fit_fits": "Fits",
+        "label.watch_candidate_budget": "Planner budget",
         "label.watch_filename": "Filename",
         "label.watch_install": "Install with",
     },
@@ -290,6 +308,18 @@ MESSAGES = {
 }
 
 MESSAGES["ja"].update({
+    "label.watch_candidates_title": "\u5019\u88dc\u306e\u5b9f\u884c\u53ef\u80fd\u6027",
+    "label.watch_fit_class": "\u5206\u985e",
+    "label.watch_fit_no_weights": "\u4e3b\u8981\u91cd\u307f\u306a\u3057",
+    "label.watch_fit_gated": "\u30b2\u30fc\u30c8\u4ed8\u304d",
+    "label.watch_fit_role_unknown": "\u5f79\u5272\u4e0d\u660e",
+    "label.watch_fit_not_text": "\u30c6\u30ad\u30b9\u30c8\u751f\u6210\u4ee5\u5916",
+    "label.watch_fit_too_large": "\u5927\u304d\u3059\u304e\u308b",
+    "label.watch_fit_fits": "\u9069\u5408",
+    "label.watch_candidate_budget": "\u30d7\u30e9\u30f3\u30ca\u30fc\u4e88\u7b97",
+    "warn.model_unknown": "\u6307\u5b9a\u3055\u308c\u305f\u30e2\u30c7\u30eb {model} \u306f\u30ab\u30bf\u30ed\u30b0\u306b\u3042\u308a\u307e\u305b\u3093\u3002",
+    "warn.quality_unmeasured": "\u54c1\u8cea\u672a\u6e2c\u5b9a\u306e\u305f\u3081\u3001\u4ee5\u4e0b\u306e\u30e2\u30c7\u30eb\u3092\u81ea\u52d5\u30e9\u30f3\u30ad\u30f3\u30b0\u304b\u3089\u9664\u5916\u3057\u307e\u3057\u305f: {models}{remaining}\u3002nmesh eval \u3067\u6e2c\u5b9a\u3067\u304d\u307e\u3059\u3002",
+    "warn.quality_unmeasured_selected": "{model} \u306f\u54c1\u8cea\u672a\u6e2c\u5b9a\u306e\u307e\u307e\u660e\u793a\u7684\u306b\u9078\u629e\u3055\u308c\u305f\u305f\u3081\u3001\u30e9\u30f3\u30ad\u30f3\u30b0\u3067\u306f\u901f\u5ea6\u9805\u306e\u307f\u3092\u4f7f\u7528\u3057\u307e\u3057\u305f\u3002",
     "label.launcher_written": "\u30e9\u30f3\u30c1\u30e3\u30fc\u3092\u66f8\u304d\u8fbc\u307f\u307e\u3057\u305f: {path}",
     "label.gateway_env": "\u30b2\u30fc\u30c8\u30a6\u30a7\u30a4\u74b0\u5883\u30d5\u30a1\u30a4\u30eb: {path}",
     "label.autostart_limitation": "\u5236\u7d04: {text}",

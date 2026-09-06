@@ -54,7 +54,7 @@ from nmesh.watch import fetch_qiita, fetch_x, fetch_zenn
 from nmesh.watch.draft import write_draft
 from nmesh.watch.sources import SourceItem, SourceStatus
 from nmesh.watch.state import WatchState, load_state, now_iso, save_state
-from nmesh.watch.verify import caps_available, verify
+from nmesh.watch.verify import Finding, caps_available, verify
 
 
 def _console() -> Console:
@@ -77,6 +77,49 @@ def _parse_languages(value: str | None) -> tuple[str, ...]:
         if primary and primary not in result:
             result.append(primary)
     return tuple(result)
+
+
+def _parse_model_ids(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    result: list[str] = []
+    for item in value.split(","):
+        model_id = item.strip()
+        if model_id and model_id.casefold() not in {entry.casefold() for entry in result}:
+            result.append(model_id)
+    return tuple(result)
+
+
+def _candidate_fit(finding: Finding, budget_bytes: float) -> str:
+    verified = finding.verified
+    weight_sets = verified.get("weight_sets")
+    if not isinstance(weight_sets, dict) or not weight_sets:
+        return "no_weights"
+    if verified.get("gated"):
+        return "gated"
+    pipeline_tag = verified.get("pipeline_tag")
+    if not isinstance(pipeline_tag, str) or not pipeline_tag:
+        return "role_unknown"
+    if pipeline_tag not in {"text-generation", "text2text-generation"}:
+        return "not_text"
+    smallest = verified.get("smallest_weight_bytes")
+    if (
+        isinstance(smallest, (int, float))
+        and not isinstance(smallest, bool)
+        and smallest > budget_bytes
+    ):
+        return "too_large"
+    return "fits"
+
+
+def _watch_budget() -> tuple[float, str]:
+    profile = detect_hardware()
+    vram, ram = free_budgets(profile)
+    return (
+        (ram, "planner.free_budgets.ram_bytes")
+        if not profile.gpus
+        else (vram, "planner.free_budgets.vram_bytes")
+    )
 
 
 def _bytes(value: float) -> str:
@@ -203,7 +246,8 @@ def _make_plan(args: argparse.Namespace) -> object:
                     max_context=args.context, budget_source=getattr(args, "budget", "total"),
                     parallel_slots=getattr(args, "parallel_slots", None),
                     lang=i18n.lang(),
-                    languages=_parse_languages(getattr(args, "lang", None)))
+                    languages=_parse_languages(getattr(args, "lang", None)),
+                    model_ids=_parse_model_ids(getattr(args, "model", None)))
     live, skipped = overlay_report()
     args._telemetry_keys = len(live)
     args._telemetry_under_load = skipped
@@ -404,17 +448,22 @@ def _runtime(args: argparse.Namespace) -> int:
             if _plan(argparse.Namespace(
                 roles="chat,code,embed", prefer="balanced", context=None,
                 budget="total", parallel_slots=None, json=False, explain=False,
-                lang=None,
+                lang=None, model=getattr(args, "model", None),
             )) != 0:
                 return 1
             plan = load_plan()
         if plan is None or not plan.services or not plan.runnable:
             return 1
-        if getattr(args, "lang", None):
+        if getattr(args, "lang", None) or _parse_model_ids(getattr(args, "model", None)):
+            updates: dict[str, object] = {}
+            if getattr(args, "lang", None):
+                updates["lang"] = i18n.lang()
+                updates["languages"] = _parse_languages(args.lang)
+            if _parse_model_ids(getattr(args, "model", None)):
+                updates["model_ids"] = _parse_model_ids(args.model)
             plan = build_plan(
                 detect_hardware(), load_catalog(),
-                replace(plan.policy, lang=i18n.lang(),
-                        languages=_parse_languages(args.lang)),
+                replace(plan.policy, **updates),
                 {**load_cache(), **bench_overlay()},
                 _eval_rates(),
             )
@@ -1029,6 +1078,23 @@ def _watch(args: argparse.Namespace) -> int:
             if finding.kind == "catalog_gap"
         }),
     }
+    budget_bytes, budget_source = _watch_budget()
+    candidate_findings = [finding for finding in findings if finding.kind == "catalog_gap"]
+    fit_counts = {
+        fit: sum(_candidate_fit(finding, budget_bytes) == fit for finding in candidate_findings)
+        for fit in ("no_weights", "gated", "role_unknown", "not_text", "too_large", "fits")
+    }
+    candidates = {
+        "total": len(candidate_findings),
+        "counts": fit_counts,
+        "fits": [
+            finding.value
+            for finding in candidate_findings
+            if _candidate_fit(finding, budget_bytes) == "fits"
+        ],
+        "budget_bytes": budget_bytes,
+        "budget_source": budget_source,
+    }
     output = {
         "sources": [asdict(status) for status in statuses],
         "items": len(items),
@@ -1038,6 +1104,7 @@ def _watch(args: argparse.Namespace) -> int:
         "drafts": drafts,
         "notes": notes,
         "catalog": catalog_metrics,
+        "candidates": candidates,
     }
     if args.json:
         _print_json(output)
@@ -1084,6 +1151,19 @@ def _watch(args: argparse.Namespace) -> int:
             str(catalog_metrics["absent_repo_ids"]),
         )
         _console().print(catalog_table)
+        candidate_table = Table(title=i18n.t("label.watch_candidates_title", language))
+        candidate_table.add_column(i18n.t("label.watch_fit_class", language))
+        candidate_table.add_column(i18n.t("label.watch_value", language))
+        for fit, count in fit_counts.items():
+            candidate_table.add_row(
+                i18n.t(f"label.watch_fit_{fit}", language),
+                str(count),
+            )
+        candidate_table.add_row(
+            i18n.t("label.watch_candidate_budget", language),
+            f"{budget_bytes:.0f} ({budget_source})",
+        )
+        _console().print(candidate_table)
         for finding in findings:
             _console().print(i18n.t(
                 "label.watch_finding",
@@ -1133,6 +1213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--context", type=int)
     plan.add_argument("--budget", choices=("total", "free"), default="total")
     plan.add_argument("--parallel-slots", type=int)
+    plan.add_argument("--model", help="comma-separated model IDs")
     plan.add_argument("--lang")
     plan.add_argument("--profile")
     up_parser = sub.add_parser("up")
@@ -1143,6 +1224,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--port", type=int, default=18000)
     up_parser.add_argument("--ignore-free-memory", action="store_true")
     up_parser.add_argument("--lang")
+    up_parser.add_argument("--model", help="comma-separated model IDs")
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=18000)
     reload_parser = sub.add_parser("reload")

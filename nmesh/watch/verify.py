@@ -6,6 +6,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 import httpx
 
@@ -28,6 +29,11 @@ class Finding:
 
 
 _QUANT_RE = re.compile(r"\b(?:[I]?Q\d(?:_[A-Z0-9]+)+|fp16|bf16)\b")
+_WEIGHT_QUANT_RE = re.compile(
+    r"(?:UD-Q[A-Z0-9._-]+|IQ\d(?:_[A-Z0-9]+)*|Q\d(?:_[A-Z0-9]+)*|BF16|F16|F32|fp16)",
+    re.IGNORECASE,
+)
+_AUXILIARY_RE = re.compile(r"mmproj|imatrix|mtp|draft|vocab", re.IGNORECASE)
 _CAPS_PATH = "caps.json"
 
 
@@ -79,6 +85,76 @@ def _config_fields(payload: Mapping[str, object]) -> dict[str, object]:
     return fields
 
 
+def _metadata_fields(metadata: Mapping[str, object]) -> dict[str, object]:
+    fields: dict[str, object] = {}
+    for key in ("pipeline_tag", "gated"):
+        if key in metadata and isinstance(metadata[key], (str, bool)):
+            fields[key] = metadata[key]
+    card_data = _mapping(metadata.get("cardData"))
+    license_value = card_data.get("license") if card_data is not None else None
+    if not isinstance(license_value, str):
+        tags = metadata.get("tags")
+        license_value = next(
+            (
+                tag.removeprefix("license:")
+                for tag in tags
+                if isinstance(tag, str) and tag.casefold().startswith("license:")
+            ),
+            None,
+        ) if isinstance(tags, list) else None
+    if isinstance(license_value, str) and license_value:
+        fields["license"] = license_value
+    safetensors = _mapping(metadata.get("safetensors"))
+    params = safetensors.get("total") if safetensors is not None else None
+    if isinstance(params, (int, float)) and not isinstance(params, bool):
+        fields["params"] = params
+    return fields
+
+
+def _weight_sets(payload: object) -> dict[str, int]:
+    if not isinstance(payload, list):
+        return {}
+    totals: dict[str, int] = {}
+    for item in payload:
+        entry = _mapping(item)
+        if entry is None:
+            continue
+        path = entry.get("path")
+        if not isinstance(path, str) or not path.casefold().endswith(".gguf"):
+            continue
+        if _AUXILIARY_RE.search(PurePosixPath(path).name):
+            continue
+        quant = _WEIGHT_QUANT_RE.search(PurePosixPath(path).stem)
+        if quant is None:
+            continue
+        lfs = _mapping(entry.get("lfs"))
+        size = lfs.get("size") if lfs is not None else entry.get("size")
+        if not isinstance(size, (int, float)) or isinstance(size, bool):
+            continue
+        stem = re.sub(
+            r"-\d{5}-of-\d{5}\.gguf$",
+            ".gguf",
+            path,
+            flags=re.IGNORECASE,
+        )
+        parent = PurePosixPath(stem).parent.as_posix()
+        key = f"{parent}:{quant.group(0).upper()}"
+        totals[key] = totals.get(key, 0) + int(size)
+    return totals
+
+
+def _tree_weight_sets(repo: str, client: httpx.Client) -> dict[str, int]:
+    try:
+        response = client.get(
+            f"https://huggingface.co/api/models/{repo}/tree/main?recursive=1"
+        )
+        if response.status_code != 200:
+            return {}
+        return _weight_sets(response.json())
+    except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError):
+        return {}
+
+
 def _model_finding(
     mention: Mention,
     client: httpx.Client,
@@ -110,13 +186,14 @@ def _model_finding(
             else ()
         )
         gguf = tuple(name for name in siblings if name.lower().endswith(".gguf"))
-        verified: dict[str, object] = {
+        verified: dict[str, object] = _metadata_fields(metadata)
+        verified.update({
             "downloads": metadata.get("downloads", 0),
             "likes": metadata.get("likes", 0),
             "createdAt": _text(metadata.get("createdAt")),
             "gguf_siblings": len(gguf),
             "quant_labels": list(_quant_labels(gguf)),
-        }
+        })
         config_repo = repo
         config_fields: dict[str, object] = {}
         config_response = client.get(
@@ -130,6 +207,14 @@ def _model_finding(
             if fallback.status_code == 200:
                 config_repo = base_repo
                 config_response = fallback
+                base_metadata_response = client.get(
+                    f"https://huggingface.co/api/models/{base_repo}"
+                )
+                if base_metadata_response.status_code == 200:
+                    base_metadata = _mapping(base_metadata_response.json())
+                    if base_metadata is not None:
+                        for key, value in _metadata_fields(base_metadata).items():
+                            verified.setdefault(key, value)
         if config_response.status_code == 200:
             config_payload = _mapping(config_response.json())
             if config_payload is not None:
@@ -138,6 +223,10 @@ def _model_finding(
             config_response.raise_for_status()
         verified.update(config_fields)
         verified["config_repo"] = config_repo if config_fields else ""
+        weight_sets = _tree_weight_sets(repo, client)
+        verified["weight_sets"] = weight_sets
+        if weight_sets:
+            verified["smallest_weight_bytes"] = min(weight_sets.values())
         return Finding("catalog_gap", repo, mention.count, mention.sources, verified)
     except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError):
         return None

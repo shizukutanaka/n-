@@ -69,6 +69,7 @@ class Policy:
     parallel_slots: int | None = None
     lang: str = "en"
     languages: tuple[str, ...] = ()
+    model_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -430,6 +431,8 @@ def _candidate_for(
     reserved_vram_bytes: float = 0.0,
     reserved_ram_bytes: float = 0.0,
     excluded: list[dict[str, str]] | None = None,
+    *,
+    allow_unmeasured: bool = False,
 ) -> list[_Candidate]:
     """Build candidates using the intentionally unchanged score.
 
@@ -445,6 +448,8 @@ def _candidate_for(
     0.5B q2_k candidate at 3654.6 tok/s, so a scale-free speed term requires a
     quality floor; the catalog quality prior is unvalidated.
     """
+    if model.quality is None and not allow_unmeasured:
+        return []
     initial = min(model.max_context, policy.max_context or 8192)
     contexts = list(dict.fromkeys(context for context in (initial, 4096, 2048) if context <= initial))
     candidates: list[_Candidate] = []
@@ -501,9 +506,11 @@ def _candidate_for(
                 continue
             wq, ws = {"quality": (1.0, 0.1), "speed": (0.5, 1.0),
                       "balanced": (1.0, 0.25)}.get(policy.prefer, (1.0, 0.25))
+            speed_score = min(tps, SPEED_REFERENCE_TPS) / SPEED_REFERENCE_TPS * 100 * ws
             score = (
-                (model.quality - QUANT_PENALTY[quant]) * wq
-                + min(tps, SPEED_REFERENCE_TPS) / SPEED_REFERENCE_TPS * 100 * ws
+                speed_score
+                if model.quality is None
+                else (model.quality - QUANT_PENALTY[quant]) * wq + speed_score
             )
             if policy.languages:
                 covers = set(policy.languages).issubset(model.languages)
@@ -1214,6 +1221,13 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                ] | None = None) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
+    requested_model_ids = {
+        model_id.casefold() for model_id in selected.model_ids if model_id.strip()
+    }
+    catalog_models = [
+        model for model in catalog
+        if not requested_model_ids or model.id.casefold() in requested_model_ids
+    ]
     warning_params = profile.warning_params
     warnings = [
         t(
@@ -1224,12 +1238,38 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         for index, warning in enumerate(profile.warnings)
     ]
     warnings.append(t("warn.quality_prior", selected.lang))
+    known_model_ids = {model.id.casefold() for model in catalog}
+    for model_id in selected.model_ids:
+        if model_id.casefold() not in known_model_ids:
+            warnings.append(t("warn.model_unknown", selected.lang, model=model_id))
+    unmeasured = sorted(
+        model.id
+        for model in catalog
+        if model.quality is None
+        and any(role in model.roles for role in roles)
+        and model.id.casefold() not in requested_model_ids
+    )
+    if unmeasured:
+        shown = ", ".join(unmeasured[:5])
+        remaining = (
+            f"; {len(unmeasured) - 5} more"
+            if len(unmeasured) > 5
+            else ""
+        )
+        warnings.append(
+            t(
+                "warn.quality_unmeasured",
+                selected.lang,
+                models=shown,
+                remaining=remaining,
+            )
+        )
     if profile.backend_gpu_devices.get("llamacpp") == () and profile.gpus:
         warnings.append(
             t("warn.backend_no_gpu", selected.lang)
         )
     hints: list[str] = []
-    for model in catalog:
+    for model in catalog_models:
         if (
             any(role in model.roles for role in roles)
             and not any(source in model.sources for source in ("hf", "hf_gguf", "ollama"))
@@ -1250,20 +1290,27 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     for group in [item for item in groups if item]:
         reserved_vram, reserved_ram = _reserved_memory(services, swap_group)
         pools = {role: sorted(
-            (candidate for model in catalog if role in model.roles
+            (candidate for model in catalog_models if role in model.roles
              for candidate in _candidate_for(
                  model, profile, selected, bench_cache,
                  reserved_vram_bytes=reserved_vram,
                  reserved_ram_bytes=reserved_ram,
                  excluded=bench_excluded,
+                 allow_unmeasured=model.id.casefold() in requested_model_ids,
              )),
             key=lambda item: item.score, reverse=True,
         ) for role in group}
         empty_pools = None
         if reserved_vram or reserved_ram:
             empty_pools = {role: sorted(
-                (candidate for model in catalog if role in model.roles
-                 for candidate in _candidate_for(model, profile, selected, bench_cache)),
+                (candidate for model in catalog_models if role in model.roles
+                 for candidate in _candidate_for(
+                     model,
+                     profile,
+                     selected,
+                     bench_cache,
+                     allow_unmeasured=model.id.casefold() in requested_model_ids,
+                 )),
                 key=lambda item: item.score, reverse=True,
             ) for role in group}
 
@@ -1350,6 +1397,19 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         ))
     services = _place_services(services, profile, selected, swap_group, warnings)
     services = _assign_slots(services, profile, selected, swap_group, warnings)
+    selected_unmeasured: set[str] = set()
+    for service in services:
+        if service.model_id.casefold() in requested_model_ids:
+            model = next(
+                (item for item in catalog_models if item.id == service.model_id),
+                None,
+            )
+            if model is not None and model.quality is None:
+                selected_unmeasured.add(model.id)
+    for model_id in sorted(selected_unmeasured):
+        warnings.append(
+            t("warn.quality_unmeasured_selected", selected.lang, model=model_id)
+        )
     if eval_cache is not None:
         measured = {
             key: value for key, value in eval_cache.items()
@@ -1413,7 +1473,12 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     ):
                         continue
                     other_rate = other_evidence.pass_rate
-                    if other_rate <= selected_rate or other.quality >= selected_model.quality:
+                    if (
+                        other_rate <= selected_rate
+                        or other.quality is None
+                        or selected_model.quality is None
+                        or other.quality >= selected_model.quality
+                    ):
                         continue
                     shared = (
                         set(selected_evidence.task_results)
@@ -1563,6 +1628,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
                     int(pol["parallel_slots"]) if pol.get("parallel_slots") is not None else None,
                     str(pol.get("lang", "en")),
                     tuple(str(x) for x in pol.get("languages", [])),
+                    tuple(str(x) for x in pol.get("model_ids", [])),
                     )
     services: list[PlannedService] = []
     for item in data["services"]:

@@ -425,6 +425,24 @@ while current discussion includes Qwen3.x, gemma-4, MiniMax-H3, llm-jp-4, and
 Nemotron. Mention counts indicate popularity, not quality — quality still
 requires `nmesh eval`, so drafts carry `quality: null`.
 
+Before the candidate path was added, all 28 verified `catalog_gap` drafts were
+rejected by the catalog loader. A hand-completed candidate with
+`quality: null` was rejected too: `float(None)` raised `TypeError` and the
+entry was silently dropped. There was no `--model` path, so measuring a
+candidate before planning required inventing quality.
+
+The same 28 candidates included 20 with no primary GGUF. The eight smallest
+complete weight sets measured 0.08 / 0.64 / 6.19 / 14.25 / 17.65 / 72.55 /
+93.09 / 397.26 GB. Per-file minima are invalid because repositories contain
+`mmproj`, MTP/draft heads, imatrix files, vocabulary files, and multi-part
+shards; `dzannotti/Qwen3.8-Flash-Next-MTP-GGUF` and
+`cdiamond/Qwen3.8-27B-iMatrix-NVFP4-MTP-GGUF` are auxiliary-only examples.
+Watch groups primary GGUF shards before reporting feasibility.
+
+Unmeasured entries are never ranked automatically. Explicit `--model` selection
+is the path to planning one, and `nmesh eval` is the only path to a legitimate
+quality value. Quality is never invented.
+
 Noise IDs such as `docs/hub`, `papers/2504.13181`, `datasets/leemeng`, and
 `blog/nvidia` are filtered by the Hugging Face 401/404 gate. GGUF mirror
 repositories commonly return 404 for `config.json`, including
