@@ -161,6 +161,40 @@ def test_catalog_gap_is_suppressed_for_existing_source(monkeypatch) -> None:
         assert verify(mentions, client) == ()
 
 
+def test_catalog_metrics_partition_mentioned_repositories(monkeypatch) -> None:
+    class Spec:
+        def __init__(self) -> None:
+            self.sources = {"hf": "known/repo"}
+
+    monkeypatch.setattr("nmesh.watch.verify.load_catalog", lambda: (Spec(),))
+    mentions = (
+        Mention("model_repo", "known/repo", 1, ("known",)),
+        Mention("model_repo", "absent/repo", 1, ("absent",)),
+        Mention("model_repo", "unresolved/repo", 1, ("unresolved",)),
+    )
+    stats = {"mentioned_repo_ids": 3, "in_catalog": 0, "resolved_repo_ids": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/models/absent/repo"):
+            return httpx.Response(200, json={"siblings": []})
+        if request.url.path.endswith("/api/models/unresolved/repo"):
+            return httpx.Response(404)
+        if request.url.path.endswith("/raw/main/config.json"):
+            return httpx.Response(404)
+        raise AssertionError("catalog-known repository should not query Hugging Face")
+
+    with _client(handler) as client:
+        findings = verify(mentions, client, stats)
+    absent = len([finding for finding in findings if finding.kind == "catalog_gap"])
+    unresolved = stats["mentioned_repo_ids"] - stats["in_catalog"] - absent
+    assert stats == {
+        "mentioned_repo_ids": 3,
+        "in_catalog": 1,
+        "resolved_repo_ids": 1,
+    }
+    assert stats["in_catalog"] + absent + unresolved == stats["mentioned_repo_ids"]
+
+
 def test_huggingface_extraction_is_anchored() -> None:
     items = (SourceItem(
         "qiita",
@@ -272,6 +306,14 @@ def test_cli_offline_json_shape_and_all_sources_unreachable(
         "drafts",
         "notes",
         "catalog",
+    }
+    assert set(payload["catalog"]) == {
+        "entries",
+        "repo_ids",
+        "mentioned_repo_ids",
+        "in_catalog",
+        "resolved_repo_ids",
+        "absent_repo_ids",
     }
     monkeypatch.setattr(
         "nmesh.cli.fetch_zenn",

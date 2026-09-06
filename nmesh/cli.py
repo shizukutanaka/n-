@@ -953,6 +953,7 @@ def _watch(args: argparse.Namespace) -> int:
             }
             catalog_stats = {
                 "mentioned_repo_ids": len(mentioned_repo_ids),
+                "in_catalog": 0,
                 "resolved_repo_ids": 0,
             }
             findings = verify(mentions, client, catalog_stats)
@@ -1011,6 +1012,23 @@ def _watch(args: argparse.Namespace) -> int:
                 source=status.name,
                 detail=status.detail,
             ))
+    catalog_models = load_catalog()
+    catalog_metrics = {
+        "entries": len(catalog_models),
+        "repo_ids": len({
+            value.casefold()
+            for model in catalog_models
+            for value in model.sources.values()
+        }),
+        "mentioned_repo_ids": catalog_stats["mentioned_repo_ids"],
+        "in_catalog": catalog_stats["in_catalog"],
+        "resolved_repo_ids": catalog_stats["resolved_repo_ids"],
+        "absent_repo_ids": len({
+            finding.value.casefold()
+            for finding in findings
+            if finding.kind == "catalog_gap"
+        }),
+    }
     output = {
         "sources": [asdict(status) for status in statuses],
         "items": len(items),
@@ -1019,21 +1037,7 @@ def _watch(args: argparse.Namespace) -> int:
         "new_findings": len(new_keys),
         "drafts": drafts,
         "notes": notes,
-        "catalog": {
-            "entries": len(catalog := load_catalog()),
-            "repo_ids": len({
-                value.casefold()
-                for model in catalog
-                for value in model.sources.values()
-            }),
-            "mentioned_repo_ids": catalog_stats["mentioned_repo_ids"],
-            "resolved_repo_ids": catalog_stats["resolved_repo_ids"],
-            "absent_repo_ids": len({
-                finding.value.casefold()
-                for finding in findings
-                if finding.kind == "catalog_gap"
-            }),
-        },
+        "catalog": catalog_metrics,
     }
     if args.json:
         _print_json(output)
@@ -1051,29 +1055,33 @@ def _watch(args: argparse.Namespace) -> int:
                 status.detail,
             )
         _console().print(table)
-        catalog = output["catalog"]
+        catalog_metrics = output["catalog"]
         catalog_table = Table(title=i18n.t("label.watch_catalog_title", language))
         catalog_table.add_column(i18n.t("label.watch_metric", language))
         catalog_table.add_column(i18n.t("label.watch_value", language))
         catalog_table.add_row(
             i18n.t("label.watch_catalog_entries", language),
-            str(catalog["entries"]),
+            str(catalog_metrics["entries"]),
         )
         catalog_table.add_row(
             i18n.t("label.watch_catalog_repo_ids", language),
-            str(catalog["repo_ids"]),
+            str(catalog_metrics["repo_ids"]),
         )
         catalog_table.add_row(
             i18n.t("label.watch_catalog_mentioned", language),
-            str(catalog["mentioned_repo_ids"]),
+            str(catalog_metrics["mentioned_repo_ids"]),
+        )
+        catalog_table.add_row(
+            i18n.t("label.watch_catalog_in_catalog", language),
+            str(catalog_metrics["in_catalog"]),
         )
         catalog_table.add_row(
             i18n.t("label.watch_catalog_resolved", language),
-            str(catalog["resolved_repo_ids"]),
+            str(catalog_metrics["resolved_repo_ids"]),
         )
         catalog_table.add_row(
             i18n.t("label.watch_catalog_absent", language),
-            str(catalog["absent_repo_ids"]),
+            str(catalog_metrics["absent_repo_ids"]),
         )
         _console().print(catalog_table)
         for finding in findings:

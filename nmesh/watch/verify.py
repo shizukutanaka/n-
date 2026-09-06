@@ -87,6 +87,8 @@ def _model_finding(
     repo = mention.value
     try:
         if _catalog_contains(repo):
+            if stats is not None:
+                stats["in_catalog"] = stats.get("in_catalog", 0) + 1
             return None
         response = client.get(f"https://huggingface.co/api/models/{repo}")
         if response.status_code in {401, 404}:
@@ -150,7 +152,7 @@ def _caps_flags() -> tuple[frozenset[str], tuple[dict[str, object], ...]] | None
             return None
         combined: set[str] = set()
         binaries: list[dict[str, object]] = []
-        for path, entry in entries.items():
+        for entry_key, entry in entries.items():
             if not isinstance(entry, dict):
                 continue
             raw_flags = entry.get("flags")
@@ -162,7 +164,7 @@ def _caps_flags() -> tuple[frozenset[str], tuple[dict[str, object], ...]] | None
             combined.update(flags)
             binary = entry.get("binary")
             binaries.append({
-                "path": binary if isinstance(binary, str) else str(path),
+                "path": binary if isinstance(binary, str) else str(entry_key),
                 "flag_count": len(flags),
             })
         if not combined:
