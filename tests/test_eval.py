@@ -16,6 +16,7 @@ from nmesh.eval import (
     EXTENDED_CATEGORIES,
     EXTENDED_TASKS,
     GENERATED_TASKS,
+    HARD_SUITE_TASKS,
     SUITES,
     TASKS,
     EvalRun,
@@ -44,10 +45,13 @@ from nmesh.eval.generated import (
     _SUBTRACTIONS,
     _UPPERCASE,
 )
+from nmesh.eval.hard import HARD_TASKS
 from nmesh.eval.runner import run
 from nmesh.eval.stats import (
     fisher_two_sided,
     mcnemar_two_sided,
+    min_discordant_for_significance,
+    min_discordant_imbalance,
     min_resolvable_difference,
     wilson_interval,
 )
@@ -138,7 +142,129 @@ def test_exact_eval_statistics() -> None:
     assert mcnemar_two_sided(6, 0) == pytest.approx(0.03125)
     assert mcnemar_two_sided(0, 0) == pytest.approx(1.0)
     assert min_resolvable_difference(16) == 5 / 16
+    assert min_discordant_for_significance() == 6
+    assert min_discordant_imbalance(5) is None
+    assert min_discordant_imbalance(6) == 6
     assert wilson_interval(12, 16) == pytest.approx((0.505, 0.898), abs=0.0005)
+
+
+def test_paired_power_depends_only_on_discordant_tasks() -> None:
+    outcomes_a = {}
+    outcomes_b = {}
+    for index in range(24):
+        outcomes_a[f"task-{index}"] = True
+        outcomes_b[f"task-{index}"] = False
+    for index in range(24, 29):
+        outcomes_a[f"task-{index}"] = False
+        outcomes_b[f"task-{index}"] = True
+    for index in range(29, 94):
+        outcomes_a[f"task-{index}"] = True
+        outcomes_b[f"task-{index}"] = True
+    for index in range(94, 104):
+        outcomes_a[f"task-{index}"] = False
+        outcomes_b[f"task-{index}"] = False
+
+    def discordance(left: dict[str, bool], right: dict[str, bool]) -> tuple[int, int]:
+        shared = set(left) & set(right)
+        return (
+            sum(left[task_id] and not right[task_id] for task_id in shared),
+            sum(right[task_id] and not left[task_id] for task_id in shared),
+        )
+
+    full_b, full_c = discordance(outcomes_a, outcomes_b)
+    reduced_a = {
+        task_id: passed for task_id, passed in outcomes_a.items()
+        if not (passed and outcomes_b[task_id])
+    }
+    reduced_b = {
+        task_id: passed for task_id, passed in outcomes_b.items()
+        if not (outcomes_a[task_id] and passed)
+    }
+    reduced_b_count, reduced_c_count = discordance(reduced_a, reduced_b)
+
+    assert len(outcomes_a) == len(outcomes_b) == 104
+    assert (full_b, full_c) == (24, 5)
+    assert (reduced_b_count, reduced_c_count) == (24, 5)
+    assert mcnemar_two_sided(full_b, full_c) == pytest.approx(
+        0.000546, abs=0.0000005,
+    )
+    assert mcnemar_two_sided(reduced_b_count, reduced_c_count) == pytest.approx(
+        mcnemar_two_sided(full_b, full_c), abs=0.0000001,
+    )
+    assert fisher_two_sided(89, 15, 70, 34) == pytest.approx(
+        0.003025, abs=0.0000005,
+    )
+    assert fisher_two_sided(24, 15, 5, 34) == pytest.approx(
+        0.000015, abs=0.0000005,
+    )
+    assert fisher_two_sided(89, 15, 70, 34) != fisher_two_sided(
+        24, 15, 5, 34,
+    )
+
+
+def test_hard_suite_and_graders() -> None:
+    assert len(HARD_TASKS) == 26
+    assert len(HARD_SUITE_TASKS) == 130
+    assert len(SUITES["hard"]) == 130
+    assert len({task.id for task in SUITES["hard"]}) == 130
+    assert not {task.id for task in HARD_TASKS} & {task.id for task in EXTENDED_TASKS}
+    assert suite_digest(SUITES["extended"]) == "v2:6d66196138326699"
+
+    checks = {
+        "instruction.initials.quick_amber_fox": ("QAF", "Q A F"),
+        "instruction.devowel.gateway": ("gtwy", "gtrwrd"),
+        "instruction.words.5": (
+            "Compiler translates source into machine",
+            "A compiler translates source code into machine code.",
+        ),
+        "multilingual.katakana.computer": ("コンピュータ", "計算機"),
+        "multilingual.en_from_ja.1": (
+            "I drink water every morning.",
+            (
+                "Here's the translation of "
+                '"私は毎朝水を飲みます。" into English:\n\n'
+                "I drink water every morning."
+            ),
+        ),
+        "instruction.sort_desc.3_1_2": ("3, 2, 1", "3, 1, 2"),
+    }
+    for task_id, (accepted, rejected) in checks.items():
+        task = next(task for task in HARD_TASKS if task.id == task_id)
+        assert task.check(accepted), task_id
+        assert not task.check(rejected), task_id
+
+    kanji_17 = next(task for task in HARD_TASKS if task.id == "multilingual.kanji_number.17")
+    assert kanji_17.rule == "kanji_number:v2"
+    for answer in ("十七", "一十七", "壹拾柒", "壱拾七"):
+        assert kanji_17.check(answer)
+    assert not kanji_17.check("十八")
+    assert not kanji_17.check('17 を漢数字で書くと "壹柒" です。')
+    assert kanji_17.value_check is not None
+    assert kanji_17.value_check("壹拾柒")
+    assert kanji_17.value_check('17 を漢数字で書くと "壹柒" です。')
+    assert not kanji_17.value_check("壹柒")
+    assert not kanji_17.value_check("十八")
+
+    kanji_30 = next(task for task in HARD_TASKS if task.id == "multilingual.kanji_number.30")
+    assert kanji_30.rule == "kanji_number:v2"
+    for answer in ("三十", "参拾", "參拾"):
+        assert kanji_30.check(answer)
+    assert not kanji_30.check("三十一")
+    assert kanji_30.value_check is not None
+    assert not kanji_30.value_check("三十一")
+    assert kanji_30.value_check('30 の漢数字は "30" です。')
+    assert kanji_30.value_check("三十")
+    assert kanji_30.value_check("参拾")
+
+    seven = next(task for task in HARD_TASKS if task.id == "multilingual.lang_lock.seven")
+    assert seven.prompt == (
+        "Answer only in Japanese with no Latin letters and no digits: how many "
+        "days are in one week? Output the kanji numeral alone."
+    )
+    assert seven.check("七")
+    assert seven.check("七日")
+    assert not seven.check("7")
+    assert suite_digest(SUITES["hard"]) == "v2:500f11b813a020c3"
 
 
 def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
@@ -195,7 +321,11 @@ def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
     assert len(GENERATED_TASKS) == 88
     assert len(TASKS) == 16
     assert len(EXTENDED_TASKS) == 104
-    assert SUITES == {"core": TASKS, "extended": EXTENDED_TASKS}
+    assert SUITES == {
+        "core": TASKS,
+        "extended": EXTENDED_TASKS,
+        "hard": HARD_SUITE_TASKS,
+    }
     assert len({task.id for task in EXTENDED_TASKS}) == 104
     assert not {task.id for task in TASKS} & {task.id for task in GENERATED_TASKS}
     assert "compliance" in EXTENDED_CATEGORIES
@@ -271,6 +401,72 @@ def test_suite_digest_identity() -> None:
         assert suite_digest(TASKS) != f"v{original}:" + suite_digest(TASKS).split(":", 1)[1]
     finally:
         suite.GRADER_VERSION = original
+    plain = Task("rule", "instruction", "prompt", 8, lambda text: True)
+    empty_rule = Task("rule", "instruction", "prompt", 8, lambda text: True, "")
+    changed_rule = Task(
+        "rule", "instruction", "prompt", 8, lambda text: True, "rule:v2",
+    )
+    assert suite_digest((plain,)) == suite_digest((empty_rule,))
+    assert suite_digest((plain,)) != suite_digest((changed_rule,))
+
+
+def test_runner_reports_value_passed_separately_from_discipline() -> None:
+    tasks = tuple(
+        next(task for task in HARD_TASKS if task.id == task_id)
+        for task_id in (
+            "instruction.initials.quick_amber_fox",
+            "multilingual.lang_lock.paris",
+            "multilingual.lang_lock.seven",
+        )
+    ) + (
+        Task(
+            "quick-pass", "instruction", "quick-pass", 8,
+            next(task for task in HARD_TASKS
+                 if task.id == "instruction.initials.quick_amber_fox").check,
+            value_check=next(
+                task for task in HARD_TASKS
+                if task.id == "instruction.initials.quick_amber_fox"
+            ).value_check,
+        ),
+        Task(
+            "quick-wrong", "instruction", "quick-wrong", 8,
+            next(task for task in HARD_TASKS
+                 if task.id == "instruction.initials.quick_amber_fox").check,
+            value_check=next(
+                task for task in HARD_TASKS
+                if task.id == "instruction.initials.quick_amber_fox"
+            ).value_check,
+        ),
+    )
+    _EvalHandler.responses = {
+        tasks[0].prompt: (200, "Q A F"),
+        tasks[1].prompt: (200, "Paris"),
+        tasks[2].prompt: (200, "7"),
+        "quick-pass": (200, "QAF"),
+        "quick-wrong": (200, "QWEN"),
+    }
+    server = _serve()
+    try:
+        result = run(tasks, f"http://127.0.0.1:{server.server_address[1]}", "model")
+    finally:
+        server.shutdown()
+        server.server_close()
+    outcomes = {outcome.id: outcome for outcome in result.outcomes}
+    assert (outcomes[tasks[0].id].passed, outcomes[tasks[0].id].value_passed) == (
+        False, True,
+    )
+    assert (outcomes[tasks[1].id].passed, outcomes[tasks[1].id].value_passed) == (
+        False, True,
+    )
+    assert (outcomes[tasks[2].id].passed, outcomes[tasks[2].id].value_passed) == (
+        False, True,
+    )
+    assert (outcomes["quick-pass"].passed, outcomes["quick-pass"].value_passed) == (
+        True, True,
+    )
+    assert (outcomes["quick-wrong"].passed, outcomes["quick-wrong"].value_passed) == (
+        False, False,
+    )
 
 
 def test_runner_mixed_and_transport_failure_continue() -> None:
@@ -385,7 +581,15 @@ def test_eval_cli_reports_unscorable_run(monkeypatch, capsys) -> None:
     assert output["unscorable"] == 1
     assert output["reasoning_allowance"] == 504
     assert "not used as planning evidence" in output["unscorable_note"]
-    assert output["failed"] == [{"id": "cut", "output": "", "unscorable": True}]
+    assert output["value_only_failures"] == 0
+    assert output["value_checked_failures"] == 0
+    assert output["value_note"] is None
+    assert output["failed"] == [{
+        "id": "cut",
+        "output": "",
+        "unscorable": True,
+        "value_passed": None,
+    }]
 
 
 def test_runner_all_transport_failures_raise() -> None:
@@ -520,7 +724,7 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     result = EvalRun(
         "prior-high", "q4_k_m", "llamacpp", 1, 1, 1.0,
         {category: 0.75 for category in CATEGORIES},
-        [TaskOutcome("failed", "instruction", False, "bad")],
+        [TaskOutcome("failed", "instruction", False, "bad", value_passed=True)],
         3.0,
     )
     monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
@@ -541,8 +745,16 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     assert output["uncertainty_note"].startswith("95% Wilson interval")
     assert output["suite_upgrade_note"].startswith("The 104-task extended suite")
     assert output["config_note"].startswith("This pass rate applies")
+    assert output["value_only_failures"] == 1
+    assert output["value_checked_failures"] == 1
+    assert "output form" in output["value_note"]
     assert output["failed"] == [
-        {"id": "failed", "output": "bad", "unscorable": False},
+        {
+            "id": "failed",
+            "output": "bad",
+            "unscorable": False,
+            "value_passed": True,
+        },
     ]
 
 
@@ -587,6 +799,31 @@ def test_planner_reports_underpowered_eval_evidence() -> None:
     assert any(
         "neither confirmed nor contradicted" in note
         and "104-task extended suite" in note
+        for note in plan.warnings
+    )
+
+
+def test_planner_reports_paired_underpowered_eval_evidence() -> None:
+    models = _quality_models()
+    selected = {f"task-{index}": index == 0 for index in range(5)}
+    better = {f"task-{index}": index in (0, 1) for index in range(5)}
+    plan = build_plan(
+        profile(8), models, Policy(roles=["chat"]),
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): EvalSummary(
+                1 / 5, 1, 5, selected,
+            ),
+            ("measured-high", "f16", "llamacpp"): EvalSummary(
+                2 / 5, 2, 5, better,
+            ),
+        },
+    )
+    assert any(
+        "paired tasks" in note
+        and "only 1 disagreed" in note
+        and "1 one way" in note
+        and "0 the other" in note
+        and "fewer than 6" in note
         for note in plan.warnings
     )
 
@@ -911,6 +1148,9 @@ def test_eval_divergence_reports_disagreeing_tasks() -> None:
             "arithmetic.subtract",
             "multilingual.ja_translate",
         ],
+        "discordant_here": 1,
+        "discordant_there": 1,
+        "zero_power_families": [],
     }]
 
 

@@ -15,6 +15,8 @@ from nmesh.eval.generated import EXTENDED_TASKS
 from nmesh.eval.stats import (
     fisher_two_sided,
     mcnemar_two_sided,
+    min_discordant_for_significance,
+    min_discordant_imbalance,
     min_resolvable_difference,
 )
 from nmesh.i18n import t
@@ -73,9 +75,18 @@ class Policy:
     eval_evidence: bool = True
 
 
+@dataclass(frozen=True)
+class EvidenceTest:
+    p_value: float
+    compared: int
+    paired: bool
+    better_only: int
+    worse_only: int
+
+
 def _evidence_p_value(
     better: EvalSummary, worse: EvalSummary,
-) -> tuple[float, int]:
+) -> EvidenceTest:
     shared = set(better.task_results) & set(worse.task_results)
     if better.task_results and worse.task_results and shared:
         b = sum(
@@ -86,8 +97,10 @@ def _evidence_p_value(
             worse.task_results[task_id] and not better.task_results[task_id]
             for task_id in shared
         )
-        return mcnemar_two_sided(b, c), len(shared)
-    return (
+        return EvidenceTest(
+            mcnemar_two_sided(b, c), len(shared), True, b, c,
+        )
+    return EvidenceTest(
         fisher_two_sided(
             better.passed,
             better.n_tasks - better.passed,
@@ -95,6 +108,9 @@ def _evidence_p_value(
             worse.n_tasks - worse.passed,
         ),
         min(better.n_tasks, worse.n_tasks),
+        False,
+        0,
+        0,
     )
 
 
@@ -1382,7 +1398,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             if not isinstance(selected_evidence, EvalSummary):
                 return current
             alternatives: list[
-                tuple[_Candidate, EvalSummary, float, int]
+                tuple[_Candidate, EvalSummary, EvidenceTest]
             ] = []
             alternative_ids = sorted({
                 candidate.model.id
@@ -1412,16 +1428,16 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     continue
                 if alternative_evidence.pass_rate <= selected_evidence.pass_rate:
                     continue
-                p_value, compared = _evidence_p_value(
+                evidence_test = _evidence_p_value(
                     alternative_evidence, selected_evidence,
                 )
-                if p_value < 0.05:
+                if evidence_test.p_value < 0.05:
                     alternatives.append((
-                        alternative, alternative_evidence, p_value, compared,
+                        alternative, alternative_evidence, evidence_test,
                     ))
             if not alternatives:
                 return current
-            alternative, evidence, p_value, compared = alternatives[0]
+            alternative, evidence, evidence_test = alternatives[0]
             for option in alternatives[1:]:
                 if (
                     option[1].pass_rate,
@@ -1432,7 +1448,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     alternative.score,
                     alternative.model.id,
                 ):
-                    alternative, evidence, p_value, compared = option
+                    alternative, evidence, evidence_test = option
             warnings.append(t(
                 "warn.eval_evidence_override",
                 selected.lang,
@@ -1443,8 +1459,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                 selected_rate=selected_evidence.pass_rate,
                 other_prior=alternative.model.quality,
                 selected_prior=current.model.quality,
-                p_value=p_value,
-                compared=compared,
+                p_value=evidence_test.p_value,
+                compared=evidence_test.compared,
             ))
             return alternative
 
@@ -1618,11 +1634,11 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         or other.quality >= selected_model.quality
                     ):
                         continue
-                    p_value, compared = _evidence_p_value(
+                    evidence_test = _evidence_p_value(
                         other_evidence, selected_evidence,
                     )
-                    suite_size = compared
-                    if p_value < 0.05:
+                    suite_size = evidence_test.compared
+                    if evidence_test.p_value < 0.05:
                         pair = (other.id, service.model_id)
                         if pair in contradiction_pairs:
                             continue
@@ -1637,30 +1653,47 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                             selected_rate=selected_rate,
                             other_prior=other.quality,
                             selected_prior=selected_model.quality,
-                            p_value=p_value,
-                            compared=compared,
+                            p_value=evidence_test.p_value,
+                            compared=evidence_test.compared,
                         ))
                     elif not underpowered_emitted:
                         underpowered_emitted = True
-                        note_key = (
-                            "note.eval_underpowered"
-                            if suite_size < len(EXTENDED_TASKS)
-                            else "note.eval_underpowered_full"
-                        )
-                        note_params = {
-                            "tasks": suite_size,
-                            "other_rate": other_rate,
-                            "selected_rate": selected_rate,
-                            "p_value": p_value,
-                            "minimum": min_resolvable_difference(suite_size),
-                        }
-                        if suite_size < len(EXTENDED_TASKS):
-                            note_params.update({
-                                "upgrade_tasks": len(EXTENDED_TASKS),
-                                "upgrade_minimum": min_resolvable_difference(
-                                    len(EXTENDED_TASKS),
-                                ),
-                            })
+                        if evidence_test.paired:
+                            note_key = "note.eval_underpowered_paired"
+                            discordant = (
+                                evidence_test.better_only
+                                + evidence_test.worse_only
+                            )
+                            imbalance = min_discordant_imbalance(discordant)
+                            note_params = {
+                                "tasks": suite_size,
+                                "discordant": discordant,
+                                "better_only": evidence_test.better_only,
+                                "worse_only": evidence_test.worse_only,
+                                "p_value": evidence_test.p_value,
+                                "required": min_discordant_for_significance(),
+                                "imbalance": imbalance if imbalance is not None else "-",
+                            }
+                        else:
+                            note_key = (
+                                "note.eval_underpowered"
+                                if suite_size < len(EXTENDED_TASKS)
+                                else "note.eval_underpowered_full"
+                            )
+                            note_params = {
+                                "tasks": suite_size,
+                                "other_rate": other_rate,
+                                "selected_rate": selected_rate,
+                                "p_value": evidence_test.p_value,
+                                "minimum": min_resolvable_difference(suite_size),
+                            }
+                            if suite_size < len(EXTENDED_TASKS):
+                                note_params.update({
+                                    "upgrade_tasks": len(EXTENDED_TASKS),
+                                    "upgrade_minimum": min_resolvable_difference(
+                                        len(EXTENDED_TASKS),
+                                    ),
+                                })
                         warnings.append(t(
                             note_key,
                             selected.lang,
