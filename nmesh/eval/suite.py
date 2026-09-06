@@ -2,18 +2,20 @@
 
 Every task is graded by a self-contained verifier: no LLM judge, no reference
 model, no network. Numeric tasks use ``_number`` to grade the value while
-tolerating surrounding prose. String-extraction tasks and instruction/format
-tasks are strict because output discipline is what they measure. The suite is
-small and mechanical on purpose: it measures instruction following, output
+tolerating surrounding prose. Value-extraction tasks grade the extracted value;
+output discipline is measured by the ``instruction``, ``format`` and
+``compliance`` families instead of being conflated with extraction. The suite
+is small and mechanical on purpose: it measures instruction following, output
 format discipline, extraction and translation direction, not knowledge. A pass
 rate here is not MMLU and must never be presented as one.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 _FENCE = re.compile(r"^```[a-zA-Z0-9]*\s*|\s*```$")
@@ -54,6 +56,40 @@ class Task:
 def _exact(expected: str) -> Callable[[str], bool]:
     def check(text: str) -> bool:
         return normalize(text).lower() == expected.lower()
+    return check
+
+
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _only_email(expected: str) -> Callable[[str], bool]:
+    """Grade the extracted address itself, tolerating prose around it."""
+
+    def check(text: str) -> bool:
+        return {found.lower() for found in _EMAIL_RE.findall(text)} == {expected.lower()}
+
+    return check
+
+
+def _only_date(expected: str) -> Callable[[str], bool]:
+    """Grade the extracted ISO date itself, tolerating prose around it."""
+
+    def check(text: str) -> bool:
+        return set(_ISO_DATE_RE.findall(text)) == {expected}
+
+    return check
+
+
+def _only_span(expected: str, rivals: Sequence[str]) -> Callable[[str], bool]:
+    """Grade a copied span by value: it must appear and no rival span may."""
+
+    def check(text: str) -> bool:
+        lowered = text.lower()
+        if expected.lower() not in lowered:
+            return False
+        return not any(rival.lower() in lowered for rival in rivals)
+
     return check
 
 
@@ -176,7 +212,7 @@ TASKS: tuple[Task, ...] = (
         "Extract the email address and output it alone: "
         "'Contact ops at nmesh-ops@example.com before Friday.'",
         32,
-        _exact("nmesh-ops@example.com"),
+        _only_email("nmesh-ops@example.com"),
     ),
     Task(
         "extraction.date",
@@ -184,7 +220,7 @@ TASKS: tuple[Task, ...] = (
         "Extract the date in YYYY-MM-DD form and output it alone: "
         "'The release shipped on March 3, 2024 in Tokyo.'",
         32,
-        _exact("2024-03-03"),
+        _only_date("2024-03-03"),
     ),
     Task(
         "extraction.number",
@@ -211,6 +247,25 @@ TASKS: tuple[Task, ...] = (
 
 
 CATEGORIES: tuple[str, ...] = tuple(dict.fromkeys(task.category for task in TASKS))
+GRADER_VERSION = 2
 
 
-__all__ = ["CATEGORIES", "TASKS", "Task", "normalize"]
+def suite_digest(tasks: Sequence[Task]) -> str:
+    """Identify what was graded and how, so records from different rules never compare."""
+    payload = "\n".join(
+        f"{task.id}\x00{task.prompt}\x00{task.max_tokens}" for task in tasks
+    )
+    return (
+        f"v{GRADER_VERSION}:"
+        f"{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+    )
+
+
+__all__ = [
+    "CATEGORIES",
+    "GRADER_VERSION",
+    "TASKS",
+    "Task",
+    "normalize",
+    "suite_digest",
+]

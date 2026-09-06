@@ -2,9 +2,9 @@
 
 The 16-task core suite cannot resolve pass-rate differences below 0.3125 at
 alpha=0.05 (exact Fisher), so it can only falsify very large quality-prior
-errors. Enumerating 80 further tasks with the same code-only verifiers brings
-the suite to 96 tasks, whose minimum resolvable difference is 0.0625 - the
-size of a single task in the core suite.
+errors. Enumerating 80 further tasks plus 8 compliance tasks with the same
+code-only verifiers brings the generated suite to 88 tasks and the extended
+suite to 104 tasks.
 
 Every task here is enumerated, not sampled: no RNG, no LLM judge, no network,
 so task ids and expected answers are stable across runs and machines. Tasks
@@ -26,6 +26,9 @@ from .suite import (
     _japanese_only,
     _json_object,
     _number,
+    _only_date,
+    _only_email,
+    _only_span,
     normalize,
 )
 
@@ -67,15 +70,20 @@ _MAXIMA = (
 )
 _SUBSTRINGS = (
     ("Extract the model name and output it alone: "
-     "'We deployed qwen2.5-7b-instruct on the spare node.'", "qwen2.5-7b-instruct"),
+     "'We deployed qwen2.5-7b-instruct on the spare node.'",
+     "qwen2.5-7b-instruct", ("spare node", "deployed")),
     ("Extract the port and output it alone: "
-     "'The gateway listens on 18000 by default.'", "18000"),
+     "'The gateway listens on 18000 by default.'",
+     "18000", ("listens", "by default")),
     ("Extract the file name and output it alone: "
-     "'Copy plan.json into the state directory.'", "plan.json"),
+     "'Copy plan.json into the state directory.'",
+     "plan.json", ("state directory", "Copy")),
     ("Extract the flag and output it alone: "
-     "'Pass --parallel-slots to raise the slot count.'", "--parallel-slots"),
+     "'Pass --parallel-slots to raise the slot count.'",
+     "--parallel-slots", ("slot count", "raise")),
     ("Extract the quantization label and output it alone: "
-     "'The blob was tagged Q4_K_M by the exporter.'", "Q4_K_M"),
+     "'The blob was tagged Q4_K_M by the exporter.'",
+     "Q4_K_M", ("exporter", "blob was")),
 )
 _JAPANESE = (
     ("次の英文を日本語に訳し、訳文だけを出力してください: 'The dog runs.'", "犬"),
@@ -204,14 +212,14 @@ def _build() -> tuple[Task, ...]:
         tasks.append(Task(
             f"extraction.email.{index}", "extraction",
             f"Extract the email address and output it alone: '{sentence}'",
-            32, _exact(address),
+            32, _only_email(address),
         ))
     for index, (sentence, iso) in enumerate(_DATES):
         tasks.append(Task(
             f"extraction.date.{index}", "extraction",
             "Extract the date in YYYY-MM-DD form and output it alone: "
             f"'{sentence}'",
-            32, _exact(iso),
+            32, _only_date(iso),
         ))
     for index, (listing, largest) in enumerate(_MAXIMA):
         tasks.append(Task(
@@ -219,9 +227,29 @@ def _build() -> tuple[Task, ...]:
             f"Output only the largest number in this list: {listing}.",
             16, _number(largest),
         ))
-    for index, (prompt, expected) in enumerate(_SUBSTRINGS):
+    for index, (prompt, expected, rivals) in enumerate(_SUBSTRINGS):
         tasks.append(Task(
-            f"extraction.span.{index}", "extraction", prompt, 32, _exact(expected),
+            f"extraction.span.{index}", "extraction", prompt, 32,
+            _only_span(expected, rivals),
+        ))
+    for index, (sentence, address) in enumerate(_EMAILS[:3]):
+        tasks.append(Task(
+            f"compliance.email.{index}", "compliance",
+            f"Output only the email address, no other words: '{sentence}'",
+            32, _exact(address),
+        ))
+    for index, (sentence, iso) in enumerate(_DATES[:3]):
+        tasks.append(Task(
+            f"compliance.date.{index}", "compliance",
+            "Output only the date in YYYY-MM-DD form, no other words: "
+            f"'{sentence}'",
+            32, _exact(iso),
+        ))
+    for index, (prompt, expected, _rivals) in enumerate(_SUBSTRINGS[:2]):
+        tasks.append(Task(
+            f"compliance.span.{index}", "compliance",
+            f"{prompt} Output only that value, no other words.",
+            32, _exact(expected),
         ))
     for index, (prompt, required) in enumerate(_JAPANESE):
         tasks.append(Task(
@@ -236,6 +264,14 @@ GENERATED_TASKS: tuple[Task, ...] = _build()
 
 EXTENDED_TASKS: tuple[Task, ...] = TASKS + GENERATED_TASKS
 SUITES: dict[str, tuple[Task, ...]] = {"core": TASKS, "extended": EXTENDED_TASKS}
+EXTENDED_CATEGORIES: tuple[str, ...] = tuple(
+    dict.fromkeys(task.category for task in EXTENDED_TASKS)
+)
 
 
-__all__ = ["EXTENDED_TASKS", "GENERATED_TASKS", "SUITES"]
+__all__ = [
+    "EXTENDED_CATEGORIES",
+    "EXTENDED_TASKS",
+    "GENERATED_TASKS",
+    "SUITES",
+]

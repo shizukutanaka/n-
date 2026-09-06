@@ -278,7 +278,8 @@ deliberately not used because its shape is unverified here.
 ### Model quality micro-evaluation
 
 `nmesh eval` runs a deterministic 16-task micro-evaluation covering instruction
-following, output format, extraction, and translation direction. It is not a
+following, output format, value extraction, and translation direction. Strict
+output discipline is measured separately by the `compliance` family. It is not a
 knowledge benchmark and its pass rate must not be compared with MMLU-style
 scores. The catalog `quality` field remains an unverified prior used for
 planning; measured results are saved in `eval.json`. When an evaluation
@@ -347,16 +348,15 @@ planner's score is not yet possible at this suite size.
 #### Extending the evaluation suite
 
 The extension is enumerated without RNG and uses code-only verifiers: 16 core
-tasks plus 80 generated tasks make 96 tasks. The measured exact resolving-power
-limit improves from `0.3125` at 16 tasks to `0.0625` at 96 tasks, while the
-Wilson interval width at a 0.75 pass rate shrinks from `0.393` to `0.171`.
-The 96-task category mix is instruction 18 / format 19 / arithmetic 30 /
-extraction 23 / multilingual 6.
+tasks plus 88 generated tasks make 104 tasks. Extraction tasks grade the
+extracted value, while strict output discipline is measured by `compliance`.
+Every evaluation record carries a grader digest, and records graded by different
+rules are never compared.
 
 The default remains the `core` suite, so historical records and runtime
 behaviour are unchanged; `nmesh eval --suite extended` is opt-in. Tasks within
 one family are not independent samples, so the effective sample size is below
-96 and the exact tests are optimistic to that extent.
+104 and the exact tests are optimistic to that extent.
 
 The extended suite was run on one CPU machine, both models on llama.cpp so the
 backend and artifact effects found earlier are not in the way: Qwen2.5 1.5B

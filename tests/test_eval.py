@@ -12,6 +12,7 @@ from nmesh import cli
 from nmesh.catalog import ModelSpec
 from nmesh.eval import (
     CATEGORIES,
+    EXTENDED_CATEGORIES,
     EXTENDED_TASKS,
     GENERATED_TASKS,
     SUITES,
@@ -21,6 +22,7 @@ from nmesh.eval import (
     Task,
     TaskOutcome,
     normalize,
+    suite_digest,
 )
 from nmesh.eval.cache import EvalRecord, load_eval_cache, save_eval
 from nmesh.eval.generated import (
@@ -166,8 +168,14 @@ def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
         expected[f"extraction.date.{index}"] = iso
     for index, (_, largest) in enumerate(_MAXIMA):
         expected[f"extraction.max.{index}"] = str(largest)
-    for index, (_, span) in enumerate(_SUBSTRINGS):
+    for index, (_, span, _rivals) in enumerate(_SUBSTRINGS):
         expected[f"extraction.span.{index}"] = span
+    for index, (_, address) in enumerate(_EMAILS[:3]):
+        expected[f"compliance.email.{index}"] = address
+    for index, (_, iso) in enumerate(_DATES[:3]):
+        expected[f"compliance.date.{index}"] = iso
+    for index, (_, span, _rivals) in enumerate(_SUBSTRINGS[:2]):
+        expected[f"compliance.span.{index}"] = span
     for index, (_, required) in enumerate(_JAPANESE):
         expected[f"multilingual.ja.{index}"] = f"\u3053\u308c\u306f{required}\u3067\u3059"
 
@@ -176,21 +184,59 @@ def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
         "instruction": "Sure! Here is the answer: nope.",
         "format": '{"unexpected": 1}',
         "extraction": "I cannot find it.",
+        "compliance": "Sure, here is the value.",
         "multilingual": "It is a cat.",
     }
-    assert len(GENERATED_TASKS) == 80
+    assert len(GENERATED_TASKS) == 88
     assert len(TASKS) == 16
-    assert len(EXTENDED_TASKS) == 96
+    assert len(EXTENDED_TASKS) == 104
     assert SUITES == {"core": TASKS, "extended": EXTENDED_TASKS}
-    assert len({task.id for task in EXTENDED_TASKS}) == 96
+    assert len({task.id for task in EXTENDED_TASKS}) == 104
     assert not {task.id for task in TASKS} & {task.id for task in GENERATED_TASKS}
-    assert min_resolvable_difference(96) == pytest.approx(0.0625)
+    assert "compliance" in EXTENDED_CATEGORIES
+    assert "compliance" not in CATEGORIES
+    assert min_resolvable_difference(len(EXTENDED_TASKS)) == min_resolvable_difference(104)
 
     for task in GENERATED_TASKS:
         answer = expected[task.id]
         assert task.check(answer), task.id
         assert task.check(f"```\n{answer}\n```"), task.id
         assert not task.check(wrong[task.category]), task.id
+
+
+def test_value_extraction_and_compliance_grading() -> None:
+    email = next(task for task in TASKS if task.id == "extraction.email")
+    date = next(task for task in TASKS if task.id == "extraction.date")
+    number = next(task for task in TASKS if task.id == "extraction.number")
+    assert email.check("The address is nmesh-ops@example.com.")
+    assert date.check("The date in YYYY-MM-DD form is: 2024-03-03")
+    assert not email.check("Contact wrong@example.com instead.")
+    assert not date.check("The date is 2024-03-04.")
+    assert number.check("The answer is 236.")
+    for task in GENERATED_TASKS:
+        if task.category == "extraction" and task.id.startswith("extraction.span."):
+            source = next(
+                prompt for prompt, expected, _rivals in _SUBSTRINGS
+                if expected in prompt
+            )
+            assert not task.check(source)
+    compliance = next(
+        task for task in GENERATED_TASKS if task.id == "compliance.email.0"
+    )
+    assert compliance.check(_EMAILS[0][1])
+    assert not compliance.check(f"The address is {_EMAILS[0][1]}.")
+
+
+def test_suite_digest_identity() -> None:
+    assert suite_digest(TASKS) == suite_digest(TASKS)
+    assert suite_digest(TASKS) != suite_digest(EXTENDED_TASKS)
+    from nmesh.eval import suite
+    original = suite.GRADER_VERSION
+    try:
+        suite.GRADER_VERSION = original + 1
+        assert suite_digest(TASKS) != f"v{original}:" + suite_digest(TASKS).split(":", 1)[1]
+    finally:
+        suite.GRADER_VERSION = original
 
 
 def test_runner_mixed_and_transport_failure_continue() -> None:
@@ -237,16 +283,19 @@ def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
         [TaskOutcome("one", "chat", True, "yes"), TaskOutcome("two", "chat", False, "no")],
         3.0,
         "gguf:2:123:abcdef",
+        "core",
+        suite_digest(TASKS),
     )
     save_eval(result, path)
     loaded = load_eval_cache(path)
-    assert loaded["model|q4_k_m|llamacpp"].pass_rate == 0.5
-    assert loaded["model|q4_k_m|llamacpp"].task_results == {
+    key = f"model|q4_k_m|llamacpp|core|{suite_digest(TASKS)}"
+    assert loaded[key].pass_rate == 0.5
+    assert loaded[key].task_results == {
         "one": True, "two": False,
     }
-    assert loaded["model|q4_k_m|llamacpp"].artifact == "gguf:2:123:abcdef"
+    assert loaded[key].artifact == "gguf:2:123:abcdef"
     assert "outcomes" not in json.loads(path.read_text(encoding="utf-8"))["results"][
-        "model|q4_k_m|llamacpp"
+        key
     ]
     legacy = {
         "results": {
@@ -275,6 +324,19 @@ def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
     path.write_text("{broken", encoding="utf-8")
     assert load_eval_cache(path) == {}
     assert load_eval_cache(tmp_path / "missing.json") == {}
+
+
+def test_eval_cache_keeps_suites_separate(tmp_path) -> None:
+    path = tmp_path / "eval.json"
+    core = EvalRun("model", "f16", "llamacpp", 16, 8, 0.5, {}, [], 1.0,
+                   "", "core", suite_digest(TASKS))
+    extended = EvalRun("model", "f16", "llamacpp", 104, 60, 60 / 104, {}, [], 2.0,
+                       "", "extended", suite_digest(EXTENDED_TASKS))
+    save_eval(core, path)
+    save_eval(extended, path)
+    records = load_eval_cache(path)
+    assert len(records) == 2
+    assert cli._eval_rates(records)[("model", "f16", "llamacpp")].n_tasks == 104
 
 
 def _quality_models() -> list[ModelSpec]:
@@ -329,13 +391,14 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
     assert cli.main(["eval", "--json"]) == 0
     output = json.loads(capsys.readouterr().out)
-    assert output["key"] == "prior-high|f16|llamacpp"
+    assert output["key"].startswith("prior-high|f16|llamacpp|core|")
     assert output["suite"] == "core"
+    assert output["digest"].startswith("v2:")
     assert output["note"].startswith("1-task")
     assert output["pass_rate_ci"] == pytest.approx((0.2065, 1.0), abs=0.0001)
     assert output["min_resolvable_difference"] == 1.0
     assert output["uncertainty_note"].startswith("95% Wilson interval")
-    assert output["suite_upgrade_note"].startswith("The 96-task extended suite")
+    assert output["suite_upgrade_note"].startswith("The 104-task extended suite")
     assert output["config_note"].startswith("This pass rate applies")
     assert output["failed"] == [{"id": "failed", "output": "bad"}]
 
@@ -379,7 +442,7 @@ def test_planner_reports_underpowered_eval_evidence() -> None:
     assert not any("pass rate ranks" in warning for warning in plan.warnings)
     assert any(
         "neither confirmed nor contradicted" in note
-        and "96-task extended suite" in note
+        and "104-task extended suite" in note
         for note in plan.warnings
     )
 
@@ -446,16 +509,28 @@ def test_planner_ignores_bare_float_eval_evidence() -> None:
 
 
 def test_eval_rates_are_keyed_by_configuration(monkeypatch) -> None:
+    core_digest = suite_digest(TASKS)
     records = {
-        "old": EvalRecord("model", "f16", "llamacpp", 16, 8, 0.5, {}, 1.0),
-        "new": EvalRecord("model", "f16", "llamacpp", 16, 12, 0.75, {}, 2.0),
-        "other": EvalRecord("model", "q4_k_m", "ollama", 16, 13, 0.8125, {}, 1.5),
+        "old": EvalRecord("model", "f16", "llamacpp", 16, 8, 0.5, {}, 1.0,
+                          {}, "", "core", core_digest),
+        "new": EvalRecord("model", "f16", "llamacpp", 16, 12, 0.75, {}, 2.0,
+                          {}, "", "core", core_digest),
+        "other": EvalRecord("model", "q4_k_m", "ollama", 16, 13, 0.8125, {}, 1.5,
+                            {}, "", "core", core_digest),
     }
     monkeypatch.setattr(cli, "load_eval_cache", lambda: records)
     assert cli._eval_rates() == {
         ("model", "f16", "llamacpp"): EvalSummary(0.75, 12, 16, {}),
         ("model", "q4_k_m", "ollama"): EvalSummary(0.8125, 13, 16, {}),
     }
+
+
+def test_eval_rates_drops_stale_grader_records() -> None:
+    stale = EvalRecord(
+        "model", "f16", "llamacpp", 16, 16, 1.0, {}, 3.0,
+        {}, "", "core", "v1:stale",
+    )
+    assert cli._eval_rates({"stale": stale}) == {}
 
 
 def test_eval_cli_category_filter(monkeypatch) -> None:
@@ -474,12 +549,32 @@ def test_eval_cli_category_filter(monkeypatch) -> None:
     assert {task.category for task in captured} == {"format"}
 
 
+def test_eval_cli_default_and_compliance_categories(monkeypatch) -> None:
+    service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
+    captured: list[Task] = []
+    result = EvalRun("prior-high", "f16", "llamacpp", 1, 1, 1.0, {}, [], 3.0)
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref: (
+        captured.extend(tasks) or result
+    ))
+    monkeypatch.setattr(cli, "save_eval", lambda value: None)
+    monkeypatch.setattr(cli, "_print_json", lambda value: None)
+    assert cli.main(["eval", "--json"]) == 0
+    assert len(captured) == 16
+    captured.clear()
+    assert cli.main(["eval", "--json", "--suite", "extended",
+                     "--categories", "compliance"]) == 0
+    assert len(captured) == 8
+    assert {task.category for task in captured} == {"compliance"}
+
+
 def test_eval_cli_extended_suite(monkeypatch, capsys) -> None:
     service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
     captured: list[Task] = []
     result = EvalRun(
-        "prior-high", "f16", "llamacpp", 96, 96, 1.0,
-        {category: 1.0 for category in CATEGORIES}, [], 3.0,
+        "prior-high", "f16", "llamacpp", 104, 104, 1.0,
+        {category: 1.0 for category in EXTENDED_CATEGORIES}, [], 3.0,
     )
     monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
     monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
@@ -489,9 +584,9 @@ def test_eval_cli_extended_suite(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
     assert cli.main(["eval", "--json", "--suite", "extended"]) == 0
     output = json.loads(capsys.readouterr().out)
-    assert len(captured) == 96
+    assert len(captured) == 104
     assert output["suite"] == "extended"
-    assert output["n_tasks"] == 96
+    assert output["n_tasks"] == 104
     assert output["suite_upgrade_note"] is None
 
 
@@ -535,7 +630,7 @@ def test_eval_cli_warns_when_artifact_changes(monkeypatch, capsys) -> None:
     )
     previous = EvalRecord(
         "prior-high", service_plan.services[0].quant, service_plan.services[0].backend,
-        1, 1, 1.0, {}, 2.0, {}, "old-artifact",
+        1, 1, 1.0, {}, 2.0, {}, "old-artifact", "core", suite_digest(TASKS),
     )
     monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
     monkeypatch.setattr(cli, "runtime_status", lambda: RuntimeStatus(
@@ -547,7 +642,10 @@ def test_eval_cli_warns_when_artifact_changes(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         cli,
         "load_eval_cache",
-        lambda: {f"prior-high|{service_plan.services[0].quant}|llamacpp": previous},
+        lambda: {
+            f"prior-high|{service_plan.services[0].quant}|llamacpp|core|"
+            f"{suite_digest(TASKS)}": previous
+        },
     )
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
     assert cli.main(["eval", "--json"]) == 0

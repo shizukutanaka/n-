@@ -32,6 +32,8 @@ class EvalRecord:
     at: float
     task_results: dict[str, bool] = field(default_factory=dict)
     artifact: str = ""
+    suite: str = "core"
+    digest: str = ""
 
 
 def _record(data: object) -> EvalRecord | None:
@@ -55,6 +57,8 @@ def _record(data: object) -> EvalRecord | None:
         at = data["at"]
         task_results = data.get("task_results", {})
         artifact = data.get("artifact", "")
+        suite = data.get("suite", "core")
+        digest = data.get("digest", "")
         if (
             isinstance(n_tasks, bool)
             or not isinstance(n_tasks, int)
@@ -72,6 +76,8 @@ def _record(data: object) -> EvalRecord | None:
             or not math.isfinite(at)
             or not isinstance(task_results, dict)
             or not isinstance(artifact, str)
+            or not isinstance(suite, str)
+            or not isinstance(digest, str)
             or any(
                 not isinstance(key, str) or not isinstance(value, bool)
                 for key, value in task_results.items()
@@ -100,6 +106,8 @@ def _record(data: object) -> EvalRecord | None:
             float(at),
             dict(task_results),
             artifact,
+            suite,
+            digest,
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -124,12 +132,14 @@ def load_eval_cache(path: Path | None = None) -> dict[str, EvalRecord]:
 def save_eval(run: EvalRun, path: Path | None = None) -> Path:
     target = path or (nmesh_home() / "eval.json")
     records = load_eval_cache(target)
-    key = f"{run.model_id}|{run.quant}|{run.backend}"
+    key = f"{run.model_id}|{run.quant}|{run.backend}|{run.suite}|{run.digest}"
     records[key] = EvalRecord(
         run.model_id, run.quant, run.backend, run.n_tasks, run.passed,
         run.pass_rate, run.by_category, run.at,
         {outcome.id: outcome.passed for outcome in run.outcomes},
         run.artifact,
+        run.suite,
+        run.digest,
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
