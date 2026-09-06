@@ -28,9 +28,10 @@ def sample(
     at: float = 1.0,
     approximate: bool = True,
     prefill_tps: float | None = None,
+    in_flight: int | None = 1,
 ) -> Sample:
     return Sample(service, key, decode_tps, ttft_s, total_s, 20, at, approximate,
-                  prefill_tps)
+                  prefill_tps, in_flight)
 
 
 def test_record_round_trip_and_trim(tmp_path) -> None:
@@ -95,6 +96,8 @@ def test_old_telemetry_samples_default_to_approximate(tmp_path) -> None:
     loaded = Telemetry(path).samples()[0]
     assert loaded.approximate is True
     assert loaded.prefill_tps is None
+    assert loaded.in_flight is None
+    assert Telemetry(path).bench_overlay() == {}
 
 
 def test_bench_overlay_prefers_exact_samples(tmp_path) -> None:
@@ -114,6 +117,16 @@ def test_bench_overlay_prefers_exact_samples(tmp_path) -> None:
         "only-approx": 32.0,
         "fallback": 14.5,
     }
+
+
+def test_bench_overlay_uses_single_stream_samples_and_reports_skips(tmp_path) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    for value in (10.0, 12.0, 14.0):
+        store.record(sample(key="single", decode_tps=value, in_flight=1))
+    for value in (30.0, 32.0, 34.0):
+        store.record(sample(key="busy", decode_tps=value, in_flight=4))
+    assert store.bench_overlay(min_samples=3) == {"single": 12.0}
+    assert store.overlay_report(min_samples=3) == ({"single": 12.0}, 3)
 
 
 class _TelemetryHandler(BaseHTTPRequestHandler):
@@ -184,6 +197,31 @@ class _TelemetryHandler(BaseHTTPRequestHandler):
         return
 
 
+class _ConcurrentHandler(BaseHTTPRequestHandler):
+    wait_for_pair: ClassVar[bool] = False
+    barrier: ClassVar[threading.Barrier | None] = None
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.rfile.read(length)
+        if self.__class__.wait_for_pair and self.__class__.barrier is not None:
+            self.__class__.barrier.wait(timeout=5)
+        body = json.dumps({
+            "model": "telemetry-model",
+            "choices": [],
+            "usage": {"completion_tokens": 1},
+            "timings": {"predicted_n": 1, "predicted_ms": 100.0},
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 def _gateway_plan(port: int):
     model = ModelSpec("telemetry-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
                       4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
@@ -223,6 +261,51 @@ def test_gateway_records_stream_and_nonstream_telemetry(tmp_path, monkeypatch) -
         assert not (tmp_path / "bench.json").exists()
     finally:
         _TelemetryHandler.timings = None
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_records_peak_in_flight_for_overlapping_nonstream_requests(
+    tmp_path, monkeypatch
+) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    monkeypatch.setattr(telemetry, "_default", store)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _ConcurrentHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _ConcurrentHandler.wait_for_pair = False
+        client = TestClient(create_app(_gateway_plan(upstream.server_address[1])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "stream": False,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert store.samples()[-1].in_flight == 1
+
+        _ConcurrentHandler.barrier = threading.Barrier(2)
+        _ConcurrentHandler.wait_for_pair = True
+        responses: list[object] = []
+
+        def request() -> None:
+            responses.append(client.post("/v1/chat/completions", json={
+                "model": "nmesh-auto",
+                "stream": False,
+                "messages": [{"role": "user", "content": "hello"}],
+            }))
+
+        workers = [threading.Thread(target=request) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=10)
+        assert len(responses) == 2
+        assert all(response.status_code == 200 for response in responses)
+        assert [sample.in_flight for sample in store.samples()[-2:]] == [2, 2]
+    finally:
+        _ConcurrentHandler.wait_for_pair = False
+        _ConcurrentHandler.barrier = None
         upstream.shutdown()
         upstream.server_close()
 

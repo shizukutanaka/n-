@@ -36,7 +36,7 @@ from nmesh.runtime import down as runtime_down
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime import up as runtime_up
 from nmesh.runtime.service_unit import launcher_script, service_unit
-from nmesh.telemetry import bench_overlay
+from nmesh.telemetry import bench_overlay, overlay_report
 from nmesh.telemetry import summary as telemetry_summary
 
 
@@ -187,8 +187,9 @@ def _make_plan(args: argparse.Namespace) -> object:
                     parallel_slots=getattr(args, "parallel_slots", None),
                     lang=i18n.lang(),
                     languages=_parse_languages(getattr(args, "lang", None)))
-    live = bench_overlay()
+    live, skipped = overlay_report()
     args._telemetry_keys = len(live)
+    args._telemetry_under_load = skipped
     cache = {**load_cache(), **live}
     return build_plan(profile, load_catalog(), policy, cache, _eval_rates())
 
@@ -282,6 +283,14 @@ def _plan(args: argparse.Namespace) -> int:
     if getattr(args, "_telemetry_keys", 0):
         _console().print(
             i18n.t("label.telemetry_overlay", language, count=args._telemetry_keys)
+        )
+    if getattr(args, "_telemetry_under_load", 0):
+        _console().print(
+            i18n.t(
+                "label.telemetry_under_load",
+                language,
+                count=getattr(args, "_telemetry_under_load", 0),
+            )
         )
     for hint in result.install_hints:
         _console().print(f"[yellow]{i18n.t('label.install', language, hint=hint)}[/yellow]")

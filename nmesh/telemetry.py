@@ -22,6 +22,7 @@ class Sample:
     at: float
     approximate: bool = True
     prefill_tps: float | None = None
+    in_flight: int | None = None
 
 
 class Telemetry:
@@ -42,6 +43,7 @@ class Telemetry:
                 float(item["total_s"]), int(item["completion_tokens"]), float(item["at"]),
                 bool(item.get("approximate", True)),
                 float(item["prefill_tps"]) if item.get("prefill_tps") is not None else None,
+                int(item["in_flight"]) if item.get("in_flight") is not None else None,
             ) for item in values if isinstance(item, dict)]
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             return []
@@ -112,10 +114,28 @@ class Telemetry:
         }
 
     def bench_overlay(self, min_samples: int = 5) -> dict[str, float]:
+        """Return the single-stream decode overlay.
+
+        One CPU machine measured Qwen2.5-1.5B-Instruct-Q4_K_M at 46.20 tok/s
+        alone with N=4, 46.26 tok/s alone with N=8, 36.64 tok/s with 4 requests
+        in flight, and 23.30 tok/s with 8 requests in flight, using one
+        llama.cpp server, ``-t 8``, ``-np N``, ``-c 4096*N``, ``/completions``,
+        ``n_predict=128``, ``temperature=0``, ``top_k=1``, ``cache_prompt=false``,
+        and nonce-prefixed prompts. Aggregate server throughput rose while the
+        per-request rate fell. This is one model on one CPU machine with
+        llama.cpp and does not generalize.
+        """
+        return self.overlay_report(min_samples)[0]
+
+    def overlay_report(self, min_samples: int = 5) -> tuple[dict[str, float], int]:
         exact: dict[str, list[float]] = {}
         approximate: dict[str, list[float]] = {}
+        skipped = 0
         for sample in self.samples():
             if sample.decode_tps is not None:
+                if sample.in_flight != 1:
+                    skipped += 1
+                    continue
                 groups = approximate if sample.approximate else exact
                 groups.setdefault(sample.key, []).append(sample.decode_tps)
         selected: dict[str, list[float]] = {}
@@ -126,10 +146,10 @@ class Telemetry:
                 selected[key] = approximate[key]
         for key, values in approximate.items():
             selected.setdefault(key, values)
-        return {
+        return ({
             key: statistics.median(values)
             for key, values in selected.items() if len(values) >= min_samples
-        }
+        }, skipped)
 
 
 _default = Telemetry()
@@ -151,6 +171,11 @@ def bench_overlay(min_samples: int = 5) -> dict[str, float]:
     return _default.bench_overlay(min_samples)
 
 
+def overlay_report(min_samples: int = 5) -> tuple[dict[str, float], int]:
+    return _default.overlay_report(min_samples)
+
+
 __all__ = [
-    "Sample", "Telemetry", "bench_overlay", "record", "summary", "summary_by_approximate",
+    "Sample", "Telemetry", "bench_overlay", "overlay_report", "record", "summary",
+    "summary_by_approximate",
 ]
