@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -17,8 +17,9 @@ from rich.table import Table
 from nmesh import i18n
 from nmesh.bench import benchmark_key, load_cache, measure, save_cache
 from nmesh.catalog import load_catalog
-from nmesh.eval import CATEGORIES, TASKS, load_eval_cache, save_eval
+from nmesh.eval import CATEGORIES, TASKS, EvalRun, load_eval_cache, save_eval
 from nmesh.eval import run as eval_run
+from nmesh.eval.cache import EvalRecord
 from nmesh.paths import nmesh_home
 from nmesh.planner import (
     PlannedService,
@@ -199,6 +200,34 @@ def _eval_rates() -> dict[tuple[str, str, str], float]:
         if previous is None or record.at > previous[0]:
             latest[key] = (record.at, record.pass_rate)
     return {key: value for key, (_, value) in latest.items()}
+
+
+def _eval_divergence(
+    result: EvalRun, records: Mapping[str, EvalRecord],
+) -> list[dict[str, object]]:
+    current = {outcome.id: outcome.passed for outcome in result.outcomes}
+    divergence: list[dict[str, object]] = []
+    for record in records.values():
+        if (
+            record.model_id != result.model_id
+            or (record.quant, record.backend) == (result.quant, result.backend)
+            or not record.task_results
+        ):
+            continue
+        comparable = sorted(set(record.task_results) & set(current))
+        disagreeing = sorted(
+            task_id for task_id in comparable
+            if record.task_results[task_id] != current[task_id]
+        )
+        if not comparable:
+            continue
+        divergence.append({
+            "config": f"{record.quant}|{record.backend}",
+            "pass_rate": record.pass_rate,
+            "compared": len(comparable),
+            "disagreeing": disagreeing,
+        })
+    return divergence
 
 
 def _plan(args: argparse.Namespace) -> int:
@@ -629,6 +658,7 @@ def _eval(args: argparse.Namespace) -> int:
     except OSError as error:
         print(i18n.t("err.eval_save", i18n.lang(), error=error), file=sys.stderr)
         return 1
+    divergence = _eval_divergence(result, load_eval_cache())
     key = f"{result.model_id}|{result.quant}|{result.backend}"
     failed = [{"id": outcome.id, "output": outcome.output}
               for outcome in result.outcomes if not outcome.passed]
@@ -653,6 +683,7 @@ def _eval(args: argparse.Namespace) -> int:
         "failed": failed,
         "note": note,
         "config_note": config_note,
+        "divergence": divergence,
     }
     if args.json:
         _print_json(output)
@@ -672,6 +703,18 @@ def _eval(args: argparse.Namespace) -> int:
     _console().print(table)
     _console().print(note)
     _console().print(config_note)
+    for item in divergence:
+        ids = ", ".join(item["disagreeing"]) or "-"
+        _console().print(i18n.t(
+            "note.eval_divergence",
+            language,
+            config=item["config"],
+            other_rate=f"{item['pass_rate']:.1%}",
+            rate=f"{result.pass_rate:.1%}",
+            count=len(item["disagreeing"]),
+            compared=item["compared"],
+            ids=ids,
+        ))
     _console().print(i18n.t(
         "label.eval_overall", language, passed=result.passed, total=result.n_tasks,
         rate=result.pass_rate,

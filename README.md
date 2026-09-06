@@ -288,6 +288,15 @@ did not change that result, so the system-prompt hypothesis was rejected.
 These measurements compare different weight artifacts and were taken on one
 model on one CPU machine; they do not generalize.
 
+The same limitation applies within fp16: on that machine, Qwen2.5 0.5B
+scored 9/16 with both llama.cpp and Ollama, while disagreeing on
+`arithmetic.subtract` (`767` vs `747`) and `multilingual.ja_translate`
+(Ollama left "sleeping" untranslated). These are opposite directions and
+both configurations are fp16, so the divergence is not a quantization
+artifact. Equal pass rates therefore do not imply equivalent behaviour.
+This is one model on one CPU machine and does not generalize; no underlying
+cause is established by this measurement.
+
 CLI commands return `0` only when the requested operation succeeds. A failed
 plan, unavailable gateway/backend, failed benchmark, missing plan, or non-zero
 foreground server exit returns `1`. `status` and `down` remain idempotent:
