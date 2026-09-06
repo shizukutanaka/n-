@@ -11,7 +11,7 @@ import pytest
 from nmesh import cli
 from nmesh.catalog import ModelSpec
 from nmesh.eval import CATEGORIES, TASKS, EvalRun, Task, TaskOutcome, normalize
-from nmesh.eval.cache import load_eval_cache, save_eval
+from nmesh.eval.cache import EvalRecord, load_eval_cache, save_eval
 from nmesh.eval.runner import run
 from nmesh.planner import Policy, build_plan
 from nmesh.runtime import RuntimeStatus
@@ -155,11 +155,17 @@ def test_planner_quality_warning_and_unchanged_selection() -> None:
     ordinary = build_plan(profile(8), models, policy)
     contradictory = build_plan(
         profile(8), models, policy,
-        eval_cache={"prior-high": 0.4, "measured-high": 0.8},
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): 0.4,
+            ("measured-high", "f16", "llamacpp"): 0.8,
+        },
     )
     consistent = build_plan(
         profile(8), models, policy,
-        eval_cache={"prior-high": 0.8, "measured-high": 0.7},
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): 0.8,
+            ("measured-high", "f16", "llamacpp"): 0.7,
+        },
     )
     assert contradictory.services[0].model_id == ordinary.services[0].model_id
     assert consistent.services[0].model_id == ordinary.services[0].model_id
@@ -188,6 +194,7 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     output = json.loads(capsys.readouterr().out)
     assert output["key"] == "prior-high|f16|llamacpp"
     assert output["note"].startswith("1-task")
+    assert output["config_note"].startswith("This pass rate applies")
     assert output["failed"] == [{"id": "failed", "output": "bad"}]
 
 
@@ -195,10 +202,40 @@ def test_planner_deduplicates_multi_role_contradiction_warning() -> None:
     models = [replace(model, roles=["chat", "code"]) for model in _quality_models()]
     plan = build_plan(
         profile(8), models, Policy(roles=["chat", "code"]),
-        eval_cache={"prior-high": 0.4, "measured-high": 0.8},
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): 0.4,
+            ("measured-high", "f16", "llamacpp"): 0.8,
+        },
     )
     contradictions = [warning for warning in plan.warnings if "pass rate ranks" in warning]
     assert len(contradictions) == 1
+
+
+def test_planner_warns_when_eval_configuration_does_not_match() -> None:
+    models = _quality_models()
+    plan = build_plan(
+        profile(8), models, Policy(roles=["chat"]),
+        eval_cache={
+            ("prior-high", "q4_k_m", "llamacpp"): 0.4,
+            ("measured-high", "f16", "llamacpp"): 0.8,
+        },
+    )
+    assert any("prior-high" in warning and "configuration" in warning
+               for warning in plan.warnings)
+    assert not any("pass rate ranks" in warning for warning in plan.warnings)
+
+
+def test_eval_rates_are_keyed_by_configuration(monkeypatch) -> None:
+    records = {
+        "old": EvalRecord("model", "f16", "llamacpp", 16, 8, 0.5, {}, 1.0),
+        "new": EvalRecord("model", "f16", "llamacpp", 16, 12, 0.75, {}, 2.0),
+        "other": EvalRecord("model", "q4_k_m", "ollama", 16, 13, 0.8125, {}, 1.5),
+    }
+    monkeypatch.setattr(cli, "load_eval_cache", lambda: records)
+    assert cli._eval_rates() == {
+        ("model", "f16", "llamacpp"): 0.75,
+        ("model", "q4_k_m", "ollama"): 0.8125,
+    }
 
 
 def test_eval_cli_category_filter(monkeypatch) -> None:
