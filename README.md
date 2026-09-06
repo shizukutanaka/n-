@@ -404,6 +404,21 @@ significant measurement rather than a hand-written prior, by both a paired and
 an unpaired exact test. It is two models on one CPU machine and does not
 establish a ranking for any other model pair.
 
+### Periodic external watch
+
+`nmesh watch` circulates through Zenn, Qiita, and optionally X to collect
+possible flags, model repositories, quantization labels, and gateway routes.
+An external post is only a pointer: every finding is checked against the
+Hugging Face API and config, recorded llama.cpp capabilities, the local
+catalog, or the gateway's actual routes. Nothing is auto-applied, and drafts
+are written only when the user supplies `--write-drafts`; model `quality` is
+never invented because only `nmesh eval` can measure it. X is reported as
+unavailable unless `NMESH_X_BEARER_TOKEN` is set. Zenn RSS carries summaries
+only, so the watcher uses the article API and fetches article HTML bodies.
+`--offline` accepts saved source items for reproducible extraction and
+verification, while bounded state prevents repeated findings from growing
+without limit.
+
 ### Speed preference saturation
 
 The planner's simulated bundled profiles show that the speed term is already

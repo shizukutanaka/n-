@@ -94,3 +94,68 @@ Restart=on-failure
 WantedBy=default.target
 """
     return "nmesh-gateway.service", text, "systemctl --user enable --now ~/.config/systemd/user/nmesh-gateway.service"
+
+
+def watch_unit(
+    interval_hours: int = 24, os_name: str | None = None
+) -> tuple[str, str, str]:
+    """Return a periodic watch unit and explicit install command."""
+    if interval_hours < 1:
+        raise ValueError("interval_hours must be at least 1")
+    current = os_name
+    windows = os.name == "nt" if current is None else current == "nt"
+    macos = (
+        sys.platform.startswith("darwin")
+        if current is None
+        else current.startswith("darwin")
+    )
+    executable = str(sys.executable)
+    if windows:
+        command_line = subprocess.list2cmdline(
+            (executable, "-m", "nmesh.cli", "watch")
+        )
+        command = (
+            f"schtasks /create /tn nmesh-watch /sc daily "
+            f"/mo {max(interval_hours // 24, 1)} /tr {command_line}"
+        )
+        return "nmesh-watch.xml", command + "\n", command
+    if macos:
+        label = "com.nmesh.watch"
+        text = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{label}</string>
+  <key>ProgramArguments</key>
+  <array><string>{html.escape(executable)}</string><string>-m</string>
+  <string>nmesh.cli</string><string>watch</string></array>
+  <key>StartInterval</key><integer>{interval_hours * 3600}</integer>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+"""
+        return f"{label}.plist", text, f"launchctl load ~/Library/LaunchAgents/{label}.plist"
+    text = f"""[Unit]
+Description=nmesh watch
+
+[Service]
+ExecStart={shlex.join((executable, "-m", "nmesh.cli", "watch"))}
+
+[Install]
+WantedBy=default.target
+
+# nmesh-watch.timer
+[Unit]
+Description=Run nmesh watch periodically
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec={interval_hours}h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+"""
+    command = "systemctl --user enable --now ~/.config/systemd/user/nmesh-watch.timer"
+    return "nmesh-watch.service + nmesh-watch.timer", text, command
