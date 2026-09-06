@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
 
+import httpx
 from rich.console import Console
 from rich.table import Table
 
@@ -45,9 +46,15 @@ from nmesh.runtime import RuntimeStatus, clear_gateway, disarm_atexit, record_ga
 from nmesh.runtime import down as runtime_down
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime import up as runtime_up
-from nmesh.runtime.service_unit import launcher_script, service_unit
+from nmesh.runtime.service_unit import launcher_script, service_unit, watch_unit
 from nmesh.telemetry import bench_overlay, overlay_report
 from nmesh.telemetry import summary as telemetry_summary
+from nmesh.watch import extract as extract_mentions
+from nmesh.watch import fetch_qiita, fetch_x, fetch_zenn
+from nmesh.watch.draft import write_draft
+from nmesh.watch.sources import SourceItem, SourceStatus
+from nmesh.watch.state import WatchState, load_state, now_iso, save_state
+from nmesh.watch.verify import caps_available, verify
 
 
 def _console() -> Console:
@@ -861,6 +868,235 @@ def _eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def _offline_items(path: str, sources: Sequence[str]) -> tuple[
+    tuple[SourceStatus, ...], tuple[SourceItem, ...]
+]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    raw_items = payload.get("items") if isinstance(payload, dict) else payload
+    if not isinstance(raw_items, list):
+        raise TypeError("offline items must be a JSON list or an object with items")
+    items: list[SourceItem] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        source = raw.get("source")
+        url = raw.get("url")
+        if not isinstance(source, str) or not isinstance(url, str):
+            continue
+        items.append(SourceItem(
+            source,
+            url,
+            raw.get("title", "") if isinstance(raw.get("title", ""), str) else "",
+            raw.get("body", "") if isinstance(raw.get("body", ""), str) else "",
+            raw.get("published", "") if isinstance(raw.get("published", ""), str) else "",
+        ))
+    statuses = tuple(
+        SourceStatus(
+            source,
+            True,
+            sum(item.source == source for item in items),
+            all(item.body for item in items if item.source == source),
+            False,
+            "offline",
+        )
+        for source in sources
+    )
+    return statuses, tuple(items)
+
+
+def _watch(args: argparse.Namespace) -> int:
+    language = i18n.lang()
+    requested = tuple(
+        item.strip().lower() for item in args.sources.split(",") if item.strip()
+    )
+    if not requested:
+        requested = ("zenn", "qiita")
+    if args.unit:
+        filename, text, command = watch_unit(args.interval_hours)
+        payload = {
+            "filename": filename,
+            "text": text,
+            "install_command": command,
+        }
+        if args.json:
+            _print_json(payload)
+        else:
+            print(
+                f"{i18n.t('label.watch_filename', language)}: {filename}\n\n"
+                f"{text}\n{i18n.t('label.watch_install', language)}:\n{command}"
+            )
+        return 0
+    try:
+        with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+            if args.offline:
+                statuses, items = _offline_items(args.offline, requested)
+            else:
+                results: dict[str, tuple[SourceStatus, tuple[SourceItem, ...]]] = {}
+                for source in requested:
+                    if source == "zenn":
+                        results[source] = fetch_zenn(limit=args.limit, client=client)
+                    elif source == "qiita":
+                        results[source] = fetch_qiita(limit=args.limit, client=client)
+                    elif source == "x":
+                        results[source] = fetch_x(
+                            "llm OR ollama OR llama.cpp OR vllm OR gguf",
+                            args.limit,
+                            client,
+                        )
+                statuses = tuple(result[0] for result in results.values())
+                items = tuple(item for result in results.values() for item in result[1])
+            mentions = extract_mentions(items)
+            mentioned_repo_ids = {
+                mention.value.casefold()
+                for mention in mentions
+                if mention.kind == "model_repo"
+            }
+            catalog_stats = {
+                "mentioned_repo_ids": len(mentioned_repo_ids),
+                "in_catalog": 0,
+                "resolved_repo_ids": 0,
+            }
+            findings = verify(mentions, client, catalog_stats)
+    except (
+        OSError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        httpx.HTTPError,
+    ) as error:
+        print(i18n.t("err.watch_run", language, error=error), file=sys.stderr)
+        return 1
+    state = load_state()
+    stamp = now_iso()
+    finding_keys = {f"{item.kind}|{item.value}" for item in findings}
+    new_keys = (
+        finding_keys
+        if args.all
+        else {key for key in finding_keys if key not in state.seen_findings}
+    )
+    next_state = WatchState(
+        stamp,
+        {**state.seen_items, **{item.url: stamp for item in items}},
+        {**state.seen_findings, **{key: stamp for key in finding_keys}},
+    )
+    try:
+        save_state(next_state)
+    except OSError as error:
+        print(i18n.t("warn.watch_state", language, error=error))
+    drafts: list[str] = []
+    if args.write_drafts:
+        for finding in findings:
+            if finding.kind == "catalog_gap":
+                try:
+                    drafts.append(str(write_draft(finding, args.write_drafts)))
+                except OSError as error:
+                    print(i18n.t("warn.watch_draft", language, error=error))
+    notes = [
+        i18n.t("note.watch_external_claim", language),
+        i18n.t("note.watch_route", language),
+    ]
+    if (
+        any(mention.kind == "flag" for mention in mentions)
+        and not caps_available()
+    ):
+        notes.append(i18n.t("note.watch_caps_unavailable", language))
+    if any(finding.kind == "flag_unknown" for finding in findings):
+        notes.append(i18n.t("note.watch_unknown_flag", language))
+    if any(status.name == "zenn" and status.reachable for status in statuses):
+        notes.append(i18n.t("note.watch_zenn_body", language))
+    for status in statuses:
+        if not status.reachable:
+            notes.append(i18n.t(
+                "warn.watch_unreachable",
+                language,
+                source=status.name,
+                detail=status.detail,
+            ))
+    catalog_models = load_catalog()
+    catalog_metrics = {
+        "entries": len(catalog_models),
+        "repo_ids": len({
+            value.casefold()
+            for model in catalog_models
+            for value in model.sources.values()
+        }),
+        "mentioned_repo_ids": catalog_stats["mentioned_repo_ids"],
+        "in_catalog": catalog_stats["in_catalog"],
+        "resolved_repo_ids": catalog_stats["resolved_repo_ids"],
+        "absent_repo_ids": len({
+            finding.value.casefold()
+            for finding in findings
+            if finding.kind == "catalog_gap"
+        }),
+    }
+    output = {
+        "sources": [asdict(status) for status in statuses],
+        "items": len(items),
+        "mentions": len(mentions),
+        "findings": [asdict(finding) for finding in findings],
+        "new_findings": len(new_keys),
+        "drafts": drafts,
+        "notes": notes,
+        "catalog": catalog_metrics,
+    }
+    if args.json:
+        _print_json(output)
+    else:
+        table = Table(title=i18n.t("label.watch_title", language))
+        table.add_column(i18n.t("label.watch_source", language))
+        table.add_column(i18n.t("label.watch_reachable", language))
+        table.add_column(i18n.t("label.watch_items", language))
+        table.add_column(i18n.t("label.watch_detail", language))
+        for status in statuses:
+            table.add_row(
+                status.name,
+                str(status.reachable),
+                str(status.items),
+                status.detail,
+            )
+        _console().print(table)
+        catalog_metrics = output["catalog"]
+        catalog_table = Table(title=i18n.t("label.watch_catalog_title", language))
+        catalog_table.add_column(i18n.t("label.watch_metric", language))
+        catalog_table.add_column(i18n.t("label.watch_value", language))
+        catalog_table.add_row(
+            i18n.t("label.watch_catalog_entries", language),
+            str(catalog_metrics["entries"]),
+        )
+        catalog_table.add_row(
+            i18n.t("label.watch_catalog_repo_ids", language),
+            str(catalog_metrics["repo_ids"]),
+        )
+        catalog_table.add_row(
+            i18n.t("label.watch_catalog_mentioned", language),
+            str(catalog_metrics["mentioned_repo_ids"]),
+        )
+        catalog_table.add_row(
+            i18n.t("label.watch_catalog_in_catalog", language),
+            str(catalog_metrics["in_catalog"]),
+        )
+        catalog_table.add_row(
+            i18n.t("label.watch_catalog_resolved", language),
+            str(catalog_metrics["resolved_repo_ids"]),
+        )
+        catalog_table.add_row(
+            i18n.t("label.watch_catalog_absent", language),
+            str(catalog_metrics["absent_repo_ids"]),
+        )
+        _console().print(catalog_table)
+        for finding in findings:
+            _console().print(i18n.t(
+                "label.watch_finding",
+                language,
+                kind=finding.kind,
+                value=finding.value,
+                mentions=finding.mentions,
+            ))
+        for note in notes:
+            _console().print(note)
+    return 1 if statuses and all(not status.reachable for status in statuses) else 0
+
+
 def _run_prompt(args: argparse.Namespace) -> int:
     payload = json.dumps({"model": f"nmesh-{args.role}",
                           "messages": [{"role": "user", "content": args.prompt}]}).encode()
@@ -934,6 +1170,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"({','.join(EXTENDED_CATEGORIES)})",
     )
     eval_parser.add_argument("--suite", choices=("core", "extended"), default="core")
+    watch_parser = sub.add_parser("watch")
+    watch_parser.add_argument("--sources", default="zenn,qiita")
+    watch_parser.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=20,
+        help="items per source tag/topic",
+    )
+    watch_parser.add_argument("--all", action="store_true", dest="all")
+    watch_parser.add_argument("--json", action="store_true")
+    watch_parser.add_argument("--write-drafts")
+    watch_parser.add_argument("--offline")
+    watch_parser.add_argument("--unit", action="store_true")
+    watch_parser.add_argument("--interval-hours", type=_positive_int, default=24)
     auto = sub.add_parser("autotune")
     auto.add_argument("--json", action="store_true")
     autostart = sub.add_parser("autostart")
@@ -962,6 +1212,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _bench(args)
     if args.command == "eval":
         return _eval(args)
+    if args.command == "watch":
+        return _watch(args)
     if args.command == "autotune":
         plan = load_plan()
         if plan is None or not plan.services:
