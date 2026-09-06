@@ -42,6 +42,10 @@ INSTALL_HINTS = {
 }
 
 
+def _effective_prior(model: ModelSpec, quant: str) -> float | None:
+    return None if model.quality is None else model.quality - QUANT_PENALTY[quant]
+
+
 @dataclass(frozen=True)
 class MemoryEstimate:
     weight_bytes: float
@@ -559,10 +563,11 @@ def _candidate_for(
             wq, ws = {"quality": (1.0, 0.1), "speed": (0.5, 1.0),
                       "balanced": (1.0, 0.25)}.get(policy.prefer, (1.0, 0.25))
             speed_score = min(tps, SPEED_REFERENCE_TPS) / SPEED_REFERENCE_TPS * 100 * ws
+            prior = _effective_prior(model, quant)
             score = (
                 speed_score
-                if model.quality is None
-                else (model.quality - QUANT_PENALTY[quant]) * wq + speed_score
+                if prior is None
+                else prior * wq + speed_score
             )
             if policy.languages:
                 covers = set(policy.languages).issubset(model.languages)
@@ -1400,17 +1405,34 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             alternatives: list[
                 tuple[_Candidate, EvalSummary, EvidenceTest]
             ] = []
-            alternative_ids = sorted({
-                candidate.model.id
+            alternative_pairs = sorted({
+                (candidate.model.id, candidate.quant)
                 for pool in source_pools.values()
                 for candidate in pool
-                if candidate.model.id != current.model.id
+                if (
+                    candidate.model.id,
+                    candidate.quant,
+                ) != (current.model.id, current.quant)
             })
-            for model_id in alternative_ids:
+            for model_id, quant in alternative_pairs:
+                if model_id != current.model.id:
+                    model_candidates = {
+                        role: [
+                            candidate for candidate in pool
+                            if candidate.model.id == model_id
+                        ]
+                        for role, pool in source_pools.items()
+                    }
+                    planned = _plan_group(current_group, model_candidates)
+                    if planned is None or planned.quant != quant:
+                        continue
                 restricted = {
                     role: [
                         candidate for candidate in pool
-                        if candidate.model.id == model_id
+                        if (
+                            candidate.model.id == model_id
+                            and candidate.quant == quant
+                        )
                     ]
                     for role, pool in source_pools.items()
                 }
@@ -1449,19 +1471,35 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     alternative.model.id,
                 ):
                     alternative, evidence, evidence_test = option
-            warnings.append(t(
-                "warn.eval_evidence_override",
-                selected.lang,
-                role=current_group[0],
-                other=alternative.model.id,
-                other_rate=evidence.pass_rate,
-                selected=current.model.id,
-                selected_rate=selected_evidence.pass_rate,
-                other_prior=alternative.model.quality,
-                selected_prior=current.model.quality,
-                p_value=evidence_test.p_value,
-                compared=evidence_test.compared,
-            ))
+            if alternative.model.id == current.model.id:
+                warnings.append(t(
+                    "warn.eval_evidence_override_quant",
+                    selected.lang,
+                    role=current_group[0],
+                    model=current.model.id,
+                    other_quant=alternative.quant,
+                    other_rate=evidence.pass_rate,
+                    selected_quant=current.quant,
+                    selected_rate=selected_evidence.pass_rate,
+                    other_penalty=QUANT_PENALTY[alternative.quant],
+                    selected_penalty=QUANT_PENALTY[current.quant],
+                    p_value=evidence_test.p_value,
+                    compared=evidence_test.compared,
+                ))
+            else:
+                warnings.append(t(
+                    "warn.eval_evidence_override",
+                    selected.lang,
+                    role=current_group[0],
+                    other=alternative.model.id,
+                    other_rate=evidence.pass_rate,
+                    selected=current.model.id,
+                    selected_rate=selected_evidence.pass_rate,
+                    other_prior=alternative.model.quality,
+                    selected_prior=current.model.quality,
+                    p_value=evidence_test.p_value,
+                    compared=evidence_test.compared,
+                ))
             return alternative
 
         def warn_capacity_tradeoff(
@@ -1567,7 +1605,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         )
     if eval_cache is not None:
         catalog_by_id = {model.id: model for model in catalog}
-        contradiction_pairs: set[tuple[str, str]] = set()
+        contradiction_pairs: set[tuple[str, str, str, str]] = set()
         eval_mismatch_models: set[str] = set()
         underpowered_emitted = False
         for service in services:
@@ -1605,100 +1643,148 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             )
             for role in service.roles:
                 for other in catalog:
-                    if other.id == service.model_id or role not in other.roles:
+                    if role not in other.roles:
                         continue
-                    if not any(
-                        key[0] == other.id.casefold() for key in measured
-                    ):
-                        continue
+                    same_model = other.id == service.model_id
                     candidates = _candidate_for(other, profile, selected, bench_cache)
-                    if not candidates:
-                        continue
-                    best = max(candidates, key=lambda candidate: candidate.score)
-                    other_evidence = measured.get(
-                        (
-                            other.id.casefold(),
-                            best.quant.casefold(),
-                            best.backend.casefold(),
-                        )
-                    )
-                    if not isinstance(selected_evidence, EvalSummary) or not isinstance(
-                        other_evidence, EvalSummary
-                    ):
-                        continue
-                    other_rate = other_evidence.pass_rate
-                    if (
-                        other_rate <= selected_rate
-                        or other.quality is None
-                        or selected_model.quality is None
-                        or other.quality >= selected_model.quality
-                    ):
-                        continue
-                    evidence_test = _evidence_p_value(
-                        other_evidence, selected_evidence,
-                    )
-                    suite_size = evidence_test.compared
-                    if evidence_test.p_value < 0.05:
-                        pair = (other.id, service.model_id)
-                        if pair in contradiction_pairs:
+                    if same_model:
+                        candidates = [
+                            candidate for candidate in candidates
+                            if candidate.quant.casefold() != service.quant.casefold()
+                            and isinstance(
+                                measured.get(
+                                    (
+                                        other.id.casefold(),
+                                        candidate.quant.casefold(),
+                                        candidate.backend.casefold(),
+                                    )
+                                ),
+                                EvalSummary,
+                            )
+                        ]
+                    else:
+                        if not any(
+                            key[0] == other.id.casefold() for key in measured
+                        ):
                             continue
-                        contradiction_pairs.add(pair)
-                        warnings.append(t(
-                            "warn.quality_contradiction",
-                            selected.lang,
-                            role=role,
-                            other=other.id,
-                            other_rate=other_rate,
-                            selected=service.model_id,
-                            selected_rate=selected_rate,
-                            other_prior=other.quality,
-                            selected_prior=selected_model.quality,
-                            p_value=evidence_test.p_value,
-                            compared=evidence_test.compared,
-                        ))
-                    elif not underpowered_emitted:
-                        underpowered_emitted = True
-                        if evidence_test.paired:
-                            note_key = "note.eval_underpowered_paired"
-                            discordant = (
-                                evidence_test.better_only
-                                + evidence_test.worse_only
+                        if candidates:
+                            candidates = [max(
+                                candidates, key=lambda candidate: candidate.score,
+                            )]
+                    for other_candidate in candidates:
+                        other_evidence = measured.get(
+                            (
+                                other.id.casefold(),
+                                other_candidate.quant.casefold(),
+                                other_candidate.backend.casefold(),
                             )
-                            imbalance = min_discordant_imbalance(discordant)
-                            note_params = {
-                                "tasks": suite_size,
-                                "discordant": discordant,
-                                "better_only": evidence_test.better_only,
-                                "worse_only": evidence_test.worse_only,
-                                "p_value": evidence_test.p_value,
-                                "required": min_discordant_for_significance(),
-                                "imbalance": imbalance if imbalance is not None else "-",
-                            }
-                        else:
-                            note_key = (
-                                "note.eval_underpowered"
-                                if suite_size < len(EXTENDED_TASKS)
-                                else "note.eval_underpowered_full"
+                        )
+                        if not isinstance(selected_evidence, EvalSummary) or not isinstance(
+                            other_evidence, EvalSummary
+                        ):
+                            continue
+                        other_rate = other_evidence.pass_rate
+                        other_prior = _effective_prior(
+                            other, other_candidate.quant,
+                        )
+                        selected_prior = _effective_prior(
+                            selected_model, service.quant,
+                        )
+                        if (
+                            other_rate <= selected_rate
+                            or other_prior is None
+                            or selected_prior is None
+                            or other_prior >= selected_prior
+                        ):
+                            continue
+                        evidence_test = _evidence_p_value(
+                            other_evidence, selected_evidence,
+                        )
+                        suite_size = evidence_test.compared
+                        if evidence_test.p_value < 0.05:
+                            pair = (
+                                other.id,
+                                other_candidate.quant,
+                                service.model_id,
+                                service.quant,
                             )
-                            note_params = {
-                                "tasks": suite_size,
-                                "other_rate": other_rate,
-                                "selected_rate": selected_rate,
-                                "p_value": evidence_test.p_value,
-                                "minimum": min_resolvable_difference(suite_size),
-                            }
-                            if suite_size < len(EXTENDED_TASKS):
-                                note_params.update({
-                                    "upgrade_tasks": len(EXTENDED_TASKS),
-                                    "upgrade_minimum": min_resolvable_difference(
-                                        len(EXTENDED_TASKS),
-                                    ),
-                                })
-                        warnings.append(t(
-                            note_key,
-                            selected.lang,
-                            **note_params,
-                        ))
+                            if pair in contradiction_pairs:
+                                continue
+                            contradiction_pairs.add(pair)
+                            if same_model:
+                                warnings.append(t(
+                                    "warn.quant_penalty_contradiction",
+                                    selected.lang,
+                                    role=role,
+                                    model=service.model_id,
+                                    other_quant=other_candidate.quant,
+                                    other_rate=other_rate,
+                                    selected_quant=service.quant,
+                                    selected_rate=selected_rate,
+                                    other_penalty=QUANT_PENALTY[
+                                        other_candidate.quant
+                                    ],
+                                    selected_penalty=QUANT_PENALTY[service.quant],
+                                    p_value=evidence_test.p_value,
+                                    compared=evidence_test.compared,
+                                ))
+                            else:
+                                warnings.append(t(
+                                    "warn.quality_contradiction",
+                                    selected.lang,
+                                    role=role,
+                                    other=other.id,
+                                    other_rate=other_rate,
+                                    selected=service.model_id,
+                                    selected_rate=selected_rate,
+                                    other_prior=other.quality,
+                                    selected_prior=selected_model.quality,
+                                    p_value=evidence_test.p_value,
+                                    compared=evidence_test.compared,
+                                ))
+                        elif not underpowered_emitted:
+                            underpowered_emitted = True
+                            if evidence_test.paired:
+                                note_key = "note.eval_underpowered_paired"
+                                discordant = (
+                                    evidence_test.better_only
+                                    + evidence_test.worse_only
+                                )
+                                imbalance = min_discordant_imbalance(discordant)
+                                note_params = {
+                                    "tasks": suite_size,
+                                    "discordant": discordant,
+                                    "better_only": evidence_test.better_only,
+                                    "worse_only": evidence_test.worse_only,
+                                    "p_value": evidence_test.p_value,
+                                    "required": min_discordant_for_significance(),
+                                    "imbalance": imbalance if imbalance is not None else "-",
+                                }
+                            else:
+                                note_key = (
+                                    "note.eval_underpowered"
+                                    if suite_size < len(EXTENDED_TASKS)
+                                    else "note.eval_underpowered_full"
+                                )
+                                note_params = {
+                                    "tasks": suite_size,
+                                    "other_rate": other_rate,
+                                    "selected_rate": selected_rate,
+                                    "p_value": evidence_test.p_value,
+                                    "minimum": min_resolvable_difference(suite_size),
+                                }
+                                if suite_size < len(EXTENDED_TASKS):
+                                    note_params.update({
+                                        "upgrade_tasks": len(EXTENDED_TASKS),
+                                        "upgrade_minimum": min_resolvable_difference(
+                                            len(EXTENDED_TASKS),
+                                        ),
+                                    })
+                            warnings.append(t(
+                                note_key,
+                                selected.lang,
+                                **note_params,
+                            ))
     if total_download > selected.allow_download_gb * GIB:
         warnings.append(t("warn.download_budget", selected.lang))
     if selected.languages:

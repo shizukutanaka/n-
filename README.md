@@ -564,6 +564,14 @@ Nothing else changed: with no eval cache the plans are bit-identical, and
 `--ignore-eval-evidence` on `plan`/`up` restores prior-based ranking while
 keeping the contradiction warning.
 
+#### Quantization evidence
+
+Pass rates are keyed by `(model, quant, backend)`, so measurements distinguish
+quantizations of the same model. Previously, the quantization ladder was
+decided only by the unmeasured `QUANT_PENALTY` table. When both quantizations
+have compatible task-level measurements and the exact paired test is
+significant, measured evidence now decides the same-model quantization choice.
+
 Measurement-to-plan identity is case-insensitive on model id, quant, and
 backend because record quants come from artifact names (`Q4_K_M`,
 `UD-Q4_K_XL`) while the catalog spells them lowercase. On this box the
