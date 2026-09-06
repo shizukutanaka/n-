@@ -765,6 +765,68 @@ def test_planner_warns_when_better_quant_is_not_selected() -> None:
                for warning in plan.warnings)
 
 
+def test_planner_notes_indistinguishable_same_model_quants() -> None:
+    selected = {f"task-{index}": index >= 6 for index in range(16)}
+    plan = build_plan(
+        profile(8), [_quant_model()], Policy(roles=["chat"]),
+        eval_cache={
+            ("quant-model", "f16", "llamacpp"): EvalSummary(
+                10 / 16, 10, 16, selected,
+            ),
+            ("quant-model", "q4_0", "llamacpp"): EvalSummary(
+                10 / 16, 10, 16, selected,
+            ),
+        },
+    )
+    assert plan.services[0].quant == "f16"
+    notes = [
+        warning for warning in plan.warnings
+        if "this suite cannot distinguish them" in warning
+    ]
+    assert len(notes) == 1
+    assert "5.0 points (0.0 vs 5.0)" in notes[0]
+
+
+def test_planner_does_not_note_more_expensive_quant() -> None:
+    blocker = ModelSpec(
+        "blocker", "test", 1_000_000_000, 24, 16, 2, 64, 512, 512,
+        ["chat"], 90.0, "test", {"hf_gguf": "blocker"},
+    )
+    model = ModelSpec(
+        "tight-quant", "test", 3_000_000_000, 40, 32, 8, 128, 512, 512,
+        ["embed"], 90.0, "test", {"hf_gguf": "tight-quant"},
+    )
+    selected = {f"task-{index}": index >= 6 for index in range(16)}
+    plan = build_plan(
+        profile(4.55), [blocker, model],
+        Policy(roles=["chat", "embed"], max_context=512, min_decode_tps=0),
+        eval_cache={
+            ("tight-quant", "q4_0", "llamacpp"): EvalSummary(
+                10 / 16, 10, 16, selected,
+            ),
+            ("tight-quant", "q4_k_m", "llamacpp"): EvalSummary(
+                10 / 16, 10, 16, selected,
+            ),
+        },
+    )
+    assert next(item for item in plan.services
+                if item.model_id == "tight-quant").quant == "q4_0"
+    assert not any("this suite cannot distinguish them" in warning
+                   for warning in plan.warnings)
+
+
+def test_planner_does_not_note_significant_same_model_quants() -> None:
+    selected = {f"task-{index}": index >= 6 for index in range(16)}
+    better = {f"task-{index}": True for index in range(16)}
+    plan = build_plan(
+        profile(8), [_quant_model()], Policy(roles=["chat"]),
+        eval_cache=_quant_eval_cache(selected, better),
+    )
+    assert plan.services[0].quant == "q4_0"
+    assert not any("this suite cannot distinguish them" in warning
+                   for warning in plan.warnings)
+
+
 def test_planner_eval_evidence_override_and_prior_fallback() -> None:
     models = _quality_models()
     policy = Policy(roles=["chat"])

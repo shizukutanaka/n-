@@ -1606,6 +1606,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     if eval_cache is not None:
         catalog_by_id = {model.id: model for model in catalog}
         contradiction_pairs: set[tuple[str, str, str, str]] = set()
+        indistinguishable_pairs: set[tuple[str, str, str, str]] = set()
         eval_mismatch_models: set[str] = set()
         underpowered_emitted = False
         for service in services:
@@ -1690,6 +1691,48 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         selected_prior = _effective_prior(
                             selected_model, service.quant,
                         )
+                        evidence_test = _evidence_p_value(
+                            other_evidence, selected_evidence,
+                        )
+                        suite_size = evidence_test.compared
+                        same_backend = (
+                            other_candidate.backend.casefold()
+                            == service.backend.casefold()
+                        )
+                        other_penalty = QUANT_PENALTY[other_candidate.quant]
+                        selected_penalty = QUANT_PENALTY[service.quant]
+                        if (
+                            same_model
+                            and same_backend
+                            and other_penalty > selected_penalty
+                            and other_rate >= selected_rate
+                            and evidence_test.p_value >= 0.05
+                        ):
+                            pair = (
+                                other.id,
+                                other_candidate.quant,
+                                service.model_id,
+                                service.quant,
+                            )
+                            if pair not in indistinguishable_pairs:
+                                indistinguishable_pairs.add(pair)
+                                warnings.append(t(
+                                    "note.quant_indistinguishable",
+                                    selected.lang,
+                                    role=role,
+                                    model=service.model_id,
+                                    other_quant=other_candidate.quant,
+                                    other_rate=other_rate,
+                                    selected_quant=service.quant,
+                                    selected_rate=selected_rate,
+                                    compared=suite_size,
+                                    p_value=evidence_test.p_value,
+                                    penalty_gap=other_penalty - selected_penalty,
+                                    selected_penalty=selected_penalty,
+                                    other_penalty=other_penalty,
+                                    minimum=min_resolvable_difference(suite_size),
+                                ))
+                            continue
                         if (
                             other_rate <= selected_rate
                             or other_prior is None
@@ -1697,10 +1740,6 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                             or other_prior >= selected_prior
                         ):
                             continue
-                        evidence_test = _evidence_p_value(
-                            other_evidence, selected_evidence,
-                        )
-                        suite_size = evidence_test.compared
                         if evidence_test.p_value < 0.05:
                             pair = (
                                 other.id,
