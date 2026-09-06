@@ -149,10 +149,57 @@ def test_exact_eval_statistics() -> None:
 
 
 def test_paired_power_depends_only_on_discordant_tasks() -> None:
-    full_mcnemar = mcnemar_two_sided(24, 5)
-    reduced_mcnemar = mcnemar_two_sided(24, 5)
-    assert reduced_mcnemar == full_mcnemar
-    assert fisher_two_sided(89, 15, 70, 34) != fisher_two_sided(65, 15, 46, 34)
+    outcomes_a = {}
+    outcomes_b = {}
+    for index in range(24):
+        outcomes_a[f"task-{index}"] = True
+        outcomes_b[f"task-{index}"] = False
+    for index in range(24, 29):
+        outcomes_a[f"task-{index}"] = False
+        outcomes_b[f"task-{index}"] = True
+    for index in range(29, 94):
+        outcomes_a[f"task-{index}"] = True
+        outcomes_b[f"task-{index}"] = True
+    for index in range(94, 104):
+        outcomes_a[f"task-{index}"] = False
+        outcomes_b[f"task-{index}"] = False
+
+    def discordance(left: dict[str, bool], right: dict[str, bool]) -> tuple[int, int]:
+        shared = set(left) & set(right)
+        return (
+            sum(left[task_id] and not right[task_id] for task_id in shared),
+            sum(right[task_id] and not left[task_id] for task_id in shared),
+        )
+
+    full_b, full_c = discordance(outcomes_a, outcomes_b)
+    reduced_a = {
+        task_id: passed for task_id, passed in outcomes_a.items()
+        if not (passed and outcomes_b[task_id])
+    }
+    reduced_b = {
+        task_id: passed for task_id, passed in outcomes_b.items()
+        if not (outcomes_a[task_id] and passed)
+    }
+    reduced_b_count, reduced_c_count = discordance(reduced_a, reduced_b)
+
+    assert len(outcomes_a) == len(outcomes_b) == 104
+    assert (full_b, full_c) == (24, 5)
+    assert (reduced_b_count, reduced_c_count) == (24, 5)
+    assert mcnemar_two_sided(full_b, full_c) == pytest.approx(
+        0.000546, abs=0.0000005,
+    )
+    assert mcnemar_two_sided(reduced_b_count, reduced_c_count) == pytest.approx(
+        mcnemar_two_sided(full_b, full_c), abs=0.0000001,
+    )
+    assert fisher_two_sided(89, 15, 70, 34) == pytest.approx(
+        0.003025, abs=0.0000005,
+    )
+    assert fisher_two_sided(24, 15, 5, 34) == pytest.approx(
+        0.000015, abs=0.0000005,
+    )
+    assert fisher_two_sided(89, 15, 70, 34) != fisher_two_sided(
+        24, 15, 5, 34,
+    )
 
 
 def test_hard_suite_and_graders() -> None:
