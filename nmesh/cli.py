@@ -31,7 +31,11 @@ from nmesh.eval import (
 )
 from nmesh.eval import run as eval_run
 from nmesh.eval.cache import EvalRecord, eval_key
-from nmesh.eval.stats import min_resolvable_difference, wilson_interval
+from nmesh.eval.stats import (
+    min_discordant_for_significance,
+    min_resolvable_difference,
+    wilson_interval,
+)
 from nmesh.paths import nmesh_home
 from nmesh.planner import (
     PlannedService,
@@ -356,12 +360,31 @@ def _eval_divergence(
         )
         if not comparable:
             continue
+        discordant_here = sorted(
+            task_id for task_id in comparable
+            if current[task_id] and not record.task_results[task_id]
+        )
+        discordant_there = sorted(
+            task_id for task_id in comparable
+            if record.task_results[task_id] and not current[task_id]
+        )
+        disagreeing_families = {
+            task_id.split(".")[0] for task_id in disagreeing
+        }
+        compared_families = {
+            task_id.split(".")[0] for task_id in comparable
+        }
         divergence.append({
             "config": f"{record.quant}|{record.backend}",
             "artifact": record.artifact or None,
             "pass_rate": record.pass_rate,
             "compared": len(comparable),
             "disagreeing": disagreeing,
+            "discordant_here": len(discordant_here),
+            "discordant_there": len(discordant_there),
+            "zero_power_families": sorted(
+                compared_families - disagreeing_families
+            ),
         })
     return divergence
 
@@ -954,6 +977,18 @@ def _eval(args: argparse.Namespace) -> int:
             compared=item["compared"],
             ids=ids,
         ))
+        _console().print(i18n.t(
+            "note.eval_paired_power",
+            language,
+            compared=item["compared"],
+            discordant=(
+                item["discordant_here"] + item["discordant_there"]
+            ),
+            here=item["discordant_here"],
+            there=item["discordant_there"],
+            required=min_discordant_for_significance(),
+            families=", ".join(item["zero_power_families"]) or "-",
+        ))
     _console().print(i18n.t(
         "label.eval_overall", language, passed=result.passed, total=result.n_tasks,
         rate=result.pass_rate,
@@ -1299,7 +1334,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="comma-separated categories "
         f"({','.join(EXTENDED_CATEGORIES)})",
     )
-    eval_parser.add_argument("--suite", choices=("core", "extended"), default="core")
+    eval_parser.add_argument(
+        "--suite", choices=("core", "extended", "hard"), default="core",
+    )
     eval_parser.add_argument(
         "--reasoning-allowance",
         type=_non_negative_int,

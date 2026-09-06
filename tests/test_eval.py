@@ -16,6 +16,7 @@ from nmesh.eval import (
     EXTENDED_CATEGORIES,
     EXTENDED_TASKS,
     GENERATED_TASKS,
+    HARD_SUITE_TASKS,
     SUITES,
     TASKS,
     EvalRun,
@@ -44,10 +45,13 @@ from nmesh.eval.generated import (
     _SUBTRACTIONS,
     _UPPERCASE,
 )
+from nmesh.eval.hard import HARD_TASKS
 from nmesh.eval.runner import run
 from nmesh.eval.stats import (
     fisher_two_sided,
     mcnemar_two_sided,
+    min_discordant_for_significance,
+    min_discordant_imbalance,
     min_resolvable_difference,
     wilson_interval,
 )
@@ -138,7 +142,49 @@ def test_exact_eval_statistics() -> None:
     assert mcnemar_two_sided(6, 0) == pytest.approx(0.03125)
     assert mcnemar_two_sided(0, 0) == pytest.approx(1.0)
     assert min_resolvable_difference(16) == 5 / 16
+    assert min_discordant_for_significance() == 6
+    assert min_discordant_imbalance(5) is None
+    assert min_discordant_imbalance(6) == 6
     assert wilson_interval(12, 16) == pytest.approx((0.505, 0.898), abs=0.0005)
+
+
+def test_paired_power_depends_only_on_discordant_tasks() -> None:
+    full_mcnemar = mcnemar_two_sided(24, 5)
+    reduced_mcnemar = mcnemar_two_sided(24, 5)
+    assert reduced_mcnemar == full_mcnemar
+    assert fisher_two_sided(89, 15, 70, 34) != fisher_two_sided(65, 15, 46, 34)
+
+
+def test_hard_suite_and_graders() -> None:
+    assert len(HARD_TASKS) == 26
+    assert len(HARD_SUITE_TASKS) == 130
+    assert len(SUITES["hard"]) == 130
+    assert len({task.id for task in SUITES["hard"]}) == 130
+    assert not {task.id for task in HARD_TASKS} & {task.id for task in EXTENDED_TASKS}
+    assert suite_digest(SUITES["extended"]) == "v2:6d66196138326699"
+
+    checks = {
+        "instruction.initials.quick_amber_fox": ("QAF", "Q A F"),
+        "instruction.devowel.gateway": ("gtwy", "gtrwrd"),
+        "instruction.words.5": (
+            "Compiler translates source into machine",
+            "A compiler translates source code into machine code.",
+        ),
+        "multilingual.katakana.computer": ("コンピュータ", "計算機"),
+        "multilingual.en_from_ja.1": (
+            "I drink water every morning.",
+            (
+                "Here's the translation of "
+                '"私は毎朝水を飲みます。" into English:\n\n'
+                "I drink water every morning."
+            ),
+        ),
+        "instruction.sort_desc.3_1_2": ("3, 2, 1", "3, 1, 2"),
+    }
+    for task_id, (accepted, rejected) in checks.items():
+        task = next(task for task in HARD_TASKS if task.id == task_id)
+        assert task.check(accepted), task_id
+        assert not task.check(rejected), task_id
 
 
 def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
@@ -195,7 +241,11 @@ def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
     assert len(GENERATED_TASKS) == 88
     assert len(TASKS) == 16
     assert len(EXTENDED_TASKS) == 104
-    assert SUITES == {"core": TASKS, "extended": EXTENDED_TASKS}
+    assert SUITES == {
+        "core": TASKS,
+        "extended": EXTENDED_TASKS,
+        "hard": HARD_SUITE_TASKS,
+    }
     assert len({task.id for task in EXTENDED_TASKS}) == 104
     assert not {task.id for task in TASKS} & {task.id for task in GENERATED_TASKS}
     assert "compliance" in EXTENDED_CATEGORIES
@@ -591,6 +641,31 @@ def test_planner_reports_underpowered_eval_evidence() -> None:
     )
 
 
+def test_planner_reports_paired_underpowered_eval_evidence() -> None:
+    models = _quality_models()
+    selected = {f"task-{index}": index == 0 for index in range(5)}
+    better = {f"task-{index}": index in (0, 1) for index in range(5)}
+    plan = build_plan(
+        profile(8), models, Policy(roles=["chat"]),
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): EvalSummary(
+                1 / 5, 1, 5, selected,
+            ),
+            ("measured-high", "f16", "llamacpp"): EvalSummary(
+                2 / 5, 2, 5, better,
+            ),
+        },
+    )
+    assert any(
+        "paired tasks" in note
+        and "only 1 disagreed" in note
+        and "1 one way" in note
+        and "0 the other" in note
+        and "fewer than 6" in note
+        for note in plan.warnings
+    )
+
+
 def test_planner_overrides_for_significant_eval_gap() -> None:
     models = _quality_models()
     plan = build_plan(
@@ -911,6 +986,9 @@ def test_eval_divergence_reports_disagreeing_tasks() -> None:
             "arithmetic.subtract",
             "multilingual.ja_translate",
         ],
+        "discordant_here": 1,
+        "discordant_there": 1,
+        "zero_power_families": [],
     }]
 
 

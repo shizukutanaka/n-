@@ -19,6 +19,7 @@ following, output format discipline, extraction and translation direction.
 
 from __future__ import annotations
 
+from .hard import HARD_TASKS
 from .suite import (
     TASKS,
     Task,
@@ -277,7 +278,12 @@ GENERATED_TASKS: tuple[Task, ...] = _build()
 
 
 EXTENDED_TASKS: tuple[Task, ...] = TASKS + GENERATED_TASKS
-SUITES: dict[str, tuple[Task, ...]] = {"core": TASKS, "extended": EXTENDED_TASKS}
+HARD_SUITE_TASKS: tuple[Task, ...] = EXTENDED_TASKS + HARD_TASKS
+SUITES: dict[str, tuple[Task, ...]] = {
+    "core": TASKS,
+    "extended": EXTENDED_TASKS,
+    "hard": HARD_SUITE_TASKS,
+}
 EXTENDED_CATEGORIES: tuple[str, ...] = tuple(
     dict.fromkeys(task.category for task in EXTENDED_TASKS)
 )
@@ -287,5 +293,6 @@ __all__ = [
     "EXTENDED_CATEGORIES",
     "EXTENDED_TASKS",
     "GENERATED_TASKS",
+    "HARD_SUITE_TASKS",
     "SUITES",
 ]

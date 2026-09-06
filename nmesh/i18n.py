@@ -146,6 +146,8 @@ MESSAGES = {
         "label.autostart_limitation": "Limitation: {text}",
         "autostart.windows_limitations": "Windows: /sc onlogon starts only after a user logs on. Boot startup requires /sc onstart and SYSTEM or saved credentials. The current simple Task Scheduler setup has no gateway self-crash restart.",
         "note.eval_scope": "{tasks}-task deterministic micro-eval: instruction following, output format, extraction, translation direction. Not a knowledge benchmark; do not compare with MMLU-style scores.",
+        "note.eval_underpowered_paired": "The two configurations were compared on {tasks} paired tasks; only {discordant} disagreed ({better_only} one way, {worse_only} the other; exact p={p_value:.4f}). The exact paired test cannot reach p < 0.05 with fewer than {required} disagreeing tasks regardless of suite size, so adding tasks that both configurations pass or both fail buys nothing (minimum imbalance at this discordant total: {imbalance}).",
+        "note.eval_paired_power": "Only the {discordant} disagreeing tasks carry paired information ({here} here, {there} there) out of {compared} compared tasks. The listed families ({families}) contributed no paired information. Fewer than {required} disagreeing tasks cannot reach p < 0.05 however many tasks are added.",
         "note.eval_uncertainty": "95% Wilson interval for the overall pass rate: {lo:.1%}–{hi:.1%}; this {tasks}-task suite cannot resolve pass-rate differences below {minimum:.1%} (exact test, α=0.05).",
         "note.eval_suite_upgrade": "The {tasks}-task extended suite lowers the minimum resolvable difference to {minimum:.1%} at α=0.05; run `nmesh eval --suite extended` to get it.",
         "warn.eval_config_mismatch": "{model}: an eval pass rate exists but not for the planned configuration ({quant}, {backend}); measured pass rates are not portable across quantizations or backends. Re-run nmesh eval against the running service.",
@@ -312,6 +314,19 @@ MESSAGES = {
 }
 
 MESSAGES["ja"].update({
+    "note.eval_underpowered_paired": (
+        "\u4e21\u65b9\u306e\u69cb\u6210\u3092{tasks}\u554f\u306e\u5bfe\u5fdc\u4ed8\u3051\u3055\u308c\u305f\u30bf\u30b9\u30af\u3067\u6bd4\u8f03\u3057\u3001"
+        "\u4e0d\u4e00\u81f4\u306f{discordant}\u554f\u3060\u3051\u3067\u3057\u305f\uff08\u4e00\u65b9\u5411\u304d{better_only}\u554f\u3001"
+        "\u9006\u65b9\u5411\u304d{worse_only}\u554f\uff09\u3002\u6b63\u78ba\u306a\u5bfe\u5fdc\u4ed8\u3051\u691c\u5b9a\u306f\u3001\u30b9\u30a4\u30fc\u30c8\u30b5\u30a4\u30ba\u306b\u95a2\u4fc2\u306a\u304f"
+        "{required}\u554f\u672a\u6e80\u306e\u4e0d\u4e00\u81f4\u3067\u306fp < 0.05\u306b\u306a\u308a\u307e\u305b\u3093\u3002\u4e21\u65b9\u304c\u5408\u683c\u307e\u305f\u306f\u4e21\u65b9\u304c\u5931\u6557\u3059\u308b\u30bf\u30b9\u30af\u3092"
+        "\u8ffd\u52a0\u3057\u3066\u3082\u5bfe\u5fdc\u4ed8\u3051\u306e\u691c\u51fa\u529b\u306f\u5897\u3048\u307e\u305b\u3093\uff08\u3053\u306e\u4e0d\u4e00\u81f4\u6570\u3067\u306e\u6700\u5c0f\u504f\u5dee: {imbalance}\uff09\u3002"
+    ),
+    "note.eval_paired_power": (
+        "\u5bfe\u5fdc\u4ed8\u3051\u306e\u60c5\u5831\u3092\u6301\u3064\u306e\u306f\u3001\u6bd4\u8f03\u3057\u305f{compared}\u554f\u306e\u3046\u3061"
+        "\u4e0d\u4e00\u81f4\u3057\u305f{discordant}\u554f\u3060\u3051\u3067\u3059\uff08\u3053\u306e\u5b9f\u884c{here}\u3001\u6bd4\u8f03\u5bfe\u8c61{there}\uff09\u3002"
+        "\u6307\u5b9a\u3055\u308c\u305f\u30d5\u30a1\u30df\u30ea\u30fc\uff08{families}\uff09\u306f\u5bfe\u5fdc\u4ed8\u3051\u306e\u60c5\u5831\u3092\u63d0\u4f9b\u3057\u307e\u305b\u3093\u3002"
+        "{required}\u554f\u672a\u6e80\u306e\u4e0d\u4e00\u81f4\u3067\u306f\u3001\u30bf\u30b9\u30af\u3092\u4f55\u554f\u8ffd\u52a0\u3057\u3066\u3082p < 0.05\u306b\u306a\u308a\u307e\u305b\u3093\u3002"
+    ),
     "label.watch_candidates_title": "\u5019\u88dc\u306e\u5b9f\u884c\u53ef\u80fd\u6027",
     "label.watch_fit_class": "\u5206\u985e",
     "label.watch_fit_no_weights": "\u4e3b\u8981\u91cd\u307f\u306a\u3057",
