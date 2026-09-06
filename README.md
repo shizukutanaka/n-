@@ -489,17 +489,45 @@ rates now decide instead, under a gate that never mixes the two scales:
 
 Nothing else changed: with no eval cache the plans are bit-identical, and
 `--ignore-eval-evidence` on `plan`/`up` restores prior-based ranking while
-keeping the contradiction warning. The mechanism is proven by fixtures with
-`p=0.0010`; on this box no real reversal has been observed yet, because the two
-models measured here (Qwen2.5 1.5B `q4_k_m` 89/104 and 0.5B `f16` 70/104) are
-ranked the same way by their priors.
+keeping the contradiction warning.
 
 Measurement-to-plan identity is case-insensitive on model id, quant, and
 backend because record quants come from artifact names (`Q4_K_M`,
 `UD-Q4_K_XL`) while the catalog spells them lowercase. On this box the
 existing 89/104 record was keyed `Q4_K_M` and was silently treated as a
-different configuration before this change. The chat service here plans the
-`ollama` backend, so llama.cpp evidence legitimately does not apply.
+different configuration before this change.
+
+With llama.cpp visible to the probe (see below), the gate has now fired on real
+measurements: with a local `models.yaml` that rates Qwen2.5 0.5B above 1.5B
+(100 versus 50), the prior plans 0.5B `f16` and the measured pair (1.5B
+`q4_k_m` 89/104 against 0.5B `f16` 70/104, paired exact `p=0.0005` over 104
+tasks) plans 1.5B instead; `--ignore-eval-evidence` restores the 0.5B plan and
+the contradiction warning. With the bundled priors the two orders agree, so no
+reversal is visible there.
+
+### An installed backend the probe cannot see
+
+Backend availability was decided by `shutil.which` alone, so a llama.cpp build
+that is not on `PATH` did not exist as far as planning was concerned: on this
+box `llama-server` lives in `C:\Users\Administrator\llamacpp\`, every eval and
+bench number in this README was produced by it, and the planner still reported
+llama.cpp as missing and planned the `ollama` backend for chat. That silently
+costs more than a hint: memory falls back to the Ollama quant estimate,
+`SLOT_CAPS["ollama"]` is 1, and every llama.cpp measurement is discarded as
+belonging to a different configuration - which is why the override above could
+not be reached with real data.
+
+Binaries are now resolved as `NMESH_LLAMACPP_BIN` / `NMESH_OLLAMA_BIN` /
+`NMESH_VLLM_BIN`, then `PATH`, then `$NMESH_HOME/bin` (with `.exe` on Windows),
+and the resolved path becomes `argv[0]` of the launch command, so a plan runs
+the binary the probe actually inspected. An override pointing at something that
+is not executable leaves the backend unavailable and says so instead of quietly
+falling back to `PATH`. No vendor install directories are guessed.
+
+The recorded version is now the first `--version` line that mentions a version
+rather than the first line of output. `ollama --version` on this box prints
+`Warning: could not connect to a running Ollama instance` before the version,
+and nmesh had been storing that warning as Ollama's version string.
 
 ### Speed preference saturation
 

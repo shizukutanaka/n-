@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from nmesh.probe import GPUInfo, Tier, classify_tier, parse_nvidia_smi, parse_rocm_smi
+from pathlib import Path
+
+from nmesh.probe import (
+    GPUInfo,
+    Tier,
+    classify_tier,
+    detector,
+    parse_nvidia_smi,
+    parse_rocm_smi,
+)
 
 
 def test_nvidia_smi_parser() -> None:
@@ -24,3 +33,71 @@ def test_tier_boundaries() -> None:
     assert classify_tier([gpu]) == Tier.T1_LOW
     assert classify_tier([]) == Tier.T0_CPU
     assert classify_tier([gpu, gpu]) == Tier.T5_SERVER
+
+
+def test_backend_env_binary_wins_over_path(monkeypatch, tmp_path: Path) -> None:
+    binary = tmp_path / "llama-server.exe"
+    binary.write_text("", encoding="utf-8")
+    monkeypatch.setenv("NMESH_LLAMACPP_BIN", str(binary))
+    monkeypatch.setattr(
+        detector.shutil,
+        "which",
+        lambda value: "C:/path/llama-server.exe" if value == "llama-server" else None,
+    )
+    monkeypatch.setattr(
+        detector,
+        "_run",
+        lambda command: ("version: test", "") if command[0] == str(binary) else (None, None),
+    )
+    monkeypatch.setattr(detector, "llamacpp_caps", lambda path: None)
+
+    backends, _, paths, _ = detector._detect_backends([], [])
+
+    assert backends["llamacpp"] == "version: test"
+    assert paths["llamacpp"] == str(binary.resolve())
+
+
+def test_missing_backend_env_binary_does_not_fall_back_to_path(
+    monkeypatch,
+) -> None:
+    missing = "C:/missing/llama-server.exe"
+    monkeypatch.setenv("NMESH_LLAMACPP_BIN", missing)
+    monkeypatch.setattr(
+        detector.shutil,
+        "which",
+        lambda value: (
+            "C:/path/llama-server.exe"
+            if value == "llama-server"
+            else None
+        ),
+    )
+
+    warnings: list[str] = []
+    params: list[dict[str, str]] = []
+    backends, _, paths, _ = detector._detect_backends(warnings, params)
+
+    assert backends["llamacpp"] is None
+    assert "llamacpp" not in paths
+    assert "warn.backend_binary_missing" in warnings
+    assert {"backend": "llamacpp", "path": missing} in params
+
+
+def test_backend_binary_is_found_in_nmesh_home_bin(monkeypatch, tmp_path: Path) -> None:
+    binary = tmp_path / "bin" / "llama-server.exe"
+    binary.parent.mkdir()
+    binary.write_text("", encoding="utf-8")
+    monkeypatch.delenv("NMESH_LLAMACPP_BIN", raising=False)
+    monkeypatch.setattr(detector, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(detector.shutil, "which", lambda value: None)
+
+    resolved = detector._resolve_backend_binary("llamacpp", "llama-server", [], [])
+
+    assert resolved == binary.resolve()
+
+
+def test_backend_version_line_prefers_line_containing_version() -> None:
+    assert detector._version_line(
+        "Warning: could not connect to a running Ollama instance\n"
+        "Warning: client version is 0.33.2\n",
+        None,
+    ) == "Warning: client version is 0.33.2"
