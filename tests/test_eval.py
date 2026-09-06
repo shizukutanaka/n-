@@ -474,7 +474,7 @@ def _quality_models() -> list[ModelSpec]:
     ]
 
 
-def test_planner_quality_warning_and_unchanged_selection() -> None:
+def test_planner_eval_evidence_override_and_prior_fallback() -> None:
     models = _quality_models()
     policy = Policy(roles=["chat"])
     ordinary = build_plan(profile(8), models, policy)
@@ -492,12 +492,27 @@ def test_planner_quality_warning_and_unchanged_selection() -> None:
             ("measured-high", "f16", "llamacpp"): EvalSummary(0.7, 11, 16, {}),
         },
     )
-    assert contradictory.services[0].model_id == ordinary.services[0].model_id
+    assert contradictory.services[0].model_id == "measured-high"
     assert consistent.services[0].model_id == ordinary.services[0].model_id
-    assert any("measured-high" in warning and "prior-high" in warning
-               for warning in contradictory.warnings)
+    assert any(
+        "measurement outranks" in warning
+        and "measured-high" in warning
+        and "prior-high" in warning
+        and "p=0.00" in warning
+        for warning in contradictory.warnings
+    )
+    assert not any("pass rate ranks" in warning for warning in contradictory.warnings)
     assert not any("pass rate ranks" in warning for warning in consistent.warnings)
     assert any("unverified" in warning for warning in ordinary.warnings)
+    prior_only = build_plan(
+        profile(8), models, replace(policy, eval_evidence=False),
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): EvalSummary(0.25, 4, 16, {}),
+            ("measured-high", "f16", "llamacpp"): EvalSummary(14 / 16, 14, 16, {}),
+        },
+    )
+    assert prior_only.services[0].model_id == "prior-high"
+    assert any("pass rate ranks" in warning for warning in prior_only.warnings)
 
 
 def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
@@ -531,7 +546,7 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     ]
 
 
-def test_planner_deduplicates_multi_role_contradiction_warning() -> None:
+def test_planner_deduplicates_multi_role_eval_override_warning() -> None:
     models = [replace(model, roles=["chat", "code"]) for model in _quality_models()]
     plan = build_plan(
         profile(8), models, Policy(roles=["chat", "code"]),
@@ -540,8 +555,9 @@ def test_planner_deduplicates_multi_role_contradiction_warning() -> None:
             ("measured-high", "f16", "llamacpp"): EvalSummary(14 / 16, 14, 16, {}),
         },
     )
-    contradictions = [warning for warning in plan.warnings if "pass rate ranks" in warning]
-    assert len(contradictions) == 1
+    overrides = [warning for warning in plan.warnings if "measurement outranks" in warning]
+    assert len(overrides) == 1
+    assert not any("pass rate ranks" in warning for warning in plan.warnings)
 
 
 def test_planner_warns_when_eval_configuration_does_not_match() -> None:
@@ -575,7 +591,7 @@ def test_planner_reports_underpowered_eval_evidence() -> None:
     )
 
 
-def test_planner_warns_for_significant_eval_gap() -> None:
+def test_planner_overrides_for_significant_eval_gap() -> None:
     models = _quality_models()
     plan = build_plan(
         profile(8), models, Policy(roles=["chat"]),
@@ -584,9 +600,9 @@ def test_planner_warns_for_significant_eval_gap() -> None:
             ("measured-high", "f16", "llamacpp"): EvalSummary(14 / 16, 14, 16, {}),
         },
     )
-    contradiction = next(item for item in plan.warnings if "pass rate ranks" in item)
-    assert "p=" in contradiction
-    assert "16 tasks" in contradiction
+    override = next(item for item in plan.warnings if "measurement outranks" in item)
+    assert "p=" in override
+    assert "16 tasks" in override
 
 
 def test_planner_uses_paired_eval_evidence() -> None:
@@ -604,7 +620,11 @@ def test_planner_uses_paired_eval_evidence() -> None:
             ),
         },
     )
-    assert any("pass rate ranks" in warning for warning in significant.warnings)
+    assert significant.services[0].model_id == "measured-high"
+    assert any(
+        "measurement outranks" in warning and "16 tasks" in warning
+        for warning in significant.warnings
+    )
 
     selected_balanced = {f"task-{index}": index % 2 == 0 for index in range(16)}
     other_balanced = {f"task-{index}": index % 2 == 1 for index in range(16)}
@@ -632,8 +652,85 @@ def test_planner_ignores_bare_float_eval_evidence() -> None:
             ("measured-high", "f16", "llamacpp"): 0.875,
         },
     )
+    assert plan.services[0].model_id == "prior-high"
+    assert not any("measurement outranks" in warning for warning in plan.warnings)
     assert not any("pass rate ranks" in warning for warning in plan.warnings)
     assert not any("neither confirmed nor contradicted" in note for note in plan.warnings)
+
+
+def test_planner_does_not_override_without_significance() -> None:
+    models = _quality_models()
+    plan = build_plan(
+        profile(8), models, Policy(roles=["chat"]),
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): EvalSummary(0.5, 8, 16, {}),
+            ("measured-high", "f16", "llamacpp"): EvalSummary(11 / 16, 11, 16, {}),
+        },
+    )
+    assert plan.services[0].model_id == "prior-high"
+    assert not any("measurement outranks" in warning for warning in plan.warnings)
+
+
+def test_planner_requires_the_planned_eval_configuration() -> None:
+    models = _quality_models()
+    plan = build_plan(
+        profile(8), models, Policy(roles=["chat"]),
+        eval_cache={
+            ("prior-high", "f16", "llamacpp"): EvalSummary(0.25, 4, 16, {}),
+            ("measured-high", "q4_k_m", "llamacpp"): EvalSummary(
+                14 / 16, 14, 16, {},
+            ),
+            ("measured-high", "f16", "ollama"): EvalSummary(
+                14 / 16, 14, 16, {},
+            ),
+        },
+    )
+    assert plan.services[0].model_id == "prior-high"
+    assert not any("measurement outranks" in warning for warning in plan.warnings)
+
+
+def test_planner_does_not_override_an_unmeasured_choice() -> None:
+    models = [
+        replace(_quality_models()[0], quality=None),
+        replace(_quality_models()[1], quality=0.0),
+    ]
+    plan = build_plan(
+        profile(8), models,
+        Policy(
+            roles=["chat"],
+            model_ids=("prior-high", "measured-high"),
+            min_decode_tps=0,
+        ),
+        eval_cache={
+            ("measured-high", "f16", "llamacpp"): EvalSummary(1.0, 16, 16, {}),
+        },
+    )
+    assert plan.services[0].model_id == "prior-high"
+    assert not any("measurement outranks" in warning for warning in plan.warnings)
+
+
+def test_cli_plan_ignore_eval_evidence_sets_policy(monkeypatch, capsys) -> None:
+    models = _quality_models()
+    captured = []
+    monkeypatch.setattr(cli, "detect_hardware", lambda: profile(8))
+    monkeypatch.setattr(cli, "load_catalog", lambda: models)
+    monkeypatch.setattr(cli, "load_cache", dict)
+    monkeypatch.setattr(cli, "bench_overlay", dict)
+    monkeypatch.setattr(cli, "_eval_rates", dict)
+    monkeypatch.setattr(cli, "save_plan", captured.append)
+    assert cli.main(["plan", "--roles", "chat", "--ignore-eval-evidence"]) == 0
+    capsys.readouterr()
+    assert captured
+    assert captured[0].policy.eval_evidence is False
+
+
+def test_cli_up_ignore_eval_evidence_parses(monkeypatch) -> None:
+    parsed = {}
+    monkeypatch.setattr(
+        cli, "_runtime", lambda args: parsed.update(vars(args)) or 0,
+    )
+    assert cli.main(["up", "--ignore-eval-evidence"]) == 0
+    assert parsed["ignore_eval_evidence"] is True
 
 
 def test_eval_rates_are_keyed_by_configuration(monkeypatch) -> None:

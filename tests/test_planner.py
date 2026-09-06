@@ -198,13 +198,20 @@ def test_plan_round_trip_preserves_explicit_model_ids(
     result = build_plan(
         profile(32),
         catalog,
-        Policy(roles=["chat"], model_ids=("qwen2.5-7b-instruct",)),
+        Policy(
+            roles=["chat"],
+            model_ids=("qwen2.5-7b-instruct",),
+            eval_evidence=False,
+        ),
     )
     path = tmp_path / "plan.json"
     save_plan(result, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["policy"]["eval_evidence"] is False
     loaded = load_plan(path)
     assert loaded is not None
     assert loaded.policy.model_ids == ("qwen2.5-7b-instruct",)
+    assert loaded.policy.eval_evidence is False
 
 
 def test_cpu_case(catalog: list[ModelSpec]) -> None:

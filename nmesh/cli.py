@@ -257,7 +257,8 @@ def _make_plan(args: argparse.Namespace) -> object:
                     parallel_slots=getattr(args, "parallel_slots", None),
                     lang=i18n.lang(),
                     languages=_parse_languages(getattr(args, "lang", None)),
-                    model_ids=_parse_model_ids(getattr(args, "model", None)))
+                    model_ids=_parse_model_ids(getattr(args, "model", None)),
+                    eval_evidence=not getattr(args, "ignore_eval_evidence", False))
     live, skipped = overlay_report()
     args._telemetry_keys = len(live)
     args._telemetry_under_load = skipped
@@ -465,18 +466,25 @@ def _runtime(args: argparse.Namespace) -> int:
                 roles="chat,code,embed", prefer="balanced", context=None,
                 budget="total", parallel_slots=None, json=False, explain=False,
                 lang=None, model=getattr(args, "model", None),
+                ignore_eval_evidence=getattr(args, "ignore_eval_evidence", False),
             )) != 0:
                 return 1
             plan = load_plan()
         if plan is None or not plan.services or not plan.runnable:
             return 1
-        if getattr(args, "lang", None) or _parse_model_ids(getattr(args, "model", None)):
+        if (
+            getattr(args, "lang", None)
+            or _parse_model_ids(getattr(args, "model", None))
+            or getattr(args, "ignore_eval_evidence", False)
+        ):
             updates: dict[str, object] = {}
             if getattr(args, "lang", None):
                 updates["lang"] = i18n.lang()
                 updates["languages"] = _parse_languages(args.lang)
             if _parse_model_ids(getattr(args, "model", None)):
                 updates["model_ids"] = _parse_model_ids(args.model)
+            if getattr(args, "ignore_eval_evidence", False):
+                updates["eval_evidence"] = False
             plan = build_plan(
                 detect_hardware(), load_catalog(),
                 replace(plan.policy, **updates),
@@ -1248,6 +1256,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--budget", choices=("total", "free"), default="total")
     plan.add_argument("--parallel-slots", type=int)
     plan.add_argument("--model", help="comma-separated model IDs")
+    plan.add_argument("--ignore-eval-evidence", action="store_true")
     plan.add_argument("--lang")
     plan.add_argument("--profile")
     up_parser = sub.add_parser("up")
@@ -1259,6 +1268,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--ignore-free-memory", action="store_true")
     up_parser.add_argument("--lang")
     up_parser.add_argument("--model", help="comma-separated model IDs")
+    up_parser.add_argument("--ignore-eval-evidence", action="store_true")
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=18000)
     reload_parser = sub.add_parser("reload")
