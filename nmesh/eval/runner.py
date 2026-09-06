@@ -30,6 +30,8 @@ class EvalRun:
     outcomes: list[TaskOutcome]
     at: float
     artifact: str = ""
+    suite: str = "core"
+    digest: str = ""
 
 
 def _output(value: object) -> str:

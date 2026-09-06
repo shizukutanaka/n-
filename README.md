@@ -278,7 +278,8 @@ deliberately not used because its shape is unverified here.
 ### Model quality micro-evaluation
 
 `nmesh eval` runs a deterministic 16-task micro-evaluation covering instruction
-following, output format, extraction, and translation direction. It is not a
+following, output format, value extraction, and translation direction. Strict
+output discipline is measured separately by the `compliance` family. It is not a
 knowledge benchmark and its pass rate must not be compared with MMLU-style
 scores. The catalog `quality` field remains an unverified prior used for
 planning; measured results are saved in `eval.json`. When an evaluation
@@ -303,6 +304,14 @@ both configurations are fp16, so the divergence is not a quantization
 artifact. Equal pass rates therefore do not imply equivalent behaviour.
 This is one model on one CPU machine and does not generalize; no underlying
 cause is established by this measurement.
+
+Each evaluation record also carries a grader digest. Records graded by an
+earlier rule version are not used for planning and must be re-measured; this
+exclusion is per record, not per task, including tasks whose grading did not
+change. The two core email/date tasks contain a single candidate value, so
+passing them proves that the value is right, not that the model selected it
+between candidates. The generated extraction family adds decoys and tests that
+selection directly.
 
 Further controlled checks scoped those eliminations to `arithmetic.subtract`:
 with the same fully expanded 48-token raw ChatML prompt, `top_k=1`,
@@ -347,37 +356,53 @@ planner's score is not yet possible at this suite size.
 #### Extending the evaluation suite
 
 The extension is enumerated without RNG and uses code-only verifiers: 16 core
-tasks plus 80 generated tasks make 96 tasks. The measured exact resolving-power
-limit improves from `0.3125` at 16 tasks to `0.0625` at 96 tasks, while the
-Wilson interval width at a 0.75 pass rate shrinks from `0.393` to `0.171`.
-The 96-task category mix is instruction 18 / format 19 / arithmetic 30 /
-extraction 23 / multilingual 6.
+tasks plus 88 generated tasks make 104 tasks. Extraction tasks grade the
+extracted value, while strict output discipline is measured by `compliance`.
+Every evaluation record carries a grader digest, and records graded by different
+rules are never compared.
 
 The default remains the `core` suite, so historical records and runtime
 behaviour are unchanged; `nmesh eval --suite extended` is opt-in. Tasks within
 one family are not independent samples, so the effective sample size is below
-96 and the exact tests are optimistic to that extent.
+104 and the exact tests are optimistic to that extent.
 
 The extended suite was run on one CPU machine, both models on llama.cpp so the
-backend and artifact effects found earlier are not in the way: Qwen2.5 1.5B
-Q4_K_M scored `72/96` (Wilson [`0.655`, `0.826`]) and Qwen2.5 0.5B fp16 scored
-`62/96` (Wilson [`0.546`, `0.734`]). The result is that the *pairing* carries
-the evidence, not the suite size alone:
+backend and artifact effects found earlier are not in the way. Under the first
+grader version, which required extraction answers to be emitted alone, Qwen2.5
+1.5B Q4_K_M scored `72/96` and Qwen2.5 0.5B fp16 scored `62/96`; the unpaired
+exact Fisher test on those totals was not significant (`p=0.1569`) and only
+exact McNemar on the paired outcomes was (13 versus 3 discordant, `p=0.0213`).
+The `extraction.*` category rates were `0.348` and `0.174`: both models failed
+those tasks, so they were concordant and carried no discriminating power.
 
-- unpaired exact Fisher on the same two totals is still not significant:
-  `p=0.1569` for a `0.104` gap, because `0.0625` is the minimum resolvable
-  difference only for the most extreme split;
-- exact McNemar on the 96 paired task outcomes *is* significant: 13 tasks
-  passed only on the 1.5B, 3 only on the 0.5B, 80 concordant, `p=0.0213`;
-- the same paired comparison restricted to the 16 core tasks gives `0` versus
-  `3` discordant tasks and `p=0.2500`, so this ranking became decidable only
-  after the suite grew.
+Those failures were not wrong extracted values but correct values wrapped in
+prose, so grader version 2 splits the two measurements: `extraction.*` grades
+the extracted value and `compliance.*` grades strict output discipline. Re-run
+on the same two artifacts and the same machine, the 104-task suite measures:
+
+| model | result | Wilson 95% |
+| --- | --- | --- |
+| Qwen2.5 1.5B Q4_K_M | `89/104` = `0.856` | [`0.776`, `0.911`] |
+| Qwen2.5 0.5B fp16 | `70/104` = `0.673` | [`0.578`, `0.756`] |
+
+- unpaired exact Fisher is now significant: `p=0.0030` (it was `p=0.1569`);
+- exact McNemar on the 104 paired outcomes: 24 tasks passed only on the 1.5B,
+  5 only on the 0.5B, 75 concordant, `p=0.0005` (it was `p=0.0213`);
+- the same paired comparison restricted to the 16 core tasks gives `5` versus
+  `0` discordant tasks and `p=0.0625`, still not significant at `α=0.05`.
+
+Fixing what the tasks measured bought more resolution than adding 80 tasks did.
+`extraction.*` went from the least informative family to the most informative
+one (`0.739` versus `0.435`, 10 versus 3 discordant), and the discipline that
+used to be conflated with it is now visible on its own: `compliance.*` is
+`1.000` versus `0.250` with 6 versus 0 discordant tasks. `instruction.*` and
+`multilingual.*` are saturated at `1.000` for both models and contribute no
+discordant pairs, so they carry no discriminating power at this model pair.
 
 This is the first catalog quality ranking in this repository backed by a
-significant measurement rather than a hand-written prior. It also shows where
-the extension is wasteful: `extraction.*` fails on both models (`0.348` and
-`0.174` category rates), and tasks both models fail are concordant and carry
-no discriminating power.
+significant measurement rather than a hand-written prior, by both a paired and
+an unpaired exact test. It is two models on one CPU machine and does not
+establish a ranking for any other model pair.
 
 ### Speed preference saturation
 

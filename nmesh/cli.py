@@ -19,13 +19,14 @@ from nmesh.artifact import service_fingerprint
 from nmesh.bench import benchmark_key, load_cache, measure, save_cache
 from nmesh.catalog import load_catalog
 from nmesh.eval import (
-    CATEGORIES,
+    EXTENDED_CATEGORIES,
     EXTENDED_TASKS,
     SUITES,
     EvalRun,
     EvalSummary,
     load_eval_cache,
     save_eval,
+    suite_digest,
 )
 from nmesh.eval import run as eval_run
 from nmesh.eval.cache import EvalRecord
@@ -203,22 +204,64 @@ def _make_plan(args: argparse.Namespace) -> object:
     return build_plan(profile, load_catalog(), policy, cache, _eval_rates())
 
 
-def _eval_rates() -> dict[tuple[str, str, str], EvalSummary]:
-    latest: dict[tuple[str, str, str], tuple[float, EvalSummary]] = {}
-    for record in load_eval_cache().values():
+def _eval_records(
+    records: Mapping[str, EvalRecord],
+) -> tuple[dict[tuple[str, str, str, str, str], EvalRecord], list[EvalRecord]]:
+    valid: dict[tuple[str, str, str, str, str], EvalRecord] = {}
+    stale: list[EvalRecord] = []
+    for record in records.values():
+        tasks = SUITES.get(record.suite)
+        if tasks is None or record.digest != suite_digest(tasks):
+            stale.append(record)
+            continue
+        key = (
+            record.model_id,
+            record.quant,
+            record.backend,
+            record.suite,
+            record.digest,
+        )
+        previous = valid.get(key)
+        if previous is None or record.at > previous.at:
+            valid[key] = record
+    return valid, stale
+
+
+def _eval_rates(
+    records: Mapping[str, EvalRecord] | None = None,
+) -> dict[tuple[str, str, str], EvalSummary]:
+    valid, _ = _eval_records(records if records is not None else load_eval_cache())
+    latest: dict[tuple[str, str, str], EvalRecord] = {}
+    for record in valid.values():
         key = (record.model_id, record.quant, record.backend)
         previous = latest.get(key)
-        if previous is None or record.at > previous[0]:
-            latest[key] = (
-                record.at,
-                EvalSummary(
-                    record.pass_rate,
-                    record.passed,
-                    record.n_tasks,
-                    record.task_results,
-                ),
-            )
-    return {key: value for key, (_, value) in latest.items()}
+        if previous is None or record.at > previous.at:
+            latest[key] = record
+    return {
+        key: EvalSummary(
+            record.pass_rate,
+            record.passed,
+            record.n_tasks,
+            record.task_results,
+        )
+        for key, record in latest.items()
+    }
+
+
+def _stale_grader_notes(records: Mapping[str, EvalRecord]) -> list[str]:
+    _, stale = _eval_records(records)
+    language = i18n.lang()
+    return [
+        i18n.t(
+            "warn.eval_stale_grader",
+            language,
+            model=record.model_id,
+            quant=record.quant,
+            backend=record.backend,
+            suite=record.suite,
+        )
+        for record in stale
+    ]
 
 
 def _eval_divergence(
@@ -230,6 +273,7 @@ def _eval_divergence(
         if (
             record.model_id != result.model_id
             or (record.quant, record.backend) == (result.quant, result.backend)
+            or record.digest != result.digest
             or not record.task_results
         ):
             continue
@@ -661,12 +705,14 @@ def _eval(args: argparse.Namespace) -> int:
     if not _service_running(service, runtime_status()):
         print(i18n.t("err.eval_up", i18n.lang()), file=sys.stderr)
         return 1
-    requested = {item.strip() for item in args.categories.split(",") if item.strip()}
+    requested = (
+        None if args.categories is None
+        else {item.strip() for item in args.categories.split(",") if item.strip()}
+    )
     base_tasks = SUITES[args.suite]
     tasks = (
-        tuple(task for task in base_tasks if task.category in requested)
-        if args.categories.strip()
-        else ()
+        base_tasks if requested is None
+        else tuple(task for task in base_tasks if task.category in requested)
     )
     if not tasks:
         print(i18n.t("err.eval_categories", i18n.lang()), file=sys.stderr)
@@ -685,9 +731,15 @@ def _eval(args: argparse.Namespace) -> int:
         quant=service.quant,
         backend=service.backend,
         artifact=service_fingerprint(service.backend, service.model_ref) or "",
+        suite=args.suite,
+        digest=suite_digest(tasks),
     )
     cached = load_eval_cache()
-    previous = cached.get(f"{result.model_id}|{result.quant}|{result.backend}")
+    key = (
+        f"{result.model_id}|{result.quant}|{result.backend}|"
+        f"{result.suite}|{result.digest}"
+    )
+    previous = cached.get(key)
     artifact_warning = None
     if (
         previous is not None
@@ -710,7 +762,7 @@ def _eval(args: argparse.Namespace) -> int:
         print(i18n.t("err.eval_save", i18n.lang(), error=error), file=sys.stderr)
         return 1
     divergence = _eval_divergence(result, cached)
-    key = f"{result.model_id}|{result.quant}|{result.backend}"
+    stale_grader_notes = _stale_grader_notes(cached)
     failed = [{"id": outcome.id, "output": outcome.output}
               for outcome in result.outcomes if not outcome.passed]
     language = i18n.lang()
@@ -746,6 +798,7 @@ def _eval(args: argparse.Namespace) -> int:
         "quant": result.quant,
         "backend": result.backend,
         "suite": args.suite,
+        "digest": result.digest,
         "artifact": result.artifact or None,
         "n_tasks": result.n_tasks,
         "passed": result.passed,
@@ -757,6 +810,7 @@ def _eval(args: argparse.Namespace) -> int:
         "note": note,
         "uncertainty_note": uncertainty_note,
         "suite_upgrade_note": suite_upgrade_note,
+        "stale_grader_notes": stale_grader_notes,
         "config_note": config_note,
         "divergence": divergence,
         "artifact_warning": artifact_warning,
@@ -778,6 +832,8 @@ def _eval(args: argparse.Namespace) -> int:
         table.add_row(category, str(category_passed), str(len(category_outcomes)), f"{rate:.1%}")
     _console().print(table)
     _console().print(note)
+    for stale_note in stale_grader_notes:
+        _console().print(stale_note)
     _console().print(uncertainty_note)
     if suite_upgrade_note is not None:
         _console().print(suite_upgrade_note)
@@ -871,7 +927,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     eval_parser = sub.add_parser("eval")
     eval_parser.add_argument("--service", default="chat")
     eval_parser.add_argument("--json", action="store_true")
-    eval_parser.add_argument("--categories", default=",".join(CATEGORIES))
+    eval_parser.add_argument(
+        "--categories",
+        default=None,
+        help="comma-separated categories "
+        f"({','.join(EXTENDED_CATEGORIES)})",
+    )
     eval_parser.add_argument("--suite", choices=("core", "extended"), default="core")
     auto = sub.add_parser("autotune")
     auto.add_argument("--json", action="store_true")
