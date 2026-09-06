@@ -78,6 +78,7 @@ class _EvalHandler(BaseHTTPRequestHandler):
     responses: ClassVar[dict[str, tuple[int, str]]] = {}
     default_status: ClassVar[int] = 200
     bodies: ClassVar[list[dict[str, object]]] = []
+    finish_reasons: ClassVar[dict[str, str]] = {}
 
     def do_POST(self) -> None:
         length = int(self.headers["Content-Length"])
@@ -88,7 +89,10 @@ class _EvalHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         payload = json.dumps({
-            "choices": [{"message": {"content": text}}],
+            "choices": [{
+                "message": {"content": text},
+                "finish_reason": self.__class__.finish_reasons.get(prompt, "stop"),
+            }],
         }).encode()
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
@@ -292,6 +296,98 @@ def test_runner_mixed_and_transport_failure_continue() -> None:
     assert result.outcomes[-1].output
 
 
+def test_runner_marks_answerless_truncation_unscorable() -> None:
+    tasks = (
+        Task("empty", "instruction", "empty", 8, lambda text: text == "yes"),
+        Task("cut", "instruction", "cut", 8, lambda text: text == "yes"),
+        Task("ok", "format", "ok", 8, lambda text: text == "yes"),
+    )
+    _EvalHandler.responses = {
+        "empty": (200, ""),
+        "cut": (200, "ye"),
+        "ok": (200, "yes"),
+    }
+    _EvalHandler.finish_reasons = {"empty": "length", "cut": "length"}
+    server = _serve()
+    try:
+        result = run(tasks, f"http://127.0.0.1:{server.server_address[1]}", "model")
+    finally:
+        _EvalHandler.finish_reasons = {}
+        server.shutdown()
+        server.server_close()
+    unscorable = {outcome.id: outcome.unscorable for outcome in result.outcomes}
+    assert unscorable == {"empty": True, "cut": False, "ok": False}
+    assert result.unscorable == 1
+    assert result.passed == 1
+
+
+def test_runner_reasoning_allowance_raises_every_budget() -> None:
+    tasks = (Task("one", "instruction", "one", 8, lambda text: text == "yes"),)
+    _EvalHandler.responses = {"one": (200, "yes")}
+    _EvalHandler.bodies = []
+    server = _serve()
+    try:
+        result = run(
+            tasks, f"http://127.0.0.1:{server.server_address[1]}", "model",
+            reasoning_allowance=504,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert _EvalHandler.bodies[0]["max_tokens"] == 512
+    assert result.reasoning_allowance == 504
+    assert result.unscorable == 0
+
+
+def test_eval_cache_separates_reasoning_allowances(tmp_path) -> None:
+    path = tmp_path / "eval.json"
+    digest = suite_digest(TASKS)
+    strict = EvalRun("model", "f16", "llamacpp", 2, 0, 0.0, {}, [], 1.0,
+                     "", "core", digest, 2, 0)
+    generous = EvalRun("model", "f16", "llamacpp", 2, 2, 1.0, {}, [], 2.0,
+                       "", "core", digest, 0, 504)
+    save_eval(strict, path)
+    save_eval(generous, path)
+    records = load_eval_cache(path)
+    assert set(records) == {
+        f"model|f16|llamacpp|core|{digest}",
+        f"model|f16|llamacpp|core|{digest}|a504",
+    }
+    assert records[f"model|f16|llamacpp|core|{digest}"].unscorable == 2
+    rates = cli._eval_rates(records)
+    assert rates[("model", "f16", "llamacpp")].pass_rate == 1.0
+
+
+def test_eval_rates_drop_runs_with_unscorable_tasks() -> None:
+    digest = suite_digest(TASKS)
+    records = {
+        "only": EvalRecord(
+            "model", "f16", "llamacpp", 104, 0, 0.0, {}, 1.0, {}, "", "core", digest, 104, 0,
+        ),
+    }
+    assert cli._eval_rates(records) == {}
+
+
+def test_eval_cli_reports_unscorable_run(monkeypatch, capsys) -> None:
+    service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
+    result = EvalRun(
+        "prior-high", "q4_k_m", "llamacpp", 1, 0, 0.0, {"instruction": 0.0},
+        [TaskOutcome("cut", "instruction", False, "", True)],
+        3.0,
+        unscorable=1,
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: result)
+    monkeypatch.setattr(cli, "save_eval", lambda value: None)
+    assert cli.main(["eval", "--json", "--reasoning-allowance", "504"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["unscorable"] == 1
+    assert output["reasoning_allowance"] == 504
+    assert "not used as planning evidence" in output["unscorable_note"]
+    assert output["failed"] == [{"id": "cut", "output": "", "unscorable": True}]
+
+
 def test_runner_all_transport_failures_raise() -> None:
     tasks = (Task("one", "instruction", "one", 8, lambda text: True),)
     _EvalHandler.responses = {}
@@ -417,7 +513,7 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
         True, [{"service": "chat", "running": True}],
     ))
     monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
-    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref: result)
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: result)
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
     assert cli.main(["eval", "--json"]) == 0
     output = json.loads(capsys.readouterr().out)
@@ -430,7 +526,9 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     assert output["uncertainty_note"].startswith("95% Wilson interval")
     assert output["suite_upgrade_note"].startswith("The 104-task extended suite")
     assert output["config_note"].startswith("This pass rate applies")
-    assert output["failed"] == [{"id": "failed", "output": "bad"}]
+    assert output["failed"] == [
+        {"id": "failed", "output": "bad", "unscorable": False},
+    ]
 
 
 def test_planner_deduplicates_multi_role_contradiction_warning() -> None:
@@ -569,7 +667,7 @@ def test_eval_cli_category_filter(monkeypatch) -> None:
     result = EvalRun("prior-high", "f16", "llamacpp", 1, 1, 1.0, {"format": 1.0}, [], 3.0)
     monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
     monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
-    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref: (
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: (
         captured.extend(tasks) or result
     ))
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
@@ -585,7 +683,7 @@ def test_eval_cli_default_and_compliance_categories(monkeypatch) -> None:
     result = EvalRun("prior-high", "f16", "llamacpp", 1, 1, 1.0, {}, [], 3.0)
     monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
     monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
-    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref: (
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: (
         captured.extend(tasks) or result
     ))
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
@@ -608,7 +706,7 @@ def test_eval_cli_extended_suite(monkeypatch, capsys) -> None:
     )
     monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
     monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
-    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref: (
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: (
         captured.extend(tasks) or result
     ))
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
@@ -667,7 +765,7 @@ def test_eval_cli_warns_when_artifact_changes(monkeypatch, capsys) -> None:
         True, [{"service": "chat", "running": True}],
     ))
     monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
-    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref: result)
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: result)
     monkeypatch.setattr(cli, "service_fingerprint", lambda backend, model_ref: "new-artifact")
     monkeypatch.setattr(
         cli,

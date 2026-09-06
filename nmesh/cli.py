@@ -30,7 +30,7 @@ from nmesh.eval import (
     suite_digest,
 )
 from nmesh.eval import run as eval_run
-from nmesh.eval.cache import EvalRecord
+from nmesh.eval.cache import EvalRecord, eval_key
 from nmesh.eval.stats import min_resolvable_difference, wilson_interval
 from nmesh.paths import nmesh_home
 from nmesh.planner import (
@@ -139,6 +139,16 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError("must be an integer of at least 1") from error
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def _non_negative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer of at least 0") from error
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be at least 0")
     return parsed
 
 
@@ -257,8 +267,8 @@ def _make_plan(args: argparse.Namespace) -> object:
 
 def _eval_records(
     records: Mapping[str, EvalRecord],
-) -> tuple[dict[tuple[str, str, str, str, str], EvalRecord], list[EvalRecord]]:
-    valid: dict[tuple[str, str, str, str, str], EvalRecord] = {}
+) -> tuple[dict[tuple[str, str, str, str, str, int], EvalRecord], list[EvalRecord]]:
+    valid: dict[tuple[str, str, str, str, str, int], EvalRecord] = {}
     stale: list[EvalRecord] = []
     for record in records.values():
         tasks = SUITES.get(record.suite)
@@ -271,6 +281,7 @@ def _eval_records(
             record.backend,
             record.suite,
             record.digest,
+            record.reasoning_allowance,
         )
         previous = valid.get(key)
         if previous is None or record.at > previous.at:
@@ -284,6 +295,8 @@ def _eval_rates(
     valid, _ = _eval_records(records if records is not None else load_eval_cache())
     latest: dict[tuple[str, str, str], EvalRecord] = {}
     for record in valid.values():
+        if record.unscorable:
+            continue
         key = (record.model_id, record.quant, record.backend)
         previous = latest.get(key)
         if previous is None or record.at > previous.at:
@@ -325,6 +338,9 @@ def _eval_divergence(
             record.model_id != result.model_id
             or (record.quant, record.backend) == (result.quant, result.backend)
             or record.digest != result.digest
+            or record.reasoning_allowance != result.reasoning_allowance
+            or record.unscorable
+            or result.unscorable
             or not record.task_results
         ):
             continue
@@ -776,8 +792,11 @@ def _eval(args: argparse.Namespace) -> int:
     base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
     )
+    allowance = max(0, getattr(args, "reasoning_allowance", 0) or 0)
     try:
-        result = eval_run(tasks, base_url, service.model_ref)
+        result = eval_run(
+            tasks, base_url, service.model_ref, reasoning_allowance=allowance,
+        )
     except RuntimeError as error:
         print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
         return 1
@@ -789,11 +808,12 @@ def _eval(args: argparse.Namespace) -> int:
         artifact=service_fingerprint(service.backend, service.model_ref) or "",
         suite=args.suite,
         digest=suite_digest(tasks),
+        reasoning_allowance=allowance,
     )
     cached = load_eval_cache()
-    key = (
-        f"{result.model_id}|{result.quant}|{result.backend}|"
-        f"{result.suite}|{result.digest}"
+    key = eval_key(
+        result.model_id, result.quant, result.backend, result.suite, result.digest,
+        result.reasoning_allowance,
     )
     previous = cached.get(key)
     artifact_warning = None
@@ -819,7 +839,7 @@ def _eval(args: argparse.Namespace) -> int:
         return 1
     divergence = _eval_divergence(result, cached)
     stale_grader_notes = _stale_grader_notes(cached)
-    failed = [{"id": outcome.id, "output": outcome.output}
+    failed = [{"id": outcome.id, "output": outcome.output, "unscorable": outcome.unscorable}
               for outcome in result.outcomes if not outcome.passed]
     language = i18n.lang()
     note = i18n.t("note.eval_scope", language, tasks=result.n_tasks)
@@ -841,6 +861,15 @@ def _eval(args: argparse.Namespace) -> int:
             tasks=len(EXTENDED_TASKS),
             minimum=min_resolvable_difference(len(EXTENDED_TASKS)),
         )
+    unscorable_note = None
+    if result.unscorable:
+        unscorable_note = i18n.t(
+            "warn.eval_unscorable",
+            language,
+            count=result.unscorable,
+            tasks=result.n_tasks,
+            allowance=allowance,
+        )
     config_note = i18n.t(
         "note.eval_config",
         language,
@@ -858,6 +887,9 @@ def _eval(args: argparse.Namespace) -> int:
         "artifact": result.artifact or None,
         "n_tasks": result.n_tasks,
         "passed": result.passed,
+        "unscorable": result.unscorable,
+        "reasoning_allowance": result.reasoning_allowance,
+        "unscorable_note": unscorable_note,
         "pass_rate": result.pass_rate,
         "pass_rate_ci": list(pass_rate_ci),
         "min_resolvable_difference": minimum_difference,
@@ -894,6 +926,8 @@ def _eval(args: argparse.Namespace) -> int:
     if suite_upgrade_note is not None:
         _console().print(suite_upgrade_note)
     _console().print(config_note)
+    if unscorable_note is not None:
+        _console().print(unscorable_note)
     if artifact_warning is not None:
         _console().print(artifact_warning)
     for item in divergence:
@@ -1252,6 +1286,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"({','.join(EXTENDED_CATEGORIES)})",
     )
     eval_parser.add_argument("--suite", choices=("core", "extended"), default="core")
+    eval_parser.add_argument(
+        "--reasoning-allowance",
+        type=_non_negative_int,
+        default=0,
+        dest="reasoning_allowance",
+        help="extra output tokens per task for models that emit reasoning "
+        "before the answer (recorded with the result)",
+    )
     watch_parser = sub.add_parser("watch")
     watch_parser.add_argument("--sources", default="zenn,qiita")
     watch_parser.add_argument(
