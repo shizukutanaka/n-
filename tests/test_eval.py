@@ -233,6 +233,29 @@ def test_hard_suite_and_graders() -> None:
         assert task.check(accepted), task_id
         assert not task.check(rejected), task_id
 
+    kanji_17 = next(task for task in HARD_TASKS if task.id == "multilingual.kanji_number.17")
+    assert kanji_17.rule == "kanji_number:v2"
+    for answer in ("十七", "一十七", "壹拾柒", "壱拾七"):
+        assert kanji_17.check(answer)
+    assert not kanji_17.check("十八")
+    assert not kanji_17.check('17 を漢数字で書くと "壹柒" です。')
+
+    kanji_30 = next(task for task in HARD_TASKS if task.id == "multilingual.kanji_number.30")
+    assert kanji_30.rule == "kanji_number:v2"
+    for answer in ("三十", "参拾", "參拾"):
+        assert kanji_30.check(answer)
+    assert not kanji_30.check("三十一")
+
+    seven = next(task for task in HARD_TASKS if task.id == "multilingual.lang_lock.seven")
+    assert seven.prompt == (
+        "Answer only in Japanese with no Latin letters and no digits: how many "
+        "days are in one week? Output the kanji numeral alone."
+    )
+    assert seven.check("七")
+    assert seven.check("七日")
+    assert not seven.check("7")
+    assert suite_digest(SUITES["hard"]) != "v2:e1791a9996b13139"
+
 
 def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
     expected: dict[str, str] = {}
@@ -368,6 +391,72 @@ def test_suite_digest_identity() -> None:
         assert suite_digest(TASKS) != f"v{original}:" + suite_digest(TASKS).split(":", 1)[1]
     finally:
         suite.GRADER_VERSION = original
+    plain = Task("rule", "instruction", "prompt", 8, lambda text: True)
+    empty_rule = Task("rule", "instruction", "prompt", 8, lambda text: True, "")
+    changed_rule = Task(
+        "rule", "instruction", "prompt", 8, lambda text: True, "rule:v2",
+    )
+    assert suite_digest((plain,)) == suite_digest((empty_rule,))
+    assert suite_digest((plain,)) != suite_digest((changed_rule,))
+
+
+def test_runner_reports_value_passed_separately_from_discipline() -> None:
+    tasks = tuple(
+        next(task for task in HARD_TASKS if task.id == task_id)
+        for task_id in (
+            "instruction.initials.quick_amber_fox",
+            "multilingual.lang_lock.paris",
+            "multilingual.lang_lock.seven",
+        )
+    ) + (
+        Task(
+            "quick-pass", "instruction", "quick-pass", 8,
+            next(task for task in HARD_TASKS
+                 if task.id == "instruction.initials.quick_amber_fox").check,
+            value_check=next(
+                task for task in HARD_TASKS
+                if task.id == "instruction.initials.quick_amber_fox"
+            ).value_check,
+        ),
+        Task(
+            "quick-wrong", "instruction", "quick-wrong", 8,
+            next(task for task in HARD_TASKS
+                 if task.id == "instruction.initials.quick_amber_fox").check,
+            value_check=next(
+                task for task in HARD_TASKS
+                if task.id == "instruction.initials.quick_amber_fox"
+            ).value_check,
+        ),
+    )
+    _EvalHandler.responses = {
+        tasks[0].prompt: (200, "Q A F"),
+        tasks[1].prompt: (200, "Paris"),
+        tasks[2].prompt: (200, "7"),
+        "quick-pass": (200, "QAF"),
+        "quick-wrong": (200, "QWEN"),
+    }
+    server = _serve()
+    try:
+        result = run(tasks, f"http://127.0.0.1:{server.server_address[1]}", "model")
+    finally:
+        server.shutdown()
+        server.server_close()
+    outcomes = {outcome.id: outcome for outcome in result.outcomes}
+    assert (outcomes[tasks[0].id].passed, outcomes[tasks[0].id].value_passed) == (
+        False, True,
+    )
+    assert (outcomes[tasks[1].id].passed, outcomes[tasks[1].id].value_passed) == (
+        False, True,
+    )
+    assert (outcomes[tasks[2].id].passed, outcomes[tasks[2].id].value_passed) == (
+        False, True,
+    )
+    assert (outcomes["quick-pass"].passed, outcomes["quick-pass"].value_passed) == (
+        True, True,
+    )
+    assert (outcomes["quick-wrong"].passed, outcomes["quick-wrong"].value_passed) == (
+        False, False,
+    )
 
 
 def test_runner_mixed_and_transport_failure_continue() -> None:
@@ -482,7 +571,15 @@ def test_eval_cli_reports_unscorable_run(monkeypatch, capsys) -> None:
     assert output["unscorable"] == 1
     assert output["reasoning_allowance"] == 504
     assert "not used as planning evidence" in output["unscorable_note"]
-    assert output["failed"] == [{"id": "cut", "output": "", "unscorable": True}]
+    assert output["value_only_failures"] == 0
+    assert output["value_checked_failures"] == 0
+    assert output["value_note"] is None
+    assert output["failed"] == [{
+        "id": "cut",
+        "output": "",
+        "unscorable": True,
+        "value_passed": None,
+    }]
 
 
 def test_runner_all_transport_failures_raise() -> None:
@@ -617,7 +714,7 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     result = EvalRun(
         "prior-high", "q4_k_m", "llamacpp", 1, 1, 1.0,
         {category: 0.75 for category in CATEGORIES},
-        [TaskOutcome("failed", "instruction", False, "bad")],
+        [TaskOutcome("failed", "instruction", False, "bad", value_passed=True)],
         3.0,
     )
     monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
@@ -638,8 +735,16 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     assert output["uncertainty_note"].startswith("95% Wilson interval")
     assert output["suite_upgrade_note"].startswith("The 104-task extended suite")
     assert output["config_note"].startswith("This pass rate applies")
+    assert output["value_only_failures"] == 1
+    assert output["value_checked_failures"] == 1
+    assert "output form" in output["value_note"]
     assert output["failed"] == [
-        {"id": "failed", "output": "bad", "unscorable": False},
+        {
+            "id": "failed",
+            "output": "bad",
+            "unscorable": False,
+            "value_passed": True,
+        },
     ]
 
 

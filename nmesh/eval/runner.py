@@ -17,6 +17,7 @@ class TaskOutcome:
     passed: bool
     output: str
     unscorable: bool = False
+    value_passed: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -97,7 +98,18 @@ def run(
                 passed = False
                 unscorable = False
             outcomes.append(
-                TaskOutcome(task.id, task.category, passed, text[:200], unscorable)
+                TaskOutcome(
+                    task.id,
+                    task.category,
+                    passed,
+                    text[:200],
+                    unscorable,
+                    (
+                        None
+                        if unscorable or task.value_check is None
+                        else bool(task.value_check(text))
+                    ),
+                )
             )
     if outcomes and transport_errors == len(outcomes):
         raise RuntimeError("all evaluation tasks failed at transport level")

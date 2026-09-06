@@ -874,8 +874,22 @@ def _eval(args: argparse.Namespace) -> int:
         return 1
     divergence = _eval_divergence(result, cached)
     stale_grader_notes = _stale_grader_notes(cached)
-    failed = [{"id": outcome.id, "output": outcome.output, "unscorable": outcome.unscorable}
-              for outcome in result.outcomes if not outcome.passed]
+    failed_outcomes = [outcome for outcome in result.outcomes if not outcome.passed]
+    failed = [
+        {
+            "id": outcome.id,
+            "output": outcome.output,
+            "unscorable": outcome.unscorable,
+            "value_passed": outcome.value_passed,
+        }
+        for outcome in failed_outcomes
+    ]
+    value_only_failures = sum(
+        outcome.value_passed is True for outcome in failed_outcomes
+    )
+    value_checked_failures = sum(
+        outcome.value_passed is not None for outcome in failed_outcomes
+    )
     language = i18n.lang()
     note = i18n.t("note.eval_scope", language, tasks=result.n_tasks)
     pass_rate_ci = wilson_interval(result.passed, result.n_tasks)
@@ -905,6 +919,14 @@ def _eval(args: argparse.Namespace) -> int:
             tasks=result.n_tasks,
             allowance=allowance,
         )
+    value_note = None
+    if value_checked_failures:
+        value_note = i18n.t(
+            "note.eval_value_vs_discipline",
+            language,
+            checked=value_checked_failures,
+            value_only=value_only_failures,
+        )
     config_note = i18n.t(
         "note.eval_config",
         language,
@@ -930,6 +952,9 @@ def _eval(args: argparse.Namespace) -> int:
         "min_resolvable_difference": minimum_difference,
         "by_category": result.by_category,
         "failed": failed,
+        "value_only_failures": value_only_failures,
+        "value_checked_failures": value_checked_failures,
+        "value_note": value_note,
         "note": note,
         "uncertainty_note": uncertainty_note,
         "suite_upgrade_note": suite_upgrade_note,
@@ -963,6 +988,8 @@ def _eval(args: argparse.Namespace) -> int:
     _console().print(config_note)
     if unscorable_note is not None:
         _console().print(unscorable_note)
+    if value_note is not None:
+        _console().print(value_note)
     if artifact_warning is not None:
         _console().print(artifact_warning)
     for item in divergence:

@@ -46,11 +46,21 @@ def _json_object(text: str) -> dict[str, object] | None:
 
 @dataclass(frozen=True)
 class Task:
+    """A deterministic evaluation task and its grader identities.
+
+    ``rule`` identifies the per-task grader semantics. Bump it whenever a
+    verifier's accept/reject behavior changes, so only suites containing that
+    task lose comparability. ``GRADER_VERSION`` remains for suite-wide scoring
+    rule changes.
+    """
+
     id: str
     category: str
     prompt: str
     max_tokens: int
     check: Callable[[str], bool]
+    rule: str = ""
+    value_check: Callable[[str], bool] | None = None
 
 
 def _exact(expected: str) -> Callable[[str], bool]:
@@ -253,7 +263,9 @@ GRADER_VERSION = 2
 def suite_digest(tasks: Sequence[Task]) -> str:
     """Identify what was graded and how, so records from different rules never compare."""
     payload = "\n".join(
-        f"{task.id}\x00{task.prompt}\x00{task.max_tokens}" for task in tasks
+        f"{task.id}\x00{task.prompt}\x00{task.max_tokens}"
+        + (f"\x00{task.rule}" if task.rule else "")
+        for task in tasks
     )
     return (
         f"v{GRADER_VERSION}:"
