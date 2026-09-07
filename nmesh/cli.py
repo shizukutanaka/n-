@@ -1781,7 +1781,14 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
             reference = arm(False)
             supervisor.down()
             candidate = arm(True)
-            record = from_arms(reference, candidate, engine=engine_id)
+            supervisor.down()
+            control_arm = arm(False)
+            record = from_arms(
+                reference,
+                candidate,
+                engine=engine_id,
+                control_arm=control_arm,
+            )
             save_spec(record)
         except (OSError, RuntimeError, ValueError, httpx.HTTPError) as error:
             print(str(error), file=sys.stderr)
@@ -1795,6 +1802,7 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
             "spec": asdict(record.spec),
             "engine": record.engine,
             "classes": [asdict(item) for item in record.classes],
+            "control": [asdict(item) for item in record.control],
             "decision": decision,
             "reason": reason,
         })
@@ -1808,6 +1816,16 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                 f"{item.speedup:.2f}", str(item.identical), f"{item.acceptance:.2f}",
             )
         _console().print(table)
+        worst = min((item.ratio for item in record.control), default=0.0)
+        identical = bool(record.control) and all(
+            item.identical for item in record.control
+        )
+        print(i18n.t(
+            "label.spec_control",
+            i18n.lang(),
+            ratio=f"{worst:.2f}",
+            identical=identical,
+        ))
         print(f"decision: {decision} ({reason})")
     return 0
 
@@ -1825,11 +1843,16 @@ def _spec_show(args: argparse.Namespace) -> int:
         })
         return 0
     table = Table(title="nmesh spec")
-    for column in ("target", "kind", "engine", "decision"):
+    for column in ("target", "kind", "engine", "control", "decision"):
         table.add_column(column)
     for record in records.values():
+        control_text = ", ".join(
+            f"{item.name}:{item.ratio:.2f}/{item.identical}"
+            for item in record.control
+        ) or "-"
         table.add_row(
             record.target.model_id, record.spec.kind, record.engine,
+            control_text,
             decide_spec(record)[0],
         )
     _console().print(table)

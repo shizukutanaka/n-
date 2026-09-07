@@ -1,5 +1,5 @@
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,9 +18,15 @@ from nmesh.spec import (
     MIXED,
     NOT_FASTER,
     NOT_IDENTICAL,
+    SPEC_HARNESS_VERSION,
+    UNSTABLE,
+    ArmRun,
     ClassEvidence,
+    ClassResult,
+    ControlEvidence,
     SpecConfig,
     SpecRecord,
+    control,
     decide,
     engine_identity,
     load_cache,
@@ -34,7 +40,7 @@ def _record(*, identical: bool = True, speedup: float = 1.2) -> SpecRecord:
         target=target,
         spec=SpecConfig(kind=KIND_NGRAM, n_max=3),
         engine="llama.cpp",
-        harness="spec-v1",
+        harness=SPEC_HARNESS_VERSION,
         repeats=2,
         classes=(
             ClassEvidence(
@@ -46,6 +52,7 @@ def _record(*, identical: bool = True, speedup: float = 1.2) -> SpecRecord:
                 acceptance=0.8,
             ),
         ),
+        control=(ControlEvidence("copy", 1.0, True),),
         at=1.0,
     )
 
@@ -68,6 +75,93 @@ def test_spec_record_save_load_round_trip(tmp_path) -> None:
     assert decide(restored) == (ALLOW, ALLOW)
 
 
+def test_missing_control_is_unstable(tmp_path: Path) -> None:
+    record = _record()
+    path = tmp_path / "spec.json"
+    save(record, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entry = payload["results"][next(iter(payload["results"]))]
+    entry.pop("control")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    restored = next(iter(load_cache(path).values()))
+    assert restored.control == ()
+    assert decide(restored) == (UNSTABLE, UNSTABLE)
+
+
+def test_malformed_control_is_rejected(tmp_path: Path) -> None:
+    record = _record()
+    path = tmp_path / "spec.json"
+    save(record, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entry = payload["results"][next(iter(payload["results"]))]
+    entry["control"] = [{"name": "copy", "ratio": "bad"}]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load_cache(path) == {}
+
+
+def test_control_failure_is_unstable() -> None:
+    assert decide(
+        replace(_record(), control=(ControlEvidence("copy", 0.89, True),))
+    ) == (UNSTABLE, UNSTABLE)
+    assert decide(
+        replace(_record(), control=(ControlEvidence("copy", 1.0, False),))
+    ) == (UNSTABLE, UNSTABLE)
+
+
+def test_harness_version_is_required_for_lookup() -> None:
+    from nmesh.spec import best_for
+
+    record = replace(_record(), harness="spec-v1")
+    assert best_for(
+        {"old": record}, record.target, record.spec, record.engine
+    ) is None
+
+
+def _arm(
+    *,
+    spec: SpecConfig | None = None,
+    target: RoleIdentity | None = None,
+    harness: str = SPEC_HARNESS_VERSION,
+    rate: float = 10.0,
+    content: str = "answer",
+    unstable: bool = False,
+) -> ArmRun:
+    return ArmRun(
+        target=target or RoleIdentity("target", "q4_k_m", "llamacpp", "artifact"),
+        spec=spec or SpecConfig(),
+        classes=(
+            ClassResult(
+                name="code",
+                completion_tokens=10,
+                decode_tps=rate,
+                seconds=1.0,
+                content_sha256=content,
+                unstable=unstable,
+                drafted=0,
+                accepted=0,
+            ),
+        ),
+        repeats=2,
+        harness=harness,
+        at=1.0,
+    )
+
+
+def test_control_validates_arms_and_calculates_ratio() -> None:
+    first = _arm(rate=10.0)
+    second = _arm(rate=5.0)
+    assert control(first, second)[0].ratio == 0.5
+    with pytest.raises(ValueError):
+        control(first, _arm(spec=SpecConfig(kind=KIND_NGRAM)))
+    with pytest.raises(ValueError):
+        control(
+            first,
+            _arm(target=RoleIdentity("other", "q4_k_m", "llamacpp", "artifact")),
+        )
+    with pytest.raises(ValueError):
+        control(first, _arm(harness="spec-v1"))
+
+
 def test_spec_decision_table_includes_mixed_regression() -> None:
     assert decide(_record()) == (ALLOW, ALLOW)
     assert decide(_record(identical=False)) == (NOT_IDENTICAL, NOT_IDENTICAL)
@@ -76,12 +170,13 @@ def test_spec_decision_table_includes_mixed_regression() -> None:
         target=_record().target,
         spec=_record().spec,
         engine="llama.cpp",
-        harness="spec-v1",
+        harness=SPEC_HARNESS_VERSION,
         repeats=2,
         classes=(
             ClassEvidence("copy", 1.2, True, 10.0, 12.0, 1.0),
             ClassEvidence("prose", 0.9, True, 10.0, 9.0, 1.0),
         ),
+        control=(ControlEvidence("copy", 1.0, True),),
         at=1.0,
     )
     assert decide(mixed) == (MIXED, MIXED)
@@ -155,6 +250,8 @@ def _planned_spec(
     flags: tuple[str, ...] = ("--spec-type",),
     policy: Policy | None = None,
     gpu: bool = False,
+    control_ratio: float = 1.0,
+    control_identical: bool = True,
 ):
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
     monkeypatch.setattr("nmesh.runtime.engine.active", lambda: None)
@@ -190,6 +287,7 @@ def _planned_spec(
                     if decision == "mixed" else ()
                 ),
             ),
+            control=(ControlEvidence("copy", control_ratio, control_identical),),
             at=1.0,
         )
         save(evidence)
@@ -240,6 +338,16 @@ def test_spec_flags_are_emitted_for_allow_and_override(
     )
     assert "--spec-type" in overridden.services[0].launch.argv
     assert any("bypassed" in warning for warning in overridden.warnings)
+
+
+def test_spec_control_failure_refuses_with_unstable_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = _planned_spec(
+        tmp_path, monkeypatch, decision="allow", control_ratio=0.5
+    )
+    assert "--spec-type" not in result.services[0].launch.argv
+    assert any("unstable" in warning for warning in result.warnings)
 
 
 def test_spec_capabilities_are_required(

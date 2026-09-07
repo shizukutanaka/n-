@@ -35,7 +35,7 @@ from nmesh.orchestrate.measure import RoleIdentity
 
 #: Bumped when the workloads or the sampling settings change, so a record
 #: never justifies a configuration measured under different conditions.
-SPEC_HARNESS_VERSION = "spec-v1"
+SPEC_HARNESS_VERSION = "spec-v2"
 
 #: Speculation off: the reference arm every candidate is compared against.
 KIND_NONE = "none"
@@ -173,6 +173,15 @@ class ClassComparison:
     reference_tps: float
     candidate_tps: float
     acceptance: float
+
+
+@dataclass(frozen=True)
+class ControlCheck:
+    """One class of the speculation-off A/A control."""
+
+    name: str
+    ratio: float
+    identical: bool
 
 
 def _hash(text: str) -> str:
@@ -317,6 +326,39 @@ def compare(reference: ArmRun, candidate: ArmRun) -> tuple[ClassComparison, ...]
     return tuple(comparisons)
 
 
+def control(first: ArmRun, second: ArmRun) -> tuple[ControlCheck, ...]:
+    """Compare two speculation-off arms for machine-state drift."""
+    if first.spec.kind != KIND_NONE or second.spec.kind != KIND_NONE:
+        raise ValueError("Control arms must have speculation disabled")
+    if first.target != second.target:
+        raise ValueError("Control arms measured on different targets")
+    if first.harness != second.harness:
+        raise ValueError("Control arms measured by different harnesses")
+    checks: list[ControlCheck] = []
+    for workload in WORKLOADS:
+        first_class = first.by_name(workload.name)
+        second_class = second.by_name(workload.name)
+        if first_class is None or second_class is None:
+            continue
+        maximum = max(first_class.decode_tps, second_class.decode_tps)
+        ratio = (
+            min(first_class.decode_tps, second_class.decode_tps) / maximum
+            if maximum > 0 else 0.0
+        )
+        checks.append(
+            ControlCheck(
+                name=workload.name,
+                ratio=ratio,
+                identical=(
+                    first_class.content_sha256 == second_class.content_sha256
+                    and not first_class.unstable
+                    and not second_class.unstable
+                ),
+            )
+        )
+    return tuple(checks)
+
+
 __all__ = [
     "KINDS",
     "KIND_DRAFT",
@@ -327,8 +369,10 @@ __all__ = [
     "ArmRun",
     "ClassComparison",
     "ClassResult",
+    "ControlCheck",
     "SpecConfig",
     "Workload",
     "compare",
+    "control",
     "run_arm",
 ]
