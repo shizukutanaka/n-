@@ -558,7 +558,8 @@ class _PlanState:
         self.plan = plan
         self.telemetry_keys = {
             service.name: benchmark_key(
-                service.model_id, service.quant, service.backend, gpu, service.n_gpu_layers
+                service.model_id, service.quant, service.backend, gpu,
+                service.n_gpu_layers, service.kv_quant,
             )
             for service in plan.services
         }

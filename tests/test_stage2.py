@@ -83,6 +83,15 @@ def test_bench_cache_round_trip(tmp_path) -> None:
     assert load_cache(path)[key] == 3.0
 
 
+def test_benchmark_key_preserves_f16_and_separates_q8() -> None:
+    old_key = "model|q4_k_m|llamacpp|cpu|0"
+    f16_key = benchmark_key("model", "q4_k_m", "llamacpp", "cpu", 0, "f16")
+    q8_key = benchmark_key("model", "q4_k_m", "llamacpp", "cpu", 0, "q8_0")
+    assert f16_key == old_key
+    assert q8_key == f"{old_key}|kvq8_0"
+    assert q8_key != f16_key
+
+
 def test_supervisor_fallback_with_fake_launcher(tmp_path, catalog: list[object]) -> None:
     plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
     service = replace(plan.services[0], launch=replace(plan.services[0].launch, health_url=None))
