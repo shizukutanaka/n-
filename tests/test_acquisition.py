@@ -77,6 +77,7 @@ def test_parse_label_canonicalizes_full_vocabulary() -> None:
         "model-Q8_0_L.gguf": "q8_0_l",
         "model-Q5_0.gguf": "q5_0",
         "model-f32.gguf": "f32",
+        "bge-m3-Q3_K.gguf": "q3_k",
     }
     for filename, expected in cases.items():
         assert acquisition.parse_label(filename) == expected
@@ -245,6 +246,25 @@ def test_resolve_uses_iq_and_k_s_vocabulary(monkeypatch) -> None:
     )
 
 
+def test_resolve_does_not_rank_bare_k_label(monkeypatch) -> None:
+    monkeypatch.setattr(
+        acquisition, "_gguf_files", lambda _repo: {"bge-m3-Q3_K.gguf": 11}
+    )
+    with pytest.raises(RuntimeError, match="published labels: q3_k"):
+        acquisition._resolve_gguf("repo", "q3_k_m")
+
+
+def test_resolve_accepts_nominal_non_planner_label(monkeypatch) -> None:
+    files = {
+        "model-IQ3_M.gguf": 11,
+        "model-IQ2_M.gguf": 9,
+    }
+    monkeypatch.setattr(acquisition, "_gguf_files", lambda _repo: files)
+    assert acquisition._resolve_gguf("repo", "iq3_m") == (
+        "iq3_m", ["model-IQ3_M.gguf"], 11,
+    )
+
+
 def _llamacpp_service(tmp_path: Path, *, quant: str = "q4_k_m") -> SimpleNamespace:
     return SimpleNamespace(
         backend="llamacpp",
@@ -270,7 +290,7 @@ def test_mixed_artifact_warning_and_size_mismatch(tmp_path, monkeypatch) -> None
     )
     acquired = acquisition.acquire(service)
     assert acquired.quant == "q3_k_l+q8"
-    assert acquired.bytes == 150
+    assert acquired.artifact_bytes == 150
     assert acquired.warning is not None
     assert "mixed-precision" in acquired.warning
     assert "150" in acquired.warning and "100" in acquired.warning
@@ -287,7 +307,7 @@ def test_existing_local_gguf_reports_parsed_identity_and_size(tmp_path) -> None:
     assert acquired.path == target
     assert acquired.quant == "q3_k_l+q8"
     assert acquired.substituted is True
-    assert acquired.bytes == len(b"artifact")
+    assert acquired.artifact_bytes == len(b"artifact")
 
 
 def test_size_mismatch_warning_is_absent_at_parity(tmp_path, monkeypatch) -> None:

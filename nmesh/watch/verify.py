@@ -286,7 +286,8 @@ def _gateway_routes() -> frozenset[str] | None:
 
 
 def _known_quant(value: str) -> bool:
-    return parse_label(f"{value}.gguf") is not None
+    canonical = parse_label(f"{value}.gguf")
+    return canonical in BPW if canonical is not None else False
 
 
 def verify(

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from nmesh import i18n
 from nmesh.paths import nmesh_home
-from nmesh.planner import BPW, PlannedService
+from nmesh.planner import PlannedService
 
 # These are llama.cpp's nominal figures for ordering candidates, not nmesh
 # measurements. Artifact bytes can deviate substantially: qwen2.5-0.5b
@@ -56,11 +56,18 @@ NOMINAL_GGUF_BPW = {
     "q4_0_8_8": 4.55,
 }
 _BARE_QUANT_TOKENS = ("q8", "q4", "q5", "q6", "q3", "q2")
+_UNRANKED_QUANT_TOKENS = ("q3_k", "q4_k", "q5_k")
 _REPACK_LABELS = frozenset({"q4_0_4_4", "q4_0_4_8", "q4_0_8_8"})
 _LABEL_ALIASES = {"fp16": "f16", "fp32": "f32"}
 _LABEL_TOKENS = tuple(
     sorted(
-        (*NOMINAL_GGUF_BPW, *_BARE_QUANT_TOKENS, "fp16", "fp32"),
+        (
+            *NOMINAL_GGUF_BPW,
+            *_BARE_QUANT_TOKENS,
+            *_UNRANKED_QUANT_TOKENS,
+            "fp16",
+            "fp32",
+        ),
         key=len,
         reverse=True,
     )
@@ -82,7 +89,7 @@ class Acquired:
     substituted: bool
     model_ref: str | None = None
     warning: str | None = None
-    bytes: int | None = None
+    artifact_bytes: int | None = None
 
 
 def parse_label(filename: str) -> str | None:
@@ -136,15 +143,13 @@ def _split_files(files: list[str], selected: str) -> list[str] | None:
 
 
 def _resolve_gguf(repo_id: str, quant: str) -> tuple[str, list[str], int]:
-    if quant not in BPW:
+    first_label = quant.split("+", 1)[0]
+    planned_bpw = NOMINAL_GGUF_BPW.get(first_label)
+    if planned_bpw is None:
         raise RuntimeError(f"Unsupported planned quantization: {quant}")
     metadata = _gguf_files(repo_id)
-    if isinstance(metadata, dict):
-        sizes = metadata
-        files = list(metadata)
-    else:
-        sizes = {filename: None for filename in metadata}
-        files = list(metadata)
+    sizes = metadata
+    files = list(metadata)
     found_labels = sorted({
         label for filename in files
         if (label := parse_label(filename)) is not None
@@ -169,7 +174,6 @@ def _resolve_gguf(repo_id: str, quant: str) -> tuple[str, list[str], int]:
     if exact:
         return min(exact, key=lambda candidate: candidate[2])
 
-    planned_bpw = BPW[quant]
     eligible = [
         candidate for candidate in candidates
         if (
@@ -268,12 +272,13 @@ def acquire(service: PlannedService) -> Acquired:
     if service.backend == "llamacpp":
         target = Path(service.model_ref)
         if target.exists():
+            artifact_bytes = target.stat().st_size
             actual_label = parse_label(target.name)
             quant = actual_label or service.quant
-            warning = _artifact_warning(service, actual_label, target.name, target.stat().st_size)
+            warning = _artifact_warning(service, actual_label, target.name, artifact_bytes)
             return Acquired(
                 target, quant, quant != service.quant, warning=warning,
-                bytes=target.stat().st_size,
+                artifact_bytes=artifact_bytes,
             )
         repo_id = service.download_repo
         if repo_id is None:
@@ -292,6 +297,6 @@ def acquire(service: PlannedService) -> Acquired:
         warning = _artifact_warning(service, chosen, files[0], total_bytes)
         return Acquired(
             paths[0], chosen, chosen != service.quant, warning=warning,
-            bytes=total_bytes,
+            artifact_bytes=total_bytes,
         )
     return Acquired(Path(service.model_ref), None, False)

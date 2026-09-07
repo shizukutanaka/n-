@@ -737,6 +737,10 @@ models were within approximately ±5%. Planning still budgets from the
 nominal parameter-count × bpw estimate, so nmesh warns when the resolved
 artifact differs from that estimate by more than 10%.
 
+Resolver recognition does not imply planner support: labels that nmesh can
+identify but cannot plan remain outside `BPW`, and `nmesh watch` continues to
+report them as unknown quantizations.
+
 ### An installed backend the probe cannot see
 
 Backend availability was decided by `shutil.which` alone, so a llama.cpp build

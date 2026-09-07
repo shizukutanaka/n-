@@ -18,11 +18,21 @@ from nmesh.watch.sources import (
     fetch_zenn,
 )
 from nmesh.watch.state import WatchState, load_state, save_state
-from nmesh.watch.verify import Finding, _weight_sets, verify
+from nmesh.watch.verify import Finding, _known_quant, _weight_sets, verify
 
 
 def _client(handler: object) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_known_quant_requires_planner_supported_canonical_label() -> None:
+    assert _known_quant("Q4_K_M") is True
+    assert _known_quant("q4_k_m") is True
+    assert _known_quant("fp16") is True
+    assert _known_quant("IQ4_XS") is False
+    assert _known_quant("Q4_K_XL") is False
+    assert _known_quant("Q3_K_L") is False
+    assert _known_quant("q3_k_l+q8") is False
 
 
 def test_zenn_fetches_article_body_not_summary() -> None:
