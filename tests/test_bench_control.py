@@ -46,6 +46,7 @@ def test_bench_records_round_trip_and_legacy(tmp_path) -> None:
     path.write_text(json.dumps({"legacy": 48.54}), encoding="utf-8")
     loaded = load_records(path)
     assert loaded["legacy"].harness == "legacy"
+    assert loaded["legacy"].epoch == "unknown"
     assert loaded["legacy"].confirmations == 1
     assert load_cache(path) == {"legacy": 48.54}
 
@@ -74,6 +75,99 @@ def test_unstable_records_are_hidden_but_prior_evidence_survives(tmp_path) -> No
     assert loaded.tps == 48.0
     assert loaded.rejected == (5.2,)
     assert load_cache(path) == {"key": 48.0}
+
+
+def test_degraded_epoch_preserves_prior_record_and_is_hidden_without_session(
+    tmp_path,
+) -> None:
+    records = {
+        "key": BenchRecord(
+            48.0, 47.0, 49.0, 3, 2, 0.99, True, "old", "bench-v1",
+            (48.0, 48.2), reference_tps=61.0, reference_id="ref", epoch="healthy",
+        )
+    }
+    merge_measurement(
+        records,
+        "key",
+        tps=21.0,
+        decode_tps_min=20.0,
+        decode_tps_max=22.0,
+        runs=3,
+        passes=2,
+        control_ratio=0.99,
+        reference_tps=24.0,
+        reference_id="ref",
+        epoch="degraded",
+    )
+    record = records["key"]
+    assert record.tps == 48.0
+    assert record.sessions == (48.0, 48.2)
+    assert record.confirmations == 2
+    assert record.rejected == (21.0,)
+    assert record.last_rejected_reference_tps == 24.0
+    assert record.last_rejected_reference_id == "ref"
+    path = tmp_path / "bench.json"
+    save_records(records, path)
+    assert load_cache(path) == {"key": 48.0}
+
+
+def test_epoch_fields_round_trip_and_degraded_cache_filter(tmp_path) -> None:
+    path = tmp_path / "bench.json"
+    records = {
+        "healthy": BenchRecord(
+            40.0, 39.0, 41.0, 3, 2, 0.99, True, "now", "bench-v1",
+            (40.0,), reference_tps=60.0, reference_id="ref", epoch="healthy",
+        ),
+        "degraded": BenchRecord(
+            20.0, 19.0, 21.0, 3, 2, 0.99, True, "now", "bench-v1",
+            (20.0,), reference_tps=24.0, reference_id="ref", epoch="degraded",
+        ),
+    }
+    save_records(records, path)
+    loaded = load_records(path)
+    assert loaded == records
+    assert load_cache(path) == {"healthy": 40.0}
+
+
+def test_degraded_epoch_without_prior_evidence_is_not_cached(tmp_path) -> None:
+    records: dict[str, BenchRecord] = {}
+    merge_measurement(
+        records,
+        "new",
+        tps=21.0,
+        decode_tps_min=20.0,
+        decode_tps_max=22.0,
+        runs=3,
+        passes=2,
+        control_ratio=0.99,
+        reference_tps=24.0,
+        reference_id="ref",
+        epoch="degraded",
+    )
+    path = tmp_path / "bench.json"
+    save_records(records, path)
+    loaded = load_records(path)["new"]
+    assert loaded.stable is False
+    assert loaded.sessions == (21.0,)
+    assert load_cache(path) == {}
+
+
+def test_unknown_epoch_keeps_the_existing_merge_behavior() -> None:
+    implicit: dict[str, BenchRecord] = {}
+    explicit: dict[str, BenchRecord] = {}
+    values = {
+        "tps": 40.0,
+        "decode_tps_min": 39.0,
+        "decode_tps_max": 41.0,
+        "runs": 3,
+        "passes": 2,
+        "control_ratio": 0.99,
+        "measured_at": "fixed",
+    }
+    implicit_record = merge_measurement(implicit, "key", **values)
+    explicit_record = merge_measurement(explicit, "key", **values, epoch="unknown")
+    assert implicit_record == explicit_record
+    assert implicit_record.epoch == "unknown"
 
 
 def test_measure_controlled_uses_pass_control(monkeypatch) -> None:

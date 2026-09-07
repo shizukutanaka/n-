@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import socket
+import statistics
 import subprocess
 import sys
 import tarfile
@@ -13,6 +14,7 @@ import urllib.request
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote
@@ -25,12 +27,22 @@ from nmesh import i18n
 from nmesh.artifact import service_fingerprint
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.bench import (
+    EPOCH_HISTORY,
+    EpochSample,
+    baseline,
     benchmark_key,
+    choose_reference_model,
+    classify,
+    find_reference_binary,
     load_cache,
+    load_history,
     load_records,
     measure,
     measure_controlled,
+    measure_reference,
     merge_measurement,
+    reference_id,
+    save_history,
     save_records,
 )
 from nmesh.catalog import load_catalog
@@ -1129,6 +1141,37 @@ def _service_running(service: PlannedService, runtime: RuntimeStatus) -> bool:
         return False
 
 
+def _reference_context(
+    service: PlannedService,
+) -> tuple[Path, Path, str, int] | None:
+    active = engine_runtime.active()
+    server = (
+        active.exe
+        if active is not None and active.exe.is_file()
+        else Path(service.launch.argv[0])
+        if service.launch.argv
+        else None
+    )
+    if server is None:
+        return None
+    binary = find_reference_binary(server)
+    model_ref = Path(service.model_ref)
+    model = choose_reference_model(model_ref.parent)
+    if model is None and model_ref.is_file() and model_ref.suffix.casefold() == ".gguf":
+        model = model_ref
+    if binary is None or model is None:
+        return None
+    try:
+        _, free_ram = free_budgets(detect_hardware())
+        if free_ram < 1.5 * model.stat().st_size:
+            return None
+    except (OSError, RuntimeError):
+        return None
+    threads = max(1, min(os.cpu_count() or 4, 8))
+    engine_build = active.tag if active is not None else server.name
+    return binary, model, reference_id(engine_build, model, threads, 32), threads
+
+
 def _bench(args: argparse.Namespace) -> int:
     plan = load_plan()
     if plan is None or not plan.services:
@@ -1141,6 +1184,18 @@ def _bench(args: argparse.Namespace) -> int:
     base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
     )
+    context = None if args.no_reference else _reference_context(service)
+    history = load_history()
+    reference_baseline = (
+        baseline(history, context[2])
+        if context is not None else None
+    )
+    before_reference = None
+    if context is not None:
+        try:
+            before_reference = measure_reference(context[0], context[1], context[3])
+        except (OSError, RuntimeError):
+            before_reference = None
     try:
         controlled = measure_controlled(
             service,
@@ -1152,12 +1207,45 @@ def _bench(args: argparse.Namespace) -> int:
     except (OSError, RuntimeError) as error:
         print(i18n.t("err.bench_measure", i18n.lang(), error=error), file=sys.stderr)
         return 1
+    after_reference = None
+    if context is not None:
+        try:
+            after_reference = measure_reference(context[0], context[1], context[3])
+        except (OSError, RuntimeError):
+            after_reference = None
+    reference_tps = (
+        statistics.mean((before_reference, after_reference))
+        if before_reference is not None and after_reference is not None
+        else None
+    )
+    reference_key = context[2] if context is not None else ""
+    epoch = (
+        classify(reference_tps, reference_baseline)
+        if reference_tps is not None else "unknown"
+    )
+    if (
+        reference_tps is not None
+        and reference_key
+        and epoch in {"healthy", "unknown"}
+    ):
+        history[reference_key] = (
+            EpochSample(
+                reference_id=reference_key,
+                tps=reference_tps,
+                measured_at=datetime.now(timezone.utc).isoformat(),
+            ),
+            *history.get(reference_key, ()),
+        )[:EPOCH_HISTORY]
+        try:
+            save_history(history)
+        except OSError as error:
+            print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
     measurement = controlled.result
     key = benchmark_key(service.model_id, service.quant, service.backend,
                         plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
                         service.n_gpu_layers, service.kv_quant, service.spec)
     records = load_records()
-    stored = controlled.stable
+    stored = controlled.stable and epoch != "degraded"
     record = merge_measurement(
         records,
         key,
@@ -1167,6 +1255,9 @@ def _bench(args: argparse.Namespace) -> int:
         runs=measurement.runs,
         passes=args.passes,
         control_ratio=controlled.control_ratio,
+        reference_tps=reference_tps,
+        reference_id=reference_key,
+        epoch=epoch,
     )
     try:
         save_records(records)
@@ -1180,6 +1271,10 @@ def _bench(args: argparse.Namespace) -> int:
     )
     result = {"key": key, "prefill_tokens": 512, "decode_tokens": args.tokens,
               "median_tps": record.tps, "session_tps": measurement.decode_tps,
+              "reference_tps": reference_tps,
+              "reference_baseline": reference_baseline,
+              "reference_id": reference_key,
+              "epoch": epoch,
               "prefill_tps": measurement.prefill_tps,
               "ttft_s": measurement.ttft_s, "approximate": measurement.approximate,
               "prompt_tokens": measurement.prompt_tokens,
@@ -1234,6 +1329,22 @@ def _bench(args: argparse.Namespace) -> int:
                     language,
                 ),
             ))
+        if epoch == "degraded":
+            _console().print(i18n.t(
+                "warn.bench_epoch",
+                language,
+                ratio=(
+                    reference_tps / reference_baseline
+                    if reference_tps is not None and reference_baseline else 0.0
+                ),
+                kept=i18n.t(
+                    "label.bench_kept" if record.stable
+                    else "label.bench_nothing_stored",
+                    language,
+                ),
+            ))
+        elif reference_tps is None:
+            _console().print(i18n.t("warn.bench_no_reference", language))
         if decode_spread > 0.25:
             _console().print(i18n.t(
                 "warn.bench_reproducibility",
@@ -2274,6 +2385,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     bench_parser.add_argument("--tokens", type=int, default=128)
     bench_parser.add_argument("--runs", type=_positive_int, default=3)
     bench_parser.add_argument("--passes", type=_positive_int, default=2)
+    bench_parser.add_argument("--no-reference", action="store_true")
     bench_parser.add_argument("--json", action="store_true")
     eval_parser = sub.add_parser("eval")
     eval_parser.add_argument("--service", default="chat")

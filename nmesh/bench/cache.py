@@ -34,6 +34,12 @@ class BenchRecord:
     last_rejected_at: str = ""
     last_rejected_min: float | None = None
     last_rejected_max: float | None = None
+    reference_tps: float | None = None
+    reference_id: str = ""
+    epoch: str = "unknown"
+    last_rejected_reference_tps: float | None = None
+    last_rejected_reference_id: str = ""
+    last_rejected_epoch: str = "unknown"
 
     @property
     def confirmations(self) -> int:
@@ -64,7 +70,7 @@ def load_cache(path: Path | None = None) -> BenchCache:
     return {
         key: record.tps
         for key, record in load_records(path).items()
-        if record.stable
+        if record.stable and record.epoch != "degraded"
     }
 
 
@@ -108,9 +114,25 @@ def _record(value: object) -> BenchRecord | None:
         last_max = value.get("last_rejected_max")
         last_min = None if last_min is None else float(last_min)
         last_max = None if last_max is None else float(last_max)
+        reference_value = value.get("reference_tps")
+        reference_tps = (
+            None if reference_value is None else float(reference_value)
+        )
+        rejected_reference_value = value.get("last_rejected_reference_tps")
+        last_rejected_reference_tps = (
+            None
+            if rejected_reference_value is None
+            else float(rejected_reference_value)
+        )
         stable = value["stable"]
         measured_at = value["measured_at"]
         harness = value["harness"]
+        reference_id = str(value.get("reference_id", ""))
+        epoch = str(value.get("epoch", "unknown"))
+        last_rejected_reference_id = str(
+            value.get("last_rejected_reference_id", "")
+        )
+        last_rejected_epoch = str(value.get("last_rejected_epoch", "unknown"))
     except (KeyError, TypeError, ValueError):
         return None
     if (
@@ -138,6 +160,12 @@ def _record(value: object) -> BenchRecord | None:
         last_rejected_at=str(value.get("last_rejected_at", "")),
         last_rejected_min=last_min,
         last_rejected_max=last_max,
+        reference_tps=reference_tps,
+        reference_id=reference_id,
+        epoch=epoch,
+        last_rejected_reference_tps=last_rejected_reference_tps,
+        last_rejected_reference_id=last_rejected_reference_id,
+        last_rejected_epoch=last_rejected_epoch,
     )
 
 
@@ -190,6 +218,9 @@ def merge_measurement(
     control_ratio: float | None,
     measured_at: str | None = None,
     harness: str = BENCH_HARNESS_VERSION,
+    reference_tps: float | None = None,
+    reference_id: str = "",
+    epoch: str = "unknown",
 ) -> BenchRecord:
     """Merge one controlled measurement while retaining usable evidence."""
     timestamp = measured_at or _now()
@@ -197,6 +228,7 @@ def merge_measurement(
         passes >= 2
         and control_ratio is not None
         and control_ratio >= MIN_CONTROL_RATIO
+        and epoch != "degraded"
     )
     previous = records.get(key)
     if stable:
@@ -238,6 +270,18 @@ def merge_measurement(
             last_rejected_max=(
                 previous.last_rejected_max if previous is not None else None
             ),
+            reference_tps=reference_tps,
+            reference_id=reference_id,
+            epoch=epoch,
+            last_rejected_reference_tps=(
+                previous.last_rejected_reference_tps if previous is not None else None
+            ),
+            last_rejected_reference_id=(
+                previous.last_rejected_reference_id if previous is not None else ""
+            ),
+            last_rejected_epoch=(
+                previous.last_rejected_epoch if previous is not None else "unknown"
+            ),
         )
     elif previous is not None and previous.stable:
         record = BenchRecord(
@@ -256,6 +300,12 @@ def merge_measurement(
             last_rejected_at=timestamp,
             last_rejected_min=decode_tps_min,
             last_rejected_max=decode_tps_max,
+            reference_tps=previous.reference_tps,
+            reference_id=previous.reference_id,
+            epoch=previous.epoch,
+            last_rejected_reference_tps=reference_tps,
+            last_rejected_reference_id=reference_id,
+            last_rejected_epoch=epoch,
         )
     else:
         rejected = ((tps, *previous.rejected)[:3]
@@ -276,6 +326,12 @@ def merge_measurement(
             last_rejected_at=timestamp,
             last_rejected_min=decode_tps_min,
             last_rejected_max=decode_tps_max,
+            reference_tps=reference_tps,
+            reference_id=reference_id,
+            epoch=epoch,
+            last_rejected_reference_tps=reference_tps,
+            last_rejected_reference_id=reference_id,
+            last_rejected_epoch=epoch,
         )
     records[key] = record
     return record

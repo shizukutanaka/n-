@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -107,3 +108,114 @@ def test_bench_json_keeps_session_tps_when_control_is_rejected(monkeypatch, caps
     assert result["session_tps"] == 5.0
     assert result["median_tps"] == 48.0
     assert result["stored"] is False
+
+
+def test_bench_reference_is_measured_around_controlled_passes(
+    monkeypatch, capsys,
+) -> None:
+    plan = _plan()
+    measurement = BenchResult(
+        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3,
+    )
+    saved = {}
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
+    monkeypatch.setattr(cli, "load_records", dict)
+    monkeypatch.setattr(cli, "save_records", lambda records: saved.update(records))
+    monkeypatch.setattr(
+        cli, "_reference_context",
+        lambda _service: (
+            Path("llama-bench"), Path("reference.gguf"),
+            "build|reference.gguf|123|t4|n32", 4,
+        ),
+    )
+    monkeypatch.setattr(cli, "load_history", dict)
+    monkeypatch.setattr(
+        cli, "save_history",
+        lambda _history: (_ for _ in ()).throw(OSError("history locked")),
+    )
+    reference_values = iter((60.0, 62.0))
+    reference_calls = []
+
+    def reference(*args, **kwargs):
+        reference_calls.append((args, kwargs))
+        return next(reference_values)
+
+    monkeypatch.setattr(
+        cli, "measure_reference", reference,
+    )
+    monkeypatch.setattr(
+        cli, "measure_controlled",
+        lambda *_args, **_kwargs: _controlled(measurement),
+    )
+
+    assert cli.main(["bench", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["reference_tps"] == 61.0
+    assert result["reference_baseline"] is None
+    assert result["reference_id"] == "build|reference.gguf|123|t4|n32"
+    assert result["epoch"] == "unknown"
+    assert saved[next(iter(saved))].reference_tps == 61.0
+    assert reference_calls[0][0][2] == reference_calls[1][0][2] == 4
+
+
+def test_bench_no_reference_keeps_epoch_unknown(monkeypatch, capsys) -> None:
+    plan = _plan()
+    measurement = BenchResult(
+        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3,
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
+    monkeypatch.setattr(cli, "load_records", dict)
+    monkeypatch.setattr(cli, "save_records", lambda _records: None)
+    monkeypatch.setattr(
+        cli, "_reference_context",
+        lambda _service: (_ for _ in ()).throw(AssertionError("reference used")),
+    )
+    monkeypatch.setattr(
+        cli, "measure_reference",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("reference used")),
+    )
+    monkeypatch.setattr(
+        cli, "measure_controlled",
+        lambda *_args, **_kwargs: _controlled(measurement),
+    )
+
+    assert cli.main(["bench", "--json", "--no-reference"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["reference_tps"] is None
+    assert result["reference_baseline"] is None
+    assert result["reference_id"] == ""
+    assert result["epoch"] == "unknown"
+
+
+def test_reference_context_skips_when_free_ram_cannot_hold_artifact(
+    monkeypatch, tmp_path,
+) -> None:
+    server = tmp_path / "llama-server.exe"
+    binary = tmp_path / "llama-bench.exe"
+    model = tmp_path / "reference.gguf"
+    server.write_text("", encoding="utf-8")
+    binary.write_text("", encoding="utf-8")
+    model.write_bytes(b"x" * 100)
+    service = type(
+        "Service",
+        (),
+        {
+            "launch": type("Launch", (), {"argv": [str(server)]})(),
+            "model_ref": str(model),
+        },
+    )()
+    monkeypatch.setattr(cli.engine_runtime, "active", lambda: None)
+    monkeypatch.setattr(cli, "detect_hardware", lambda: object())
+    monkeypatch.setattr(cli, "free_budgets", lambda _profile: (0.0, 100.0))
+    assert cli._reference_context(service) is None
+
+    monkeypatch.setattr(cli, "free_budgets", lambda _profile: (0.0, 1000.0))
+    monkeypatch.setattr(cli.os, "cpu_count", lambda: 4)
+    context = cli._reference_context(service)
+    assert context is not None
+    assert context[3] == 4
+    assert context[2].endswith("|t4|n32")
