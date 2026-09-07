@@ -294,27 +294,34 @@ def _delegation_identity(service: PlannedService) -> RoleIdentity:
 
 def _delegation_pair(
     plan: Plan,
-) -> tuple[PlannedService | None, PlannedService | None]:
+) -> tuple[PlannedService | None, PlannedService | None, str]:
     lead_name = plan.routing.role_to_service.get("chat", "")
     lead = next((item for item in plan.services if item.name == lead_name), None)
     if lead is None:
-        return None, None
+        return None, None, "no_worker"
+    generative = [
+        item for item in plan.services
+        if item.name != lead.name
+        and set(item.roles) & {"chat", "code", "worker"}
+    ]
+    if not generative:
+        return lead, None, "no_worker"
     worker_name = plan.routing.role_to_service.get("worker", "")
     worker = next(
         (
-            item for item in plan.services
-            if item.name == worker_name and item.name != lead.name
+            item for item in generative
+            if item.name == worker_name
         ),
         None,
     )
     if worker is None:
-        candidates = [item for item in plan.services if item.name != lead.name]
         worker = min(
-            candidates,
+            generative,
             key=lambda item: (item.memory.weight_bytes, item.model_id),
-            default=None,
         )
-    return lead, worker
+    if lead.name in plan.swap_group or worker.name in plan.swap_group:
+        return lead, worker, "not_coresident"
+    return lead, worker, ""
 
 
 def _delegation_gate(
@@ -326,9 +333,9 @@ def _delegation_gate(
     str,
     str,
 ]:
-    lead, worker = _delegation_pair(plan)
-    if lead is None or worker is None:
-        return lead, worker, None, "no_worker", "no_worker"
+    lead, worker, pair_reason = _delegation_pair(plan)
+    if pair_reason:
+        return lead, worker, None, pair_reason, pair_reason
     record = best_for(
         load_cache(),
         _delegation_identity(lead),
@@ -340,8 +347,17 @@ def _delegation_gate(
 
 
 def _delegation_gate_error(
-    reason: str, record: DelegationRecord | None
+    reason: str, record: DelegationRecord | None,
+    lead: PlannedService | None = None,
+    worker: PlannedService | None = None,
 ) -> str:
+    if reason == "not_coresident" and lead is not None and worker is not None:
+        return i18n.t(
+            "err.delegate_not_coresident",
+            i18n.lang(),
+            lead=lead.name,
+            worker=worker.name,
+        )
     if record is None:
         return i18n.t("err.delegate_gate", i18n.lang(), reason=reason)
     return i18n.t(
@@ -352,87 +368,6 @@ def _delegation_gate_error(
         lead=record.lead_passed,
         p=record.delegated_p,
     )
-
-
-async def _delegated_completion(
-    request: Mapping[str, object], plan: Plan
-) -> dict[str, object]:
-    if bool(request.get("stream")):
-        raise HTTPException(
-            status_code=400,
-            detail=i18n.t("err.delegate_stream", i18n.lang()),
-        )
-    lead, worker, record, decision, reason = _delegation_gate(plan)
-    if lead is None or worker is None:
-        raise HTTPException(
-            status_code=409,
-            detail=i18n.t("err.delegate_worker", i18n.lang()),
-        )
-    if decision != "allow":
-        raise HTTPException(
-            status_code=409,
-            detail=_delegation_gate_error(reason, record),
-        )
-    try:
-        max_tokens = int(
-            request.get("max_tokens")
-            or request.get("max_completion_tokens")
-            or 256
-        )
-    except (TypeError, ValueError):
-        max_tokens = 256
-    prompt = _content(request)
-    ledger = Ledger()
-
-    def run() -> object:
-        assert httpx is not None
-        with httpx.Client(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
-            return delegate(
-                client,
-                prompt,
-                max(1, max_tokens),
-                lead=Endpoint(_base_url(lead), lead.model_ref),
-                worker=Endpoint(_base_url(worker), worker.model_ref),
-                ledger=ledger,
-            )
-
-    try:
-        result = await asyncio.to_thread(run)
-    except (httpx.HTTPError, ValueError) as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
-    role = "worker" if result.accepted else "lead"
-    return {
-        "id": f"nmesh-delegate-{int(time.time() * 1000)}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": "nmesh-delegate",
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": result.answer},
-            "finish_reason": "stop",
-        }],
-        "usage": {
-            "prompt_tokens": (
-                ledger.worker.prompt_tokens
-                + ledger.verify.prompt_tokens
-                + ledger.rescue.prompt_tokens
-            ),
-            "completion_tokens": (
-                ledger.worker.completion_tokens
-                + ledger.verify.completion_tokens
-                + ledger.rescue.completion_tokens
-            ),
-            "total_tokens": (
-                ledger.worker.prompt_tokens
-                + ledger.verify.prompt_tokens
-                + ledger.rescue.prompt_tokens
-                + ledger.worker.completion_tokens
-                + ledger.verify.completion_tokens
-                + ledger.rescue.completion_tokens
-            ),
-        },
-        "nmesh_role": role,
-    }
 
 
 def _upstream_body(request: Mapping[str, object], service: PlannedService) -> dict[str, object]:
@@ -1181,6 +1116,123 @@ def create_app(
             data.get("usage") if isinstance(data, dict) else None,
         )
         return data
+
+    async def _delegated_completion(
+        request: Mapping[str, object], plan_snapshot: Plan
+    ) -> dict[str, object]:
+        if bool(request.get("stream")):
+            raise HTTPException(
+                status_code=400,
+                detail=i18n.t("err.delegate_stream", i18n.lang()),
+            )
+        lead, worker, record, decision, reason = _delegation_gate(plan_snapshot)
+        if lead is None or worker is None:
+            raise HTTPException(
+                status_code=409,
+                detail=i18n.t("err.delegate_worker", i18n.lang()),
+            )
+        if decision != "allow":
+            raise HTTPException(
+                status_code=409,
+                detail=_delegation_gate_error(reason, record, lead, worker),
+            )
+        try:
+            max_tokens = int(
+                request.get("max_tokens")
+                or request.get("max_completion_tokens")
+                or 256
+            )
+        except (TypeError, ValueError):
+            max_tokens = 256
+        prompt = _content(request)
+        ledger = Ledger()
+        managed: list[tuple[PlannedService, object, _Ticket]] = []
+
+        def concurrency_error(service: PlannedService) -> HTTPException:
+            slots = max(1, service.memory.parallel_slots)
+            return HTTPException(
+                status_code=503,
+                detail=(
+                    f"Service {service.name} is at its concurrency limit "
+                    f"({slots} slots)"
+                ),
+                headers={"Retry-After": "1"},
+            )
+
+        try:
+            for service in (lead, worker):
+                last_use.touch(service.name)
+                if service.name in await asyncio.to_thread(idle_services):
+                    revive_lock = revive_locks.setdefault(
+                        service.name, asyncio.Lock()
+                    )
+                    async with revive_lock:
+                        if service.name in await asyncio.to_thread(idle_services):
+                            await asyncio.to_thread(
+                                ensure_running, service.name, plan_snapshot
+                            )
+                slot = await limiter.acquire(service, QUEUE_TIMEOUT)
+                if slot is None:
+                    raise concurrency_error(service)
+                ticket = in_flight.enter(service.name)
+                managed.append((service, slot, ticket))
+
+            def run() -> object:
+                assert httpx is not None
+                with httpx.Client(
+                    timeout=httpx.Timeout(300.0, connect=10.0)
+                ) as client:
+                    return delegate(
+                        client,
+                        prompt,
+                        max(1, max_tokens),
+                        lead=Endpoint(_base_url(lead), lead.model_ref),
+                        worker=Endpoint(_base_url(worker), worker.model_ref),
+                        ledger=ledger,
+                    )
+
+            try:
+                result = await asyncio.to_thread(run)
+            except (httpx.HTTPError, ValueError) as error:
+                raise HTTPException(status_code=502, detail=str(error)) from error
+        finally:
+            for service, slot, ticket in reversed(managed):
+                in_flight.leave(service.name, ticket)
+                limiter.release(slot)
+                last_use.touch(service.name)
+        role = "worker" if result.accepted else "lead"
+        return {
+            "id": f"nmesh-delegate-{int(time.time() * 1000)}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": "nmesh-delegate",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": result.answer},
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": (
+                    ledger.worker.prompt_tokens
+                    + ledger.verify.prompt_tokens
+                    + ledger.rescue.prompt_tokens
+                ),
+                "completion_tokens": (
+                    ledger.worker.completion_tokens
+                    + ledger.verify.completion_tokens
+                    + ledger.rescue.completion_tokens
+                ),
+                "total_tokens": (
+                    ledger.worker.prompt_tokens
+                    + ledger.verify.prompt_tokens
+                    + ledger.rescue.prompt_tokens
+                    + ledger.worker.completion_tokens
+                    + ledger.verify.completion_tokens
+                    + ledger.rescue.completion_tokens
+                ),
+            },
+            "nmesh_role": role,
+        }
 
     @app.get("/health")
     async def health() -> dict[str, str]:

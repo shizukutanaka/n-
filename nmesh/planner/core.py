@@ -661,6 +661,10 @@ def _candidate_for(
     return sorted(candidates, key=lambda item: item.score, reverse=True)
 
 
+def _catalog_role(role: str) -> str:
+    return "chat" if role == "worker" else role
+
+
 def split_memory(memory: MemoryEstimate, model_layers: int, layers: int) -> tuple[float, float]:
     on_gpu = layers > 0
     gpu_bytes = memory.per_layer_bytes * layers + (
@@ -752,7 +756,8 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
                  role_to_service: dict[str, str], hints: list[str],
                  missing_backends: list[str],
                  budget_source: str, warnings: list[str],
-                 language: str = "en") -> None:
+                 language: str = "en",
+                 resident_override: bool | None = None) -> None:
     if not candidate.installed:
         hints.append(t(INSTALL_HINTS[candidate.backend], language))
         if candidate.backend not in missing_backends:
@@ -796,7 +801,11 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         candidate.quant, candidate.backend, candidate.context,
         11434 if candidate.backend == "ollama" else port, indices,
         None if candidate.backend in {"vllm", "mlx", "ollama"} else layers,
-        profile.tier not in {Tier.T0_CPU, Tier.T1_LOW} or not services,
+        (
+            resident_override
+            if resident_override is not None
+            else profile.tier not in {Tier.T0_CPU, Tier.T1_LOW} or not services
+        ),
         memory, candidate.decode_tps, candidate.estimated, launch,
         candidate.model.languages,
         kv_quant=candidate.kv_quant,
@@ -1440,7 +1449,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         model.id
         for model in catalog
         if model.quality is None
-        and any(role in model.roles for role in roles)
+        and any(_catalog_role(role) in model.roles for role in roles)
         and model.id.casefold() not in requested_model_ids
     )
     if unmeasured:
@@ -1466,7 +1475,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     missing_backends: list[str] = []
     for model in catalog_models:
         if (
-            any(role in model.roles for role in roles)
+            any(_catalog_role(role) in model.roles for role in roles)
             and not any(source in model.sources for source in ("hf", "hf_gguf", "ollama"))
         ):
             warnings.append(
@@ -1476,7 +1485,9 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         groups = [[role for role in roles if role in {"chat", "code"}]]
         groups += [[role] for role in roles if role == "embed"]
     else:
-        groups = [[role] for role in roles]
+        groups = [[role] for role in roles if role != "worker"]
+    if "worker" in roles:
+        groups.append(["worker"])
     services: list[PlannedService] = []
     swap_group: list[str] = []
     role_to_service: dict[str, str] = {}
@@ -1485,7 +1496,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     for group in [item for item in groups if item]:
         reserved_vram, reserved_ram = _reserved_memory(services, swap_group)
         pools = {role: sorted(
-            (candidate for model in catalog_models if role in model.roles
+            (candidate for model in catalog_models
+             if _catalog_role(role) in model.roles
              for candidate in _candidate_for(
                  model, profile, selected, bench_cache, artifact_cache,
                  reserved_vram_bytes=reserved_vram,
@@ -1498,7 +1510,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         empty_pools = None
         if reserved_vram or reserved_ram:
             empty_pools = {role: sorted(
-                (candidate for model in catalog_models if role in model.roles
+                (candidate for model in catalog_models
+                 if _catalog_role(role) in model.roles
                  for candidate in _candidate_for(
                      model,
                      profile,
@@ -1651,6 +1664,48 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     )
                 )
 
+        if group == ["worker"]:
+            lead_name = role_to_service.get("chat", "")
+            lead = next(
+                (service for service in services if service.name == lead_name),
+                None,
+            )
+            worker_candidates = (
+                [
+                    item for item in pools["worker"]
+                    if lead is not None
+                    and item.model.id != lead.model_id
+                    and item.memory.weight_bytes <= lead.memory.weight_bytes
+                    and item.decode_tps >= lead.decode_tps
+                ]
+                if lead is not None else []
+            )
+            if worker_candidates:
+                candidate = min(
+                    worker_candidates,
+                    key=lambda item: (-item.score, item.model.id, item.quant),
+                )
+                _add_service(
+                    group, candidate, profile, services, swap_group,
+                    role_to_service, hints, missing_backends,
+                    selected.budget_source, warnings, selected.lang,
+                    resident_override=True,
+                )
+                worker = services[-1]
+                if not worker.resident or worker.name in swap_group:
+                    services.pop()
+                    role_to_service.pop("worker", None)
+                    if worker.name in swap_group:
+                        swap_group.remove(worker.name)
+                    warnings.append(
+                        t("warn.worker_not_coresident", selected.lang)
+                    )
+                else:
+                    total_download += int(candidate.memory.disk_needed)
+            else:
+                warnings.append(t("warn.worker_not_coresident", selected.lang))
+            continue
+
         candidate = _plan_group(group, pools)
         if candidate is None and len(group) > 1:
             for role in group:
@@ -1769,7 +1824,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             )
             for role in service.roles:
                 for other in catalog:
-                    if role not in other.roles:
+                    if _catalog_role(role) not in other.roles:
                         continue
                     same_model = other.id == service.model_id
                     candidates = _candidate_for(

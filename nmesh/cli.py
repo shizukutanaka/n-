@@ -1424,6 +1424,10 @@ def _orchestration_identity(service: PlannedService) -> RoleIdentity:
     )
 
 
+def _orchestration_generative(service: PlannedService) -> bool:
+    return bool(set(service.roles) & {"chat", "code", "worker"})
+
+
 def _orchestration_url(service: PlannedService) -> str:
     return "http://127.0.0.1:11434" if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
@@ -1446,6 +1450,28 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
                 i18n.lang(),
                 lead=args.lead,
                 worker=args.worker,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    if not args.lead_url and not _orchestration_generative(lead):
+        print(
+            i18n.t(
+                "err.orchestrate_nongenerative",
+                i18n.lang(),
+                role="lead",
+                service=lead.name,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    if not args.worker_url and not _orchestration_generative(worker):
+        print(
+            i18n.t(
+                "err.orchestrate_nongenerative",
+                i18n.lang(),
+                role="worker",
+                service=worker.name,
             ),
             file=sys.stderr,
         )

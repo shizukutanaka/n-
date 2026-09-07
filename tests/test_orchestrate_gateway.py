@@ -148,3 +148,41 @@ def test_delegate_model_rejects_streaming(monkeypatch) -> None:
             },
         )
     assert response.status_code == 400
+
+
+def test_embed_only_service_is_not_an_eligible_worker(monkeypatch) -> None:
+    plan = _delegation_plan()
+    embed = replace(plan.services[1], roles=["embed"])
+    plan = replace(plan, services=[plan.services[0], embed])
+    monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": _record(plan)})
+    with TestClient(create_app(plan)) as client:
+        models = client.get("/v1/models").json()["data"]
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "nmesh-delegate",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert "nmesh-delegate" not in {item["id"] for item in models}
+    assert response.status_code == 409
+    assert "two distinct" in response.json()["error"]["message"]
+
+
+def test_swap_exclusive_pair_is_not_eligible(monkeypatch) -> None:
+    plan = replace(_delegation_plan(), swap_group=["chat", "worker"])
+    monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": _record(plan)})
+    with TestClient(create_app(plan)) as client:
+        models = client.get("/v1/models").json()["data"]
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "nmesh-delegate",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert "nmesh-delegate" not in {item["id"] for item in models}
+    assert response.status_code == 409
+    message = response.json()["error"]["message"]
+    assert "chat" in message and "worker" in message
+    assert "mutually exclusive" in message

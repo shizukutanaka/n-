@@ -78,6 +78,7 @@ MESSAGES = {
         "warn.runtime_fallback": "Runtime fallback attempt {attempt}",
         "warn.admission_skipped": "Free-memory admission skipped: {error}",
         "warn.health_failed": "Service failed health check: {service}",
+        "warn.worker_not_coresident": "The worker role was requested, but no distinct smaller generative model fits alongside the lead; delegation remains unavailable.",
         "warn.quality_prior": "Model ranking uses unverified catalog quality claims; nmesh eval measures them.",
         "warn.quality_unmeasured": (
             "Unmeasured quality excluded these models from automatic ranking: "
@@ -202,6 +203,7 @@ MESSAGES = {
         "label.eval_title": "nmesh eval",
         "err.orchestrate_plan": "No saved plan with runnable services found.",
         "err.orchestrate_service": "Could not resolve lead {lead} and worker {worker} from the plan.",
+        "err.orchestrate_nongenerative": "The selected {role} service {service} is not generative; choose a chat, code, or worker service.",
         "err.orchestrate_up": "A selected service is not running; provide its URL or run nmesh up first.",
         "err.orchestrate_measure": "Delegation measurement failed: {error}",
         "label.orchestrate_summary": "Delegation measurement: n={n}",
@@ -214,6 +216,7 @@ MESSAGES = {
         "label.orchestrate_title": "nmesh orchestrate show",
         "err.delegate_stream": "nmesh-delegate does not support streaming.",
         "err.delegate_worker": "nmesh-delegate requires two distinct planned services.",
+        "err.delegate_not_coresident": "nmesh-delegate is unavailable: lead {lead} and worker {worker} are mutually exclusive by memory.",
         "err.delegate_gate": "nmesh-delegate is disabled by the evidence gate: {reason}.",
         "err.delegate_gate_stats": "nmesh-delegate is disabled by the evidence gate: {reason} (delegated={delegated}, lead={lead}, p={p:.4f}).",
         "note.watch_external_claim": "External posts are pointers, not evidence; findings are confirmed against queryable ground truth.",
@@ -316,6 +319,7 @@ MESSAGES = {
         "warn.runtime_fallback": "ランタイムのフォールバック試行 {attempt}",
         "warn.admission_skipped": "空きメモリ判定をスキップしました: {error}",
         "warn.health_failed": "サービスのヘルスチェックに失敗しました: {service}",
+        "warn.worker_not_coresident": "ワーカーロールが要求されましたが、リードと共存できる異なる小型生成モデルがありません。委譲は利用できません。",
         "info.resolved_gguf": "解決したGGUF: {name}",
         "err.no_plan": "プランが見つかりません",
         "err.no_active_plan": "アクティブなプランがありません",
@@ -490,6 +494,7 @@ MESSAGES["ja"].update({
     "label.eval_title": "nmesh eval",
     "err.orchestrate_plan": "\u5b9f\u884c\u53ef\u80fd\u306a\u30b5\u30fc\u30d3\u30b9\u3092\u542b\u3080\u4fdd\u5b58\u6e08\u307f\u8a08\u753b\u304c\u3042\u308a\u307e\u305b\u3093\u3002",
     "err.orchestrate_service": "\u8a08\u753b\u304b\u3089 lead {lead} \u3068 worker {worker} \u3092\u89e3\u6c7a\u3067\u304d\u307e\u305b\u3093\u3002",
+    "err.orchestrate_nongenerative": "\u9078\u629e\u3055\u308c\u305f {role} \u30b5\u30fc\u30d3\u30b9 {service} \u306f\u751f\u6210\u7528\u3067\u306f\u3042\u308a\u307e\u305b\u3093\u3002chat\u3001code\u3001worker \u306e\u30b5\u30fc\u30d3\u30b9\u3092\u9078\u629e\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
     "err.orchestrate_up": "\u9078\u629e\u3057\u305f\u30b5\u30fc\u30d3\u30b9\u304c\u8d77\u52d5\u3057\u3066\u3044\u307e\u305b\u3093\u3002URL \u3092\u6307\u5b9a\u3059\u308b\u304b\u3001\u5148\u306b nmesh up \u3092\u5b9f\u884c\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
     "err.orchestrate_measure": "\u59d4\u8b72\u6e2c\u5b9a\u306b\u5931\u6557\u3057\u307e\u3057\u305f: {error}",
     "label.orchestrate_summary": "\u59d4\u8b72\u6e2c\u5b9a: n={n}",
@@ -502,6 +507,7 @@ MESSAGES["ja"].update({
     "label.orchestrate_title": "nmesh orchestrate show",
     "err.delegate_stream": "nmesh-delegate \u306f\u30b9\u30c8\u30ea\u30fc\u30df\u30f3\u30b0\u3092\u30b5\u30dd\u30fc\u30c8\u3057\u307e\u305b\u3093\u3002",
     "err.delegate_worker": "nmesh-delegate \u306b\u306f\u7570\u306a\u308b\u8a08\u753b\u6e08\u307f\u30b5\u30fc\u30d3\u30b9\u304c2\u3064\u5fc5\u8981\u3067\u3059\u3002",
+    "err.delegate_not_coresident": "nmesh-delegate \u306f\u5229\u7528\u3067\u304d\u307e\u305b\u3093: lead {lead} \u3068 worker {worker} \u306f\u30e1\u30e2\u30ea\u4e0a\u306e\u76f8\u4e92\u6392\u4ed6\u3067\u3059\u3002",
     "err.delegate_gate": "nmesh-delegate \u306f\u8a3c\u62e0\u30b2\u30fc\u30c8\u3067\u7121\u52b9\u3067\u3059: {reason}\u3002",
     "err.delegate_gate_stats": "nmesh-delegate \u306f\u8a3c\u62e0\u30b2\u30fc\u30c8\u3067\u7121\u52b9\u3067\u3059: {reason}\uff08delegated={delegated}, lead={lead}, p={p:.4f}\uff09\u3002",
 })
