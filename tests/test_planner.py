@@ -36,9 +36,15 @@ def assert_memory_fit(result) -> None:
 def test_worker_role_plans_distinct_coresident_service(
     catalog: list[ModelSpec],
 ) -> None:
+    small = next(item for item in catalog if item.id == "qwen2.5-0.5b-instruct")
+    lead_model = next(item for item in catalog if item.id == "qwen2.5-1.5b-instruct")
+    worker_catalog = [
+        replace(lead_model, quality=100.0),
+        replace(small, quality=50.0),
+    ]
     result = build_plan(
         profile(16, (24,)),
-        catalog,
+        worker_catalog,
         Policy(roles=["chat", "worker"], min_decode_tps=0),
     )
     lead = next(item for item in result.services if "chat" in item.roles)
@@ -64,6 +70,40 @@ def test_worker_role_warns_when_no_coresident_candidate(
         "worker role was requested" in warning.lower()
         for warning in result.warnings
     )
+
+
+def test_worker_role_omits_larger_model_than_small_lead(
+    catalog: list[ModelSpec],
+) -> None:
+    small = next(item for item in catalog if item.id == "qwen2.5-0.5b-instruct")
+    larger = next(item for item in catalog if item.id == "qwen2.5-1.5b-instruct")
+    result = build_plan(
+        profile(16, (24,)),
+        [
+            replace(small, quality=100.0),
+            replace(larger, quality=50.0),
+        ],
+        Policy(roles=["chat", "worker"], min_decode_tps=0),
+    )
+    lead = next(item for item in result.services if "chat" in item.roles)
+    assert lead.model_id == "qwen2.5-0.5b-instruct"
+    assert "worker" not in result.routing.role_to_service
+    assert not any("worker" in service.roles for service in result.services)
+    assert any("strictly smaller" in warning for warning in result.warnings)
+
+
+def test_worker_role_warns_with_planned_lead_but_no_worker(
+    catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(
+        profile(2),
+        catalog,
+        Policy(roles=["chat", "worker"], min_decode_tps=0),
+    )
+    assert any("chat" in service.roles for service in result.services)
+    assert not any("worker" in service.roles for service in result.services)
+    assert "worker" not in result.routing.role_to_service
+    assert any("strictly smaller" in warning for warning in result.warnings)
 
 
 def test_launch_uses_resolved_backend_binary_when_present(

@@ -1670,11 +1670,19 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                 (service for service in services if service.name == lead_name),
                 None,
             )
+            lead_model = next(
+                (
+                    model for model in catalog
+                    if model.id.casefold() == lead.model_id.casefold()
+                ),
+                None,
+            ) if lead is not None else None
             worker_candidates = (
                 [
                     item for item in pools["worker"]
-                    if lead is not None
+                    if lead is not None and lead_model is not None
                     and item.model.id != lead.model_id
+                    and item.model.params < lead_model.params
                     and item.memory.weight_bytes <= lead.memory.weight_bytes
                     and item.decode_tps >= lead.decode_tps
                 ]
@@ -1692,7 +1700,18 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     resident_override=True,
                 )
                 worker = services[-1]
-                if not worker.resident or worker.name in swap_group:
+                resident_vram, resident_ram = _reserved_memory(
+                    services, swap_group
+                )
+                vram_budget, ram_budget = _profile_budgets(
+                    profile, selected.budget_source
+                )
+                if (
+                    not worker.resident
+                    or worker.name in swap_group
+                    or resident_vram > vram_budget + 1
+                    or resident_ram > ram_budget + 1
+                ):
                     services.pop()
                     role_to_service.pop("worker", None)
                     if worker.name in swap_group:

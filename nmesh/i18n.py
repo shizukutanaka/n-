@@ -78,7 +78,7 @@ MESSAGES = {
         "warn.runtime_fallback": "Runtime fallback attempt {attempt}",
         "warn.admission_skipped": "Free-memory admission skipped: {error}",
         "warn.health_failed": "Service failed health check: {service}",
-        "warn.worker_not_coresident": "The worker role was requested, but no distinct smaller generative model fits alongside the lead; delegation remains unavailable.",
+        "warn.worker_not_coresident": "The worker role was requested, but no strictly smaller generative model fits alongside the lead; delegation remains unavailable.",
         "warn.quality_prior": "Model ranking uses unverified catalog quality claims; nmesh eval measures them.",
         "warn.quality_unmeasured": (
             "Unmeasured quality excluded these models from automatic ranking: "
@@ -319,7 +319,7 @@ MESSAGES = {
         "warn.runtime_fallback": "ランタイムのフォールバック試行 {attempt}",
         "warn.admission_skipped": "空きメモリ判定をスキップしました: {error}",
         "warn.health_failed": "サービスのヘルスチェックに失敗しました: {service}",
-        "warn.worker_not_coresident": "ワーカーロールが要求されましたが、リードと共存できる異なる小型生成モデルがありません。委譲は利用できません。",
+        "warn.worker_not_coresident": "ワーカーロールが要求されましたが、リードと共存できる厳密に小さい生成モデルがありません。委譲は利用できません。",
         "info.resolved_gguf": "解決したGGUF: {name}",
         "err.no_plan": "プランが見つかりません",
         "err.no_active_plan": "アクティブなプランがありません",
