@@ -121,8 +121,9 @@ def test_supervisor_unload_adopts_live_state_process(
     tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
     plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    planner_save_plan(plan)
     supervisor = Supervisor(state_path=tmp_path / "state.json")
-    supervisor.active_plan = plan
     (tmp_path / "state.json").write_text(
         json.dumps({"services": [{"service": "chat", "pid": 1234}]}),
         encoding="utf-8",

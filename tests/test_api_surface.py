@@ -334,6 +334,31 @@ def test_gateway_admin_unload_reports_not_running(monkeypatch) -> None:
     }
 
 
+def test_gateway_admin_unload_reports_not_owned(monkeypatch) -> None:
+    plan = _completion_plan(1)
+    monkeypatch.setattr(
+        gateway_module,
+        "runtime_status",
+        lambda: SimpleNamespace(services=[{
+            "service": plan.services[0].name,
+            "running": True,
+            "shared": False,
+            "external": False,
+        }]),
+    )
+    monkeypatch.setattr(gateway_module, "idle_services", lambda: set())
+    monkeypatch.setattr(gateway_module, "unload", lambda _name: False)
+
+    with TestClient(create_app(plan)) as client:
+        response = client.post("/admin/unload/chat")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "unloaded": [],
+        "results": [{"service": "chat", "unloaded": False, "reason": "not_owned"}],
+    }
+
+
 def test_gateway_admin_requires_api_key(monkeypatch) -> None:
     monkeypatch.setenv("NMESH_API_KEY", "test-secret")
     plan = _completion_plan(1)

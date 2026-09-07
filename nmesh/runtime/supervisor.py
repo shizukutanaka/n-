@@ -866,15 +866,18 @@ class Supervisor:
                 return False
             adopted = self.adopted.get(service_name)
             if adopted is None and service_name not in self.processes:
+                lookup_plan = self.active_plan
+                if lookup_plan is None:
+                    lookup_plan = load_plan()
                 planned = (
                     next(
                         (
-                            service for service in self.active_plan.services
+                            service for service in lookup_plan.services
                             if service.name == service_name
                         ),
                         None,
                     )
-                    if self.active_plan is not None
+                    if lookup_plan is not None
                     else None
                 )
                 if planned is not None:
@@ -882,6 +885,8 @@ class Supervisor:
                     if service_name in self.external_shared:
                         return False
                     adopted = self.adopted.get(service_name)
+                    if adopted is not None and self.active_plan is None:
+                        self.active_plan = lookup_plan
             if adopted is not None:
                 pid = adopted.get("pid")
                 if not isinstance(pid, int) or isinstance(pid, bool):

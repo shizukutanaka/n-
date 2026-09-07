@@ -169,7 +169,7 @@ def _unload_reason(
         return "idle"
     if item is None or not item.get("running", False):
         return "not_running"
-    return "not_running"
+    return "not_owned"
 
 
 async def _unload_service(

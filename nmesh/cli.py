@@ -723,6 +723,7 @@ def _unload(args: argparse.Namespace) -> int:
             "idle": "err.unload_idle",
             "shared": "err.unload_shared",
             "external": "err.unload_external",
+            "not_owned": "err.unload_not_owned",
         }.get(reason, "err.unload_unknown")
         print(i18n.t(reason_key, i18n.lang(), service=args.service), file=sys.stderr)
         return 1

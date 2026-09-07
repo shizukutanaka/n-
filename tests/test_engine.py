@@ -254,6 +254,28 @@ def test_unload_empty_result_reports_reason(monkeypatch, capsys) -> None:
     assert "not unloaded" in capsys.readouterr().err
 
 
+def test_unload_not_owned_points_to_foreign_down(monkeypatch, capsys) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return b'{"unloaded": [], "results": [{"service": "chat", "reason": "not_owned"}]}'
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    args = type(
+        "Args",
+        (),
+        {"port": 18058, "service": "chat", "json": False},
+    )()
+
+    assert cli._unload(args) == 1
+    assert "nmesh down --foreign" in capsys.readouterr().err
+
+
 def test_unload_404_preserves_unknown_service(monkeypatch, capsys) -> None:
     error = urllib.error.HTTPError(
         "http://127.0.0.1:18058/admin/unload/chat",
