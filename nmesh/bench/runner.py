@@ -35,6 +35,7 @@ class ControlledBenchResult:
     control_ratio: float | None
     stable: bool
 
+
 _FILLER = "benchmark filler text "
 
 
