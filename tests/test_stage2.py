@@ -225,7 +225,7 @@ def test_supervisor_rechecks_acquired_artifact_bytes(
         probe=lambda: hardware,
         catalog=lambda: catalog,
     )
-    updated, actualized, changed = supervisor._apply_acquired(
+    updated, actualized, changed, replanned = supervisor._apply_acquired(
         plan,
         service,
         Acquired(None, None, False, artifact_bytes=int(service.memory.weight_bytes * 2)),
@@ -235,8 +235,9 @@ def test_supervisor_rechecks_acquired_artifact_bytes(
         service.memory.weight_bytes * 2
     )
     assert any("real artifact bytes exceeded" in warning for warning in updated.warnings)
+    assert replanned
 
-    unchanged, _, changed = supervisor._apply_acquired(
+    unchanged, _, changed, replanned = supervisor._apply_acquired(
         plan,
         service,
         Acquired(None, None, False, artifact_bytes=int(service.memory.weight_bytes)),
@@ -244,8 +245,9 @@ def test_supervisor_rechecks_acquired_artifact_bytes(
     assert not changed
     assert not any("real artifact bytes exceeded" in warning
                    for warning in unchanged.warnings)
+    assert not replanned
 
-    near, _, changed = supervisor._apply_acquired(
+    near, _, changed, replanned = supervisor._apply_acquired(
         plan,
         service,
         Acquired(None, None, False, artifact_bytes=int(service.memory.weight_bytes * 1.05)),
@@ -253,6 +255,7 @@ def test_supervisor_rechecks_acquired_artifact_bytes(
     assert changed
     assert not any("real artifact bytes exceeded" in warning
                    for warning in near.warnings)
+    assert not replanned
 
 
 def test_supervisor_applies_ollama_derived_model_ref(

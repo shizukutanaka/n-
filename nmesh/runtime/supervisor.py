@@ -332,7 +332,7 @@ class Supervisor:
 
     def _apply_acquired(
         self, plan: Plan, service: PlannedService, acquired: Acquired
-    ) -> tuple[Plan, PlannedService, bool]:
+    ) -> tuple[Plan, PlannedService, bool, bool]:
         if acquired.warning is not None:
             plan = replace(
                 plan,
@@ -343,10 +343,11 @@ class Supervisor:
             str(acquired.path) if acquired.path is not None else None
         )
         if model_ref is None and acquired.artifact_bytes is None:
-            return plan, service, False
+            return plan, service, False, False
         quant = acquired.quant or service.quant
         memory = service.memory
         real_bytes_warning = None
+        artifact_replanned = False
         if (
             acquired.artifact_bytes is not None
             and acquired.artifact_bytes != service.memory.weight_bytes
@@ -379,6 +380,7 @@ class Supervisor:
                     n_gpu_layers=layers,
                 )
                 if acquired.artifact_bytes > estimated_bytes * 1.10:
+                    artifact_replanned = True
                     real_bytes_warning = i18n.t(
                         "warn.real_artifact_replanned",
                         i18n.lang(),
@@ -406,6 +408,7 @@ class Supervisor:
                 replace(plan, services=updated_services),
                 updated,
                 memory != service.memory,
+                artifact_replanned,
             )
         argv = list(service.launch.argv)
         if "-m" in argv:
@@ -428,7 +431,7 @@ class Supervisor:
         updated_services = [
             updated if item.name == service.name else item for item in plan.services
         ]
-        return replace(plan, services=updated_services), updated, True
+        return replace(plan, services=updated_services), updated, True, artifact_replanned
 
     def _admit(
         self,
@@ -759,7 +762,7 @@ class Supervisor:
             current = plan
             self._boot_recovery = False
             actualized = False
-            artifact_replanned = False
+            replan_done = False
             if admit:
                 try:
                     current = self._admit(plan, bench_cache)
@@ -797,27 +800,21 @@ class Supervisor:
                             self._record_restart(service.name)
                         if not no_download:
                             acquired = acquire(service)
-                            current, service, changed = self._apply_acquired(
+                            current, service, changed, artifact_replanned = self._apply_acquired(
                                 current, service, acquired
                             )
                             actualized = actualized or changed
-                            warning = i18n.t(
-                                "warn.real_artifact_replanned",
-                                i18n.lang(),
-                                service=service.name,
-                            )
                             if (
-                                changed
-                                and warning in current.warnings
+                                artifact_replanned
                                 and admit
-                                and not artifact_replanned
+                                and not replan_done
                             ):
                                 current = self._admit(
                                     current,
                                     bench_cache,
                                     drop_unaffordable=True,
                                 )
-                                artifact_replanned = True
+                                replan_done = True
                                 service = next(
                                     (
                                         item for item in current.services
@@ -974,7 +971,7 @@ class Supervisor:
                         ))
                     self._record_restart(service_name)
                 if service_name not in self.processes:
-                    selected, target, actualized = self._apply_acquired(
+                    selected, target, actualized, _ = self._apply_acquired(
                         selected, target, acquire(target)
                     )
                     self.active_plan = selected
