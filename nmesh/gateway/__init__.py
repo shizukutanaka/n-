@@ -6,14 +6,14 @@ import os
 import re
 import secrets
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 
 from nmesh.bench import benchmark_key
 from nmesh.planner import PLAN_PATH, Plan, PlannedService, load_plan
-from nmesh.runtime import ensure_running, heartbeat
+from nmesh.runtime import ensure_running, heartbeat, idle_services, unload
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime.logs import log_path
 from nmesh.runtime.logs import tail as tail_log
@@ -40,6 +40,11 @@ try:
     QUEUE_TIMEOUT = float(os.environ.get("NMESH_QUEUE_TIMEOUT", "120.0"))
 except ValueError:
     QUEUE_TIMEOUT = 120.0
+
+try:
+    KEEP_ALIVE = float(os.environ.get("NMESH_KEEP_ALIVE", "0"))
+except ValueError:
+    KEEP_ALIVE = 0.0
 
 try:
     import httpx
@@ -98,6 +103,30 @@ class _InFlight:
             if not active:
                 self._active.pop(service, None)
         return ticket.peak
+
+    def count(self, service: str) -> int:
+        return len(self._active.get(service, ()))
+
+
+class _LastUse:
+    def __init__(self, services: Sequence[PlannedService]) -> None:
+        stamp = time.monotonic()
+        self._values = {service.name: stamp for service in services}
+
+    def touch(self, service: str, now: float | None = None) -> None:
+        self._values[service] = time.monotonic() if now is None else now
+
+    def age(self, service: str, now: float | None = None) -> float | None:
+        last = self._values.get(service)
+        if last is None:
+            return None
+        current = time.monotonic() if now is None else now
+        return max(0.0, current - last)
+
+    def ensure(self, services: Sequence[PlannedService]) -> None:
+        stamp = time.monotonic()
+        for service in services:
+            self._values.setdefault(service.name, stamp)
 
 
 def _timing_metrics(timings: object) -> tuple[float | None, float | None]:
@@ -553,9 +582,11 @@ def create_app(
     selected = plan if explicit else load_plan(PLAN_PATH)
     if selected is None:
         raise FileNotFoundError("No plan found")
+    last_use = _LastUse(selected.services)
+
     @asynccontextmanager
     async def lifespan(_app: object):
-        task: asyncio.Task[None] | None = None
+        tasks: list[asyncio.Task[None]] = []
         if watchdog:
             async def watch() -> None:
                 while True:
@@ -565,13 +596,25 @@ def create_app(
                     except Exception:  # noqa: BLE001, S110
                         pass
 
-            task = asyncio.create_task(watch())
+            tasks.append(asyncio.create_task(watch()))
+        if KEEP_ALIVE > 0:
+            async def reap_loop() -> None:
+                interval = max(1.0, min(15.0, KEEP_ALIVE / 2))
+                while True:
+                    await asyncio.sleep(interval)
+                    try:
+                        await _reap()
+                    except Exception:  # noqa: BLE001, S110
+                        pass
+
+            tasks.append(asyncio.create_task(reap_loop()))
         try:
             yield
         finally:
-            if task is not None:
+            for task in tasks:
                 task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     app = FastAPI(title="nmesh gateway", lifespan=lifespan)
 
@@ -601,6 +644,28 @@ def create_app(
     limiter = SlotLimiter()
     in_flight = _InFlight()
     plan_state = _PlanState(selected, explicit, gate, limiter)
+    revive_locks: dict[str, asyncio.Lock] = {}
+
+    async def _reap() -> None:
+        plan_state.maybe_reload()
+        current, _ = plan_state.snapshot()
+        last_use.ensure(current.services)
+        runtime = await asyncio.to_thread(runtime_status)
+        now = time.monotonic()
+        for item in runtime.services:
+            name = item.get("service")
+            if not isinstance(name, str) or not item.get("running"):
+                continue
+            if in_flight.count(name) or last_use.age(name, now) is None:
+                continue
+            if (
+                last_use.age(name, now) > KEEP_ALIVE
+                and await asyncio.to_thread(unload, name)
+            ):
+                gate.invalidate()
+
+    app.state.reap = _reap
+    app.state.in_flight = in_flight
     api_key = os.environ.get("NMESH_API_KEY")
     api_key_bytes = api_key.encode("utf-8") if api_key is not None else None
 
@@ -635,6 +700,7 @@ def create_app(
                     path: str, instrument: bool = True,
                     limit_slots: bool = False) -> object:
         started = time.perf_counter()
+        last_use.touch(service.name)
         slot_token: object | None = None
         if limit_slots:
             slot_token = await limiter.acquire(service, QUEUE_TIMEOUT)
@@ -660,6 +726,11 @@ def create_app(
                 )
             except asyncio.TimeoutError as error:
                 raise HTTPException(status_code=504, detail="Timed out waiting for service swap") from error
+        if not locked and service.name in await asyncio.to_thread(idle_services):
+            revive_lock = revive_locks.setdefault(service.name, asyncio.Lock())
+            async with revive_lock:
+                if service.name in await asyncio.to_thread(idle_services):
+                    await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
         body = _upstream_body(request, service)
         url = f"{_base_url(service)}{path}"
         assert httpx is not None
@@ -693,6 +764,7 @@ def create_app(
             except HTTPException:
                 await client.aclose()
                 in_flight.leave(service.name, ticket)
+                last_use.touch(service.name)
                 if locked:
                     gate.release()
                 if limit_slots:
@@ -701,6 +773,7 @@ def create_app(
             except httpx.HTTPError as error:
                 await client.aclose()
                 in_flight.leave(service.name, ticket)
+                last_use.touch(service.name)
                 if locked:
                     gate.release()
                 if limit_slots:
@@ -711,6 +784,7 @@ def create_app(
                 await upstream.aclose()
                 await client.aclose()
                 in_flight.leave(service.name, ticket)
+                last_use.touch(service.name)
                 if locked:
                     gate.release()
                 if limit_slots:
@@ -802,6 +876,7 @@ def create_app(
                     await upstream.aclose()
                     await client.aclose()
                     in_flight_peak = in_flight.leave(service.name, ticket)
+                    last_use.touch(service.name)
                     if locked:
                         gate.release()
                     if limit_slots:
@@ -869,6 +944,7 @@ def create_app(
         finally:
             await client.aclose()
             in_flight_peak = in_flight.leave(service.name, ticket)
+            last_use.touch(service.name)
             if locked:
                 gate.release()
             if limit_slots:
@@ -961,6 +1037,62 @@ def create_app(
             "services": [service.name for service in selected.services],
             "created_at": selected.created_at,
         }
+
+    @app.post("/admin/unload")
+    async def unload_all() -> dict[str, object]:
+        plan_state.maybe_reload()
+        selected, _ = plan_state.snapshot()
+        unloaded: list[str] = []
+        runtime = await asyncio.to_thread(runtime_status)
+        planned_names = {service.name for service in selected.services}
+        for item in runtime.services:
+            name = item.get("service")
+            if (
+                isinstance(name, str)
+                and name in planned_names
+                and item.get("running")
+                and await asyncio.to_thread(unload, name)
+            ):
+                unloaded.append(name)
+                gate.invalidate()
+        return {"unloaded": unloaded}
+
+    @app.post("/admin/unload/{service}")
+    async def unload_one(service: str) -> dict[str, object]:
+        plan_state.maybe_reload()
+        selected, _ = plan_state.snapshot()
+        if service not in {item.name for item in selected.services}:
+            raise HTTPException(status_code=404, detail=f"Unknown service: {service}")
+        unloaded = []
+        if await asyncio.to_thread(unload, service):
+            unloaded.append(service)
+            gate.invalidate()
+        return {"unloaded": unloaded}
+
+    @app.get("/admin/running")
+    async def running() -> dict[str, object]:
+        plan_state.maybe_reload()
+        selected, _ = plan_state.snapshot()
+        last_use.ensure(selected.services)
+        runtime = await asyncio.to_thread(runtime_status)
+        now = time.monotonic()
+        by_name = {
+            item.get("service"): item
+            for item in runtime.services
+            if isinstance(item.get("service"), str)
+        }
+        services = []
+        for service in selected.services:
+            item = by_name.get(service.name, {})
+            idle = bool(item.get("idle", False))
+            services.append({
+                "service": service.name,
+                "running": bool(item.get("running", False)),
+                "idle": idle,
+                "idle_seconds": last_use.age(service.name, now),
+                "in_flight": in_flight.count(service.name),
+            })
+        return {"keep_alive": KEEP_ALIVE, "services": services}
 
     @app.get("/metrics")
     async def metrics() -> dict[str, object]:

@@ -111,6 +111,34 @@ def test_logs_cli(monkeypatch, tmp_path: Path, capsys) -> None:
     assert "No log found" in capsys.readouterr().err
 
 
+def test_unload_cli(monkeypatch, capsys) -> None:
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"unloaded": ["chat"]}'
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    assert cli.main(["unload", "chat"]) == 0
+    assert "chat" in capsys.readouterr().out
+
+    class EmptyResponse(Response):
+        def read(self):
+            return b'{"unloaded": []}'
+
+    monkeypatch.setattr(
+        cli.urllib.request, "urlopen", lambda *_args, **_kwargs: EmptyResponse()
+    )
+    assert cli.main(["unload", "missing"]) == 1
+    assert "Unknown service" in capsys.readouterr().err
+
+
 def test_gateway_non_owner_is_retained(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     state_path.write_text(

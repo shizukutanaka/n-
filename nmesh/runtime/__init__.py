@@ -7,13 +7,16 @@ from .supervisor import (
     down,
     ensure_running,
     heartbeat,
+    idle_services,
     record_gateway,
     status,
     stop_gateway,
+    unload,
     up,
 )
 
 __all__ = [
     "Acquired", "RuntimeStatus", "Supervisor", "clear_gateway", "disarm_atexit", "down",
-    "ensure_running", "heartbeat", "record_gateway", "status", "stop_gateway", "up",
+    "ensure_running", "heartbeat", "idle_services", "record_gateway", "status",
+    "stop_gateway", "unload", "up",
 ]
