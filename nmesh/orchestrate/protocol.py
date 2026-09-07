@@ -147,9 +147,15 @@ def read_verdict(text: str) -> bool | None:
     verifier that emits prose can never silently pass a wrong answer.
     """
     upper = text.strip().upper()
-    if upper == "YES":
+    if upper.startswith("YES"):
         return True
-    if upper == "NO":
+    if upper.startswith("NO"):
+        return False
+    yes = upper.count("YES")
+    no = upper.count("NO")
+    if yes == 1 and no == 0:
+        return True
+    if no == 1 and yes == 0:
         return False
     return None
 

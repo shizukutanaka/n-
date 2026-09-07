@@ -166,7 +166,6 @@ def best_for(
             item.lead == lead
             and item.worker == worker
             and item.protocol == protocol
-            and item.superior
         )
     ]
     return max(matches, key=lambda item: item.at, default=None)

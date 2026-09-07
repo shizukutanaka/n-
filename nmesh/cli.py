@@ -1579,7 +1579,15 @@ def _orchestrate_show(args: argparse.Namespace) -> int:
         _console().print(i18n.t("label.orchestrate_empty", language))
         return 0
     table = Table(title=i18n.t("label.orchestrate_title", language))
-    for column in ("lead", "worker", "suite", "n", "delegated", "lead", "gate"):
+    for column in (
+        "lead",
+        "worker",
+        "suite",
+        "n",
+        "delegated_passed",
+        "lead_passed",
+        "gate",
+    ):
         table.add_column(column)
     for record in sorted(records.values(), key=lambda item: item.at, reverse=True):
         table.add_row(

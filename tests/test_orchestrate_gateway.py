@@ -116,6 +116,25 @@ def test_delegate_model_sums_usage_when_allowed(monkeypatch) -> None:
     assert response.json()["nmesh_role"] == "worker"
 
 
+def test_delegate_model_reports_non_superior_evidence(monkeypatch) -> None:
+    plan = _delegation_plan()
+    record = replace(_record(plan), delegated_passed=4, delegated_p=0.2)
+    monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": record})
+    with TestClient(create_app(plan)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "nmesh-delegate",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert response.status_code == 409
+    detail = response.json()["error"]["message"]
+    assert "delegated=4" in detail
+    assert "lead=5" in detail
+    assert "p=0.2000" in detail
+
+
 def test_delegate_model_rejects_streaming(monkeypatch) -> None:
     plan = _delegation_plan()
     monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": _record(plan)})

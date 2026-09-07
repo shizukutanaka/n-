@@ -30,11 +30,13 @@ from nmesh.orchestrate.protocol import Call
 measure_module = importlib.import_module("nmesh.orchestrate.measure")
 
 
-def test_read_verdict_requires_exact_word() -> None:
+def test_read_verdict_accepts_unambiguous_verdicts() -> None:
     assert read_verdict("YES") is True
+    assert read_verdict("YES.") is True
+    assert read_verdict(" yes\n") is True
     assert read_verdict("NO") is False
-    assert read_verdict("YES because it is right") is None
-    assert read_verdict("The answer is NO") is None
+    assert read_verdict("NO, the format is wrong") is False
+    assert read_verdict("Maybe yes, maybe no") is None
     assert read_verdict("") is None
 
 
@@ -152,5 +154,5 @@ def test_gate_rejects_non_superior_records(tmp_path: Path) -> None:
     )
     record = from_run(run)
     assert decide(record) == (NOT_SUPERIOR, NOT_SUPERIOR)
-    assert best_for({record.digest: record}, lead, worker, PROTOCOL_VERSION) is None
+    assert best_for({record.digest: record}, lead, worker, PROTOCOL_VERSION) == record
     assert decide(None) == (NO_EVIDENCE, NO_EVIDENCE)

@@ -16,6 +16,7 @@ from nmesh.artifact import service_fingerprint
 from nmesh.bench import benchmark_key
 from nmesh.orchestrate import (
     PROTOCOL_VERSION,
+    DelegationRecord,
     Endpoint,
     Ledger,
     RoleIdentity,
@@ -321,7 +322,7 @@ def _delegation_gate(
 ) -> tuple[
     PlannedService | None,
     PlannedService | None,
-    object,
+    DelegationRecord | None,
     str,
     str,
 ]:
@@ -338,16 +339,18 @@ def _delegation_gate(
     return lead, worker, record, decision, reason
 
 
-def _delegation_gate_error(reason: str, record: object) -> str:
+def _delegation_gate_error(
+    reason: str, record: DelegationRecord | None
+) -> str:
     if record is None:
         return i18n.t("err.delegate_gate", i18n.lang(), reason=reason)
     return i18n.t(
         "err.delegate_gate_stats",
         i18n.lang(),
         reason=reason,
-        delegated=getattr(record, "delegated_passed", 0),
-        lead=getattr(record, "lead_passed", 0),
-        p=getattr(record, "delegated_p", 1.0),
+        delegated=record.delegated_passed,
+        lead=record.lead_passed,
+        p=record.delegated_p,
     )
 
 
