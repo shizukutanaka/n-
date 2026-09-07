@@ -230,6 +230,31 @@ def test_plan_round_trip_preserves_explicit_model_ids(
     assert loaded.policy.eval_evidence is False
 
 
+def test_missing_backend_ids_are_structural_and_ordered(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    unavailable = profile(
+        32,
+        backends={"ollama": None, "llamacpp": None, "vllm": None, "mlx": None},
+    )
+    missing = build_plan(unavailable, catalog, Policy(roles=["chat"]))
+    assert not missing.runnable
+    assert missing.missing_backends == ["llamacpp"]
+
+    runnable = build_plan(profile(32), catalog, Policy(roles=["chat"]))
+    assert runnable.runnable
+    assert runnable.missing_backends == []
+
+    path = tmp_path / "old-plan.json"
+    save_plan(runnable, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["missing_backends"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    loaded = load_plan(path)
+    assert loaded is not None
+    assert loaded.missing_backends == []
+
+
 def test_cpu_case(catalog: list[ModelSpec]) -> None:
     result = build_plan(profile(8), catalog)
     assert_memory_fit(result)

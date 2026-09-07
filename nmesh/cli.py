@@ -43,6 +43,7 @@ from nmesh.eval.stats import (
 )
 from nmesh.paths import nmesh_home
 from nmesh.planner import (
+    Plan,
     PlannedService,
     Policy,
     build_plan,
@@ -409,6 +410,8 @@ def _plan(args: argparse.Namespace) -> int:
         return 1
     if not result.services or not result.runnable:
         print(i18n.t("err.plan_empty", i18n.lang()), file=sys.stderr)
+        for hint in result.install_hints:
+            print(hint, file=sys.stderr)
         return 1
     path = None
     if not getattr(args, "_simulated", False):
@@ -480,6 +483,86 @@ def _plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _up_plan_args(args: argparse.Namespace) -> argparse.Namespace:
+    return argparse.Namespace(
+        roles="chat,code,embed",
+        prefer="balanced",
+        context=None,
+        budget="total",
+        parallel_slots=None,
+        json=False,
+        explain=False,
+        lang=getattr(args, "lang", None),
+        model=getattr(args, "model", None),
+        ignore_eval_evidence=getattr(args, "ignore_eval_evidence", False),
+        profile=getattr(args, "profile", None),
+    )
+
+
+def _print_plan_failure(plan: Plan) -> None:
+    print(i18n.t("err.plan_empty", i18n.lang()), file=sys.stderr)
+    for hint in plan.install_hints:
+        print(hint, file=sys.stderr)
+
+
+def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
+    plan = load_plan()
+    if plan is not None and plan.services and plan.runnable:
+        return plan
+    plan_args = _up_plan_args(args)
+    try:
+        plan = _make_plan(plan_args)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        print(i18n.t("err.up", i18n.lang(), error=error), file=sys.stderr)
+        return None
+    simulated = bool(
+        getattr(args, "profile", None)
+        or getattr(args, "_simulated", False)
+        or getattr(plan_args, "_simulated", False)
+    )
+    if (
+        plan.missing_backends == ["llamacpp"]
+        and not getattr(args, "no_download", False)
+        and not simulated
+    ):
+        try:
+            installed, _ = engine_runtime.install(variant="auto")
+        except (
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+            tarfile.TarError,
+            zipfile.BadZipFile,
+        ) as error:
+            print(i18n.t("err.up", i18n.lang(), error=error), file=sys.stderr)
+            _print_plan_failure(plan)
+            return None
+        _console().print(
+            i18n.t(
+                "info.engine_autoinstall",
+                i18n.lang(),
+                tag=installed.tag,
+                variant=installed.variant,
+            )
+        )
+        try:
+            plan = _make_plan(plan_args)
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
+            print(i18n.t("err.up", i18n.lang(), error=error), file=sys.stderr)
+            return None
+    if not plan.services or not plan.runnable:
+        _print_plan_failure(plan)
+        return None
+    if not simulated:
+        try:
+            save_plan(plan)
+        except OSError as error:
+            print(i18n.t("err.plan_save", i18n.lang(), error=error), file=sys.stderr)
+            return None
+    return plan
+
+
 def _runtime(args: argparse.Namespace) -> int:
     exit_code = 0
     if args.command == "serve":
@@ -498,17 +581,8 @@ def _runtime(args: argparse.Namespace) -> int:
         return 0 if exit_code == 0 else 1
     if args.command == "up":
         gateway_log: Path | None = None
-        plan = load_plan()
+        plan = _ensure_runnable_plan(args)
         if plan is None:
-            if _plan(argparse.Namespace(
-                roles="chat,code,embed", prefer="balanced", context=None,
-                budget="total", parallel_slots=None, json=False, explain=False,
-                lang=None, model=getattr(args, "model", None),
-                ignore_eval_evidence=getattr(args, "ignore_eval_evidence", False),
-            )) != 0:
-                return 1
-            plan = load_plan()
-        if plan is None or not plan.services or not plan.runnable:
             return 1
         if (
             getattr(args, "lang", None)
@@ -1613,6 +1687,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--lang")
     up_parser.add_argument("--model", help="comma-separated model IDs")
     up_parser.add_argument("--ignore-eval-evidence", action="store_true")
+    up_parser.add_argument("--profile")
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=18000)
     reload_parser = sub.add_parser("reload")
