@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from nmesh.bench.cache import MIN_CONTROL_RATIO
 from nmesh.planner import PlannedService
 
 
@@ -33,11 +34,6 @@ class ControlledBenchResult:
     pass_tps: tuple[float, ...]
     control_ratio: float | None
     stable: bool
-
-    @property
-    def measurement(self) -> BenchResult:
-        return self.result
-
 
 _FILLER = "benchmark filler text "
 
@@ -247,5 +243,5 @@ def measure_controlled(
         result=merged,
         pass_tps=pass_tps,
         control_ratio=ratio,
-        stable=ratio is not None and ratio >= 0.90,
+        stable=ratio is not None and ratio >= MIN_CONTROL_RATIO,
     )

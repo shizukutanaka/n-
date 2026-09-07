@@ -5,7 +5,7 @@ import json
 import pytest
 
 from nmesh import cli
-from nmesh.bench import BenchResult
+from nmesh.bench import BenchRecord, BenchResult, ControlledBenchResult, benchmark_key
 from nmesh.catalog import ModelSpec
 from nmesh.planner import Policy, build_plan
 
@@ -16,6 +16,15 @@ def _plan():
     model = ModelSpec("cli-bench", "test", 500_000_000, 24, 16, 2, 64, 1024,
                       4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
     return build_plan(profile(64), [model], Policy(roles=["chat"]))
+
+
+def _controlled(measurement: BenchResult) -> ControlledBenchResult:
+    return ControlledBenchResult(
+        result=measurement,
+        pass_tps=(measurement.decode_tps, measurement.decode_tps),
+        control_ratio=1.0,
+        stable=True,
+    )
 
 
 def test_bench_runs_rejects_zero() -> None:
@@ -31,9 +40,10 @@ def test_bench_json_reports_spread_and_warns(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "load_plan", lambda: plan)
     monkeypatch.setattr(cli, "runtime_status", lambda: object())
     monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
-    monkeypatch.setattr(cli, "load_cache", dict)
-    monkeypatch.setattr(cli, "save_cache", lambda _cache: None)
-    monkeypatch.setattr(cli, "measure", lambda *_args, **_kwargs: measurement)
+    monkeypatch.setattr(cli, "load_records", dict)
+    monkeypatch.setattr(cli, "save_records", lambda _records: None)
+    monkeypatch.setattr(cli, "measure_controlled", lambda *_args, **_kwargs:
+                        _controlled(measurement))
     assert cli.main(["bench", "--json", "--runs", "3"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["runs"] == 3
@@ -53,8 +63,47 @@ def test_bench_narrow_spread_has_no_reproducibility_warning(monkeypatch, capsys)
     monkeypatch.setattr(cli, "load_plan", lambda: plan)
     monkeypatch.setattr(cli, "runtime_status", lambda: object())
     monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
-    monkeypatch.setattr(cli, "load_cache", dict)
-    monkeypatch.setattr(cli, "save_cache", lambda _cache: None)
-    monkeypatch.setattr(cli, "measure", lambda *_args, **_kwargs: measurement)
+    monkeypatch.setattr(cli, "load_records", dict)
+    monkeypatch.setattr(cli, "save_records", lambda _records: None)
+    monkeypatch.setattr(cli, "measure_controlled", lambda *_args, **_kwargs:
+                        _controlled(measurement))
     assert cli.main(["bench", "--runs", "3"]) == 0
     assert "not reproducible" not in capsys.readouterr().out
+
+
+def test_bench_json_keeps_session_tps_when_control_is_rejected(monkeypatch, capsys) -> None:
+    plan = _plan()
+    service = plan.services[0]
+    key = benchmark_key(
+        service.model_id,
+        service.quant,
+        service.backend,
+        plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
+        service.n_gpu_layers,
+        service.kv_quant,
+        service.spec,
+    )
+    previous = BenchRecord(
+        48.0, 47.0, 49.0, 3, 2, 0.99, True, "old", "bench-v1",
+        (48.0, 48.2),
+    )
+    noisy = ControlledBenchResult(
+        result=BenchResult(
+            100.0, 5.0, 0.5, False, 330, "timings", 0, 4.9, 5.1, 6,
+        ),
+        pass_tps=(5.0, 45.0),
+        control_ratio=5.0 / 45.0,
+        stable=False,
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
+    monkeypatch.setattr(cli, "load_records", lambda: {key: previous})
+    monkeypatch.setattr(cli, "save_records", lambda _records: None)
+    monkeypatch.setattr(cli, "measure_controlled", lambda *_args, **_kwargs: noisy)
+
+    assert cli.main(["bench", "--json", "--passes", "2"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["session_tps"] == 5.0
+    assert result["median_tps"] == 48.0
+    assert result["stored"] is False

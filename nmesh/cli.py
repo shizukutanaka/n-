@@ -25,7 +25,6 @@ from nmesh import i18n
 from nmesh.artifact import service_fingerprint
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.bench import (
-    ControlledBenchResult,
     benchmark_key,
     load_cache,
     load_records,
@@ -109,9 +108,6 @@ from nmesh.watch.draft import write_draft
 from nmesh.watch.sources import SourceItem, SourceStatus
 from nmesh.watch.state import WatchState, load_state, now_iso, save_state
 from nmesh.watch.verify import Finding, caps_available, verify
-
-_DEFAULT_MEASURE = measure
-save_cache = None
 
 
 def _console() -> Console:
@@ -1146,24 +1142,13 @@ def _bench(args: argparse.Namespace) -> int:
         f"http://127.0.0.1:{service.port}"
     )
     try:
-        if measure is not _DEFAULT_MEASURE:
-            measurement = measure(
-                service, base_url, decode_tokens=args.tokens, runs=args.runs
-            )
-            controlled = ControlledBenchResult(
-                result=measurement,
-                pass_tps=(measurement.decode_tps,),
-                control_ratio=None,
-                stable=False,
-            )
-        else:
-            controlled = measure_controlled(
-                service,
-                base_url,
-                decode_tokens=args.tokens,
-                runs=args.runs,
-                passes=args.passes,
-            )
+        controlled = measure_controlled(
+            service,
+            base_url,
+            decode_tokens=args.tokens,
+            runs=args.runs,
+            passes=args.passes,
+        )
     except (OSError, RuntimeError) as error:
         print(i18n.t("err.bench_measure", i18n.lang(), error=error), file=sys.stderr)
         return 1
@@ -1194,7 +1179,8 @@ def _bench(args: argparse.Namespace) -> int:
         if measurement.decode_tps else 0.0
     )
     result = {"key": key, "prefill_tokens": 512, "decode_tokens": args.tokens,
-              "median_tps": record.tps, "prefill_tps": measurement.prefill_tps,
+              "median_tps": record.tps, "session_tps": measurement.decode_tps,
+              "prefill_tps": measurement.prefill_tps,
               "ttft_s": measurement.ttft_s, "approximate": measurement.approximate,
               "prompt_tokens": measurement.prompt_tokens,
               "prefill_source": measurement.prefill_source,

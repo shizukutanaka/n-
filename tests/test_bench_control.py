@@ -120,7 +120,7 @@ def test_planner_requires_two_agreeing_sessions_to_exclude() -> None:
         5.05, 5.0, 5.1, 3, 2, 0.95, True, "now", "bench-v1", (5.05,),
     )
     candidates = planner_core._candidate_for(
-        model, profile(64), policy, cache, records={key: unconfirmed},
+        model, profile(64), policy, cache, bench_records={key: unconfirmed},
     )
     assert any(item.quant == "q4_k_m" for item in candidates)
 
@@ -129,6 +129,40 @@ def test_planner_requires_two_agreeing_sessions_to_exclude() -> None:
         (5.05, 5.1),
     )
     candidates = planner_core._candidate_for(
-        model, profile(64), policy, cache, records={key: confirmed},
+        model, profile(64), policy, cache, bench_records={key: confirmed},
     )
     assert not any(item.quant == "q4_k_m" for item in candidates)
+
+
+def test_unstable_record_isolated_and_stable_measurement_restores_evidence(
+    tmp_path,
+) -> None:
+    records = {
+        "unstable": BenchRecord(
+            5.0, 4.9, 5.1, 3, 2, 0.1, False, "old", "bench-v1", (5.0,),
+        ),
+        "other": BenchRecord(
+            20.0, 19.0, 21.0, 3, 2, 0.99, True, "old", "bench-v1",
+            (20.0, 20.2),
+        ),
+    }
+    path = tmp_path / "bench.json"
+    save_records(records, path)
+    assert load_cache(path) == {"other": 20.0}
+
+    merge_measurement(
+        records,
+        "unstable",
+        tps=6.0,
+        decode_tps_min=5.9,
+        decode_tps_max=6.1,
+        runs=3,
+        passes=2,
+        control_ratio=0.99,
+    )
+    save_records(records, path)
+    loaded = load_records(path)
+    assert loaded["unstable"].stable is True
+    assert loaded["unstable"].tps == 6.0
+    assert loaded["unstable"].confirmations == 1
+    assert load_cache(path) == {"unstable": 6.0, "other": 20.0}

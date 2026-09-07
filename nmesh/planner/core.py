@@ -570,7 +570,6 @@ def _candidate_for(
     allow_unmeasured: bool = False,
     bench_records: Mapping[str, BenchRecord] | None = None,
     unconfirmed: list[dict[str, str]] | None = None,
-    records: Mapping[str, BenchRecord] | None = None,
 ) -> list[_Candidate]:
     """Build candidates using the intentionally unchanged score.
 
@@ -586,8 +585,6 @@ def _candidate_for(
     0.5B q2_k candidate at 3654.6 tok/s, so a scale-free speed term requires a
     quality floor; the catalog quality prior is unvalidated.
     """
-    if records is not None:
-        bench_records = records
     if model.quality is None and not allow_unmeasured:
         return []
     initial = min(model.max_context, policy.max_context or 8192)
@@ -1637,10 +1634,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                    tuple[str, str, str], float | EvalSummary
                ] | None = None,
                artifact_cache: Mapping[str, int] | None = None,
-               bench_records: Mapping[str, BenchRecord] | None = None,
-               records: Mapping[str, BenchRecord] | None = None) -> Plan:
-    if records is not None:
-        bench_records = records
+               bench_records: Mapping[str, BenchRecord] | None = None) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
     requested_model_ids = {
