@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -49,8 +50,10 @@ from nmesh.planner import (
 from nmesh.probe import HardwareProfile, detect_hardware, profile_from_dict
 from nmesh.runtime import RuntimeStatus, clear_gateway, disarm_atexit, record_gateway
 from nmesh.runtime import down as runtime_down
+from nmesh.runtime import engine as engine_runtime
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime import up as runtime_up
+from nmesh.runtime.acquisition import QUANT_ALIASES
 from nmesh.runtime.logs import available as available_logs
 from nmesh.runtime.logs import log_path
 from nmesh.runtime.logs import rotate as rotate_log
@@ -770,6 +773,83 @@ def _reload(args: argparse.Namespace) -> int:
 
 
 def _models(args: argparse.Namespace) -> int:
+    if getattr(args, "models_command", None) in {"list", "rm"}:
+        model_root = nmesh_home() / "models"
+        if args.models_command == "rm":
+            candidate = Path(args.name)
+            if not candidate.is_absolute():
+                candidate = model_root / candidate
+            candidate = candidate.resolve()
+            if not candidate.is_file() or candidate.suffix.lower() != ".gguf":
+                print(f"model not found: {args.name}", file=sys.stderr)
+                return 1
+            plan = load_plan()
+            planned = {
+                str(Path(service.model_ref).resolve()).casefold()
+                for service in (plan.services if plan is not None else [])
+                if service.model_ref
+            }
+            if str(candidate).casefold() in planned and not args.force:
+                print(
+                    i18n.t(
+                        "models.planned_refusal",
+                        i18n.lang(),
+                        path=candidate,
+                    ),
+                    file=sys.stderr,
+                )
+                return 1
+            try:
+                candidate.unlink()
+            except OSError as error:
+                print(f"unable to remove model: {error}", file=sys.stderr)
+                return 1
+            if args.json:
+                _print_json({"removed": str(candidate), "forced": bool(args.force)})
+            else:
+                print(i18n.t("models.removed", i18n.lang(), path=candidate))
+            return 0
+        plan = load_plan()
+        planned = {
+            str(Path(service.model_ref).resolve()).casefold()
+            for service in (plan.services if plan is not None else [])
+            if service.model_ref
+        }
+        items = []
+        for path in sorted(model_root.rglob("*.gguf")) if model_root.exists() else []:
+            lower = path.name.lower()
+            quant = next(
+                (
+                    name for name, aliases in QUANT_ALIASES.items()
+                    if any(
+                        re.search(
+                            rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])",
+                            lower,
+                        )
+                        for alias in aliases
+                    )
+                ),
+                None,
+            )
+            items.append({
+                "path": str(path),
+                "bytes": path.stat().st_size,
+                "quant": quant,
+                "planned": str(path.resolve()).casefold() in planned,
+            })
+        if args.json:
+            _print_json(items)
+        else:
+            table = Table(title="nmesh models")
+            for column in ("Path", "Bytes", "Quant", "Planned"):
+                table.add_column(column)
+            for item in items:
+                table.add_row(
+                    item["path"], str(item["bytes"]), str(item["quant"] or "-"),
+                    str(item["planned"]),
+                )
+            _console().print(table)
+        return 0
     models = load_catalog()
     if args.role:
         models = [model for model in models if args.role in model.roles]
@@ -786,6 +866,75 @@ def _models(args: argparse.Namespace) -> int:
                       str(model.max_context), ",".join(model.languages))
     _console().print(table)
     return 0
+
+
+def _engine(args: argparse.Namespace) -> int:
+    command = getattr(args, "engine_command", None)
+    try:
+        if command == "list":
+            entries = engine_runtime.installed()
+            active = engine_runtime.active()
+            payload = {
+                "installed": [asdict(item) for item in entries],
+                "active": asdict(active) if active is not None else None,
+            }
+            if args.available:
+                payload["available"] = engine_runtime.build_tags()
+            if args.json:
+                _print_json(payload)
+                return 0
+            table = Table(title="nmesh engines")
+            for column in ("Tag", "Variant", "Version", "Active", "Path"):
+                table.add_column(column)
+            for item in entries:
+                table.add_row(
+                    item.tag, item.variant, item.version_line or "-",
+                    "yes" if active is not None and active.tag == item.tag else "",
+                    str(item.exe),
+                )
+            _console().print(table)
+            if args.available:
+                _console().print("Available: " + ", ".join(payload["available"]))
+            return 0
+        if command == "install":
+            item, warnings = engine_runtime.install(
+                tag=args.version,
+                variant=args.variant,
+            )
+            payload = {"installed": asdict(item), "warnings": warnings}
+            if args.json:
+                _print_json(payload)
+            else:
+                _console().print(i18n.t(
+                    "engine.install", i18n.lang(), tag=item.tag, variant=item.variant,
+                ))
+                for warning in warnings:
+                    _console().print(f"[yellow]- {warning}[/yellow]")
+            return 0
+        if command == "use":
+            item = engine_runtime.use(args.tag)
+            payload = {"active": asdict(item)}
+            if args.json:
+                _print_json(payload)
+            else:
+                _console().print(i18n.t(
+                    "engine.use", i18n.lang(), tag=item.tag, variant=item.variant,
+                ))
+            return 0
+        if command == "remove":
+            was_active = engine_runtime.remove(args.tag)
+            payload = {"removed": args.tag, "active_cleared": was_active}
+            if args.json:
+                _print_json(payload)
+            else:
+                _console().print(i18n.t("engine.remove", i18n.lang(), tag=args.tag))
+                if was_active:
+                    _console().print(i18n.t("engine.active_cleared", i18n.lang()))
+            return 0
+    except (OSError, RuntimeError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    return 1
 
 
 def _service_running(service: PlannedService, runtime: RuntimeStatus) -> bool:
@@ -1495,6 +1644,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     models = sub.add_parser("models")
     models.add_argument("--role")
     models.add_argument("--json", action="store_true")
+    model_commands = models.add_subparsers(dest="models_command")
+    model_list = model_commands.add_parser("list")
+    model_list.add_argument("--json", action="store_true")
+    model_rm = model_commands.add_parser("rm")
+    model_rm.add_argument("name")
+    model_rm.add_argument("--force", action="store_true")
+    model_rm.add_argument("--json", action="store_true")
+    engine = sub.add_parser("engine")
+    engine_commands = engine.add_subparsers(dest="engine_command", required=True)
+    engine_list = engine_commands.add_parser("list")
+    engine_list.add_argument("--available", action="store_true")
+    engine_list.add_argument("--json", action="store_true")
+    engine_install = engine_commands.add_parser("install")
+    engine_install.add_argument("--version")
+    engine_install.add_argument("--variant", default="auto")
+    engine_install.add_argument("--json", action="store_true")
+    engine_use = engine_commands.add_parser("use")
+    engine_use.add_argument("tag")
+    engine_use.add_argument("--json", action="store_true")
+    engine_remove = engine_commands.add_parser("remove")
+    engine_remove.add_argument("tag")
+    engine_remove.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if args.global_json and hasattr(args, "json"):
         args.json = True
@@ -1512,6 +1683,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _runtime(args)
     if args.command == "models":
         return _models(args)
+    if args.command == "engine":
+        return _engine(args)
     if args.command == "bench":
         return _bench(args)
     if args.command == "logs":

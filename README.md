@@ -73,6 +73,31 @@ real filename. Split GGUF files are downloaded as a complete set; if only a
 lower quantization is published, the runtime records that safe substitution in
 `status` and the persisted state.
 
+### Managed llama.cpp engine
+
+If no llama.cpp, Ollama, or LM Studio installation is available, nmesh can
+install a suitable llama.cpp server itself:
+
+```text
+nmesh engine install
+nmesh engine list
+nmesh plan --roles chat
+nmesh up
+```
+
+Engine archives are selected for the local operating system and accelerator,
+stored under `$NMESH_HOME/engines/llamacpp`, and the active build is used by
+hardware detection. Use `nmesh engine list --available` to inspect build tags,
+`nmesh engine use <tag>` to switch installed builds, and
+`nmesh engine remove <tag>` to delete one. GGUF weights remain under
+`$NMESH_HOME/models`; inspect or remove them with `nmesh models list` and
+`nmesh models rm`.
+
+The llama.cpp release assets used here do not publish checksum files. The
+manifest SHA-256 is therefore the hash nmesh observed while downloading the
+archive. It detects later local corruption, but it does **not** verify
+publisher provenance.
+
 ## Concurrency slots
 
 Plans automatically size concurrency slots from memory left after placement;
