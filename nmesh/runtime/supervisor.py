@@ -351,6 +351,7 @@ class Supervisor:
             acquired.artifact_bytes is not None
             and acquired.artifact_bytes != service.memory.weight_bytes
         ):
+            estimated_bytes = service.memory.weight_bytes
             model = next(
                 (item for item in self.catalog() if item.id == service.model_id),
                 None,
@@ -377,16 +378,17 @@ class Supervisor:
                     cpu_bytes=cpu_bytes,
                     n_gpu_layers=layers,
                 )
-                real_bytes_warning = i18n.t(
-                    "warn.real_artifact_replanned",
-                    i18n.lang(),
-                    service=service.name,
-                )
-                plan = replace(
-                    plan,
-                    warnings=[*plan.warnings, real_bytes_warning],
-                )
-                self.notes[service.name] = real_bytes_warning
+                if acquired.artifact_bytes > estimated_bytes * 1.10:
+                    real_bytes_warning = i18n.t(
+                        "warn.real_artifact_replanned",
+                        i18n.lang(),
+                        service=service.name,
+                    )
+                    plan = replace(
+                        plan,
+                        warnings=[*plan.warnings, real_bytes_warning],
+                    )
+                    self.notes[service.name] = real_bytes_warning
         if (
             model_ref is None
             or (
@@ -403,7 +405,7 @@ class Supervisor:
             return (
                 replace(plan, services=updated_services),
                 updated,
-                real_bytes_warning is not None,
+                memory != service.memory,
             )
         argv = list(service.launch.argv)
         if "-m" in argv:
@@ -795,7 +797,17 @@ class Supervisor:
                                 current, service, acquired
                             )
                             actualized = actualized or changed
-                            if changed and admit and not artifact_replanned:
+                            warning = i18n.t(
+                                "warn.real_artifact_replanned",
+                                i18n.lang(),
+                                service=service.name,
+                            )
+                            if (
+                                changed
+                                and warning in current.warnings
+                                and admit
+                                and not artifact_replanned
+                            ):
                                 current = self._admit(current, bench_cache)
                                 artifact_replanned = True
                                 service = next(

@@ -245,6 +245,15 @@ def test_supervisor_rechecks_acquired_artifact_bytes(
     assert not any("real artifact bytes exceeded" in warning
                    for warning in unchanged.warnings)
 
+    near, _, changed = supervisor._apply_acquired(
+        plan,
+        service,
+        Acquired(None, None, False, artifact_bytes=int(service.memory.weight_bytes * 1.05)),
+    )
+    assert changed
+    assert not any("real artifact bytes exceeded" in warning
+                   for warning in near.warnings)
+
 
 def test_supervisor_applies_ollama_derived_model_ref(
     tmp_path, catalog: list[ModelSpec], monkeypatch
