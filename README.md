@@ -710,6 +710,33 @@ tasks) plans 1.5B instead; `--ignore-eval-evidence` restores the 0.5B plan and
 the contradiction warning. With the bundled priors the two orders agree, so no
 reversal is visible there.
 
+#### GGUF artifact identity
+
+The former GGUF resolver selected by filename substring rather than by a
+canonical artifact label. On `bartowski/gemma-2-9b-it-GGUF`, a planned
+`q8_0` could download `gemma-2-9b-it-Q3_K_L-Q8.gguf` (5,132,452,800 bytes)
+and report it as `q8_0`; a planned `f16` could download
+`gemma-2-9b-it-Q4_K_M-fp16.gguf` (6,843,425,696 bytes) and report it as
+`f16`. The same resolver selected `gemma-2-9b-it-Q6_K-Q8.gguf` for planned
+`q6_k` instead of the plain `gemma-2-9b-it-Q6_K.gguf`, and selected
+`Meta-Llama-3.1-8B-Instruct-Q4_0_4_4.gguf` for planned `q4_0` in
+`bartowski/Meta-Llama-3.1-8B-Instruct-GGUF`. The latter is an unverified
+CPU-repacked artifact.
+
+GGUF names are now parsed into canonical labels across the published
+vocabulary, including IQ, K-family, tensor, and full-precision variants.
+Mixed labels remain distinct from plain labels, and the CPU-repack labels
+`q4_0_4_4`, `q4_0_4_8`, and `q4_0_8_8` are excluded. Artifact metadata
+reports the resolved label and file bytes rather than the planned label.
+
+The resolver orders safe fallbacks using llama.cpp's nominal bpw table; that
+table is not measured nmesh data. Actual bytes can differ substantially:
+the measured actual/estimated ratios were 1.641 for a 0.5B `q4_k_m` file,
+2.007 for its `q2_k` file, and 1.271 for `bge-m3` `q4_k_m`; 7B and larger
+models were within approximately ±5%. Planning still budgets from the
+nominal parameter-count × bpw estimate, so nmesh warns when the resolved
+artifact differs from that estimate by more than 10%.
+
 ### An installed backend the probe cannot see
 
 Backend availability was decided by `shutil.which` alone, so a llama.cpp build

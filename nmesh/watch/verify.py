@@ -14,7 +14,7 @@ from nmesh.catalog import load_catalog
 from nmesh.gateway import create_app
 from nmesh.paths import nmesh_home
 from nmesh.planner import BPW
-from nmesh.runtime.acquisition import QUANT_ALIASES
+from nmesh.runtime.acquisition import parse_label
 
 from .extract import Mention
 
@@ -286,12 +286,7 @@ def _gateway_routes() -> frozenset[str] | None:
 
 
 def _known_quant(value: str) -> bool:
-    lowered = value.casefold()
-    return lowered in {item.casefold() for item in BPW} or lowered in {
-        alias.casefold()
-        for aliases in QUANT_ALIASES.values()
-        for alias in aliases
-    }
+    return parse_label(f"{value}.gguf") is not None
 
 
 def verify(
