@@ -6,11 +6,14 @@ import os
 import re
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.request
+import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import quote
 
 import httpx
@@ -695,13 +698,33 @@ def _unload(args: argparse.Namespace) -> int:
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             data = json.loads(response.read().decode())
+    except HTTPError as error:
+        if error.code == 404 and args.service is not None:
+            print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
+                  file=sys.stderr)
+        else:
+            print(i18n.t("err.gateway_unload", i18n.lang(), error=error), file=sys.stderr)
+        return 1
     except (OSError, json.JSONDecodeError) as error:
         print(i18n.t("err.gateway_unload", i18n.lang(), error=error), file=sys.stderr)
         return 1
     unloaded = data.get("unloaded", [])
     if args.service is not None and not unloaded:
-        print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
-              file=sys.stderr)
+        result = next(
+            (
+                item for item in data.get("results", [])
+                if isinstance(item, dict) and item.get("service") == args.service
+            ),
+            {},
+        )
+        reason = result.get("reason")
+        reason_key = {
+            "not_running": "err.unload_not_running",
+            "idle": "err.unload_idle",
+            "shared": "err.unload_shared",
+            "external": "err.unload_external",
+        }.get(reason, "err.unload_unknown")
+        print(i18n.t(reason_key, i18n.lang(), service=args.service), file=sys.stderr)
         return 1
     if args.json:
         _print_json(data)
@@ -773,7 +796,7 @@ def _reload(args: argparse.Namespace) -> int:
 
 
 def _models(args: argparse.Namespace) -> int:
-    if getattr(args, "models_command", None) in {"list", "rm"}:
+    if getattr(args, "models_command", None) in {"local", "rm"}:
         model_root = nmesh_home() / "models"
         if args.models_command == "rm":
             candidate = Path(args.name)
@@ -840,7 +863,7 @@ def _models(args: argparse.Namespace) -> int:
         if args.json:
             _print_json(items)
         else:
-            table = Table(title="nmesh models")
+            table = Table(title=i18n.t("models.local", i18n.lang()))
             for column in ("Path", "Bytes", "Quant", "Planned"):
                 table.add_column(column)
             for item in items:
@@ -883,8 +906,14 @@ def _engine(args: argparse.Namespace) -> int:
             if args.json:
                 _print_json(payload)
                 return 0
-            table = Table(title="nmesh engines")
-            for column in ("Tag", "Variant", "Version", "Active", "Path"):
+            table = Table(title=i18n.t("engine.installed", i18n.lang()))
+            for column in (
+                i18n.t("engine.tag", i18n.lang()),
+                i18n.t("engine.variant", i18n.lang()),
+                i18n.t("label.version", i18n.lang()),
+                i18n.t("engine.active_column", i18n.lang()),
+                i18n.t("engine.path", i18n.lang()),
+            ):
                 table.add_column(column)
             for item in entries:
                 table.add_row(
@@ -893,8 +922,15 @@ def _engine(args: argparse.Namespace) -> int:
                     str(item.exe),
                 )
             _console().print(table)
+            if active is not None:
+                _console().print(
+                    f"{i18n.t('engine.active', i18n.lang())}: {active.tag}"
+                )
             if args.available:
-                _console().print("Available: " + ", ".join(payload["available"]))
+                _console().print(
+                    f"{i18n.t('engine.available', i18n.lang())}: "
+                    + ", ".join(payload["available"])
+                )
             return 0
         if command == "install":
             item, warnings = engine_runtime.install(
@@ -931,7 +967,7 @@ def _engine(args: argparse.Namespace) -> int:
                 if was_active:
                     _console().print(i18n.t("engine.active_cleared", i18n.lang()))
             return 0
-    except (OSError, RuntimeError, ValueError) as error:
+    except (OSError, RuntimeError, ValueError, tarfile.TarError, zipfile.BadZipFile) as error:
         print(str(error), file=sys.stderr)
         return 1
     return 1
@@ -1645,7 +1681,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     models.add_argument("--role")
     models.add_argument("--json", action="store_true")
     model_commands = models.add_subparsers(dest="models_command")
-    model_list = model_commands.add_parser("list")
+    model_list = model_commands.add_parser("local")
     model_list.add_argument("--json", action="store_true")
     model_rm = model_commands.add_parser("rm")
     model_rm.add_argument("name")

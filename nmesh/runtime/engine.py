@@ -124,12 +124,29 @@ def _asset_variant(asset: str) -> str:
 
 
 def _asset_for(assets: list[str], pattern: str) -> str | None:
-    matches = sorted(asset for asset in assets if re.fullmatch(pattern, asset, re.IGNORECASE))
+    matches = [
+        asset for asset in assets if re.fullmatch(pattern, asset, re.IGNORECASE)
+    ]
+    matches.sort(
+        key=lambda asset: (
+            tuple(int(value) for value in re.findall(r"\d+", asset)),
+            asset,
+        )
+    )
     return matches[-1] if matches else None
 
 
+def _normalize_system(system: str) -> str:
+    value = system.lower()
+    if value in {"darwin", "macos", "osx"}:
+        return "macos"
+    if value in {"windows", "win32", "nt"}:
+        return "windows"
+    return "linux"
+
+
 def _platform_cpu(system: str, machine: str) -> str:
-    system = system.lower()
+    system = _normalize_system(system)
     machine = machine.lower()
     if system == "windows":
         return "win-cpu-arm64.zip" if "arm" in machine or "aarch" in machine else "win-cpu-x64.zip"
@@ -151,7 +168,7 @@ def select_asset(
     accelerator: str | None,
     variant: str = "auto",
 ) -> tuple[EngineAsset, str | None]:
-    system = system.lower()
+    system = _normalize_system(system)
     machine = machine.lower()
     accelerator = (accelerator or "").lower()
     published = set(assets)
@@ -164,16 +181,11 @@ def select_asset(
     if system == "windows" and not ("arm" in machine or "aarch" in machine):
         if requested_variant == "auto":
             if accelerator == "nvidia":
-                cuda = sorted(
-                    asset for asset in assets
-                    if re.fullmatch(
-                        rf"{re.escape(_asset_name(tag, 'win-cuda'))}-(\d+\.\d+)-x64\.zip",
-                        asset,
-                        re.IGNORECASE,
-                    )
+                chosen = _asset_for(
+                    assets,
+                    rf"{re.escape(_asset_name(tag, 'win-cuda'))}-\d+\.\d+-x64\.zip",
                 )
-                if cuda:
-                    chosen = cuda[-1]
+                if chosen is not None:
                     version = re.search(r"-cuda-(\d+\.\d+)-", chosen, re.IGNORECASE)
                     if version:
                         cudart = (
@@ -190,12 +202,24 @@ def select_asset(
                 )
             elif accelerator == "intel":
                 chosen = _asset_name(tag, "win-sycl-x64.zip")
-            elif requested_variant == "vulkan":
-                chosen = _asset_name(tag, "win-vulkan-x64.zip")
             if chosen is None:
                 chosen = cpu_name
         elif requested_variant == "cpu":
             chosen = cpu_name
+        elif requested_variant in {"cuda", "rocm"}:
+            family = requested_variant
+            chosen = _asset_for(
+                assets,
+                rf"{re.escape(_asset_name(tag, f'win-{family}'))}-\d+\.\d+-x64\.zip",
+            )
+            if chosen is not None and family == "cuda":
+                version = re.search(r"-cuda-(\d+\.\d+)-", chosen, re.IGNORECASE)
+                if version:
+                    cudart = (
+                        f"cudart-llama-bin-win-cuda-{version.group(1)}-x64.zip"
+                    )
+                    if cudart in published:
+                        extra = (cudart,)
         elif requested_variant.startswith("cuda"):
             suffix = requested_variant.removeprefix("cuda-")
             chosen = _asset_name(tag, f"win-cuda-{suffix}-x64.zip")
@@ -243,6 +267,11 @@ def select_asset(
                 chosen = cpu_name
         elif requested_variant == "cpu":
             chosen = cpu_name
+        elif requested_variant in {"rocm"}:
+            chosen = _asset_for(
+                assets,
+                rf"{re.escape(_asset_name(tag, 'ubuntu-rocm'))}-\d+\.\d+-x64\.tar\.gz",
+            )
         elif requested_variant == "vulkan":
             chosen = _asset_name(tag, "ubuntu-vulkan-x64.tar.gz")
         elif requested_variant.startswith("rocm"):
@@ -290,18 +319,6 @@ def _download(url: str, path: Path) -> None:
     ):
         while chunk := response.read(1024 * 1024):
             output.write(chunk)
-
-
-def _call_download(download: Callable[..., object], url: str, path: Path) -> None:
-    try:
-        result = download(url, path)
-    except TypeError:
-        result = download(url)
-    if isinstance(result, bytes):
-        path.write_bytes(result)
-    elif result is not None and hasattr(result, "read"):
-        with path.open("wb") as output:
-            shutil.copyfileobj(result, output)
 
 
 def _safe_member(name: str, root: Path) -> Path:
@@ -379,7 +396,7 @@ def install(
     *,
     dest: Path | None = None,
     fetch: Callable[[str], bytes | str] = _fetch_url,
-    download: Callable[..., object] = _download,
+    download: Callable[[str, Path], None] = _download,
     system: str | None = None,
     machine: str | None = None,
     accelerator: str | None = None,
@@ -415,7 +432,7 @@ def install(
     archive = target / asset.asset
     warnings = [selection_warning] if selection_warning else []
     try:
-        _call_download(download, asset.url, archive)
+        download(asset.url, archive)
         digest = hashlib.sha256()
         with archive.open("rb") as source:
             while chunk := source.read(1024 * 1024):
@@ -423,8 +440,7 @@ def install(
         _extract_archive(archive, target)
         for extra_name in asset.extra_assets:
             extra_path = target / extra_name
-            _call_download(
-                download,
+            download(
                 _require_https(DOWNLOAD_URL.format(tag=selected_tag, asset=extra_name)),
                 extra_path,
             )
@@ -434,7 +450,10 @@ def install(
         executables = list(target.rglob(exe_name))
         if not executables:
             raise FileNotFoundError(f"{exe_name} was not found in {asset.asset}")
-        exe = executables[0].resolve()
+        exe = min(
+            executables,
+            key=lambda candidate: (len(candidate.relative_to(target).parts), str(candidate)),
+        ).resolve()
         result = subprocess.run(
             [str(exe), "--version"],
             capture_output=True,

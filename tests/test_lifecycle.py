@@ -136,7 +136,7 @@ def test_unload_cli(monkeypatch, capsys) -> None:
         cli.urllib.request, "urlopen", lambda *_args, **_kwargs: EmptyResponse()
     )
     assert cli.main(["unload", "missing"]) == 1
-    assert "Unknown service" in capsys.readouterr().err
+    assert "not unloaded" in capsys.readouterr().err
 
 
 def test_gateway_non_owner_is_retained(tmp_path: Path) -> None:

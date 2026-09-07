@@ -90,7 +90,7 @@ stored under `$NMESH_HOME/engines/llamacpp`, and the active build is used by
 hardware detection. Use `nmesh engine list --available` to inspect build tags,
 `nmesh engine use <tag>` to switch installed builds, and
 `nmesh engine remove <tag>` to delete one. GGUF weights remain under
-`$NMESH_HOME/models`; inspect or remove them with `nmesh models list` and
+`$NMESH_HOME/models`; inspect or remove them with `nmesh models local` and
 `nmesh models rm`.
 
 The llama.cpp release assets used here do not publish checksum files. The

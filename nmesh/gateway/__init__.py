@@ -156,6 +156,36 @@ def _is_chat_request(request: Mapping[str, object]) -> bool:
     return "messages" in request
 
 
+def _unload_reason(
+    service: str,
+    item: Mapping[str, object] | None,
+    idle: set[str],
+) -> str:
+    if item is not None and item.get("shared"):
+        return "shared"
+    if item is not None and item.get("external"):
+        return "external"
+    if service in idle or (item is not None and item.get("idle")):
+        return "idle"
+    if item is None or not item.get("running", False):
+        return "not_running"
+    return "not_running"
+
+
+async def _unload_service(
+    service: str,
+    item: Mapping[str, object] | None,
+    idle: set[str],
+) -> dict[str, object]:
+    if await asyncio.to_thread(unload, service):
+        return {"service": service, "unloaded": True, "reason": "ok"}
+    return {
+        "service": service,
+        "unloaded": False,
+        "reason": _unload_reason(service, item, idle),
+    }
+
+
 def _content(request: Mapping[str, object]) -> str:
     messages = _get(request, "messages", [])
     if isinstance(messages, list) and messages:
@@ -1044,18 +1074,24 @@ def create_app(
         selected, _ = plan_state.snapshot()
         unloaded: list[str] = []
         runtime = await asyncio.to_thread(runtime_status)
-        planned_names = {service.name for service in selected.services}
-        for item in runtime.services:
-            name = item.get("service")
-            if (
-                isinstance(name, str)
-                and name in planned_names
-                and item.get("running")
-                and await asyncio.to_thread(unload, name)
-            ):
-                unloaded.append(name)
-                gate.invalidate()
-        return {"unloaded": unloaded}
+        idle = await asyncio.to_thread(idle_services)
+        by_name = {
+            item.get("service"): item
+            for item in runtime.services
+            if isinstance(item.get("service"), str)
+        }
+        results = [
+            await _unload_service(service.name, by_name.get(service.name), idle)
+            for service in selected.services
+        ]
+        if any(result["unloaded"] for result in results):
+            gate.invalidate()
+        unloaded.extend(
+            result["service"]
+            for result in results
+            if result["unloaded"]
+        )
+        return {"unloaded": unloaded, "results": results}
 
     @app.post("/admin/unload/{service}")
     async def unload_one(service: str) -> dict[str, object]:
@@ -1063,11 +1099,22 @@ def create_app(
         selected, _ = plan_state.snapshot()
         if service not in {item.name for item in selected.services}:
             raise HTTPException(status_code=404, detail=f"Unknown service: {service}")
-        unloaded = []
-        if await asyncio.to_thread(unload, service):
-            unloaded.append(service)
+        runtime = await asyncio.to_thread(runtime_status)
+        idle = await asyncio.to_thread(idle_services)
+        item = next(
+            (
+                entry for entry in runtime.services
+                if entry.get("service") == service
+            ),
+            None,
+        )
+        result = await _unload_service(service, item, idle)
+        if result["unloaded"]:
             gate.invalidate()
-        return {"unloaded": unloaded}
+        return {
+            "unloaded": [service] if result["unloaded"] else [],
+            "results": [result],
+        }
 
     @app.get("/admin/running")
     async def running() -> dict[str, object]:

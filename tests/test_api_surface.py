@@ -287,6 +287,7 @@ def test_gateway_admin_unload_and_running(monkeypatch) -> None:
             "running": True,
         }]),
     )
+    monkeypatch.setattr(gateway_module, "idle_services", lambda: set())
     unloaded: list[str] = []
 
     def fake_unload(name: str) -> bool:
@@ -297,7 +298,10 @@ def test_gateway_admin_unload_and_running(monkeypatch) -> None:
     with TestClient(create_app(plan)) as client:
         response = client.post("/admin/unload/chat")
         assert response.status_code == 200
-        assert response.json() == {"unloaded": ["chat"]}
+        assert response.json() == {
+            "unloaded": ["chat"],
+            "results": [{"service": "chat", "unloaded": True, "reason": "ok"}],
+        }
         unknown = client.post("/admin/unload/missing")
         assert unknown.status_code == 404
         assert unknown.json()["error"]["code"] == 404
@@ -305,6 +309,29 @@ def test_gateway_admin_unload_and_running(monkeypatch) -> None:
     assert unloaded == ["chat"]
     assert running.status_code == 200
     assert running.json()["services"][0]["in_flight"] == 0
+
+
+def test_gateway_admin_unload_reports_not_running(monkeypatch) -> None:
+    plan = _completion_plan(1)
+    monkeypatch.setattr(
+        gateway_module,
+        "runtime_status",
+        lambda: SimpleNamespace(services=[{
+            "service": plan.services[0].name,
+            "running": False,
+        }]),
+    )
+    monkeypatch.setattr(gateway_module, "idle_services", lambda: set())
+    monkeypatch.setattr(gateway_module, "unload", lambda _name: False)
+
+    with TestClient(create_app(plan)) as client:
+        response = client.post("/admin/unload/chat")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "unloaded": [],
+        "results": [{"service": "chat", "unloaded": False, "reason": "not_running"}],
+    }
 
 
 def test_gateway_admin_requires_api_key(monkeypatch) -> None:

@@ -865,6 +865,23 @@ class Supervisor:
             if service_name in self.shared_services or service_name in self.external_shared:
                 return False
             adopted = self.adopted.get(service_name)
+            if adopted is None and service_name not in self.processes:
+                planned = (
+                    next(
+                        (
+                            service for service in self.active_plan.services
+                            if service.name == service_name
+                        ),
+                        None,
+                    )
+                    if self.active_plan is not None
+                    else None
+                )
+                if planned is not None:
+                    self._adopt(planned)
+                    if service_name in self.external_shared:
+                        return False
+                    adopted = self.adopted.get(service_name)
             if adopted is not None:
                 pid = adopted.get("pid")
                 if not isinstance(pid, int) or isinstance(pid, bool):
