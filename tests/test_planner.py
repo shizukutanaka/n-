@@ -383,6 +383,107 @@ def test_kv_quantization_is_independent(catalog: list[ModelSpec]) -> None:
     assert q8.weight_bytes == f16.weight_bytes
 
 
+def test_supported_llamacpp_kv_quantization_is_launched(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={
+            "llamacpp": (
+                "--parallel", "-ngl", "--tensor-split",
+                "--cache-type-k", "--cache-type-v",
+            ),
+        },
+    )
+    result = build_plan(machine, [model], Policy(roles=["chat"], kv_quant="q8_0"))
+    service = result.services[0]
+    f16 = estimate_memory(
+        model, service.quant, service.context,
+        parallel_slots=service.memory.parallel_slots, kv_quant="f16",
+    )
+    assert service.kv_quant == "q8_0"
+    assert service.memory.kv_cache_bytes == pytest.approx(f16.kv_cache_bytes / 2)
+    assert service.launch.argv[service.launch.argv.index("--cache-type-k") + 1] == "q8_0"
+    assert service.launch.argv[service.launch.argv.index("--cache-type-v") + 1] == "q8_0"
+
+
+def test_unsupported_llamacpp_kv_quantization_downgrades_accounting(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl", "--tensor-split")},
+    )
+    result = build_plan(machine, [model], Policy(roles=["chat"], kv_quant="q8_0"))
+    service = result.services[0]
+    f16 = estimate_memory(
+        model, service.quant, service.context,
+        parallel_slots=service.memory.parallel_slots, kv_quant="f16",
+    )
+    assert service.kv_quant == "f16"
+    assert service.memory.kv_cache_bytes == pytest.approx(f16.kv_cache_bytes)
+    assert not any("--cache-type" in flag for flag in service.launch.argv)
+    assert any("llamacpp" in warning and "accounted at f16" in warning
+               for warning in result.warnings)
+
+
+@pytest.mark.parametrize(
+    ("backend", "os_name", "gpu_gib"),
+    [("ollama", "windows", ()), ("vllm", "linux", (24,))],
+)
+def test_non_llamacpp_kv_quantization_downgrades_accounting(
+    catalog: list[ModelSpec], backend: str, os_name: str, gpu_gib: tuple[int, ...],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = profile(
+        64,
+        gpu_gib,
+        os_name=os_name,
+        backends={
+            "ollama": "test" if backend == "ollama" else None,
+            "llamacpp": None,
+            "vllm": "test" if backend == "vllm" else None,
+            "mlx": None,
+        },
+    )
+    result = build_plan(machine, [model], Policy(roles=["chat"], kv_quant="q8_0"))
+    service = result.services[0]
+    f16 = estimate_memory(
+        model, service.quant, service.context,
+        parallel_slots=service.memory.parallel_slots, kv_quant="f16",
+    )
+    assert service.backend == backend
+    assert service.kv_quant == "f16"
+    assert service.memory.kv_cache_bytes == pytest.approx(f16.kv_cache_bytes)
+    assert not any("--cache-type" in flag for flag in service.launch.argv)
+    assert any(backend in warning and "accounted at f16" in warning
+               for warning in result.warnings)
+
+
+def test_unsupported_kv_quantization_cannot_false_fit() -> None:
+    model = ModelSpec(
+        "fit", "fit", 500_000_000, 24, 16, 16, 128, 2048, 8192,
+        ["chat"], 90.0, "test", {"ollama": "test"},
+    )
+    base = profile(
+        1,
+        backends={"ollama": "test", "llamacpp": None, "vllm": None, "mlx": None},
+    )
+    machine = replace(
+        base,
+        total_ram_bytes=int(1.2 * GIB),
+        available_ram_bytes=int(1.2 * GIB),
+    )
+    result = build_plan(
+        machine, [model],
+        Policy(roles=["chat"], max_context=2048, kv_quant="q8_0", min_decode_tps=0),
+    )
+    assert result.services == []
+    assert any("No runnable model" in warning for warning in result.warnings)
+
+
 def test_embedding_has_activation_memory_not_kv(catalog: list[ModelSpec]) -> None:
     model = next(item for item in catalog if item.id == "bge-m3")
     result = build_plan(profile(32), catalog, Policy(roles=["embed"]))
@@ -578,13 +679,33 @@ def test_save_plan_replaces_atomically(tmp_path, catalog: list[ModelSpec], monke
 def test_plan_save_load(tmp_path, catalog: list[ModelSpec]) -> None:
     from nmesh.planner import load_plan, save_plan
 
-    result = build_plan(profile(8), catalog)
+    machine = replace(
+        profile(8),
+        backend_flags={"llamacpp": ("--cache-type-k", "--cache-type-v")},
+    )
+    result = build_plan(machine, catalog, Policy(kv_quant="q8_0"))
     path = tmp_path / "plan.json"
     save_plan(result, path)
     loaded = load_plan(path)
     assert loaded is not None
     assert loaded == result
+    assert loaded.policy.kv_quant == "q8_0"
+    assert loaded.services[0].kv_quant == result.services[0].kv_quant
     assert isinstance(loaded.services[0].memory.n_gpu_layers, int)
+
+
+def test_old_plan_without_service_kv_quant_defaults_to_f16(
+    tmp_path, catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(profile(8), catalog)
+    path = tmp_path / "plan.json"
+    save_plan(result, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    del payload["services"][0]["kv_quant"]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    loaded = load_plan(path)
+    assert loaded is not None
+    assert loaded.services[0].kv_quant == "f16"
 
 
 def test_plan_save_load_serializes_backend_flags_as_strings(
