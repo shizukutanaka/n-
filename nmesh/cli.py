@@ -430,22 +430,7 @@ def _plan(args: argparse.Namespace) -> int:
     language = result.policy.lang
     if getattr(args, "_simulated", False):
         _console().print(f"[yellow]{i18n.t('warn.simulated_profile', language)}[/yellow]")
-    table = Table(title=f"nmesh plan ({result.tier.value})")
-    for column in (
-        i18n.t("label.service", language), i18n.t("label.roles", language),
-        i18n.t("label.model", language), i18n.t("label.backend", language),
-        i18n.t("label.context", language), i18n.t("label.slots", language),
-        i18n.t("label.gpu_layers", language), i18n.t("label.languages", language),
-        i18n.t("label.tps", language),
-    ):
-        table.add_column(column)
-    for service in result.services:
-        table.add_row(service.name, ",".join(service.roles), service.model_id, service.backend,
-                      str(service.context), str(service.memory.parallel_slots),
-                      "-" if service.n_gpu_layers is None else str(service.n_gpu_layers),
-                      ",".join(service.languages),
-                      f"{service.decode_tps:.1f}")
-    _console().print(table)
+    _render_plan(result)
     if path is not None:
         _console().print(i18n.t("label.saved_to", language, path=path))
     if result.policy.budget_source == "free":
@@ -483,6 +468,26 @@ def _plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _render_plan(result: Plan) -> None:
+    language = result.policy.lang
+    table = Table(title=f"nmesh plan ({result.tier.value})")
+    for column in (
+        i18n.t("label.service", language), i18n.t("label.roles", language),
+        i18n.t("label.model", language), i18n.t("label.backend", language),
+        i18n.t("label.context", language), i18n.t("label.slots", language),
+        i18n.t("label.gpu_layers", language), i18n.t("label.languages", language),
+        i18n.t("label.tps", language),
+    ):
+        table.add_column(column)
+    for service in result.services:
+        table.add_row(service.name, ",".join(service.roles), service.model_id, service.backend,
+                      str(service.context), str(service.memory.parallel_slots),
+                      "-" if service.n_gpu_layers is None else str(service.n_gpu_layers),
+                      ",".join(service.languages),
+                      f"{service.decode_tps:.1f}")
+    _console().print(table)
+
+
 def _up_plan_args(args: argparse.Namespace) -> argparse.Namespace:
     return argparse.Namespace(
         roles="chat,code,embed",
@@ -513,7 +518,8 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
     try:
         plan = _make_plan(plan_args)
     except (OSError, RuntimeError, TypeError, ValueError) as error:
-        print(i18n.t("err.up", i18n.lang(), error=error), file=sys.stderr)
+        key = "err.profile_load" if getattr(plan_args, "profile", None) else "err.plan"
+        print(i18n.t(key, i18n.lang(), error=error), file=sys.stderr)
         return None
     simulated = bool(
         getattr(args, "profile", None)
@@ -549,11 +555,14 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
         try:
             plan = _make_plan(plan_args)
         except (OSError, RuntimeError, TypeError, ValueError) as error:
-            print(i18n.t("err.up", i18n.lang(), error=error), file=sys.stderr)
+            key = "err.profile_load" if getattr(plan_args, "profile", None) else "err.plan"
+            print(i18n.t(key, i18n.lang(), error=error), file=sys.stderr)
             return None
     if not plan.services or not plan.runnable:
         _print_plan_failure(plan)
         return None
+    if not getattr(args, "json", False):
+        _render_plan(plan)
     if not simulated:
         try:
             save_plan(plan)
@@ -1687,7 +1696,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--lang")
     up_parser.add_argument("--model", help="comma-separated model IDs")
     up_parser.add_argument("--ignore-eval-evidence", action="store_true")
-    up_parser.add_argument("--profile")
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=18000)
     reload_parser = sub.add_parser("reload")

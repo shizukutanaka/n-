@@ -75,15 +75,23 @@ lower quantization is published, the runtime records that safe substitution in
 
 ### Managed llama.cpp engine
 
-If no llama.cpp, Ollama, or LM Studio installation is available, nmesh can
-install a suitable llama.cpp server itself:
+If no llama.cpp, Ollama, or LM Studio installation is available, a single
+`nmesh up` can acquire a suitable managed llama.cpp server and the planned
+model itself:
 
 ```text
-nmesh engine install
-nmesh engine list
-nmesh plan --roles chat
 nmesh up
 ```
+
+Use `nmesh engine install` when you want to install the engine explicitly.
+Passing `--no-download` opts out of automatic acquisition. In that mode:
+
+```text
+nmesh up --no-download
+```
+
+leaves the plan non-runnable and prints the command or package hint needed to
+install the missing backend.
 
 Engine archives are selected for the local operating system and accelerator,
 stored under `$NMESH_HOME/engines/llamacpp`, and the active build is used by

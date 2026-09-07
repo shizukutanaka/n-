@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from io import StringIO
 from types import SimpleNamespace
+
+from rich.console import Console
 
 from nmesh import cli
 from nmesh.runtime import RuntimeStatus
@@ -31,8 +34,26 @@ def _plan(missing_backends: list[str], runnable: bool) -> SimpleNamespace:
         runnable=runnable,
         services=[],
         install_hints=["Install llama.cpp with nmesh engine install"],
-        policy=SimpleNamespace(),
+        policy=SimpleNamespace(lang="en", budget_source="total"),
+        tier=SimpleNamespace(value="balanced"),
+        warnings=[],
     )
+
+
+def _runnable_plan() -> SimpleNamespace:
+    result = _plan([], True)
+    result.services = [SimpleNamespace(
+        name="chat",
+        roles=["chat"],
+        model_id="qwen2.5-1.5b-instruct",
+        backend="llamacpp",
+        context=4096,
+        memory=SimpleNamespace(parallel_slots=1),
+        n_gpu_layers=0,
+        languages=["en"],
+        decode_tps=12.0,
+    )]
+    return result
 
 
 def test_plan_reports_install_hint(monkeypatch, capsys) -> None:
@@ -50,17 +71,7 @@ def test_plan_reports_install_hint(monkeypatch, capsys) -> None:
 
 
 def test_up_autoinstalls_once_rebuilds_and_reaches_runtime(monkeypatch) -> None:
-    plans = [_plan(["llamacpp"], False), _plan([], True)]
-    plans[1].services = [{
-        "service": "chat",
-        "backend": "llamacpp",
-        "model_ref": "model",
-        "port": 18001,
-        "context": 1024,
-        "parallel_slots": 1,
-        "n_gpu_layers": 0,
-        "argv": ["llama-server"],
-    }]
+    plans = [_plan(["llamacpp"], False), _runnable_plan()]
     make_calls = 0
     install_calls = 0
     runtime_calls: list[object] = []
@@ -89,6 +100,37 @@ def test_up_autoinstalls_once_rebuilds_and_reaches_runtime(monkeypatch) -> None:
     assert install_calls == 1
     assert make_calls == 2
     assert len(runtime_calls) == 1
+
+
+def test_up_renders_fresh_plan_but_json_suppresses_it(monkeypatch) -> None:
+    output = StringIO()
+    monkeypatch.setattr(
+        cli, "_console", lambda: Console(file=output, force_terminal=False, width=200)
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: None)
+    monkeypatch.setattr(cli, "save_plan", lambda _plan: None)
+    monkeypatch.setattr(cli, "runtime_up", lambda *_args, **_kwargs: RuntimeStatus(False, []))
+
+    monkeypatch.setattr(cli, "_make_plan", lambda _args: _runnable_plan())
+    assert cli._runtime(_up_args()) == 0
+    assert "qwen2.5-1.5b-instruct" in output.getvalue()
+
+    output.seek(0)
+    output.truncate(0)
+    assert cli._runtime(_up_args(json=True)) == 0
+    assert "qwen2.5-1.5b-instruct" not in output.getvalue()
+
+
+def test_up_plan_failure_uses_plan_error(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli, "load_plan", lambda: None)
+    monkeypatch.setattr(
+        cli, "_make_plan", lambda _args: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+
+    assert cli._ensure_runnable_plan(_up_args()) is None
+    captured = capsys.readouterr()
+    assert "plan failed: boom" in captured.err
+    assert "up failed: boom" not in captured.err
 
 
 def test_up_no_download_does_not_autoinstall(monkeypatch, capsys) -> None:
