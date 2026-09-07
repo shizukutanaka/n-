@@ -15,6 +15,7 @@ from nmesh import cli, telemetry
 from nmesh.catalog import ModelSpec
 from nmesh.gateway import create_app, route
 from nmesh.planner import Policy, build_plan
+from nmesh.runtime.logs import log_path
 
 from .test_planner import profile
 
@@ -238,6 +239,39 @@ def test_api_key_authentication(monkeypatch) -> None:
         }
         assert secret not in missing.text
         assert secret not in wrong.text
+
+
+def test_logs_endpoint_reads_tail_and_reports_missing(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("NMESH_API_KEY", raising=False)
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    path = log_path("chat")
+    path.parent.mkdir(parents=True)
+    path.write_text("first\nsecond\n", encoding="utf-8")
+    plan = _completion_plan(1)
+
+    with TestClient(create_app(plan)) as client:
+        response = client.get("/logs/chat?lines=1")
+        missing = client.get("/logs/missing")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "service": "chat",
+        "path": str(path),
+        "lines": ["second"],
+    }
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == 404
+
+
+def test_logs_endpoint_requires_api_key(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setenv("NMESH_API_KEY", "test-secret")
+    plan = _completion_plan(1)
+
+    with TestClient(create_app(plan)) as client:
+        response = client.get("/logs/chat")
+
+    assert response.status_code == 401
 
 
 def test_openai_model_listing_and_detail() -> None:

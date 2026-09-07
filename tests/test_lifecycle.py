@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from nmesh import cli
 from nmesh.catalog import load_catalog
 from nmesh.planner import Policy, build_plan
 from nmesh.runtime import service_unit as service_unit_module
+from nmesh.runtime.logs import log_path, open_log, tail
 from nmesh.runtime.service_unit import launcher_script, service_unit
 from nmesh.runtime.supervisor import Supervisor
 
@@ -29,6 +31,82 @@ def test_gateway_state_is_terminated_and_removed(tmp_path: Path) -> None:
     assert supervisor.down(foreign=True).running is False
     assert terminated == [os.getpid()]
     assert not (tmp_path / "state.json").exists()
+
+
+def test_runtime_log_rotation_and_tail(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "4")
+    first = open_log("chat")
+    first.write(b"old\n")
+    first.close()
+    second = open_log("chat")
+    second.write(b"new\n")
+    second.close()
+
+    assert log_path("chat").read_bytes() == b"new\n"
+    assert log_path("chat").with_name("chat.log.1").read_bytes() == b"old\n"
+    assert tail("chat") == ["new"]
+
+
+def test_runtime_log_tail_handles_missing_and_invalid_utf8(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    assert tail("missing") == []
+    path = log_path("chat")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"one\nbad \xff\n\nthree\n")
+
+    assert tail("chat", 2) == ["bad \ufffd", "three"]
+
+
+def test_supervisor_captures_backend_output(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    plan = build_plan(profile(64, (24,)), load_catalog(), Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        launch=replace(
+            plan.services[0].launch,
+            argv=[sys.executable, "-c", "print('captured backend output')"],
+            health_url=None,
+        ),
+    )
+    supervisor = Supervisor()
+    process = supervisor._launch(service)
+    assert process.wait(timeout=10) == 0
+
+    assert "captured backend output" in log_path(service.name).read_text()
+
+
+def test_unhealthy_message_includes_backend_log_tail(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    handle = open_log("chat")
+    handle.write(b"backend failed to start\n")
+    handle.close()
+
+    message = Supervisor()._unhealthy_message("chat")
+
+    assert "Service did not become healthy: chat" in message
+    assert "backend failed to start" in message
+
+
+def test_logs_cli(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    handle = open_log("chat")
+    handle.write(b"first\nsecond\n")
+    handle.close()
+
+    assert cli.main(["logs"]) == 0
+    assert capsys.readouterr().out.strip() == "chat"
+    assert cli.main(["logs", "chat", "--lines", "1"]) == 0
+    assert capsys.readouterr().out.strip() == "second"
+    assert cli.main(["logs", "chat", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["service"] == "chat"
+    assert payload["lines"] == ["first", "second"]
+    assert cli.main(["logs", "missing"]) == 1
+    assert "No log found" in capsys.readouterr().err
 
 
 def test_gateway_non_owner_is_retained(tmp_path: Path) -> None:
