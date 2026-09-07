@@ -106,6 +106,39 @@ manifest SHA-256 is therefore the hash nmesh observed while downloading the
 archive. It detects later local corruption, but it does **not** verify
 publisher provenance.
 
+### KV-cache precision measurement
+
+KV-cache precision is part of benchmark identity. On one Windows CPU x64
+machine, one llama.cpp build, one model, and one context, the controlled
+measurement used engine `b10831` (`0.4.0-dev`, commit `8fe90e1fb`), Qwen2.5
+1.5B-Instruct Q4_K_M (SHA-256
+`6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e`),
+`-c 32768 --parallel 1 --threads 8`, and an 8,309-token prompt with prompt
+caching defeated with both `--no-cache-prompt` and request
+`"cache_prompt": false`. Each arm used three repetitions and reports the
+median:
+
+| metric | f16 KV, no flash | q8_0 KV, no flash | f16 KV, `--flash-attn on` | q8_0 KV, `--flash-attn on` |
+| --- | ---: | ---: | ---: | ---: |
+| prefill median | 273.60 tok/s | 73.04 tok/s | 255.12 tok/s | 71.56 tok/s |
+| decode median | 24.33 tok/s | 19.23 tok/s | 27.77 tok/s | 20.13 tok/s |
+
+The load-time private bytes were 1,792,454,656 B for f16 KV and
+1,348,911,104 B for q8_0 KV.
+
+The private-byte difference was 444,104,704 B, versus 469,762,048 B in nmesh
+accounting. Supplying `--flash-attn on` did not recover the prefill loss:
+the corresponding medians were 255.12 tok/s for f16 KV and 71.56 tok/s for
+q8_0 KV. The hard-130 quality comparison was 100/130 versus 98/130, with
+discordant cells 4/2 and exact McNemar `p=0.6875`; this does not establish
+equivalence, only that no difference was detectable at this sample size. No
+stderr line in any arm mentioned flash attention, cache type, or an attention
+fallback.
+
+The default remains `f16`, and KV precision is not part of the automatic
+fallback ladder. On this build, the measured memory saving costs prefill
+speed.
+
 ## Concurrency slots
 
 Plans automatically size concurrency slots from memory left after placement;

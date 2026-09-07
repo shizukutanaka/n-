@@ -383,6 +383,25 @@ def test_kv_quantization_is_independent(catalog: list[ModelSpec]) -> None:
     assert q8.weight_bytes == f16.weight_bytes
 
 
+def test_bench_lookup_isolated_by_kv_precision() -> None:
+    model = ModelSpec(
+        "bench-kv", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"},
+    )
+    f16_key = benchmark_key(model.id, "q4_k_m", "llamacpp", "cpu", 0, "f16")
+    q8_key = benchmark_key(model.id, "q4_k_m", "llamacpp", "cpu", 0, "q8_0")
+    cache = {f16_key: 16.0, q8_key: 8.0}
+    assert planner_core._bench_value(
+        cache, model, "q4_k_m", "llamacpp", "cpu", 0, "f16"
+    ) == 16.0
+    assert planner_core._bench_value(
+        cache, model, "q4_k_m", "llamacpp", "cpu", 0, "q8_0"
+    ) == 8.0
+    assert planner_core._bench_value(
+        {f16_key: 16.0}, model, "q4_k_m", "llamacpp", "cpu", 0, "q8_0"
+    ) is None
+
+
 def test_supported_llamacpp_kv_quantization_is_launched(
     catalog: list[ModelSpec],
 ) -> None:
@@ -406,6 +425,11 @@ def test_supported_llamacpp_kv_quantization_is_launched(
     assert service.memory.kv_cache_bytes == pytest.approx(f16.kv_cache_bytes / 2)
     assert service.launch.argv[service.launch.argv.index("--cache-type-k") + 1] == "q8_0"
     assert service.launch.argv[service.launch.argv.index("--cache-type-v") + 1] == "q8_0"
+    speed_warnings = [
+        warning for warning in result.warnings
+        if "planned throughput does not model KV cache type" in warning
+    ]
+    assert len(speed_warnings) == 1
 
 
 def test_unsupported_llamacpp_kv_quantization_downgrades_accounting(
@@ -427,6 +451,19 @@ def test_unsupported_llamacpp_kv_quantization_downgrades_accounting(
     assert not any("--cache-type" in flag for flag in service.launch.argv)
     assert any("llamacpp" in warning and "accounted at f16" in warning
                for warning in result.warnings)
+
+
+def test_f16_kv_quantization_has_no_speed_warning(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    result = build_plan(
+        profile(64, (24,)), [model], Policy(roles=["chat"], kv_quant="f16")
+    )
+    assert not any(
+        "planned throughput does not model KV cache type" in warning
+        for warning in result.warnings
+    )
 
 
 @pytest.mark.parametrize(

@@ -479,14 +479,18 @@ class _Candidate:
 
 
 def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: str,
-                 backend: str, gpu_name: str, layers: int) -> float | None:
+                 backend: str, gpu_name: str, layers: int,
+                 kv_quant: str = "f16") -> float | None:
     if cache is None:
         return None
-    for key in (
-        (model.id, quant, backend, gpu_name, layers),
-        f"{model.id}|{quant}|{backend}|{gpu_name}|{layers}",
-        f"{model.id}:{quant}:{backend}:{gpu_name}:{layers}",
-    ):
+    suffix = "" if kv_quant == "f16" else f"|kv{kv_quant}"
+    keys: list[object] = [f"{model.id}|{quant}|{backend}|{gpu_name}|{layers}{suffix}"]
+    if kv_quant == "f16":
+        keys.extend((
+            (model.id, quant, backend, gpu_name, layers),
+            f"{model.id}:{quant}:{backend}:{gpu_name}:{layers}",
+        ))
+    for key in keys:
         if key in cache:
             return float(cache[key])
     return None
@@ -578,7 +582,9 @@ def _candidate_for(
             if not _has_source(backend, model):
                 continue
             gpu_name = profile.gpus[0].name if profile.gpus else "cpu"
-            bench = _bench_value(cache, model, quant, backend, gpu_name, layers)
+            bench = _bench_value(
+                cache, model, quant, backend, gpu_name, layers, accounted_kv_quant,
+            )
             memory = MemoryEstimate(**{**asdict(base), "cpu_bytes": cpu_bytes,
                                        "gpu_bytes": gpu_bytes, "n_gpu_layers": layers})
             tps = bench if bench is not None else _throughput(model, memory, layers, profile)
@@ -758,6 +764,15 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
                 service=name,
                 backend=candidate.backend,
                 requested=candidate.requested_kv_quant,
+            )
+        )
+    if candidate.kv_quant != "f16":
+        warnings.append(
+            t(
+                "warn.kv_quant_speed_unmodeled",
+                language,
+                service=name,
+                kv_quant=candidate.kv_quant,
             )
         )
     services.append(service)

@@ -1099,7 +1099,7 @@ def _bench(args: argparse.Namespace) -> int:
     cache = load_cache()
     key = benchmark_key(service.model_id, service.quant, service.backend,
                         plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
-                        service.n_gpu_layers)
+                        service.n_gpu_layers, service.kv_quant)
     cache[key] = measurement.decode_tps
     try:
         save_cache(cache)
