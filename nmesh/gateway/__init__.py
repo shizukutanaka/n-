@@ -15,6 +15,8 @@ from nmesh.bench import benchmark_key
 from nmesh.planner import PLAN_PATH, Plan, PlannedService, load_plan
 from nmesh.runtime import ensure_running, heartbeat
 from nmesh.runtime import status as runtime_status
+from nmesh.runtime.logs import log_path
+from nmesh.runtime.logs import tail as tail_log
 from nmesh.telemetry import Sample, summary_by_approximate
 from nmesh.telemetry import record as record_telemetry
 from nmesh.telemetry import summary as telemetry_summary
@@ -607,7 +609,9 @@ def create_app(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         path = request.url.path
-        if api_key_bytes is not None and path.startswith(("/v1/", "/metrics")):
+        if api_key_bytes is not None and path.startswith(
+            ("/v1/", "/metrics", "/admin/", "/logs")
+        ):
             authorization = request.headers.get("authorization", "")
             prefix = "Bearer "
             presented = authorization[len(prefix):] if authorization.startswith(prefix) else ""
@@ -966,6 +970,22 @@ def create_app(
             "services": telemetry_summary(),
             "concurrency": limiter.metrics(),
             "token_calibration": _calibration_metrics(selected.services),
+        }
+
+    @app.get("/logs/{service:path}")
+    async def logs(service: str, lines: int = 50) -> dict[str, object]:
+        try:
+            path = log_path(service)
+        except ValueError:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown log: {service}"
+            ) from None
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail=f"Unknown log: {service}")
+        return {
+            "service": service,
+            "path": str(path),
+            "lines": await asyncio.to_thread(tail_log, service, max(1, min(lines, 1000))),
         }
 
     @app.get("/metrics/prometheus")

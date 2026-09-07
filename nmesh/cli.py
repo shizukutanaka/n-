@@ -50,6 +50,10 @@ from nmesh.runtime import RuntimeStatus, clear_gateway, disarm_atexit, record_ga
 from nmesh.runtime import down as runtime_down
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime import up as runtime_up
+from nmesh.runtime.logs import available as available_logs
+from nmesh.runtime.logs import log_path
+from nmesh.runtime.logs import rotate as rotate_log
+from nmesh.runtime.logs import tail as tail_log
 from nmesh.runtime.service_unit import launcher_script, service_unit, watch_unit
 from nmesh.telemetry import bench_overlay, overlay_report
 from nmesh.telemetry import summary as telemetry_summary
@@ -636,6 +640,39 @@ def _runtime(args: argparse.Namespace) -> int:
     return 0 if exit_code == 0 else 1
 
 
+def _logs(args: argparse.Namespace) -> int:
+    language = i18n.lang()
+    if args.service is None:
+        services = available_logs()
+        if args.json:
+            _print_json({"services": services})
+        else:
+            for service in services:
+                _console().print(service)
+        return 0
+    try:
+        path = log_path(args.service)
+    except ValueError:
+        path = None
+    if path is None or not path.is_file():
+        print(
+            i18n.t("err.no_log", language, service=args.service),
+            file=sys.stderr,
+        )
+        return 1
+    lines = tail_log(args.service, args.lines)
+    if args.json:
+        _print_json({
+            "service": args.service,
+            "path": str(path),
+            "lines": lines,
+        })
+    else:
+        for line in lines:
+            _console().print(line)
+    return 0
+
+
 def _launch_gateway(port: int, detach: bool) -> tuple[subprocess.Popen[bytes], Path | None]:
     command = [sys.executable, "-m", "nmesh.gateway.server", "--port", str(port)]
     kwargs: dict[str, object] = {}
@@ -648,6 +685,7 @@ def _launch_gateway(port: int, detach: bool) -> tuple[subprocess.Popen[bytes], P
             kwargs["start_new_session"] = True
         log_path = nmesh_home() / "gateway.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        rotate_log(log_path)
         log = log_path.open("ab")
         kwargs["stdout"] = log
         kwargs["stderr"] = log
@@ -1390,6 +1428,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="extra output tokens per task for models that emit reasoning "
         "before the answer (recorded with the result)",
     )
+    logs_parser = sub.add_parser("logs")
+    logs_parser.add_argument("service", nargs="?")
+    logs_parser.add_argument("--lines", type=_positive_int, default=50)
+    logs_parser.add_argument("--json", action="store_true")
     watch_parser = sub.add_parser("watch")
     watch_parser.add_argument("--sources", default="zenn,qiita")
     watch_parser.add_argument(
@@ -1430,6 +1472,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _models(args)
     if args.command == "bench":
         return _bench(args)
+    if args.command == "logs":
+        return _logs(args)
     if args.command == "eval":
         return _eval(args)
     if args.command == "watch":

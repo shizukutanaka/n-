@@ -23,6 +23,7 @@ from nmesh.planner import BPW, Plan, PlannedService, build_plan, free_budgets, l
 from nmesh.probe import HardwareProfile, detect_hardware
 
 from .acquisition import Acquired, acquire
+from .logs import log_path, open_log, tail
 
 STATE_PATH = nmesh_home() / "state.json"
 HEALTH_TIMEOUT = 120.0
@@ -355,7 +356,41 @@ class Supervisor:
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             kwargs["start_new_session"] = True
-        return subprocess.Popen(service.launch.argv, **kwargs)
+        handle = None
+        if os.environ.get("NMESH_BACKEND_LOG") != "0":
+            try:
+                handle = open_log(service.name)
+            except OSError:
+                handle = None
+        if handle is not None:
+            kwargs["stdout"] = handle
+            kwargs["stderr"] = subprocess.STDOUT
+        try:
+            return subprocess.Popen(service.launch.argv, **kwargs)
+        finally:
+            if handle is not None:
+                handle.close()
+
+    def _with_log_tail(self, service_name: str, message: str) -> str:
+        recent = tail(service_name, 5)
+        if not recent:
+            return message
+        detail = i18n.t(
+            "err.service_log_tail",
+            i18n.lang(),
+            path=log_path(service_name),
+            tail="\n".join(recent),
+        )
+        return (
+            f"{message} "
+            f"{detail}"
+        )
+
+    def _unhealthy_message(self, service_name: str) -> str:
+        return self._with_log_tail(
+            service_name,
+            i18n.t("err.service_unhealthy", i18n.lang(), service=service_name),
+        )
 
     def _healthy(self, service: PlannedService) -> bool:
         if service.launch.health_url is None:
@@ -605,9 +640,7 @@ class Supervisor:
                         self._arm_atexit()
                         self.failed.pop(service.name, None)
                         if not self._wait_health(service):
-                            raise RuntimeError(i18n.t(
-                                "err.service_unhealthy", i18n.lang(), service=service.name
-                            ))
+                            raise RuntimeError(self._unhealthy_message(service.name))
                     if current is plan or actualized:
                         save_plan(current)
                     self._persist(current)
@@ -732,9 +765,7 @@ class Supervisor:
                 self._arm_atexit()
                 if not self._wait_health(target):
                     self._stop_process(service_name)
-                    raise RuntimeError(i18n.t(
-                        "err.service_unhealthy", i18n.lang(), service=service_name
-                    ))
+                    raise RuntimeError(self._unhealthy_message(service_name))
                 self.failed.pop(service_name, None)
             if actualized:
                 save_plan(selected)
@@ -925,9 +956,10 @@ class Supervisor:
                     if not self._wait_health(service, timeout=min(self.health_timeout, 30.0)):
                         self._stop_process(service.name)
                         if not self._restart_budget(service.name):
-                            self.failed[service.name] = (
+                            self.failed[service.name] = self._with_log_tail(
+                                service.name,
                                 i18n.t("warn.health_failed", i18n.lang(),
-                                       service=service.name)
+                                       service=service.name),
                             )
                 except Exception as error:  # noqa: BLE001
                     self.processes.pop(service.name, None)

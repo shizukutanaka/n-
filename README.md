@@ -102,6 +102,16 @@ services. The default is `18010`; nmesh assigns subsequent service ports from
 that base. Use a free base (as the E2E harness does) and ensure the gateway
 port selected for `nmesh up --port` does not conflict with it.
 
+## Runtime logs
+
+Backend output is captured per service in
+`$NMESH_HOME/logs/<service>.log`. Each log keeps one rotated generation at
+`<service>.log.1`; set `NMESH_LOG_MAX_BYTES` to change the size cap. Set
+`NMESH_BACKEND_LOG=0` to keep backend stdout and stderr inherited by the
+launching process. Use `nmesh logs` to list services or inspect a log tail.
+Resident gateways also expose `GET /logs/{service}`; when `NMESH_API_KEY` is
+configured, this endpoint is protected by that key.
+
 ## Hardware profile simulation
 
 `nmesh doctor --json` output can be saved on a GPU machine and consumed
