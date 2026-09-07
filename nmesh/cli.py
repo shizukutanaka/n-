@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 import tarfile
@@ -57,7 +56,7 @@ from nmesh.runtime import down as runtime_down
 from nmesh.runtime import engine as engine_runtime
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime import up as runtime_up
-from nmesh.runtime.acquisition import QUANT_ALIASES
+from nmesh.runtime.acquisition import parse_label
 from nmesh.runtime.logs import available as available_logs
 from nmesh.runtime.logs import log_path
 from nmesh.runtime.logs import rotate as rotate_log
@@ -930,20 +929,7 @@ def _models(args: argparse.Namespace) -> int:
         }
         items = []
         for path in sorted(model_root.rglob("*.gguf")) if model_root.exists() else []:
-            lower = path.name.lower()
-            quant = next(
-                (
-                    name for name, aliases in QUANT_ALIASES.items()
-                    if any(
-                        re.search(
-                            rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])",
-                            lower,
-                        )
-                        for alias in aliases
-                    )
-                ),
-                None,
-            )
+            quant = parse_label(path.name)
             items.append({
                 "path": str(path),
                 "bytes": path.stat().st_size,

@@ -636,9 +636,20 @@ class Supervisor:
             launch = replace(service.launch, argv=argv)
             services.append(replace(service, quant=quant, context=context,
                                     model_ref=model_ref, n_gpu_layers=layers, launch=launch))
-        return replace(plan, services=services,
-                        warnings=[*plan.warnings,
-                                  i18n.t("warn.runtime_fallback", i18n.lang(), attempt=attempt)])
+        warnings = [*plan.warnings]
+        if attempt == 1:
+            warnings.extend(
+                i18n.t(
+                    "warn.quant_fallback_skipped",
+                    i18n.lang(),
+                    service=service.name,
+                    quant=service.quant,
+                )
+                for service in plan.services
+                if service.quant not in quant_order
+            )
+        warnings.append(i18n.t("warn.runtime_fallback", i18n.lang(), attempt=attempt))
+        return replace(plan, services=services, warnings=warnings)
 
     def up(self, plan: Plan, no_download: bool = False, dry_run: bool = False,
            admit: bool = True,

@@ -8,6 +8,7 @@ from dataclasses import replace
 import psutil
 import pytest
 
+from nmesh import i18n
 from nmesh.bench import benchmark, benchmark_key, load_cache, save_cache
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.gateway import estimate_tokens, route
@@ -124,6 +125,32 @@ def test_supervisor_fallback_with_fake_launcher(tmp_path, catalog: list[object])
     assert result.running
     assert len(calls) == 2
     supervisor.down()
+
+
+def test_supervisor_fallback_skips_unknown_artifact_quant(tmp_path, catalog) -> None:
+    plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        quant="iq3_m",
+        launch=replace(plan.services[0].launch, health_url=None),
+    )
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+
+    skipped = supervisor._fallback(replace(plan, services=[service]), 1)
+
+    assert skipped.services[0].quant == "iq3_m"
+    warning = i18n.t(
+        "warn.quant_fallback_skipped",
+        "en",
+        service=service.name,
+        quant="iq3_m",
+    )
+    assert skipped.warnings.count(warning) == 1
+
+    ordinary = supervisor._fallback(
+        replace(plan, services=[replace(service, quant="q4_k_m")]), 1
+    )
+    assert ordinary.services[0].quant == "q4_0"
 
 
 def test_supervisor_unload_adopts_live_state_process(
