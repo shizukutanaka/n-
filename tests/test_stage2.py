@@ -434,8 +434,140 @@ def test_supervisor_adopts_healthy_external_service(
     assert supervisor.external_shared == {"chat"}
     result = supervisor.status()
     assert result.services[0]["external"] is True
+    assert supervisor.unload("chat") is False
     supervisor.down()
     assert process.poll() is None
+
+
+def test_supervisor_adopts_recorded_pid_and_unloads_it(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    plan = replace(plan, services=[service])
+    state_path = tmp_path / "adopted.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "services": [{
+                "service": "chat",
+                "pid": os.getpid(),
+                "create_time": psutil.Process(os.getpid()).create_time(),
+                "port": 18010,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("recorded process should be adopted"),
+        state_path,
+        terminator=terminated.append,
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+
+    supervisor.ensure_running("chat", plan)
+
+    assert supervisor.adopted["chat"]["pid"] == os.getpid()
+    adopted_status = next(
+        item for item in supervisor.status().services if item["service"] == "chat"
+    )
+    assert adopted_status["pid"] == os.getpid()
+    assert adopted_status["running"] is True
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert payload["services"][0]["pid"] == os.getpid()
+    assert payload["services"][0]["adopted"] is True
+    assert supervisor.unload("chat") is True
+    assert terminated == [os.getpid()]
+    assert supervisor.idle_services() == {"chat"}
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert payload["services"] == []
+
+
+def test_supervisor_heartbeat_relaunches_dead_adopted_service(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    plan = replace(plan, services=[service])
+    state_path = tmp_path / "dead-adopted.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "services": [{
+                "service": "chat",
+                "pid": 1234,
+                "create_time": 1.0,
+                "port": 18010,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    alive = True
+    launched: list[str] = []
+
+    def pid_alive(pid: int, create_time: float | None = None) -> bool:
+        return pid == 1234 and alive
+
+    supervisor = Supervisor(
+        lambda item: launched.append(item.name) or _RecoverProcess(),
+        state_path,
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(supervisor_module, "_pid_alive", pid_alive)
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+    supervisor.ensure_running("chat", plan)
+    alive = False
+
+    supervisor.heartbeat()
+
+    assert launched == ["chat"]
+    assert supervisor.adopted == {}
+    assert supervisor.processes["chat"].poll() is None
+    supervisor.down()
+
+
+def test_supervisor_down_stops_adopted_service(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    plan = replace(plan, services=[service])
+    state_path = tmp_path / "down-adopted.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "services": [{
+                "service": "chat",
+                "pid": os.getpid(),
+                "create_time": psutil.Process(os.getpid()).create_time(),
+                "port": 18010,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("recorded process should be adopted"),
+        state_path,
+        terminator=terminated.append,
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+
+    supervisor.ensure_running("chat", plan)
+    supervisor.down()
+
+    assert terminated == [os.getpid()]
+    assert not state_path.exists()
 
 
 def test_supervisor_status_state_fallback_is_running(tmp_path) -> None:

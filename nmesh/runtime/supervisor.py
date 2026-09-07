@@ -92,6 +92,7 @@ class Supervisor:
         self.processes: dict[str, ProcessLike] = {}
         self.shared_services: set[str] = set()
         self.external_shared: set[str] = set()
+        self.adopted: dict[str, dict[str, object]] = {}
         self.idle: set[str] = set()
         self.restarts: dict[str, list[float]] = {}
         self.failed: dict[str, str] = {}
@@ -245,6 +246,11 @@ class Supervisor:
     def _already_up(self, service: PlannedService) -> bool:
         if service.name in self.processes:
             return self._alive(service.name)
+        adopted = self.adopted.get(service.name)
+        if adopted is not None:
+            if self._entry_alive(adopted) and self._healthy(service):
+                return True
+            self.adopted.pop(service.name, None)
         if service.name in self.external_shared:
             if service.launch.health_url is not None and self._healthy(service):
                 return True
@@ -262,6 +268,42 @@ class Supervisor:
     def _adopt(self, service: PlannedService) -> bool:
         if service.name in self.processes or service.launch.health_url is None:
             return False
+        state = self._load_state()
+        entries = state.get("services") if isinstance(state, dict) else None
+        entry = next(
+            (
+                item for item in entries
+                if isinstance(item, dict) and item.get("service") == service.name
+            ),
+            None,
+        ) if isinstance(entries, list) else None
+        pid = entry.get("pid") if isinstance(entry, dict) else None
+        if (
+            isinstance(pid, int)
+            and not isinstance(pid, bool)
+            and isinstance(entry, dict)
+            and self._entry_alive(entry)
+            and self._healthy(service)
+        ):
+            create_time = entry.get("create_time")
+            port = entry.get("port")
+            self.adopted[service.name] = {
+                "pid": pid,
+                "create_time": (
+                    float(create_time)
+                    if isinstance(create_time, (int, float))
+                    and not isinstance(create_time, bool)
+                    else None
+                ),
+                "port": (
+                    int(port)
+                    if isinstance(port, int) and not isinstance(port, bool)
+                    else None
+                ),
+            }
+            self.external_shared.discard(service.name)
+            return True
+        self.adopted.pop(service.name, None)
         if self._healthy(service):
             self.external_shared.add(service.name)
             return True
@@ -421,7 +463,10 @@ class Supervisor:
         if not isinstance(previous_entries, list):
             previous_entries = []
         owned_names = (
-            set(self.processes) | self.shared_services | self.external_shared
+            set(self.processes)
+            | self.shared_services
+            | self.external_shared
+            | set(self.adopted)
         )
         entries = [
             dict(entry) for entry in previous_entries
@@ -459,6 +504,35 @@ class Supervisor:
                 "owner_pid": os.getpid(),
             }
             for name, process in self.processes.items()
+        )
+        entries.extend(
+            {
+                "service": name,
+                "pid": record["pid"],
+                "port": record.get("port") or _port(plan, name, 0),
+                "started_at": time.time(),
+                "create_time": record.get("create_time"),
+                "shared": False,
+                "external": True,
+                "adopted": True,
+                "parallel_slots": _slots(plan, name),
+                "health_url": next(
+                    (item.launch.health_url for item in plan.services if item.name == name),
+                    None,
+                ),
+                "model_ref": next(
+                    (item.model_ref for item in plan.services if item.name == name), None
+                ),
+                "quant": next(
+                    (item.quant for item in plan.services if item.name == name), None
+                ),
+                "backend": next(
+                    (item.backend for item in plan.services if item.name == name), None
+                ),
+                "owner_pid": os.getpid(),
+            }
+            for name, record in self.adopted.items()
+            if name not in self.processes
         )
         entries.extend(
             {
@@ -658,6 +732,11 @@ class Supervisor:
 
     def down(self, foreign: bool = False) -> RuntimeStatus:
         with self._lock:
+            adopted_names = set(self.adopted)
+            for record in self.adopted.values():
+                pid = record.get("pid")
+                if isinstance(pid, int) and not isinstance(pid, bool):
+                    self._terminator(pid)
             for process in list(self.processes.values()):
                 if process.poll() is not None:
                     continue
@@ -683,6 +762,8 @@ class Supervisor:
                 retained: list[dict[str, object]] = []
                 for entry in state.get("services", []):
                     if not isinstance(entry, dict):
+                        continue
+                    if entry.get("service") in adopted_names:
                         continue
                     owner = entry.get("owner_pid", state.get("owner_pid"))
                     if owner == os.getpid():
@@ -720,6 +801,7 @@ class Supervisor:
             self.processes.clear()
             self.shared_services.clear()
             self.external_shared.clear()
+            self.adopted.clear()
             self.idle.clear()
             self.restarts.clear()
             self.failed.clear()
@@ -780,13 +862,19 @@ class Supervisor:
 
     def unload(self, service_name: str) -> bool:
         with self._lock:
-            if (
-                service_name not in self.processes
-                or service_name in self.shared_services
-                or service_name in self.external_shared
-            ):
+            if service_name in self.shared_services or service_name in self.external_shared:
                 return False
-            self._stop_process(service_name)
+            adopted = self.adopted.get(service_name)
+            if adopted is not None:
+                pid = adopted.get("pid")
+                if not isinstance(pid, int) or isinstance(pid, bool):
+                    return False
+                self._terminator(pid)
+                self.adopted.pop(service_name, None)
+            elif service_name not in self.processes:
+                return False
+            else:
+                self._stop_process(service_name)
             self.idle.add(service_name)
             self.restarts.pop(service_name, None)
             self.failed.pop(service_name, None)
@@ -851,6 +939,22 @@ class Supervisor:
                 "backend": planned(name).backend} if planned(name) else {}),
             **({"note": self.notes[name]} if name in self.notes else {}),
         } for name in self.shared_services if name not in self.processes)
+        entries.extend({
+            "service": name,
+            "pid": record.get("pid"),
+            "running": (
+                self._healthy(planned(name))
+                if planned(name) is not None
+                else self._entry_alive(record)
+            ),
+            "external": True,
+            "adopted": True,
+            "parallel_slots": _slots(self.active_plan, name),
+            **({"model_ref": planned(name).model_ref,
+                "quant": planned(name).quant,
+                "backend": planned(name).backend} if planned(name) else {}),
+            **({"note": self.notes[name]} if name in self.notes else {}),
+        } for name, record in self.adopted.items() if name not in self.processes)
         entries.extend({
             "service": name,
             "pid": None,
@@ -964,13 +1068,19 @@ class Supervisor:
             for service in self.active_plan.services:
                 if service.name in self.idle:
                     continue
+                adopted = self.adopted.get(service.name)
+                adopted_dead = adopted is not None and not self._entry_alive(adopted)
+                if adopted_dead:
+                    self.adopted.pop(service.name, None)
+                    self.external_shared.discard(service.name)
+                    changed = True
                 if (
                     service.name in self.active_plan.swap_group
                     and service.name not in self.processes
                     and service.name not in self.external_shared
                 ):
                     continue
-                if self._adopt(service):
+                if not adopted_dead and self._adopt(service):
                     self.failed.pop(service.name, None)
                     changed = True
                     continue

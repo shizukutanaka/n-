@@ -115,10 +115,11 @@ configured, this endpoint is protected by that key.
 ## Idle keep-alive
 
 Set `NMESH_KEEP_ALIVE` to an idle timeout in seconds. The default `0` disables
-idle unloading. When enabled, nmesh unloads only processes it launched itself;
-shared Ollama daemons and adopted foreign processes are never stopped. Ollama's
-own model retention is not managed by nmesh. An idle service is revived before
-the next request reaches it.
+idle unloading. Processes nmesh started in this `NMESH_HOME` remain unloadable
+even when a different nmesh process, such as a detached gateway, re-attaches to
+them. Shared Ollama daemons and servers nmesh only found listening on a port
+are never stopped. Ollama's own model retention is not managed by nmesh. An
+idle service is revived before the next request reaches it.
 
 Use `nmesh unload` to unload planned services manually. The gateway also exposes
 `POST /admin/unload`, `POST /admin/unload/{service}`, and
