@@ -252,6 +252,7 @@ def test_logs_endpoint_reads_tail_and_reports_missing(monkeypatch, tmp_path) -> 
     with TestClient(create_app(plan)) as client:
         response = client.get("/logs/chat?lines=1")
         missing = client.get("/logs/missing")
+        traversal = client.get("/logs/..%2F..%2Fplan")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -261,6 +262,8 @@ def test_logs_endpoint_reads_tail_and_reports_missing(monkeypatch, tmp_path) -> 
     }
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == 404
+    assert traversal.status_code == 404
+    assert traversal.json()["error"]["code"] == 404
 
 
 def test_logs_endpoint_requires_api_key(monkeypatch, tmp_path) -> None:

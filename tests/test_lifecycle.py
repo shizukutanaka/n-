@@ -107,6 +107,8 @@ def test_logs_cli(monkeypatch, tmp_path: Path, capsys) -> None:
     assert payload["lines"] == ["first", "second"]
     assert cli.main(["logs", "missing"]) == 1
     assert "No log found" in capsys.readouterr().err
+    assert cli.main(["logs", "../x"]) == 1
+    assert "No log found" in capsys.readouterr().err
 
 
 def test_gateway_non_owner_is_retained(tmp_path: Path) -> None:

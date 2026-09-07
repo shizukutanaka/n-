@@ -972,9 +972,14 @@ def create_app(
             "token_calibration": _calibration_metrics(selected.services),
         }
 
-    @app.get("/logs/{service}")
+    @app.get("/logs/{service:path}")
     async def logs(service: str, lines: int = 50) -> dict[str, object]:
-        path = log_path(service)
+        try:
+            path = log_path(service)
+        except ValueError:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown log: {service}"
+            ) from None
         if not path.is_file():
             raise HTTPException(status_code=404, detail=f"Unknown log: {service}")
         return {

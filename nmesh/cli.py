@@ -650,8 +650,11 @@ def _logs(args: argparse.Namespace) -> int:
             for service in services:
                 _console().print(service)
         return 0
-    path = log_path(args.service)
-    if not path.is_file():
+    try:
+        path = log_path(args.service)
+    except ValueError:
+        path = None
+    if path is None or not path.is_file():
         print(
             i18n.t("err.no_log", language, service=args.service),
             file=sys.stderr,

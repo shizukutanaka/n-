@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import BinaryIO
 
@@ -8,6 +9,11 @@ from nmesh.paths import nmesh_home
 
 LOG_MAX_BYTES = 5 * 1024 * 1024
 _TAIL_BYTES = 256 * 1024
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _safe(name: str) -> bool:
+    return bool(_SAFE_NAME.fullmatch(name)) and name not in {".", ".."}
 
 
 def _max_bytes() -> int:
@@ -19,6 +25,8 @@ def log_dir() -> Path:
 
 
 def log_path(name: str) -> Path:
+    if not _safe(name):
+        raise ValueError(f"unsafe log name: {name}")
     return log_dir() / f"{name}.log"
 
 
@@ -28,9 +36,11 @@ def rotate(path: Path) -> None:
 
 
 def open_log(name: str) -> BinaryIO:
-    directory = log_dir()
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{name}.log"
+    try:
+        path = log_path(name)
+    except ValueError as error:
+        raise OSError(str(error)) from error
+    path.parent.mkdir(parents=True, exist_ok=True)
     rotate(path)
     return path.open("ab")
 
@@ -38,7 +48,10 @@ def open_log(name: str) -> BinaryIO:
 def tail(name: str, lines: int = 20) -> list[str]:
     if lines <= 0:
         return []
-    path = log_path(name)
+    try:
+        path = log_path(name)
+    except ValueError:
+        return []
     if not path.exists():
         return []
     with path.open("rb") as handle:
