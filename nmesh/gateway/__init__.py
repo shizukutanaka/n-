@@ -11,7 +11,19 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 
+from nmesh import i18n
+from nmesh.artifact import service_fingerprint
 from nmesh.bench import benchmark_key
+from nmesh.orchestrate import (
+    PROTOCOL_VERSION,
+    Endpoint,
+    Ledger,
+    RoleIdentity,
+    best_for,
+    decide,
+    delegate,
+    load_cache,
+)
 from nmesh.planner import PLAN_PATH, Plan, PlannedService, load_plan
 from nmesh.runtime import ensure_running, heartbeat, idle_services, unload
 from nmesh.runtime import status as runtime_status
@@ -268,6 +280,156 @@ def _base_url(service: PlannedService) -> str:
     return "http://127.0.0.1:11434" if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
     )
+
+
+def _delegation_identity(service: PlannedService) -> RoleIdentity:
+    return RoleIdentity(
+        model_id=service.model_id,
+        quant=service.quant,
+        backend=service.backend,
+        artifact=service_fingerprint(service.backend, service.model_ref) or "",
+    )
+
+
+def _delegation_pair(
+    plan: Plan,
+) -> tuple[PlannedService | None, PlannedService | None]:
+    lead_name = plan.routing.role_to_service.get("chat", "")
+    lead = next((item for item in plan.services if item.name == lead_name), None)
+    if lead is None:
+        return None, None
+    worker_name = plan.routing.role_to_service.get("worker", "")
+    worker = next(
+        (
+            item for item in plan.services
+            if item.name == worker_name and item.name != lead.name
+        ),
+        None,
+    )
+    if worker is None:
+        candidates = [item for item in plan.services if item.name != lead.name]
+        worker = min(
+            candidates,
+            key=lambda item: (item.memory.weight_bytes, item.model_id),
+            default=None,
+        )
+    return lead, worker
+
+
+def _delegation_gate(
+    plan: Plan,
+) -> tuple[
+    PlannedService | None,
+    PlannedService | None,
+    object,
+    str,
+    str,
+]:
+    lead, worker = _delegation_pair(plan)
+    if lead is None or worker is None:
+        return lead, worker, None, "no_worker", "no_worker"
+    record = best_for(
+        load_cache(),
+        _delegation_identity(lead),
+        _delegation_identity(worker),
+        PROTOCOL_VERSION,
+    )
+    decision, reason = decide(record)
+    return lead, worker, record, decision, reason
+
+
+def _delegation_gate_error(reason: str, record: object) -> str:
+    if record is None:
+        return i18n.t("err.delegate_gate", i18n.lang(), reason=reason)
+    return i18n.t(
+        "err.delegate_gate_stats",
+        i18n.lang(),
+        reason=reason,
+        delegated=getattr(record, "delegated_passed", 0),
+        lead=getattr(record, "lead_passed", 0),
+        p=getattr(record, "delegated_p", 1.0),
+    )
+
+
+async def _delegated_completion(
+    request: Mapping[str, object], plan: Plan
+) -> dict[str, object]:
+    if bool(request.get("stream")):
+        raise HTTPException(
+            status_code=400,
+            detail=i18n.t("err.delegate_stream", i18n.lang()),
+        )
+    lead, worker, record, decision, reason = _delegation_gate(plan)
+    if lead is None or worker is None:
+        raise HTTPException(
+            status_code=409,
+            detail=i18n.t("err.delegate_worker", i18n.lang()),
+        )
+    if decision != "allow":
+        raise HTTPException(
+            status_code=409,
+            detail=_delegation_gate_error(reason, record),
+        )
+    try:
+        max_tokens = int(
+            request.get("max_tokens")
+            or request.get("max_completion_tokens")
+            or 256
+        )
+    except (TypeError, ValueError):
+        max_tokens = 256
+    prompt = _content(request)
+    ledger = Ledger()
+
+    def run() -> object:
+        assert httpx is not None
+        with httpx.Client(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
+            return delegate(
+                client,
+                prompt,
+                max(1, max_tokens),
+                lead=Endpoint(_base_url(lead), lead.model_ref),
+                worker=Endpoint(_base_url(worker), worker.model_ref),
+                ledger=ledger,
+            )
+
+    try:
+        result = await asyncio.to_thread(run)
+    except (httpx.HTTPError, ValueError) as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    role = "worker" if result.accepted else "lead"
+    return {
+        "id": f"nmesh-delegate-{int(time.time() * 1000)}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": "nmesh-delegate",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": result.answer},
+            "finish_reason": "stop",
+        }],
+        "usage": {
+            "prompt_tokens": (
+                ledger.worker.prompt_tokens
+                + ledger.verify.prompt_tokens
+                + ledger.rescue.prompt_tokens
+            ),
+            "completion_tokens": (
+                ledger.worker.completion_tokens
+                + ledger.verify.completion_tokens
+                + ledger.rescue.completion_tokens
+            ),
+            "total_tokens": (
+                ledger.worker.prompt_tokens
+                + ledger.verify.prompt_tokens
+                + ledger.rescue.prompt_tokens
+                + ledger.worker.completion_tokens
+                + ledger.verify.completion_tokens
+                + ledger.rescue.completion_tokens
+            ),
+        },
+        "nmesh_role": role,
+    }
 
 
 def _upstream_body(request: Mapping[str, object], service: PlannedService) -> dict[str, object]:
@@ -1030,6 +1192,9 @@ def create_app(
         plan_state.maybe_reload()
         selected, _ = plan_state.snapshot()
         ids = ["nmesh-auto"] + [f"nmesh-{service.name}" for service in selected.services]
+        _, worker, _, decision, _ = _delegation_gate(selected)
+        if worker is not None and decision == "allow":
+            ids.append("nmesh-delegate")
         created = _created_timestamp(selected)
         return {"object": "list", "data": [
             {
@@ -1048,6 +1213,9 @@ def create_app(
         ids = {"nmesh-auto"} | {
             f"nmesh-{service.name}" for service in selected.services
         }
+        _, worker, _, decision, _ = _delegation_gate(selected)
+        if worker is not None and decision == "allow":
+            ids.add("nmesh-delegate")
         if model_id not in ids:
             raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
         return {
@@ -1181,6 +1349,8 @@ def create_app(
     async def chat_completions(request: dict[str, object]) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
+        if request.get("model") == "nmesh-delegate":
+            return await _delegated_completion(request, selected)
         token_hint = await _routing_token_hint(request, selected)
         service = _service(selected, route(request, selected, token_hint=token_hint))
         return await proxy(
