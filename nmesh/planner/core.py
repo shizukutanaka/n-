@@ -168,6 +168,7 @@ class Plan:
     install_hints: list[str]
     total_download_bytes: int
     runnable: bool = True
+    missing_backends: list[str] = field(default_factory=list)
 
 
 def _profile_budgets(profile: HardwareProfile | None, source: str = "total") -> tuple[float, float]:
@@ -654,10 +655,13 @@ def _reserved_memory(
 def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfile,
                  services: list[PlannedService], swap_group: list[str],
                  role_to_service: dict[str, str], hints: list[str],
+                 missing_backends: list[str],
                  budget_source: str, warnings: list[str],
                  language: str = "en") -> None:
     if not candidate.installed:
         hints.append(t(INSTALL_HINTS[candidate.backend], language))
+        if candidate.backend not in missing_backends:
+            missing_backends.append(candidate.backend)
     indices: list[int] = []
     tensor_parallel = 1
     name = group[0]
@@ -1342,6 +1346,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             t("warn.backend_no_gpu", selected.lang)
         )
     hints: list[str] = []
+    missing_backends: list[str] = []
     for model in catalog_models:
         if (
             any(role in model.roles for role in roles)
@@ -1546,7 +1551,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     warn_capacity_tradeoff(role, role_candidate, empty_candidate)
                     _add_service(
                         [role], role_candidate, profile, services, swap_group,
-                        role_to_service, hints, selected.budget_source, warnings,
+                        role_to_service, hints, missing_backends,
+                        selected.budget_source, warnings,
                         selected.lang,
                     )
                     total_download += int(role_candidate.memory.disk_needed)
@@ -1568,6 +1574,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         warn_capacity_tradeoff(group[0], candidate, empty_candidate)
         _add_service(
             group, candidate, profile, services, swap_group, role_to_service, hints,
+            missing_backends,
             selected.budget_source, warnings, selected.lang,
         )
         total_download += int(candidate.memory.disk_needed)
@@ -1842,7 +1849,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         services, swap_group,
         RoutingRules("rules", role_to_service, {"nmesh-auto": role_to_service.get("chat", "")}),
         list(dict.fromkeys(warnings)), list(dict.fromkeys(hints)),
-        total_download, runnable,
+        total_download, runnable, list(dict.fromkeys(missing_backends)),
     )
 
 
@@ -1937,6 +1944,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
         policy, services, [str(x) for x in data["swap_group"]], routing,
         [str(x) for x in data["warnings"]], [str(x) for x in data["install_hints"]],
         int(data["total_download_bytes"]), bool(data.get("runnable", True)),
+        [str(x) for x in data.get("missing_backends", [])],
     )
 
 
