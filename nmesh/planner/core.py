@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from nmesh import __version__
+from nmesh.artifact import service_fingerprint
 from nmesh.artifacts import artifact_key
 from nmesh.catalog import ModelSpec
 from nmesh.eval.cache import EvalSummary
@@ -21,8 +22,17 @@ from nmesh.eval.stats import (
     min_resolvable_difference,
 )
 from nmesh.i18n import t
+from nmesh.orchestrate.measure import RoleIdentity
 from nmesh.paths import nmesh_home
 from nmesh.probe import GPUInfo, HardwareProfile, Tier
+from nmesh.spec import (
+    KINDS,
+    SpecConfig,
+    best_for,
+    decide,
+    engine_identity,
+    load_cache,
+)
 
 BPW = {
     "f16": 16.0, "q8_0": 8.5, "q6_k": 6.6, "q5_k_m": 5.7,
@@ -79,6 +89,18 @@ class Policy:
     languages: tuple[str, ...] = ()
     model_ids: tuple[str, ...] = ()
     eval_evidence: bool = True
+    spec: str = "none"
+    spec_draft: str = ""
+    spec_n_max: int = 3
+    ignore_spec_evidence: bool = False
+
+    def __post_init__(self) -> None:
+        if self.spec not in KINDS:
+            raise ValueError(f"Unknown speculation kind: {self.spec}")
+        if self.spec == "draft" and not self.spec_draft.strip():
+            raise ValueError("spec_draft is required for draft speculation")
+        if self.spec_n_max < 1:
+            raise ValueError("spec_n_max must be positive")
 
 
 @dataclass(frozen=True)
@@ -148,6 +170,8 @@ class PlannedService:
     launch: LaunchSpec
     languages: tuple[str, ...] = ("en",)
     kv_quant: str = "f16"
+    spec: str = "none"
+    spec_draft: str = ""
 
 
 @dataclass(frozen=True)
@@ -349,6 +373,9 @@ def _launch(
     gpu_devices: tuple[str, ...] | None = None,
     language: str = "en",
     roles: Sequence[str] = (),
+    spec: str = "none",
+    spec_draft: str = "",
+    spec_n_max: int = 3,
     *,
     binary: str | None = None,
 ) -> LaunchSpec:
@@ -418,6 +445,21 @@ def _launch(
             and _honors_kv_quant(backend, backend_flags)
         ):
             argv += ["--cache-type-k", kv_quant, "--cache-type-v", kv_quant]
+        if backend == "llamacpp" and spec != "none" and _honors_spec(
+            backend, backend_flags, spec
+        ):
+            if spec == "ngram":
+                argv += ["--spec-type", "ngram-simple"]
+            elif spec == "draft":
+                argv += [
+                    "--spec-type", "draft-simple",
+                    "--spec-draft-model", spec_draft,
+                    "--spec-draft-n-max", str(spec_n_max),
+                ]
+        elif spec != "none" and warnings is not None:
+            warnings.append(
+                t("warn.spec_unsupported", language, service=model.id)
+            )
         if backend == "llamacpp" and embed_only:
             if not known or "--embeddings" in backend_flags:
                 embedding_flag = "--embeddings"
@@ -499,12 +541,14 @@ class _Candidate:
 
 def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: str,
                  backend: str, gpu_name: str, layers: int,
-                 kv_quant: str = "f16") -> float | None:
+                 kv_quant: str = "f16", spec: str = "none") -> float | None:
     if cache is None:
         return None
     suffix = "" if kv_quant == "f16" else f"|kv{kv_quant}"
+    if spec != "none":
+        suffix += f"|sp{spec}"
     keys: list[object] = [f"{model.id}|{quant}|{backend}|{gpu_name}|{layers}{suffix}"]
-    if kv_quant == "f16":
+    if kv_quant == "f16" and spec == "none":
         keys.extend((
             (model.id, quant, backend, gpu_name, layers),
             f"{model.id}:{quant}:{backend}:{gpu_name}:{layers}",
@@ -614,6 +658,7 @@ def _candidate_for(
             gpu_name = profile.gpus[0].name if profile.gpus else "cpu"
             bench = _bench_value(
                 cache, model, quant, backend, gpu_name, layers, accounted_kv_quant,
+                policy.spec,
             )
             memory = MemoryEstimate(**{**asdict(base), "cpu_bytes": cpu_bytes,
                                        "gpu_bytes": gpu_bytes, "n_gpu_layers": layers})
@@ -681,6 +726,8 @@ _split_memory = split_memory
 
 GPU_LAYER_FLAGS = ("-ngl", "--gpu-layers", "--n-gpu-layers")
 KV_CACHE_TYPE_FLAGS = ("--cache-type-k", "--cache-type-v")
+SPEC_TYPE_FLAGS = ("--spec-type",)
+SPEC_DRAFT_FLAGS = ("--spec-draft-model", "--spec-draft-n-max")
 
 
 def _supports_gpu_layers(
@@ -696,6 +743,19 @@ def _honors_kv_quant(
     if backend != "llamacpp":
         return False
     return backend_flags is None or all(flag in backend_flags for flag in KV_CACHE_TYPE_FLAGS)
+
+
+def _honors_spec(
+    backend: str,
+    backend_flags: frozenset[str] | tuple[str, ...] | None,
+    kind: str,
+) -> bool:
+    if backend != "llamacpp":
+        return False
+    required = SPEC_TYPE_FLAGS + (
+        SPEC_DRAFT_FLAGS if kind == "draft" else ()
+    )
+    return backend_flags is None or all(flag in backend_flags for flag in required)
 
 
 def _plan_group(group: list[str], pools: dict[str, list[_Candidate]]) -> _Candidate | None:
@@ -751,13 +811,138 @@ def _reserved_memory(
     )
 
 
+def _spec_draft_path(value: str) -> Path | None:
+    candidate = Path(value).expanduser()
+    if candidate.is_file():
+        return candidate.resolve()
+    models = nmesh_home() / "models"
+    if not models.is_dir():
+        return None
+    wanted = value.casefold()
+    return next(
+        (
+            item.resolve()
+            for item in models.glob("*.gguf")
+            if item.stem.casefold() == wanted
+        ),
+        None,
+    )
+
+
+def _spec_identity(path: Path) -> RoleIdentity:
+    return RoleIdentity(
+        model_id=path.stem,
+        quant="",
+        backend="llamacpp",
+        artifact=service_fingerprint("llamacpp", str(path)) or "",
+    )
+
+
+def _spec_for_service(
+    candidate: _Candidate,
+    profile: HardwareProfile,
+    policy: Policy,
+    memory: MemoryEstimate,
+    warnings: list[str],
+    language: str,
+) -> tuple[str, str, MemoryEstimate]:
+    if policy.spec == "none":
+        return "none", "", memory
+    if candidate.backend != "llamacpp":
+        warnings.append(t("warn.spec_unsupported", language, service=candidate.model.id))
+        return "none", "", memory
+    backend_flags = profile.backend_flags.get(candidate.backend)
+    if not _honors_spec(candidate.backend, backend_flags, policy.spec):
+        warnings.append(t("warn.spec_unsupported", language, service=candidate.model.id))
+        return "none", "", memory
+    draft_path: Path | None = None
+    if policy.spec == "draft":
+        draft_path = _spec_draft_path(policy.spec_draft)
+        if draft_path is None:
+            warnings.append(
+                t("warn.spec_draft_missing", language, service=candidate.model.id,
+                  draft=policy.spec_draft)
+            )
+            return "none", "", memory
+        if candidate.n_gpu_layers > 0:
+            warnings.append(
+                t("warn.spec_draft_gpu_unmodeled", language,
+                  service=candidate.model.id)
+            )
+            return "none", "", memory
+        draft_bytes = draft_path.stat().st_size
+        if memory.cpu_bytes + draft_bytes > memory.ram_budget + 1:
+            warnings.append(
+                t(
+                    "warn.spec_draft_no_fit",
+                    language,
+                    service=candidate.model.id,
+                    bytes=draft_bytes,
+                )
+            )
+            return "none", "", memory
+    target = RoleIdentity(
+        model_id=candidate.model.id,
+        quant=candidate.quant,
+        backend=candidate.backend,
+        artifact=service_fingerprint(
+            candidate.backend,
+            _source_for(candidate.backend, candidate.model, candidate.quant),
+        ) or "",
+    )
+    spec_config = SpecConfig(
+        kind=policy.spec,
+        draft=_spec_identity(draft_path) if draft_path is not None else None,
+        n_max=policy.spec_n_max,
+    )
+    try:
+        cache = load_cache()
+    except (OSError, TypeError, ValueError):
+        cache = {}
+    record = best_for(
+        cache,
+        target,
+        spec_config,
+        engine_identity(profile),
+    )
+    decision, reason = decide(record)
+    if not policy.ignore_spec_evidence and decision != "allow":
+        speeds = "-"
+        if record is not None:
+            speeds = ", ".join(
+                f"{item.name}={item.speedup:.2f}x" for item in record.classes
+            ) or "-"
+        warnings.append(
+            t(
+                "warn.spec_refused",
+                language,
+                service=candidate.model.id,
+                reason=reason,
+                speeds=speeds,
+            )
+        )
+        return "none", "", memory
+    if policy.ignore_spec_evidence:
+        warnings.append(t("warn.spec_override", language, service=candidate.model.id))
+    if draft_path is not None:
+        draft_bytes = draft_path.stat().st_size
+        memory = replace(
+            memory,
+            weight_bytes=memory.weight_bytes + draft_bytes,
+            total_bytes=memory.total_bytes + draft_bytes,
+            cpu_bytes=memory.cpu_bytes + draft_bytes,
+        )
+    return policy.spec, str(draft_path or ""), memory
+
+
 def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfile,
                  services: list[PlannedService], swap_group: list[str],
                  role_to_service: dict[str, str], hints: list[str],
                  missing_backends: list[str],
                  budget_source: str, warnings: list[str],
                  language: str = "en",
-                 resident_override: bool | None = None) -> None:
+                 resident_override: bool | None = None,
+                 spec_policy: Policy | None = None) -> None:
     if not candidate.installed:
         hints.append(t(INSTALL_HINTS[candidate.backend], language))
         if candidate.backend not in missing_backends:
@@ -768,6 +953,14 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
     port = _service_port_base() + len(services)
     layers = candidate.n_gpu_layers
     memory = candidate.memory
+    spec_kind, spec_draft, memory = _spec_for_service(
+        candidate,
+        profile,
+        spec_policy or Policy(),
+        memory,
+        warnings,
+        language,
+    )
     backend_flags = profile.backend_flags.get(candidate.backend)
     gpu_devices = profile.backend_gpu_devices.get(candidate.backend)
     if (
@@ -791,6 +984,9 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         gpu_devices=gpu_devices,
         language=language,
         roles=group,
+        spec=spec_kind,
+        spec_draft=spec_draft,
+        spec_n_max=(spec_policy.spec_n_max if spec_policy is not None else 3),
         binary=profile.backend_paths.get(candidate.backend),
     )
     if candidate.backend == "llamacpp" and "hf_gguf" in candidate.model.sources:
@@ -809,6 +1005,8 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         memory, candidate.decode_tps, candidate.estimated, launch,
         candidate.model.languages,
         kv_quant=candidate.kv_quant,
+        spec=spec_kind,
+        spec_draft=spec_draft,
     )
     if candidate.requested_kv_quant != candidate.kv_quant:
         warnings.append(
@@ -1698,6 +1896,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     role_to_service, hints, missing_backends,
                     selected.budget_source, warnings, selected.lang,
                     resident_override=True,
+                    spec_policy=selected,
                 )
                 worker = services[-1]
                 resident_vram, resident_ram = _reserved_memory(
@@ -1745,7 +1944,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         [role], role_candidate, profile, services, swap_group,
                         role_to_service, hints, missing_backends,
                         selected.budget_source, warnings,
-                        selected.lang,
+                        selected.lang, spec_policy=selected,
                     )
                     total_download += int(role_candidate.memory.disk_needed)
                 else:
@@ -1766,8 +1965,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         warn_capacity_tradeoff(group[0], candidate, empty_candidate)
         _add_service(
             group, candidate, profile, services, swap_group, role_to_service, hints,
-            missing_backends,
-            selected.budget_source, warnings, selected.lang,
+            missing_backends, selected.budget_source, warnings, selected.lang,
+            spec_policy=selected,
         )
         total_download += int(candidate.memory.disk_needed)
     seen_excluded: set[str] = set()
@@ -2101,6 +2300,10 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
                     tuple(str(x) for x in pol.get("languages", [])),
                     tuple(str(x) for x in pol.get("model_ids", [])),
                     bool(pol.get("eval_evidence", True)),
+                    str(pol.get("spec", "none")),
+                    str(pol.get("spec_draft", "")),
+                    int(pol.get("spec_n_max", 3)),
+                    bool(pol.get("ignore_spec_evidence", False)),
                     )
     services: list[PlannedService] = []
     for item in data["services"]:
@@ -2128,6 +2331,8 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             memory, float(sd["decode_tps"]), bool(sd["estimated"]), launch,
             tuple(str(x) for x in sd.get("languages", ["en"])),
             kv_quant=str(sd.get("kv_quant", "f16")),
+            spec=str(sd.get("spec", "none")),
+            spec_draft=str(sd.get("spec_draft", "")),
         ))
     rd = data["routing"]
     if not isinstance(rd, dict):
@@ -2149,6 +2354,23 @@ def save_plan(plan: Plan, path: Path | None = None) -> Path:
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     try:
         payload = asdict(plan)
+        policy_payload = payload.get("policy")
+        if isinstance(policy_payload, dict):
+            for key, default in (
+                ("spec", "none"),
+                ("spec_draft", ""),
+                ("spec_n_max", 3),
+                ("ignore_spec_evidence", False),
+            ):
+                if policy_payload.get(key) == default:
+                    policy_payload.pop(key, None)
+        for service_payload in payload.get("services", []):
+            if not isinstance(service_payload, dict):
+                continue
+            if service_payload.get("spec") == "none":
+                service_payload.pop("spec", None)
+            if service_payload.get("spec_draft") == "":
+                service_payload.pop("spec_draft", None)
         temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(temporary, target)
     except OSError:
