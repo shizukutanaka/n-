@@ -353,6 +353,46 @@ def test_supervisor_heartbeat_skips_unloaded_swap_member(
     supervisor.down()
 
 
+def test_supervisor_idle_unload_does_not_restart_and_revives(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    plan = _recovery_plan(catalog)
+    processes: list[_RecoverProcess] = []
+    supervisor = Supervisor(
+        lambda _service: processes.append(_RecoverProcess()) or processes[-1],
+        tmp_path / "idle.json",
+        health_timeout=0.01,
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    supervisor.up(plan, no_download=True, admit=False)
+    supervisor.restarts["chat"] = [1.0]
+
+    assert supervisor.unload("missing") is False
+    supervisor.shared_services.add("chat")
+    assert supervisor.unload("chat") is False
+    supervisor.shared_services.clear()
+    supervisor.external_shared.add("chat")
+    assert supervisor.unload("chat") is False
+    supervisor.external_shared.clear()
+
+    assert supervisor.unload("chat") is True
+    assert processes[0].poll() == 0
+    assert supervisor.idle_services() == {"chat"}
+    assert supervisor.restarts == {}
+    idle = next(item for item in supervisor.status().services if item["service"] == "chat")
+    assert idle["idle"] is True
+    assert idle["running"] is False
+    assert "failed" not in idle
+    assert supervisor.status().running is False
+    supervisor.heartbeat()
+    assert len(processes) == 1
+
+    supervisor.ensure_running("chat", plan)
+    assert len(processes) == 2
+    assert supervisor.idle_services() == set()
+    supervisor.down()
+
+
 def test_supervisor_ensure_running_revives_dead_process(
     tmp_path, catalog: list[ModelSpec]
 ) -> None:

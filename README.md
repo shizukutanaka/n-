@@ -112,6 +112,18 @@ launching process. Use `nmesh logs` to list services or inspect a log tail.
 Resident gateways also expose `GET /logs/{service}`; when `NMESH_API_KEY` is
 configured, this endpoint is protected by that key.
 
+## Idle keep-alive
+
+Set `NMESH_KEEP_ALIVE` to an idle timeout in seconds. The default `0` disables
+idle unloading. When enabled, nmesh unloads only processes it launched itself;
+shared Ollama daemons and adopted foreign processes are never stopped. Ollama's
+own model retention is not managed by nmesh. An idle service is revived before
+the next request reaches it.
+
+Use `nmesh unload` to unload planned services manually. The gateway also exposes
+`POST /admin/unload`, `POST /admin/unload/{service}`, and
+`GET /admin/running`.
+
 ## Hardware profile simulation
 
 `nmesh doctor --json` output can be saved on a GPU machine and consumed

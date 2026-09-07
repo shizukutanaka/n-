@@ -277,6 +277,69 @@ def test_logs_endpoint_requires_api_key(monkeypatch, tmp_path) -> None:
     assert response.status_code == 401
 
 
+def test_gateway_admin_unload_and_running(monkeypatch) -> None:
+    plan = _completion_plan(1)
+    monkeypatch.setattr(
+        gateway_module,
+        "runtime_status",
+        lambda: SimpleNamespace(services=[{
+            "service": plan.services[0].name,
+            "running": True,
+        }]),
+    )
+    unloaded: list[str] = []
+
+    def fake_unload(name: str) -> bool:
+        unloaded.append(name)
+        return True
+
+    monkeypatch.setattr(gateway_module, "unload", fake_unload)
+    with TestClient(create_app(plan)) as client:
+        response = client.post("/admin/unload/chat")
+        assert response.status_code == 200
+        assert response.json() == {"unloaded": ["chat"]}
+        unknown = client.post("/admin/unload/missing")
+        assert unknown.status_code == 404
+        assert unknown.json()["error"]["code"] == 404
+        running = client.get("/admin/running")
+    assert unloaded == ["chat"]
+    assert running.status_code == 200
+    assert running.json()["services"][0]["in_flight"] == 0
+
+
+def test_gateway_admin_requires_api_key(monkeypatch) -> None:
+    monkeypatch.setenv("NMESH_API_KEY", "test-secret")
+    plan = _completion_plan(1)
+    with TestClient(create_app(plan)) as client:
+        response = client.post("/admin/unload")
+    assert response.status_code == 401
+
+
+def test_gateway_reaper_skips_in_flight(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_module, "KEEP_ALIVE", 5.0)
+    clock = [100.0]
+    monkeypatch.setattr(gateway_module.time, "monotonic", lambda: clock[0])
+    plan = _completion_plan(1)
+    monkeypatch.setattr(
+        gateway_module,
+        "runtime_status",
+        lambda: SimpleNamespace(services=[{
+            "service": "chat",
+            "running": True,
+        }]),
+    )
+    unloaded: list[str] = []
+    monkeypatch.setattr(gateway_module, "unload", lambda name: unloaded.append(name) or True)
+    app = create_app(plan)
+    ticket = app.state.in_flight.enter("chat")
+    clock[0] = 110.0
+    asyncio.run(app.state.reap())
+    assert unloaded == []
+    app.state.in_flight.leave("chat", ticket)
+    asyncio.run(app.state.reap())
+    assert unloaded == ["chat"]
+
+
 def test_openai_model_listing_and_detail() -> None:
     plan = _completion_plan(1)
     with TestClient(create_app(plan)) as client:

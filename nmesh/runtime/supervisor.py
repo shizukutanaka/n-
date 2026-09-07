@@ -92,6 +92,7 @@ class Supervisor:
         self.processes: dict[str, ProcessLike] = {}
         self.shared_services: set[str] = set()
         self.external_shared: set[str] = set()
+        self.idle: set[str] = set()
         self.restarts: dict[str, list[float]] = {}
         self.failed: dict[str, str] = {}
         self.active_plan: Plan | None = None
@@ -601,8 +602,10 @@ class Supervisor:
                         if dead:
                             self.processes.pop(service.name, None)
                         if service.name not in self.processes and self._adopt(service):
+                            self.idle.discard(service.name)
                             continue
                         if self._already_up(service):
+                            self.idle.discard(service.name)
                             if service.launch.shared_daemon:
                                 self.shared_services.add(service.name)
                             continue
@@ -637,6 +640,7 @@ class Supervisor:
                                 self.active_plan = current
                             self.notes[service.name] = warning
                         self.processes[service.name] = self.launcher(service)
+                        self.idle.discard(service.name)
                         self._arm_atexit()
                         self.failed.pop(service.name, None)
                         if not self._wait_health(service):
@@ -716,6 +720,7 @@ class Supervisor:
             self.processes.clear()
             self.shared_services.clear()
             self.external_shared.clear()
+            self.idle.clear()
             self.restarts.clear()
             self.failed.clear()
             self.active_plan = None
@@ -732,6 +737,7 @@ class Supervisor:
                 raise KeyError(i18n.t(
                     "err.unknown_service", i18n.lang(), service=service_name
                 ))
+            self.idle.discard(service_name)
             actualized = False
             if service_name in selected.swap_group:
                 for name in list(self.processes):
@@ -771,6 +777,26 @@ class Supervisor:
                 save_plan(selected)
             self._persist(selected)
             return self.status()
+
+    def unload(self, service_name: str) -> bool:
+        with self._lock:
+            if (
+                service_name not in self.processes
+                or service_name in self.shared_services
+                or service_name in self.external_shared
+            ):
+                return False
+            self._stop_process(service_name)
+            self.idle.add(service_name)
+            self.restarts.pop(service_name, None)
+            self.failed.pop(service_name, None)
+            if self.active_plan is not None:
+                self._persist(self.active_plan)
+            return True
+
+    def idle_services(self) -> set[str]:
+        with self._lock:
+            return set(self.idle)
 
     def _stop_process(self, service_name: str) -> None:
         process = self.processes.pop(service_name, None)
@@ -837,6 +863,20 @@ class Supervisor:
                 "backend": planned(name).backend} if planned(name) else {}),
             **({"note": self.notes[name]} if name in self.notes else {}),
         } for name in self.external_shared if name not in self.processes)
+        entries.extend({
+            "service": name,
+            "pid": None,
+            "running": False,
+            "idle": True,
+            "restarts": len(self.restarts.get(name, [])),
+            "parallel_slots": _slots(self.active_plan, name),
+            **({"model_ref": planned(name).model_ref,
+                "quant": planned(name).quant,
+                "backend": planned(name).backend} if planned(name) else {}),
+            **({"note": self.notes[name]} if name in self.notes else {}),
+        } for name in self.idle if name not in self.processes
+        and name not in self.shared_services
+        and name not in self.external_shared)
         payload = self._load_state() if self.state_path.exists() else None
         gateway = payload.get("gateway") if payload else None
         gateway_entry = None
@@ -922,6 +962,8 @@ class Supervisor:
                     }
             changed = False
             for service in self.active_plan.services:
+                if service.name in self.idle:
+                    continue
                 if (
                     service.name in self.active_plan.swap_group
                     and service.name not in self.processes
@@ -987,6 +1029,14 @@ def up(plan: Plan | None = None, no_download: bool = False, dry_run: bool = Fals
 
 def down(foreign: bool = False) -> RuntimeStatus:
     return _default.down(foreign=foreign)
+
+
+def unload(service_name: str) -> bool:
+    return _default.unload(service_name)
+
+
+def idle_services() -> set[str]:
+    return _default.idle_services()
 
 
 def record_gateway(pid: int, port: int) -> None:

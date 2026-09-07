@@ -10,6 +10,7 @@ import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 from rich.console import Console
@@ -608,6 +609,13 @@ def _runtime(args: argparse.Namespace) -> int:
             )
     else:
         _console().print(result)
+        if args.command == "status":
+            for item in result.services:
+                if item.get("idle"):
+                    _console().print(
+                        i18n.t("label.service_idle", language,
+                               service=item.get("service"))
+                    )
         if args.command == "up" and args.detach and gateway_log is not None:
             _console().print(
                 i18n.t("label.gateway_log", language, path=gateway_log)
@@ -670,6 +678,34 @@ def _logs(args: argparse.Namespace) -> int:
     else:
         for line in lines:
             _console().print(line)
+    return 0
+
+
+def _unload(args: argparse.Namespace) -> int:
+    path = "/admin/unload"
+    if args.service is not None:
+        path += f"/{quote(args.service, safe='')}"
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{args.port}{path}",
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.loads(response.read().decode())
+    except (OSError, json.JSONDecodeError) as error:
+        print(i18n.t("err.gateway_unload", i18n.lang(), error=error), file=sys.stderr)
+        return 1
+    unloaded = data.get("unloaded", [])
+    if args.service is not None and not unloaded:
+        print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
+              file=sys.stderr)
+        return 1
+    if args.json:
+        _print_json(data)
+    else:
+        print(i18n.t("label.unloaded", i18n.lang(),
+                     services=", ".join(unloaded) if unloaded else
+                     i18n.t("label.none", i18n.lang())))
     return 0
 
 
@@ -1396,6 +1432,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     reload_parser = sub.add_parser("reload")
     reload_parser.add_argument("--port", type=int, default=18000)
     reload_parser.add_argument("--json", action="store_true")
+    unload_parser = sub.add_parser("unload")
+    unload_parser.add_argument("service", nargs="?")
+    unload_parser.add_argument("--port", type=int, default=18000)
+    unload_parser.add_argument("--json", action="store_true")
     for name in ("status", "down"):
         item = sub.add_parser(name)
         item.add_argument("--json", action="store_true")
@@ -1464,6 +1504,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _plan(args)
     if args.command == "reload":
         return _reload(args)
+    if args.command == "unload":
+        return _unload(args)
     if args.command in {"up", "down", "status", "serve"}:
         if args.command == "up":
             args.dry_run = args.dry_run or args.global_dry_run

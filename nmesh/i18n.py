@@ -79,6 +79,7 @@ MESSAGES = {
         "err.no_log": "No log found for service: {service}",
         "err.runtime_start": "Runtime startup failed",
         "err.gateway_reload": "gateway reload failed: {error}",
+        "err.gateway_unload": "gateway unload failed: {error}",
         "err.gateway_unavailable": "gateway unavailable: {error}",
         "err.doctor": "doctor failed: {error}",
         "err.plan": "plan failed: {error}",
@@ -141,6 +142,8 @@ MESSAGES = {
         "label.ttft_p95": "TTFT p95",
         "label.total_median": "Total median",
         "label.reloaded": "Reloaded: {services} (created_at={created_at})",
+        "label.unloaded": "Unloaded: {services}",
+        "label.service_idle": "{service}: idle",
         "label.median_decode": "median decode: {marker}{value} tok/s",
         "label.decode_range": "decode range: {minimum:.2f}–{maximum:.2f} tok/s (spread {spread:.1%})",
         "label.prefill": "prefill:       {marker}{value} tok/s",
@@ -321,6 +324,12 @@ MESSAGES = {
         "label.gateway_log": "ゲートウェイログ: {path}",
     },
 }
+
+MESSAGES["ja"].update({
+    "err.gateway_unload": "\u30b2\u30fc\u30c8\u30a6\u30a7\u30a4\u306e\u30a2\u30f3\u30ed\u30fc\u30c9\u306b\u5931\u6557\u3057\u307e\u3057\u305f: {error}",
+    "label.unloaded": "\u30a2\u30f3\u30ed\u30fc\u30c9\u5b8c\u4e86: {services}",
+    "label.service_idle": "{service}: \u30a2\u30a4\u30c9\u30eb",
+})
 
 MESSAGES["ja"].update({
     "note.eval_underpowered_paired": (
