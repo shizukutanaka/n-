@@ -27,10 +27,12 @@ from nmesh.paths import nmesh_home
 
 from .measure import (
     KIND_NONE,
+    SPEC_HARNESS_VERSION,
     ArmRun,
     ClassComparison,
     SpecConfig,
     compare,
+    control,
 )
 
 #: A class must be at least this much faster to count as a gain.
@@ -52,6 +54,11 @@ MIXED = "mixed"
 #: The repeats disagreed with each other, so nothing was established.
 UNSTABLE = "unstable"
 
+# The quiet-machine cross-launch spread was 3.3--5.3%; a 10% threshold is
+# roughly twice that noise floor and far below the 1.6--2.8x contamination
+# that motivated this control.
+MIN_CONTROL_RATIO = 0.90
+
 
 @dataclass(frozen=True)
 class ClassEvidence:
@@ -63,6 +70,17 @@ class ClassEvidence:
     reference_tps: float
     candidate_tps: float
     acceptance: float
+    reference_spread: float = 0.0
+    candidate_spread: float = 0.0
+
+
+@dataclass(frozen=True)
+class ControlEvidence:
+    """One workload class of the stored A/A control."""
+
+    name: str
+    ratio: float
+    identical: bool
 
 
 @dataclass(frozen=True)
@@ -75,7 +93,8 @@ class SpecRecord:
     harness: str
     repeats: int
     classes: tuple[ClassEvidence, ...]
-    at: float
+    control: tuple[ControlEvidence, ...] = ()
+    at: float = 0.0
 
     @property
     def gains(self) -> tuple[ClassEvidence, ...]:
@@ -91,8 +110,13 @@ class SpecRecord:
 
     @property
     def decision(self) -> str:
-        if not self.classes:
-            return NO_EVIDENCE
+        if not self.classes or not self.control:
+            return NO_EVIDENCE if not self.classes else UNSTABLE
+        if any(
+            item.ratio < MIN_CONTROL_RATIO or not item.identical
+            for item in self.control
+        ):
+            return UNSTABLE
         if any(not item.identical for item in self.classes):
             return NOT_IDENTICAL
         if not self.gains:
@@ -107,6 +131,7 @@ def from_arms(
     candidate: ArmRun,
     *,
     engine: str,
+    control_arm: ArmRun,
 ) -> SpecRecord:
     """Turn a reference/candidate pair into a storable record."""
     comparisons: Sequence[ClassComparison] = compare(reference, candidate)
@@ -115,7 +140,7 @@ def from_arms(
         spec=candidate.spec,
         engine=engine,
         harness=candidate.harness,
-        repeats=min(reference.repeats, candidate.repeats),
+        repeats=min(reference.repeats, candidate.repeats, control_arm.repeats),
         classes=tuple(
             ClassEvidence(
                 name=item.name,
@@ -124,10 +149,20 @@ def from_arms(
                 reference_tps=item.reference_tps,
                 candidate_tps=item.candidate_tps,
                 acceptance=item.acceptance,
+                reference_spread=item.reference_spread,
+                candidate_spread=item.candidate_spread,
             )
             for item in comparisons
         ),
-        at=max(reference.at, candidate.at),
+        control=tuple(
+            ControlEvidence(
+                name=item.name,
+                ratio=item.ratio,
+                identical=item.identical,
+            )
+            for item in control(reference, control_arm)
+        ),
+        at=max(reference.at, candidate.at, control_arm.at),
     )
 
 
@@ -172,6 +207,7 @@ def best_for(
             item.target == target
             and item.spec == spec
             and item.engine == engine
+            and item.harness == SPEC_HARNESS_VERSION
         )
     ]
     return max(matches, key=lambda item: item.at, default=None)
@@ -278,7 +314,17 @@ def _class(data: object) -> ClassEvidence | None:
         field: _number(data.get(field))
         for field in ("speedup", "reference_tps", "candidate_tps", "acceptance")
     }
-    if any(value is None for value in numbers.values()):
+    spreads = {
+        field: (
+            _number(data.get(field))
+            if field in data else 0.0
+        )
+        for field in ("reference_spread", "candidate_spread")
+    }
+    if (
+        any(value is None for value in numbers.values())
+        or any(value is None for value in spreads.values())
+    ):
         return None
     return ClassEvidence(
         name=name,
@@ -287,7 +333,24 @@ def _class(data: object) -> ClassEvidence | None:
         reference_tps=float(numbers["reference_tps"] or 0.0),
         candidate_tps=float(numbers["candidate_tps"] or 0.0),
         acceptance=float(numbers["acceptance"] or 0.0),
+        reference_spread=float(spreads["reference_spread"] or 0.0),
+        candidate_spread=float(spreads["candidate_spread"] or 0.0),
     )
+
+
+def _control(data: object) -> ControlEvidence | None:
+    if not isinstance(data, Mapping):
+        return None
+    name = data.get("name")
+    identical = data.get("identical")
+    ratio = _number(data.get("ratio"))
+    if (
+        not isinstance(name, str)
+        or not isinstance(identical, bool)
+        or ratio is None
+    ):
+        return None
+    return ControlEvidence(name=name, ratio=ratio, identical=identical)
 
 
 def _parse(data: object) -> SpecRecord | None:
@@ -300,6 +363,7 @@ def _parse(data: object) -> SpecRecord | None:
     repeats = data.get("repeats")
     at = _number(data.get("at"))
     rows = data.get("classes")
+    control_rows = data.get("control")
     if (
         target is None
         or spec is None
@@ -307,14 +371,33 @@ def _parse(data: object) -> SpecRecord | None:
         or not isinstance(harness, str)
         or isinstance(repeats, bool)
         or not isinstance(repeats, int)
-        or repeats < 2
+        or repeats < 3
         or at is None
         or not isinstance(rows, Sequence)
         or isinstance(rows, (str, bytes))
+        or (
+            control_rows is not None
+            and (
+                not isinstance(control_rows, Sequence)
+                or isinstance(control_rows, (str, bytes))
+            )
+        )
     ):
         return None
     parsed = [item for row in rows if (item := _class(row)) is not None]
     if len(parsed) != len(rows) or not parsed:
+        return None
+    parsed_control = (
+        [
+            item for row in control_rows
+            if (item := _control(row)) is not None
+        ]
+        if control_rows is not None else []
+    )
+    if (
+        control_rows is not None
+        and len(parsed_control) != len(control_rows)
+    ):
         return None
     return SpecRecord(
         target=target,
@@ -323,6 +406,7 @@ def _parse(data: object) -> SpecRecord | None:
         harness=harness,
         repeats=repeats,
         classes=tuple(parsed),
+        control=tuple(parsed_control),
         at=at,
     )
 
@@ -330,6 +414,7 @@ def _parse(data: object) -> SpecRecord | None:
 __all__ = [
     "ALLOW",
     "MAX_REGRESSION",
+    "MIN_CONTROL_RATIO",
     "MIN_SPEEDUP",
     "MIXED",
     "NOT_FASTER",
@@ -337,6 +422,7 @@ __all__ = [
     "NO_EVIDENCE",
     "UNSTABLE",
     "ClassEvidence",
+    "ControlEvidence",
     "SpecRecord",
     "best_for",
     "cache_path",

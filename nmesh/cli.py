@@ -1686,6 +1686,12 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
     if args.kind == KIND_DRAFT and not args.draft:
         print(i18n.t("err.spec_draft_required", language), file=sys.stderr)
         return 2
+    if args.repeats < 3:
+        print(
+            i18n.t("err.spec_repeats", language),
+            file=sys.stderr,
+        )
+        return 2
     plan = load_plan()
     if plan is None or not plan.services:
         print(i18n.t("err.no_active_plan", language), file=sys.stderr)
@@ -1781,7 +1787,14 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
             reference = arm(False)
             supervisor.down()
             candidate = arm(True)
-            record = from_arms(reference, candidate, engine=engine_id)
+            supervisor.down()
+            control_arm = arm(False)
+            record = from_arms(
+                reference,
+                candidate,
+                engine=engine_id,
+                control_arm=control_arm,
+            )
             save_spec(record)
         except (OSError, RuntimeError, ValueError, httpx.HTTPError) as error:
             print(str(error), file=sys.stderr)
@@ -1795,19 +1808,35 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
             "spec": asdict(record.spec),
             "engine": record.engine,
             "classes": [asdict(item) for item in record.classes],
+            "control": [asdict(item) for item in record.control],
             "decision": decision,
             "reason": reason,
         })
     else:
         table = Table(title="nmesh spec measure")
-        for column in ("class", "reference", "candidate", "speedup", "identical", "acceptance"):
+        for column in (
+            "class", "reference", "candidate", "speedup", "identical",
+            "acceptance", i18n.t("label.spec_ref_spread", language),
+            i18n.t("label.spec_cand_spread", language),
+        ):
             table.add_column(column)
         for item in record.classes:
             table.add_row(
                 item.name, f"{item.reference_tps:.2f}", f"{item.candidate_tps:.2f}",
                 f"{item.speedup:.2f}", str(item.identical), f"{item.acceptance:.2f}",
+                f"{item.reference_spread:.1%}", f"{item.candidate_spread:.1%}",
             )
         _console().print(table)
+        worst = min((item.ratio for item in record.control), default=0.0)
+        identical = bool(record.control) and all(
+            item.identical for item in record.control
+        )
+        print(i18n.t(
+            "label.spec_control",
+            i18n.lang(),
+            ratio=f"{worst:.2f}",
+            identical=identical,
+        ))
         print(f"decision: {decision} ({reason})")
     return 0
 
@@ -1825,11 +1854,16 @@ def _spec_show(args: argparse.Namespace) -> int:
         })
         return 0
     table = Table(title="nmesh spec")
-    for column in ("target", "kind", "engine", "decision"):
+    for column in ("target", "kind", "engine", "control", "decision"):
         table.add_column(column)
     for record in records.values():
+        control_text = ", ".join(
+            f"{item.name}:{item.ratio:.2f}/{item.identical}"
+            for item in record.control
+        ) or "-"
         table.add_row(
             record.target.model_id, record.spec.kind, record.engine,
+            control_text,
             decide_spec(record)[0],
         )
     _console().print(table)
@@ -2207,7 +2241,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     spec_measure = spec_commands.add_parser("measure")
     spec_measure.add_argument("--kind", choices=("ngram", "draft"), required=True)
     spec_measure.add_argument("--draft")
-    spec_measure.add_argument("--repeats", type=int, default=2)
+    spec_measure.add_argument("--repeats", type=int, default=3)
     spec_measure.add_argument("--n-max", type=int, default=3)
     spec_measure.add_argument("--service")
     spec_measure.add_argument("--json", action="store_true")
