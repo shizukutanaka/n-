@@ -41,6 +41,21 @@ from nmesh.eval.stats import (
     min_resolvable_difference,
     wilson_interval,
 )
+from nmesh.orchestrate import (
+    Endpoint,
+    RoleIdentity,
+    decide,
+    from_run,
+)
+from nmesh.orchestrate import (
+    load_cache as load_delegation_cache,
+)
+from nmesh.orchestrate import (
+    measure as orchestrate_measure,
+)
+from nmesh.orchestrate import (
+    save as save_delegation,
+)
 from nmesh.paths import nmesh_home
 from nmesh.planner import (
     Plan,
@@ -1387,6 +1402,207 @@ def _eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def _orchestration_service(
+    plan: Plan, selector: str, role: str
+) -> PlannedService | None:
+    selector = plan.routing.role_to_service.get(selector, selector)
+    service = next(
+        (item for item in plan.services if item.name == selector),
+        None,
+    )
+    if service is not None:
+        return service
+    return next((item for item in plan.services if item.model_id == selector), None)
+
+
+def _orchestration_identity(service: PlannedService) -> RoleIdentity:
+    return RoleIdentity(
+        model_id=service.model_id,
+        quant=service.quant,
+        backend=service.backend,
+        artifact=service_fingerprint(service.backend, service.model_ref) or "",
+    )
+
+
+def _orchestration_url(service: PlannedService) -> str:
+    return "http://127.0.0.1:11434" if service.backend == "ollama" else (
+        f"http://127.0.0.1:{service.port}"
+    )
+
+
+def _orchestrate_measure_command(args: argparse.Namespace) -> int:
+    plan = load_plan()
+    if plan is None or not plan.services:
+        print(i18n.t("err.orchestrate_plan", i18n.lang()), file=sys.stderr)
+        return 1
+    lead = _orchestration_service(plan, args.lead, "lead")
+    worker = _orchestration_service(plan, args.worker, "worker")
+    if worker is None and args.worker == "worker":
+        worker = next((item for item in plan.services if item != lead), None)
+    if lead is None or worker is None:
+        print(
+            i18n.t(
+                "err.orchestrate_service",
+                i18n.lang(),
+                lead=args.lead,
+                worker=args.worker,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    tasks = SUITES[args.suite]
+    if args.limit is not None:
+        tasks = tasks[:args.limit]
+    lead_url = args.lead_url or _orchestration_url(lead)
+    worker_url = args.worker_url or _orchestration_url(worker)
+    if not args.lead_url and not _service_running(lead, runtime_status()):
+        print(i18n.t("err.orchestrate_up", i18n.lang()), file=sys.stderr)
+        return 1
+    if not args.worker_url and not _service_running(worker, runtime_status()):
+        print(i18n.t("err.orchestrate_up", i18n.lang()), file=sys.stderr)
+        return 1
+    lead_identity = _orchestration_identity(lead)
+    worker_identity = _orchestration_identity(worker)
+    try:
+        run = orchestrate_measure(
+            tasks,
+            lead=Endpoint(lead_url, lead.model_ref),
+            worker=Endpoint(worker_url, worker.model_ref),
+            lead_identity=lead_identity,
+            worker_identity=worker_identity,
+            suite=args.suite,
+            reasoning_allowance=max(0, args.reasoning_allowance),
+        )
+        save_delegation(run)
+    except (OSError, RuntimeError, ValueError, httpx.HTTPError) as error:
+        print(
+            i18n.t("err.orchestrate_measure", i18n.lang(), error=error),
+            file=sys.stderr,
+        )
+        return 1
+    record = from_run(run)
+    decision, reason = decide(record)
+    output = {
+        "n": run.n_tasks,
+        "worker_passed": run.worker_passed,
+        "lead_passed": run.lead_passed,
+        "delegated_passed": run.delegated_passed,
+        "ceiling_passed": run.ceiling_passed,
+        "delegated_gained": run.delegated_vs_lead.gained,
+        "delegated_lost": run.delegated_vs_lead.lost,
+        "delegated_p": run.delegated_vs_lead.p,
+        "ceiling_gained": run.ceiling_vs_lead.gained,
+        "ceiling_lost": run.ceiling_vs_lead.lost,
+        "ceiling_p": run.ceiling_vs_lead.p,
+        "verifier_accuracy": run.verifier.accuracy,
+        "verifier_accepted": run.verifier.accepted,
+        "accepted_but_wrong": run.verifier.accepted_but_wrong,
+        "rejected_but_right": run.verifier.rejected_but_right,
+        "verifier_unparsed": run.verifier.unparsed,
+        "lead_tokens_solo": run.lead_tokens_solo,
+        "lead_tokens_delegated": run.lead_tokens_delegated,
+        "verify_overhead": run.verify_overhead,
+        "seconds_solo": run.seconds_solo,
+        "seconds_delegated": run.seconds_delegated,
+        "gate": decision,
+        "reason": reason,
+        "digest": run.digest,
+        "protocol": run.protocol,
+    }
+    if args.json:
+        _print_json(output)
+        return 0
+    language = i18n.lang()
+    _console().print("\n".join((
+        i18n.t("label.orchestrate_summary", language, n=run.n_tasks),
+        i18n.t(
+            "label.orchestrate_passed",
+            language,
+            worker=run.worker_passed,
+            lead=run.lead_passed,
+            delegated=run.delegated_passed,
+            ceiling=run.ceiling_passed,
+        ),
+        i18n.t(
+            "label.orchestrate_comparison",
+            language,
+            name="delegated",
+            gained=run.delegated_vs_lead.gained,
+            lost=run.delegated_vs_lead.lost,
+            p=run.delegated_vs_lead.p,
+        ),
+        i18n.t(
+            "label.orchestrate_comparison",
+            language,
+            name="ceiling",
+            gained=run.ceiling_vs_lead.gained,
+            lost=run.ceiling_vs_lead.lost,
+            p=run.ceiling_vs_lead.p,
+        ),
+        i18n.t(
+            "label.orchestrate_verifier",
+            language,
+            accuracy=run.verifier.accuracy,
+            accepted=run.verifier.accepted,
+            wrong=run.verifier.accepted_but_wrong,
+            right=run.verifier.rejected_but_right,
+            unparsed=run.verifier.unparsed,
+        ),
+        i18n.t(
+            "label.orchestrate_cost",
+            language,
+            solo=run.lead_tokens_solo,
+            delegated=run.lead_tokens_delegated,
+            overhead=run.verify_overhead,
+            solo_seconds=run.seconds_solo,
+            delegated_seconds=run.seconds_delegated,
+        ),
+        i18n.t("label.orchestrate_gate", language, decision=decision, reason=reason),
+    )))
+    return 0
+
+
+def _orchestrate_show(args: argparse.Namespace) -> int:
+    records = load_delegation_cache()
+    language = i18n.lang()
+    if args.json:
+        _print_json([
+            {
+                **asdict(record),
+                "gate": decide(record)[0],
+                "reason": decide(record)[1],
+            }
+            for record in records.values()
+        ])
+        return 0
+    if not records:
+        _console().print(i18n.t("label.orchestrate_empty", language))
+        return 0
+    table = Table(title=i18n.t("label.orchestrate_title", language))
+    for column in (
+        "lead",
+        "worker",
+        "suite",
+        "n",
+        "delegated_passed",
+        "lead_passed",
+        "gate",
+    ):
+        table.add_column(column)
+    for record in sorted(records.values(), key=lambda item: item.at, reverse=True):
+        table.add_row(
+            record.lead.model_id,
+            record.worker.model_id,
+            record.suite,
+            str(record.n_tasks),
+            str(record.delegated_passed),
+            str(record.lead_passed),
+            decide(record)[0],
+        )
+    _console().print(table)
+    return 0
+
+
 def _offline_items(path: str, sources: Sequence[str]) -> tuple[
     tuple[SourceStatus, ...], tuple[SourceItem, ...]
 ]:
@@ -1729,6 +1945,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="comma-separated categories "
         f"({','.join(EXTENDED_CATEGORIES)})",
     )
+    orchestrate_parser = sub.add_parser("orchestrate")
+    orchestrate_commands = orchestrate_parser.add_subparsers(
+        dest="orchestrate_command",
+        required=True,
+    )
+    measure_parser = orchestrate_commands.add_parser("measure")
+    measure_parser.add_argument("--suite", choices=("core", "extended", "hard"), default="hard")
+    measure_parser.add_argument("--lead", default="chat")
+    measure_parser.add_argument("--worker", default="worker")
+    measure_parser.add_argument("--lead-url")
+    measure_parser.add_argument("--worker-url")
+    measure_parser.add_argument("--reasoning-allowance", type=int, default=0)
+    measure_parser.add_argument("--limit", type=_positive_int)
+    measure_parser.add_argument("--json", action="store_true")
+    show_parser = orchestrate_commands.add_parser("show")
+    show_parser.add_argument("--json", action="store_true")
     eval_parser.add_argument(
         "--suite", choices=("core", "extended", "hard"), default="core",
     )
@@ -1814,6 +2046,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _logs(args)
     if args.command == "eval":
         return _eval(args)
+    if args.command == "orchestrate":
+        if args.orchestrate_command == "measure":
+            return _orchestrate_measure_command(args)
+        return _orchestrate_show(args)
     if args.command == "watch":
         return _watch(args)
     if args.command == "autotune":

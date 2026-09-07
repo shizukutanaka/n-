@@ -1,0 +1,63 @@
+"""Evidence-gated lead/worker delegation for local models."""
+
+from .measure import (
+    Comparison,
+    DelegationRun,
+    RoleIdentity,
+    TaskRow,
+    VerifierReport,
+    measure,
+)
+from .protocol import (
+    PROTOCOL_VERSION,
+    VERIFY_PROMPT,
+    Delegation,
+    Endpoint,
+    Ledger,
+    complete,
+    delegate,
+    read_verdict,
+)
+from .record import (
+    ALLOW,
+    ALPHA,
+    NO_EVIDENCE,
+    NOT_SUPERIOR,
+    DelegationRecord,
+    best_for,
+    decide,
+    delegation_key,
+    from_run,
+    load_cache,
+    record_key,
+    save,
+)
+
+__all__ = [
+    "ALLOW",
+    "ALPHA",
+    "NOT_SUPERIOR",
+    "NO_EVIDENCE",
+    "PROTOCOL_VERSION",
+    "VERIFY_PROMPT",
+    "Comparison",
+    "Delegation",
+    "DelegationRecord",
+    "DelegationRun",
+    "Endpoint",
+    "Ledger",
+    "RoleIdentity",
+    "TaskRow",
+    "VerifierReport",
+    "best_for",
+    "complete",
+    "decide",
+    "delegate",
+    "delegation_key",
+    "from_run",
+    "load_cache",
+    "measure",
+    "read_verdict",
+    "record_key",
+    "save",
+]
