@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass
+from statistics import median
 
 import httpx
 
@@ -35,7 +36,7 @@ from nmesh.orchestrate.measure import RoleIdentity
 
 #: Bumped when the workloads or the sampling settings change, so a record
 #: never justifies a configuration measured under different conditions.
-SPEC_HARNESS_VERSION = "spec-v2"
+SPEC_HARNESS_VERSION = "spec-v3"
 
 #: Speculation off: the reference arm every candidate is compared against.
 KIND_NONE = "none"
@@ -121,9 +122,9 @@ class ClassResult:
 
     name: str
     completion_tokens: int
-    #: Worst decode rate seen across the repeats, in tokens per second.
+    #: Median decode rate across the repeats, in tokens per second.
     decode_tps: float
-    #: Wall time of the fastest repeat, in seconds.
+    #: Median wall time across the repeats, in seconds.
     seconds: float
     #: SHA-256 of the answer text, so identity is comparable without storing
     #: the answers themselves.
@@ -131,6 +132,10 @@ class ClassResult:
     #: Whether the repeats disagreed with each other. An unstable arm cannot
     #: support any claim about identity or speed.
     unstable: bool
+    #: Minimum decode rate seen across the repeats.
+    decode_tps_min: float = 0.0
+    #: Maximum decode rate seen across the repeats.
+    decode_tps_max: float = 0.0
     #: Tokens drafted and accepted, when the backend reports them.
     drafted: int = 0
     accepted: int = 0
@@ -166,13 +171,14 @@ class ClassComparison:
     """One workload class, candidate arm against the reference arm."""
 
     name: str
-    #: Worst-case ratio: the candidate's slowest repeat over the reference's
-    #: fastest one. A ratio above one survived every repeat.
+    #: Candidate median decode rate divided by the reference median.
     speedup: float
     identical: bool
     reference_tps: float
     candidate_tps: float
     acceptance: float
+    reference_spread: float = 0.0
+    candidate_spread: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -247,12 +253,12 @@ def run_arm(
     *,
     target: RoleIdentity,
     spec: SpecConfig,
-    repeats: int = 2,
+    repeats: int = 3,
     workloads: tuple[Workload, ...] = WORKLOADS,
 ) -> ArmRun:
     """Measure every workload class against one already-running server."""
-    if repeats < 2:
-        raise ValueError("A single repeat cannot show whether an arm is stable")
+    if repeats < 3:
+        raise ValueError("At least three repeats are required")
     results: list[ClassResult] = []
     for workload in workloads:
         answers: list[str] = []
@@ -275,10 +281,12 @@ def run_arm(
             ClassResult(
                 name=workload.name,
                 completion_tokens=tokens,
-                decode_tps=min(rates),
-                seconds=min(seconds),
+                decode_tps=median(rates),
+                seconds=median(seconds),
                 content_sha256=_hash(answers[0]),
                 unstable=len(set(answers)) > 1,
+                decode_tps_min=min(rates),
+                decode_tps_max=max(rates),
                 drafted=drafted,
                 accepted=accepted,
             )
@@ -321,6 +329,15 @@ def compare(reference: ArmRun, candidate: ArmRun) -> tuple[ClassComparison, ...]
                 reference_tps=base.decode_tps,
                 candidate_tps=other.decode_tps,
                 acceptance=other.acceptance,
+                reference_spread=(
+                    (base.decode_tps_max - base.decode_tps_min) / base.decode_tps
+                    if base.decode_tps > 0 else 0.0
+                ),
+                candidate_spread=(
+                    (other.decode_tps_max - other.decode_tps_min)
+                    / other.decode_tps
+                    if other.decode_tps > 0 else 0.0
+                ),
             )
         )
     return tuple(comparisons)

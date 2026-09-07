@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import nmesh.planner.core as planner_core
+import nmesh.spec.measure as spec_measure
 from nmesh import cli
 from nmesh.bench import benchmark_key
 from nmesh.catalog import load_catalog
@@ -26,9 +27,11 @@ from nmesh.spec import (
     ControlEvidence,
     SpecConfig,
     SpecRecord,
+    Workload,
     control,
     decide,
     engine_identity,
+    from_arms,
     load_cache,
     save,
 )
@@ -41,7 +44,7 @@ def _record(*, identical: bool = True, speedup: float = 1.2) -> SpecRecord:
         spec=SpecConfig(kind=KIND_NGRAM, n_max=3),
         engine="llama.cpp",
         harness=SPEC_HARNESS_VERSION,
-        repeats=2,
+        repeats=3,
         classes=(
             ClassEvidence(
                 name="copy",
@@ -50,6 +53,8 @@ def _record(*, identical: bool = True, speedup: float = 1.2) -> SpecRecord:
                 reference_tps=10.0,
                 candidate_tps=speedup * 10.0,
                 acceptance=0.8,
+                reference_spread=0.12,
+                candidate_spread=0.24,
             ),
         ),
         control=(ControlEvidence("copy", 1.0, True),),
@@ -72,6 +77,8 @@ def test_spec_record_save_load_round_trip(tmp_path) -> None:
     assert len(loaded) == 1
     restored = next(iter(loaded.values()))
     assert asdict(restored) == asdict(record)
+    assert restored.classes[0].reference_spread == 0.12
+    assert restored.classes[0].candidate_spread == 0.24
     assert decide(restored) == (ALLOW, ALLOW)
 
 
@@ -99,6 +106,31 @@ def test_malformed_control_is_rejected(tmp_path: Path) -> None:
     assert load_cache(path) == {}
 
 
+def test_legacy_two_repeat_record_is_rejected(tmp_path: Path) -> None:
+    record = _record()
+    path = tmp_path / "spec.json"
+    save(record, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entry = payload["results"][next(iter(payload["results"]))]
+    entry["repeats"] = 2
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load_cache(path) == {}
+
+
+def test_legacy_record_without_spreads_defaults_to_zero(tmp_path: Path) -> None:
+    record = _record()
+    path = tmp_path / "spec.json"
+    save(record, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entry = payload["results"][next(iter(payload["results"]))]
+    entry["classes"][0].pop("reference_spread")
+    entry["classes"][0].pop("candidate_spread")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    restored = next(iter(load_cache(path).values()))
+    assert restored.classes[0].reference_spread == 0.0
+    assert restored.classes[0].candidate_spread == 0.0
+
+
 def test_control_failure_is_unstable() -> None:
     assert decide(
         replace(_record(), control=(ControlEvidence("copy", 0.89, True),))
@@ -123,6 +155,8 @@ def _arm(
     target: RoleIdentity | None = None,
     harness: str = SPEC_HARNESS_VERSION,
     rate: float = 10.0,
+    rate_min: float | None = None,
+    rate_max: float | None = None,
     content: str = "answer",
     unstable: bool = False,
 ) -> ArmRun:
@@ -137,11 +171,13 @@ def _arm(
                 seconds=1.0,
                 content_sha256=content,
                 unstable=unstable,
+                decode_tps_min=rate if rate_min is None else rate_min,
+                decode_tps_max=rate if rate_max is None else rate_max,
                 drafted=0,
                 accepted=0,
             ),
         ),
-        repeats=2,
+        repeats=3,
         harness=harness,
         at=1.0,
     )
@@ -162,6 +198,66 @@ def test_control_validates_arms_and_calculates_ratio() -> None:
         control(first, _arm(harness="spec-v1"))
 
 
+def test_run_arm_uses_medians_and_preserves_rate_extremes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    samples = iter(
+        [
+            ("answer", 10, 1.0, 3.0, 0, 0),
+            ("answer", 10, 100.0, 1.0, 0, 0),
+            ("answer", 10, 3.0, 2.0, 0, 0),
+        ]
+    )
+    monkeypatch.setattr(spec_measure, "_ask", lambda *args: next(samples))
+    result = spec_measure.run_arm(
+        None,
+        "http://unused",
+        "model",
+        target=RoleIdentity("target", "q4_k_m", "llamacpp", "artifact"),
+        spec=SpecConfig(),
+        repeats=3,
+        workloads=(Workload("code", "", 1),),
+    )
+    item = result.classes[0]
+    assert item.decode_tps == 3.0
+    assert item.seconds == 2.0
+    assert item.decode_tps_min == 1.0
+    assert item.decode_tps_max == 100.0
+
+
+def test_run_arm_rejects_fewer_than_three_repeats() -> None:
+    with pytest.raises(ValueError, match="three"):
+        spec_measure.run_arm(
+            None,
+            "http://unused",
+            "model",
+            target=RoleIdentity("target", "q4_k_m", "llamacpp", "artifact"),
+            spec=SpecConfig(),
+            repeats=2,
+            workloads=(Workload("code", "", 1),),
+        )
+
+
+def test_from_arms_carries_rate_spreads() -> None:
+    reference = _arm(rate=10.0, rate_min=9.0, rate_max=11.0)
+    candidate = _arm(
+        spec=SpecConfig(kind=KIND_NGRAM),
+        rate=12.0,
+        rate_min=10.0,
+        rate_max=14.0,
+    )
+    control_arm = _arm(rate=10.5, rate_min=10.0, rate_max=11.0)
+    record = from_arms(
+        reference,
+        candidate,
+        engine="engine",
+        control_arm=control_arm,
+    )
+    evidence = record.classes[0]
+    assert evidence.reference_spread == 0.2
+    assert evidence.candidate_spread == (4.0 / 12.0)
+
+
 def test_spec_decision_table_includes_mixed_regression() -> None:
     assert decide(_record()) == (ALLOW, ALLOW)
     assert decide(_record(identical=False)) == (NOT_IDENTICAL, NOT_IDENTICAL)
@@ -171,7 +267,7 @@ def test_spec_decision_table_includes_mixed_regression() -> None:
         spec=_record().spec,
         engine="llama.cpp",
         harness=SPEC_HARNESS_VERSION,
-        repeats=2,
+        repeats=3,
         classes=(
             ClassEvidence("copy", 1.2, True, 10.0, 12.0, 1.0),
             ClassEvidence("prose", 0.9, True, 10.0, 9.0, 1.0),
@@ -434,5 +530,7 @@ def test_spec_cli_validates_draft_and_kind(
     monkeypatch.setenv("NMESH_HOME", str(Path.cwd() / "missing-spec-home"))
     assert cli.main(["spec", "measure", "--kind", "draft"]) == 2
     assert "--draft" in capsys.readouterr().err
+    assert cli.main(["spec", "measure", "--kind", "ngram", "--repeats", "2"]) == 2
+    assert "repeats" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         cli.main(["spec", "measure", "--kind", "unknown"])

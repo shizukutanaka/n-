@@ -70,6 +70,8 @@ class ClassEvidence:
     reference_tps: float
     candidate_tps: float
     acceptance: float
+    reference_spread: float = 0.0
+    candidate_spread: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -147,6 +149,8 @@ def from_arms(
                 reference_tps=item.reference_tps,
                 candidate_tps=item.candidate_tps,
                 acceptance=item.acceptance,
+                reference_spread=item.reference_spread,
+                candidate_spread=item.candidate_spread,
             )
             for item in comparisons
         ),
@@ -310,7 +314,17 @@ def _class(data: object) -> ClassEvidence | None:
         field: _number(data.get(field))
         for field in ("speedup", "reference_tps", "candidate_tps", "acceptance")
     }
-    if any(value is None for value in numbers.values()):
+    spreads = {
+        field: (
+            _number(data.get(field))
+            if field in data else 0.0
+        )
+        for field in ("reference_spread", "candidate_spread")
+    }
+    if (
+        any(value is None for value in numbers.values())
+        or any(value is None for value in spreads.values())
+    ):
         return None
     return ClassEvidence(
         name=name,
@@ -319,6 +333,8 @@ def _class(data: object) -> ClassEvidence | None:
         reference_tps=float(numbers["reference_tps"] or 0.0),
         candidate_tps=float(numbers["candidate_tps"] or 0.0),
         acceptance=float(numbers["acceptance"] or 0.0),
+        reference_spread=float(spreads["reference_spread"] or 0.0),
+        candidate_spread=float(spreads["candidate_spread"] or 0.0),
     )
 
 
@@ -355,7 +371,7 @@ def _parse(data: object) -> SpecRecord | None:
         or not isinstance(harness, str)
         or isinstance(repeats, bool)
         or not isinstance(repeats, int)
-        or repeats < 2
+        or repeats < 3
         or at is None
         or not isinstance(rows, Sequence)
         or isinstance(rows, (str, bytes))

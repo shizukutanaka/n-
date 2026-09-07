@@ -1686,6 +1686,12 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
     if args.kind == KIND_DRAFT and not args.draft:
         print(i18n.t("err.spec_draft_required", language), file=sys.stderr)
         return 2
+    if args.repeats < 3:
+        print(
+            i18n.t("err.spec_repeats", language),
+            file=sys.stderr,
+        )
+        return 2
     plan = load_plan()
     if plan is None or not plan.services:
         print(i18n.t("err.no_active_plan", language), file=sys.stderr)
@@ -1808,12 +1814,17 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
         })
     else:
         table = Table(title="nmesh spec measure")
-        for column in ("class", "reference", "candidate", "speedup", "identical", "acceptance"):
+        for column in (
+            "class", "reference", "candidate", "speedup", "identical",
+            "acceptance", i18n.t("label.spec_ref_spread", language),
+            i18n.t("label.spec_cand_spread", language),
+        ):
             table.add_column(column)
         for item in record.classes:
             table.add_row(
                 item.name, f"{item.reference_tps:.2f}", f"{item.candidate_tps:.2f}",
                 f"{item.speedup:.2f}", str(item.identical), f"{item.acceptance:.2f}",
+                f"{item.reference_spread:.1%}", f"{item.candidate_spread:.1%}",
             )
         _console().print(table)
         worst = min((item.ratio for item in record.control), default=0.0)
@@ -2230,7 +2241,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     spec_measure = spec_commands.add_parser("measure")
     spec_measure.add_argument("--kind", choices=("ngram", "draft"), required=True)
     spec_measure.add_argument("--draft")
-    spec_measure.add_argument("--repeats", type=int, default=2)
+    spec_measure.add_argument("--repeats", type=int, default=3)
     spec_measure.add_argument("--n-max", type=int, default=3)
     spec_measure.add_argument("--service")
     spec_measure.add_argument("--json", action="store_true")
