@@ -11,6 +11,7 @@ from pathlib import Path
 from nmesh import __version__
 from nmesh.artifact import service_fingerprint
 from nmesh.artifacts import artifact_key
+from nmesh.bench.cache import BenchRecord, benchmark_key
 from nmesh.catalog import ModelSpec
 from nmesh.eval.cache import EvalSummary
 from nmesh.eval.generated import EXTENDED_TASKS
@@ -544,10 +545,9 @@ def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: 
                  kv_quant: str = "f16", spec: str = "none") -> float | None:
     if cache is None:
         return None
-    suffix = "" if kv_quant == "f16" else f"|kv{kv_quant}"
-    if spec != "none":
-        suffix += f"|sp{spec}"
-    keys: list[object] = [f"{model.id}|{quant}|{backend}|{gpu_name}|{layers}{suffix}"]
+    keys: list[object] = [
+        benchmark_key(model.id, quant, backend, gpu_name, layers, kv_quant, spec)
+    ]
     if kv_quant == "f16" and spec == "none":
         keys.extend((
             (model.id, quant, backend, gpu_name, layers),
@@ -568,6 +568,8 @@ def _candidate_for(
     excluded: list[dict[str, str]] | None = None,
     *,
     allow_unmeasured: bool = False,
+    bench_records: Mapping[str, BenchRecord] | None = None,
+    unconfirmed: list[dict[str, str]] | None = None,
 ) -> list[_Candidate]:
     """Build candidates using the intentionally unchanged score.
 
@@ -660,6 +662,25 @@ def _candidate_for(
                 cache, model, quant, backend, gpu_name, layers, accounted_kv_quant,
                 policy.spec,
             )
+            bench_record = (
+                bench_records.get(
+                    benchmark_key(
+                        model.id, quant, backend, gpu_name, layers,
+                        accounted_kv_quant, policy.spec,
+                    )
+                )
+                if bench_records is not None else None
+            )
+            confirmed = (
+                bench_records is None
+                or (
+                    bench_record is not None
+                    and (
+                        bench_record.harness == "legacy"
+                        or bench_record.confirmations >= 2
+                    )
+                )
+            )
             memory = MemoryEstimate(**{**asdict(base), "cpu_bytes": cpu_bytes,
                                        "gpu_bytes": gpu_bytes, "n_gpu_layers": layers})
             tps = bench if bench is not None else _throughput(
@@ -669,7 +690,15 @@ def _candidate_for(
                 profile,
                 model.params * bpw / 8,
             )
-            if tps < policy.min_decode_tps:
+            if tps < policy.min_decode_tps and not confirmed:
+                if bench is not None and unconfirmed is not None:
+                    unconfirmed.append({
+                        "model": model.id,
+                        "quant": quant,
+                        "tps": f"{bench:.2f}",
+                        "threshold": f"{policy.min_decode_tps:.2f}",
+                    })
+            elif tps < policy.min_decode_tps:
                 if bench is not None and excluded is not None:
                     estimate = _throughput(
                         model,
@@ -1604,7 +1633,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                eval_cache: Mapping[
                    tuple[str, str, str], float | EvalSummary
                ] | None = None,
-               artifact_cache: Mapping[str, int] | None = None) -> Plan:
+               artifact_cache: Mapping[str, int] | None = None,
+               bench_records: Mapping[str, BenchRecord] | None = None) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
     requested_model_ids = {
@@ -1690,6 +1720,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     swap_group: list[str] = []
     role_to_service: dict[str, str] = {}
     bench_excluded: list[dict[str, str]] = []
+    bench_unconfirmed: list[dict[str, str]] = []
     total_download = 0
     for group in [item for item in groups if item]:
         reserved_vram, reserved_ram = _reserved_memory(services, swap_group)
@@ -1702,6 +1733,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                  reserved_ram_bytes=reserved_ram,
                  excluded=bench_excluded,
                  allow_unmeasured=model.id.casefold() in requested_model_ids,
+                 bench_records=bench_records,
+                 unconfirmed=bench_unconfirmed,
              )),
             key=lambda item: item.score, reverse=True,
         ) for role in group}
@@ -1717,6 +1750,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                      bench_cache,
                      artifact_cache,
                      allow_unmeasured=model.id.casefold() in requested_model_ids,
+                     bench_records=bench_records,
+                     unconfirmed=bench_unconfirmed,
                  )),
                 key=lambda item: item.score, reverse=True,
             ) for role in group}
@@ -1969,6 +2004,20 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             spec_policy=selected,
         )
         total_download += int(candidate.memory.disk_needed)
+    seen_unconfirmed: set[str] = set()
+    for measurement in bench_unconfirmed:
+        identity = f"{measurement['model']}|{measurement['quant']}"
+        if identity in seen_unconfirmed:
+            continue
+        seen_unconfirmed.add(identity)
+        warnings.append(t(
+            "warn.bench_unconfirmed",
+            selected.lang,
+            model=measurement["model"],
+            quant=measurement["quant"],
+            tps=measurement["tps"],
+            threshold=measurement["threshold"],
+        ))
     seen_excluded: set[str] = set()
     for exclusion in bench_excluded:
         model_id = exclusion["model"]
@@ -2046,7 +2095,9 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         continue
                     same_model = other.id == service.model_id
                     candidates = _candidate_for(
-                        other, profile, selected, bench_cache, artifact_cache
+                        other, profile, selected, bench_cache, artifact_cache,
+                        bench_records=bench_records,
+                        unconfirmed=bench_unconfirmed,
                     )
                     if same_model:
                         candidates = [

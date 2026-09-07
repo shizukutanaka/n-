@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from nmesh.bench.cache import MIN_CONTROL_RATIO
 from nmesh.planner import PlannedService
 
 
@@ -23,6 +24,16 @@ class BenchResult:
     decode_tps_min: float = 0.0
     decode_tps_max: float = 0.0
     runs: int = 1
+
+
+@dataclass(frozen=True)
+class ControlledBenchResult:
+    """Benchmark output with an across-pass reproducibility control."""
+
+    result: BenchResult
+    pass_tps: tuple[float, ...]
+    control_ratio: float | None
+    stable: bool
 
 
 _FILLER = "benchmark filler text "
@@ -182,4 +193,56 @@ def measure(service: PlannedService, base_url: str, prefill_tokens: int = 512,
         min(item.decode_tps for item in results),
         max(item.decode_tps for item in results),
         len(results),
+    )
+
+
+def measure_controlled(
+    service: PlannedService,
+    base_url: str,
+    prefill_tokens: int = 512,
+    decode_tokens: int = 128,
+    runs: int = 3,
+    passes: int = 2,
+) -> ControlledBenchResult:
+    if passes < 1:
+        raise ValueError("passes must be at least 1")
+    results = [
+        measure(service, base_url, prefill_tokens, decode_tokens, runs)
+        for _ in range(passes)
+    ]
+    pass_tps = tuple(item.decode_tps for item in results)
+    ratio = (
+        min(pass_tps) / max(pass_tps)
+        if passes >= 2 and max(pass_tps) > 0
+        else 0.0 if passes >= 2 else None
+    )
+    sources = {item.prefill_source for item in results}
+    source = (
+        "ttft" if "ttft" in sources
+        else "cached" if "cached" in sources
+        else "timings"
+    )
+    merged = BenchResult(
+        statistics.median(item.prefill_tps for item in results),
+        statistics.median(pass_tps),
+        statistics.median(item.ttft_s for item in results),
+        any(item.approximate for item in results),
+        (
+            int(statistics.median(
+                item.prompt_tokens for item in results
+                if item.prompt_tokens is not None
+            ))
+            if any(item.prompt_tokens is not None for item in results) else None
+        ),
+        source,
+        max(item.cached_prompt_tokens for item in results),
+        min(item.decode_tps_min for item in results),
+        max(item.decode_tps_max for item in results),
+        sum(item.runs for item in results),
+    )
+    return ControlledBenchResult(
+        result=merged,
+        pass_tps=pass_tps,
+        control_ratio=ratio,
+        stable=ratio is not None and ratio >= MIN_CONTROL_RATIO,
     )

@@ -24,7 +24,15 @@ from rich.table import Table
 from nmesh import i18n
 from nmesh.artifact import service_fingerprint
 from nmesh.artifacts import load_cache as load_artifact_cache
-from nmesh.bench import benchmark_key, load_cache, measure, save_cache
+from nmesh.bench import (
+    benchmark_key,
+    load_cache,
+    load_records,
+    measure,
+    measure_controlled,
+    merge_measurement,
+    save_records,
+)
 from nmesh.catalog import load_catalog
 from nmesh.eval import (
     EXTENDED_CATEGORIES,
@@ -314,6 +322,10 @@ def _make_plan(args: argparse.Namespace) -> object:
     args._telemetry_keys = len(live)
     args._telemetry_under_load = skipped
     cache = {**load_cache(), **live}
+    records = {
+        key: value for key, value in load_records().items()
+        if key not in live
+    }
     return build_plan(
         profile,
         load_catalog(),
@@ -321,6 +333,7 @@ def _make_plan(args: argparse.Namespace) -> object:
         cache,
         _eval_rates(),
         load_artifact_cache(),
+        records,
     )
 
 
@@ -657,12 +670,18 @@ def _runtime(args: argparse.Namespace) -> int:
                 updates["model_ids"] = _parse_model_ids(args.model)
             if getattr(args, "ignore_eval_evidence", False):
                 updates["eval_evidence"] = False
+            live = bench_overlay()
+            records = {
+                key: value for key, value in load_records().items()
+                if key not in live
+            }
             plan = build_plan(
                 detect_hardware(), load_catalog(),
                 replace(plan.policy, **updates),
-                {**load_cache(), **bench_overlay()},
+                {**load_cache(), **live},
                 _eval_rates(),
                 load_artifact_cache(),
+                records,
             )
             save_plan(plan)
         cache = {**load_cache(), **bench_overlay()}
@@ -1123,19 +1142,34 @@ def _bench(args: argparse.Namespace) -> int:
         f"http://127.0.0.1:{service.port}"
     )
     try:
-        measurement = measure(
-            service, base_url, decode_tokens=args.tokens, runs=args.runs
+        controlled = measure_controlled(
+            service,
+            base_url,
+            decode_tokens=args.tokens,
+            runs=args.runs,
+            passes=args.passes,
         )
     except (OSError, RuntimeError) as error:
         print(i18n.t("err.bench_measure", i18n.lang(), error=error), file=sys.stderr)
         return 1
-    cache = load_cache()
+    measurement = controlled.result
     key = benchmark_key(service.model_id, service.quant, service.backend,
                         plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
                         service.n_gpu_layers, service.kv_quant, service.spec)
-    cache[key] = measurement.decode_tps
+    records = load_records()
+    stored = controlled.stable
+    record = merge_measurement(
+        records,
+        key,
+        tps=measurement.decode_tps,
+        decode_tps_min=measurement.decode_tps_min,
+        decode_tps_max=measurement.decode_tps_max,
+        runs=measurement.runs,
+        passes=args.passes,
+        control_ratio=controlled.control_ratio,
+    )
     try:
-        save_cache(cache)
+        save_records(records)
     except OSError as error:
         print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
         return 1
@@ -1145,7 +1179,8 @@ def _bench(args: argparse.Namespace) -> int:
         if measurement.decode_tps else 0.0
     )
     result = {"key": key, "prefill_tokens": 512, "decode_tokens": args.tokens,
-              "median_tps": cache[key], "prefill_tps": measurement.prefill_tps,
+              "median_tps": record.tps, "session_tps": measurement.decode_tps,
+              "prefill_tps": measurement.prefill_tps,
               "ttft_s": measurement.ttft_s, "approximate": measurement.approximate,
               "prompt_tokens": measurement.prompt_tokens,
               "prefill_source": measurement.prefill_source,
@@ -1153,7 +1188,13 @@ def _bench(args: argparse.Namespace) -> int:
               "runs": measurement.runs,
               "decode_tps_min": measurement.decode_tps_min,
               "decode_tps_max": measurement.decode_tps_max,
-              "decode_spread": decode_spread}
+              "decode_spread": decode_spread,
+              "passes": args.passes,
+              "pass_tps": list(controlled.pass_tps),
+              "control_ratio": controlled.control_ratio,
+              "stable": controlled.stable,
+              "stored": stored,
+              "confirmations": record.confirmations}
     if args.json:
         _print_json(result)
     else:
@@ -1170,7 +1211,29 @@ def _bench(args: argparse.Namespace) -> int:
             i18n.t("label.prefill", language, marker=prefill_marker,
                    value=measurement.prefill_tps),
             i18n.t("label.ttft", language, marker=marker, value=measurement.ttft_s),
+            i18n.t("label.bench_passes", language,
+                   passes=args.passes, values=", ".join(
+                       f"{value:.2f}" for value in controlled.pass_tps
+                   )),
+            i18n.t("label.bench_control", language,
+                   ratio=(
+                       f"{controlled.control_ratio:.1%}"
+                       if controlled.control_ratio is not None else "n/a"
+                   )),
         )))
+        if args.passes == 1:
+            _console().print(i18n.t("warn.bench_no_control", language))
+        elif not controlled.stable:
+            _console().print(i18n.t(
+                "warn.bench_control",
+                language,
+                ratio=controlled.control_ratio or 0.0,
+                kept=i18n.t(
+                    "label.bench_kept" if record.stable
+                    else "label.bench_nothing_stored",
+                    language,
+                ),
+            ))
         if decode_spread > 0.25:
             _console().print(i18n.t(
                 "warn.bench_reproducibility",
@@ -2210,6 +2273,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     bench_parser.add_argument("--service", default="chat")
     bench_parser.add_argument("--tokens", type=int, default=128)
     bench_parser.add_argument("--runs", type=_positive_int, default=3)
+    bench_parser.add_argument("--passes", type=_positive_int, default=2)
     bench_parser.add_argument("--json", action="store_true")
     eval_parser = sub.add_parser("eval")
     eval_parser.add_argument("--service", default="chat")
