@@ -7,6 +7,7 @@ speculation-off and decides whether a plan may enable it.
 
 from __future__ import annotations
 
+from .engine import engine_identity
 from .measure import (
     KIND_DRAFT,
     KIND_NGRAM,
@@ -62,6 +63,7 @@ __all__ = [
     "best_for",
     "compare",
     "decide",
+    "engine_identity",
     "from_arms",
     "load_cache",
     "run_arm",

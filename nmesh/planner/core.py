@@ -25,7 +25,14 @@ from nmesh.i18n import t
 from nmesh.orchestrate.measure import RoleIdentity
 from nmesh.paths import nmesh_home
 from nmesh.probe import GPUInfo, HardwareProfile, Tier
-from nmesh.spec import KINDS
+from nmesh.spec import (
+    KINDS,
+    SpecConfig,
+    best_for,
+    decide,
+    engine_identity,
+    load_cache,
+)
 
 BPW = {
     "f16": 16.0, "q8_0": 8.5, "q6_k": 6.6, "q5_k_m": 5.7,
@@ -541,7 +548,7 @@ def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: 
     if spec != "none":
         suffix += f"|sp{spec}"
     keys: list[object] = [f"{model.id}|{quant}|{backend}|{gpu_name}|{layers}{suffix}"]
-    if kv_quant == "f16":
+    if kv_quant == "f16" and spec == "none":
         keys.extend((
             (model.id, quant, backend, gpu_name, layers),
             f"{model.id}:{quant}:{backend}:{gpu_name}:{layers}",
@@ -811,11 +818,15 @@ def _spec_draft_path(value: str) -> Path | None:
     models = nmesh_home() / "models"
     if not models.is_dir():
         return None
-    matches = sorted(
-        item for item in models.glob("*.gguf")
-        if value.casefold() in item.stem.casefold()
+    wanted = value.casefold()
+    return next(
+        (
+            item.resolve()
+            for item in models.glob("*.gguf")
+            if item.stem.casefold() == wanted
+        ),
+        None,
     )
-    return matches[0].resolve() if matches else None
 
 
 def _spec_identity(path: Path) -> RoleIdentity:
@@ -849,13 +860,14 @@ def _spec_for_service(
         draft_path = _spec_draft_path(policy.spec_draft)
         if draft_path is None:
             warnings.append(
-                t(
-                    "warn.spec_refused",
-                    language,
-                    service=candidate.model.id,
-                    reason="no_evidence",
-                    speeds="-",
-                )
+                t("warn.spec_draft_missing", language, service=candidate.model.id,
+                  draft=policy.spec_draft)
+            )
+            return "none", "", memory
+        if candidate.n_gpu_layers > 0:
+            warnings.append(
+                t("warn.spec_draft_gpu_unmodeled", language,
+                  service=candidate.model.id)
             )
             return "none", "", memory
         draft_bytes = draft_path.stat().st_size
@@ -869,33 +881,31 @@ def _spec_for_service(
                 )
             )
             return "none", "", memory
+    target = RoleIdentity(
+        model_id=candidate.model.id,
+        quant=candidate.quant,
+        backend=candidate.backend,
+        artifact=service_fingerprint(
+            candidate.backend,
+            _source_for(candidate.backend, candidate.model, candidate.quant),
+        ) or "",
+    )
+    spec_config = SpecConfig(
+        kind=policy.spec,
+        draft=_spec_identity(draft_path) if draft_path is not None else None,
+        n_max=policy.spec_n_max,
+    )
     try:
-        from nmesh.spec import SpecConfig, best_for, decide, load_cache
-
-        target = RoleIdentity(
-            model_id=candidate.model.id,
-            quant=candidate.quant,
-            backend=candidate.backend,
-            artifact=service_fingerprint(
-                candidate.backend,
-                _source_for(candidate.backend, candidate.model, candidate.quant),
-            ) or "",
-        )
-        spec_config = SpecConfig(
-            kind=policy.spec,
-            draft=_spec_identity(draft_path) if draft_path is not None else None,
-            n_max=policy.spec_n_max,
-        )
-        record = best_for(
-            load_cache(),
-            target,
-            spec_config,
-            profile.available_backends.get("llamacpp") or "",
-        )
-        decision, reason = decide(record)
-    except (OSError, TypeError, ValueError, KeyError):
-        record = None
-        decision, reason = "no_evidence", "no_evidence"
+        cache = load_cache()
+    except (OSError, TypeError, ValueError):
+        cache = {}
+    record = best_for(
+        cache,
+        target,
+        spec_config,
+        engine_identity(profile),
+    )
+    decision, reason = decide(record)
     if not policy.ignore_spec_evidence and decision != "allow":
         speeds = "-"
         if record is not None:

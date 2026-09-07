@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import tarfile
@@ -84,6 +85,7 @@ from nmesh.spec import (
     KIND_DRAFT,
     KIND_NGRAM,
     SpecConfig,
+    engine_identity,
     from_arms,
     run_arm,
 )
@@ -1680,8 +1682,11 @@ def _spec_measure_argv(service: PlannedService, kind: str, draft: str,
 
 
 def _spec_measure_command(args: argparse.Namespace) -> int:
-    plan = load_plan()
     language = i18n.lang()
+    if args.kind == KIND_DRAFT and not args.draft:
+        print(i18n.t("err.spec_draft_required", language), file=sys.stderr)
+        return 2
+    plan = load_plan()
     if plan is None or not plan.services:
         print(i18n.t("err.no_active_plan", language), file=sys.stderr)
         return 1
@@ -1693,12 +1698,18 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
             return 1
     else:
         service = next(
-            (item for item in plan.services if "1.5b" in item.model_id.casefold()),
-            plan.services[0],
+            (
+                item for item in plan.services
+                if set(item.roles) & {"chat", "code", "worker"}
+            ),
+            None,
         )
-    if args.kind == KIND_DRAFT and not args.draft:
-        print(i18n.t("err.spec_draft_required", language), file=sys.stderr)
-        return 2
+        if service is None:
+            print(
+                i18n.t("err.spec_no_generative_service", language),
+                file=sys.stderr,
+            )
+            return 1
     target = RoleIdentity(
         model_id=service.model_id,
         quant=service.quant,
@@ -1711,13 +1722,10 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                      service_fingerprint("llamacpp", draft) or "")
         if draft else None
     )
-    spec_config = SpecConfig(kind=args.kind, draft=draft_identity, n_max=3)
-    engine = (
-        engine_runtime.active().version_line
-        if engine_runtime.active() is not None
-        else plan.profile.available_backends.get("llamacpp") or ""
-    )
-    port = 19000 + (os.getpid() % 500)
+    engine_id = engine_identity(plan.profile)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
     with tempfile.TemporaryDirectory(prefix="nmesh-spec-") as temp:
         state_path = Path(temp) / "state.json"
         supervisor = Supervisor(state_path=state_path)
@@ -1726,14 +1734,14 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                 launch = replace(
                     service.launch,
                     argv=_spec_measure_argv(
-                        service, args.kind, draft, 3, port, enabled
+                        service, args.kind, draft, args.n_max, port, enabled
                     ),
                     health_url=f"http://127.0.0.1:{port}/health",
                 )
-                engine = engine_runtime.active()
+                active_engine = engine_runtime.active()
                 binary = (
-                    str(engine.exe)
-                    if engine is not None and engine.exe.is_file()
+                    str(active_engine.exe)
+                    if active_engine is not None and active_engine.exe.is_file()
                     else plan.profile.backend_paths.get(service.backend)
                 )
                 if binary:
@@ -1759,14 +1767,21 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                     return run_arm(
                         client, base_url, item.model_ref,
                         target=target,
-                        spec=spec_config if enabled else SpecConfig(),
+                        spec=(
+                            SpecConfig(
+                                kind=args.kind,
+                                draft=draft_identity,
+                                n_max=args.n_max,
+                            )
+                            if enabled else SpecConfig()
+                        ),
                         repeats=args.repeats,
                     )
 
             reference = arm(False)
             supervisor.down()
             candidate = arm(True)
-            record = from_arms(reference, candidate, engine=engine)
+            record = from_arms(reference, candidate, engine=engine_id)
             save_spec(record)
         except (OSError, RuntimeError, ValueError, httpx.HTTPError) as error:
             print(str(error), file=sys.stderr)
@@ -2193,6 +2208,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     spec_measure.add_argument("--kind", choices=("ngram", "draft"), required=True)
     spec_measure.add_argument("--draft")
     spec_measure.add_argument("--repeats", type=int, default=2)
+    spec_measure.add_argument("--n-max", type=int, default=3)
     spec_measure.add_argument("--service")
     spec_measure.add_argument("--json", action="store_true")
     spec_show = spec_commands.add_parser("show")
