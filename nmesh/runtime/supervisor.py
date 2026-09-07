@@ -29,8 +29,8 @@ from nmesh.planner import (
     free_budgets,
     load_plan,
     save_plan,
+    split_memory,
 )
-from nmesh.planner.core import _split_memory
 from nmesh.probe import HardwareProfile, detect_hardware
 
 from .acquisition import Acquired, acquire
@@ -369,7 +369,7 @@ class Supervisor:
                     weight_bytes=float(acquired.artifact_bytes),
                 )
                 layers = service.memory.n_gpu_layers or service.n_gpu_layers or 0
-                gpu_bytes, cpu_bytes = _split_memory(
+                gpu_bytes, cpu_bytes = split_memory(
                     memory, model.n_layers, layers
                 )
                 memory = replace(
@@ -430,8 +430,13 @@ class Supervisor:
         ]
         return replace(plan, services=updated_services), updated, True
 
-    def _admit(self, plan: Plan,
-               bench_cache: Mapping[object, float] | None = None) -> Plan:
+    def _admit(
+        self,
+        plan: Plan,
+        bench_cache: Mapping[object, float] | None = None,
+        *,
+        drop_unaffordable: bool = False,
+    ) -> Plan:
         profile = self.probe()
         vram, ram = free_budgets(profile)
         pending = [service for service in plan.services if not self._already_up(service)]
@@ -464,8 +469,7 @@ class Supervisor:
                 replanned,
                 warnings=[*plan.warnings, *replanned.warnings, warning],
             )
-        if i18n.t("warn.real_artifact_replanned", i18n.lang(),
-                  service="") in " ".join(plan.warnings):
+        if drop_unaffordable:
             return replace(
                 plan,
                 services=[],
@@ -808,7 +812,11 @@ class Supervisor:
                                 and admit
                                 and not artifact_replanned
                             ):
-                                current = self._admit(current, bench_cache)
+                                current = self._admit(
+                                    current,
+                                    bench_cache,
+                                    drop_unaffordable=True,
+                                )
                                 artifact_replanned = True
                                 service = next(
                                     (

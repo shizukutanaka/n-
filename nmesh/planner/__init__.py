@@ -16,6 +16,7 @@ from .core import (
     load_plan,
     save_plan,
     solve_gpu_layers,
+    split_memory,
     structural_weight_bytes,
 )
 
@@ -35,5 +36,6 @@ __all__ = [
     "load_plan",
     "save_plan",
     "solve_gpu_layers",
+    "split_memory",
     "structural_weight_bytes",
 ]

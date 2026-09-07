@@ -276,13 +276,15 @@ def _throughput(model: ModelSpec, memory: MemoryEstimate, layers: int,
     derived from a params-by-bpw label) can overstate bytes actually read per
     token for an artifact with an untied duplicate head.
     """
+    # Throughput uses bytes read per token, not artifact bytes.
     gpu_frac = layers / model.n_layers
     if gpu_frac == 0 or not profile.gpus:
         effective = 40.0
     else:
         gpu_bw = sum(_gpu_bandwidth(gpu) for gpu in profile.gpus) / len(profile.gpus)
         effective = 1.0 / (gpu_frac / gpu_bw + (1.0 - gpu_frac) / 40.0)
-    return 0.75 * effective * 1e9 / (weight_bytes or memory.weight_bytes)
+    basis = memory.weight_bytes if weight_bytes is None else weight_bytes
+    return 0.75 * effective * 1e9 / basis
 
 
 def _backend(profile: HardwareProfile, model: ModelSpec, layers: int) -> tuple[str, bool]:
@@ -624,7 +626,13 @@ def _candidate_for(
             )
             if tps < policy.min_decode_tps:
                 if bench is not None and excluded is not None:
-                    estimate = _throughput(model, memory, layers, profile)
+                    estimate = _throughput(
+                        model,
+                        memory,
+                        layers,
+                        profile,
+                        model.params * bpw / 8,
+                    )
                     if estimate >= policy.min_decode_tps:
                         excluded.append({
                             "model": model.id,
@@ -653,7 +661,7 @@ def _candidate_for(
     return sorted(candidates, key=lambda item: item.score, reverse=True)
 
 
-def _split_memory(memory: MemoryEstimate, model_layers: int, layers: int) -> tuple[float, float]:
+def split_memory(memory: MemoryEstimate, model_layers: int, layers: int) -> tuple[float, float]:
     on_gpu = layers > 0
     gpu_bytes = memory.per_layer_bytes * layers + (
         memory.kv_cache_bytes + memory.compute_overhead if on_gpu else 0.0
@@ -662,6 +670,9 @@ def _split_memory(memory: MemoryEstimate, model_layers: int, layers: int) -> tup
         0.0 if on_gpu else memory.kv_cache_bytes + memory.compute_overhead
     )
     return gpu_bytes, cpu_bytes
+
+
+_split_memory = split_memory
 
 
 GPU_LAYER_FLAGS = ("-ngl", "--gpu-layers", "--n-gpu-layers")
