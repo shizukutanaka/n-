@@ -214,6 +214,50 @@ def test_supervisor_rewrites_acquired_model_and_records_note(
     supervisor.down()
 
 
+def test_supervisor_rechecks_acquired_artifact_bytes(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    hardware = profile(32, (24,))
+    plan = build_plan(hardware, catalog, Policy(roles=["chat"]))
+    service = plan.services[0]
+    supervisor = Supervisor(
+        state_path=tmp_path / "artifact-state.json",
+        probe=lambda: hardware,
+        catalog=lambda: catalog,
+    )
+    updated, actualized, changed, replanned = supervisor._apply_acquired(
+        plan,
+        service,
+        Acquired(None, None, False, artifact_bytes=int(service.memory.weight_bytes * 2)),
+    )
+    assert changed
+    assert actualized.memory.weight_bytes == pytest.approx(
+        service.memory.weight_bytes * 2
+    )
+    assert any("real artifact bytes exceeded" in warning for warning in updated.warnings)
+    assert replanned
+
+    unchanged, _, changed, replanned = supervisor._apply_acquired(
+        plan,
+        service,
+        Acquired(None, None, False, artifact_bytes=int(service.memory.weight_bytes)),
+    )
+    assert not changed
+    assert not any("real artifact bytes exceeded" in warning
+                   for warning in unchanged.warnings)
+    assert not replanned
+
+    near, _, changed, replanned = supervisor._apply_acquired(
+        plan,
+        service,
+        Acquired(None, None, False, artifact_bytes=int(service.memory.weight_bytes * 1.05)),
+    )
+    assert changed
+    assert not any("real artifact bytes exceeded" in warning
+                   for warning in near.warnings)
+    assert not replanned
+
+
 def test_supervisor_applies_ollama_derived_model_ref(
     tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:

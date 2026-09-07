@@ -25,6 +25,8 @@ class ModelSpec:
     sources: dict[str, str]
     languages: tuple[str, ...] = ("en",)
     pooling: str = ""
+    vocab_size: int = 0
+    head_layout: str = "separate"
 
 
 def _model_from_mapping(item: object) -> ModelSpec | None:
@@ -78,6 +80,8 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
             sources={str(key): str(value) for key, value in sources_value.items()},
             languages=languages,
             pooling=str(item.get("pooling", "")),
+            vocab_size=int(item.get("vocab_size", 0)),
+            head_layout=str(item.get("head_layout", "separate")),
         )
     except (TypeError, ValueError):
         return None

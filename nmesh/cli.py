@@ -21,6 +21,7 @@ from rich.table import Table
 
 from nmesh import i18n
 from nmesh.artifact import service_fingerprint
+from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.bench import benchmark_key, load_cache, measure, save_cache
 from nmesh.catalog import load_catalog
 from nmesh.eval import (
@@ -279,7 +280,14 @@ def _make_plan(args: argparse.Namespace) -> object:
     args._telemetry_keys = len(live)
     args._telemetry_under_load = skipped
     cache = {**load_cache(), **live}
-    return build_plan(profile, load_catalog(), policy, cache, _eval_rates())
+    return build_plan(
+        profile,
+        load_catalog(),
+        policy,
+        cache,
+        _eval_rates(),
+        load_artifact_cache(),
+    )
 
 
 def _eval_records(
@@ -616,6 +624,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 replace(plan.policy, **updates),
                 {**load_cache(), **bench_overlay()},
                 _eval_rates(),
+                load_artifact_cache(),
             )
             save_plan(plan)
         cache = {**load_cache(), **bench_overlay()}

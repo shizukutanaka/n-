@@ -11,7 +11,16 @@ from nmesh import i18n
 from nmesh.bench import benchmark_key
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.catalog.loader import _model_from_mapping
-from nmesh.planner import Policy, build_plan, estimate_memory, free_budgets, load_plan, save_plan
+from nmesh.planner import (
+    BPW,
+    Policy,
+    build_plan,
+    estimate_memory,
+    free_budgets,
+    load_plan,
+    save_plan,
+    structural_weight_bytes,
+)
 from nmesh.planner.core import _gpu_budget
 from nmesh.probe import GPUInfo, HardwareProfile, Tier, classify_tier, profile_from_dict
 
@@ -88,7 +97,119 @@ def symmetric_catalog() -> list[ModelSpec]:
 def test_memory_regression(catalog: list[ModelSpec]) -> None:
     model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
     estimate = estimate_memory(model, "q4_k_m", 2048)
-    assert estimate.weight_bytes == pytest.approx(4.62e9, rel=0.01)
+    assert estimate.weight_bytes == pytest.approx(
+        structural_weight_bytes(model, "q4_k_m")
+    )
+
+
+MEASURED_ARTIFACTS = {
+    ("qwen2.5-0.5b-instruct", "q4_k_m"): 491400032,
+    ("qwen2.5-0.5b-instruct", "q2_k"): 415182688,
+    ("qwen2.5-0.5b-instruct", "f16"): 1266425696,
+    ("qwen2.5-0.5b-instruct", "q8_0"): 675710816,
+    ("qwen2.5-1.5b-instruct", "q4_k_m"): 1117320736,
+    ("qwen2.5-1.5b-instruct", "q2_k"): 752880160,
+    ("qwen2.5-7b-instruct", "q4_k_m"): 4683073632,
+    ("qwen2.5-7b-instruct", "q2_k"): 3015940000,
+    ("gemma2-9b", "q4_k_m"): 5761057728,
+    ("gemma2-9b", "q2_k"): 3805397952,
+    ("llama3.1-8b-instruct", "q4_k_m"): 4920739232,
+    ("mistral-7b-instruct", "q4_k_m"): 4372812000,
+    ("phi-4-14b", "q4_k_m"): 9053114816,
+    ("bge-m3", "q4_k_m"): 437778496,
+    ("bge-m3", "q2_k"): 366114880,
+    ("nomic-embed-text-v1.5", "q4_k_m"): 84106624,
+    ("nomic-embed-text-v1.5", "q2_k"): 49361088,
+}
+
+
+def test_structural_estimates_match_measured_envelope(
+    catalog: list[ModelSpec],
+) -> None:
+    models = {model.id: model for model in catalog}
+    ratios = []
+    for (model_id, quant), measured in MEASURED_ARTIFACTS.items():
+        ratio = structural_weight_bytes(models[model_id], quant) / measured
+        ratios.append(ratio)
+        assert 0.79 <= ratio <= 1.30
+    assert ratios
+
+
+@pytest.mark.parametrize(
+    "model_id,quant",
+    [
+        ("qwen2.5-0.5b-instruct", "q4_k_m"),
+        ("qwen2.5-0.5b-instruct", "q2_k"),
+        ("qwen2.5-0.5b-instruct", "f16"),
+        ("qwen2.5-0.5b-instruct", "q8_0"),
+        ("bge-m3", "q2_k"),
+    ],
+)
+def test_structural_estimate_fixes_old_underestimate(
+    catalog: list[ModelSpec], model_id: str, quant: str
+) -> None:
+    model = next(item for item in catalog if item.id == model_id)
+    measured = MEASURED_ARTIFACTS[(model_id, quant)]
+    old_ratio = model.params * BPW[quant] / 8 / measured
+    structural_ratio = structural_weight_bytes(model, quant) / measured
+    assert old_ratio < 0.79
+    assert structural_ratio >= 0.79
+
+
+def test_structural_estimate_never_regresses_below_old_formula(
+    catalog: list[ModelSpec],
+) -> None:
+    models = {model.id: model for model in catalog}
+    for model_id in {model_id for model_id, _ in MEASURED_ARTIFACTS}:
+        model = models[model_id]
+        for quant in BPW:
+            assert structural_weight_bytes(model, quant) + 1e-6 >= (
+                model.params * BPW[quant] / 8
+            )
+
+
+def test_metadata_free_models_keep_old_weight_formula() -> None:
+    model = ModelSpec(
+        "legacy", "test", 123_456_789, 12, 8, 2, 64, 512, 4096,
+        ["chat"], 80.0, "apache", {"hf_gguf": "org/legacy"},
+    )
+    assert structural_weight_bytes(model, "q4_k_m") == (
+        model.params * BPW["q4_k_m"] / 8
+    )
+
+
+def test_artifact_cache_overrides_structural_estimate(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-0.5b-instruct")
+    repo_id = model.sources["hf_gguf"]
+    candidates = planner_core._candidate_for(
+        model,
+        profile(64),
+        Policy(roles=["chat"], min_decode_tps=0),
+        None,
+        {f"{repo_id}|q4_k_m": 999_000_000},
+        allow_unmeasured=True,
+    )
+    candidate = next(item for item in candidates if item.quant == "q4_k_m")
+    assert candidate.memory.weight_bytes == 999_000_000
+
+
+def test_measured_artifact_can_change_candidate_selection() -> None:
+    model = ModelSpec(
+        "tight", "test", 1_000_000_000, 24, 16, 4, 128, 2048, 4096,
+        ["chat"], 80.0, "apache", {"hf_gguf": "org/tight"},
+    )
+    policy = Policy(roles=["chat"], min_decode_tps=0)
+    structural = build_plan(profile(4), [model], policy)
+    measured = build_plan(
+        profile(4),
+        [model],
+        policy,
+        artifact_cache={"org/tight|q6_k": 6_000_000_000},
+    )
+    assert structural.services[0].quant == "q6_k"
+    assert measured.services[0].quant != "q6_k"
 
 
 def test_catalog_quality_null_is_explicit_and_invalid_quality_is_rejected() -> None:

@@ -741,6 +741,15 @@ Resolver recognition does not imply planner support: labels that nmesh can
 identify but cannot plan remain outside `BPW`, and `nmesh watch` continues to
 report them as unknown quantizations.
 
+The planner now structurally accounts for vocabulary and output-head tensors
+for the catalog models whose GGUF headers provide that metadata. Its nominal
+weight estimate keeps those tensors at a 5.5 bpw floor; measured artifact byte
+totals cached by repository and resolved label override the estimate when
+available, and acquisition records those totals for later plans. The estimate
+remains an estimate: the measured 0.5B `q4_k_m` and `q2_k` ratios above were
+1.641 and 2.007, while the structural estimate brings the corresponding
+planner ratios into the observed 0.79–1.30 envelope.
+
 ### An installed backend the probe cannot see
 
 Backend availability was decided by `shutil.which` alone, so a llama.cpp build
