@@ -223,6 +223,12 @@ def _resolve_backend_binary(
     located = shutil.which(command)
     if located:
         return Path(located).resolve()
+    if backend == "llamacpp":
+        from nmesh.runtime.engine import active as active_engine
+
+        managed = active_engine()
+        if managed is not None and managed.exe.is_file():
+            return managed.exe.resolve()
     names = [command]
     if os.name == "nt":
         names = [f"{command}.exe", command]
@@ -279,6 +285,13 @@ def _detect_backends(
         paths[name] = str(executable)
         output, error = _run([str(executable), *command[1:]])
         version = _version_line(output, error)
+        if name == "llamacpp":
+            from nmesh.runtime.engine import active as active_engine
+
+            managed = active_engine()
+            if managed is not None and executable == managed.exe:
+                suffix = f" [{managed.tag}/{managed.variant}]"
+                version = f"{version}{suffix}" if version else suffix.strip()
         if version:
             backends[name] = version
         if name == "llamacpp":

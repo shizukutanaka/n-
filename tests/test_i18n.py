@@ -33,6 +33,14 @@ def test_translation_tables_have_equal_keys() -> None:
     assert set(MESSAGES["en"]) == set(MESSAGES["ja"])
 
 
+def test_japanese_messages_survived_their_encoding() -> None:
+    replacement_runs = {
+        key: value for key, value in MESSAGES["ja"].items()
+        if "??" in value or "\ufffd" in value
+    }
+    assert replacement_runs == {}
+
+
 def test_translation_is_failure_tolerant() -> None:
     assert t("missing.key") == "missing.key"
     assert t("warn.language_coverage", "ja") != ""

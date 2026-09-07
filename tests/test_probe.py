@@ -95,6 +95,26 @@ def test_backend_binary_is_found_in_nmesh_home_bin(monkeypatch, tmp_path: Path) 
     assert resolved == binary.resolve()
 
 
+def test_active_managed_engine_precedes_nmesh_home_bin(monkeypatch, tmp_path: Path) -> None:
+    managed = tmp_path / "engines" / "llama-server.exe"
+    managed.parent.mkdir(parents=True)
+    managed.write_text("", encoding="utf-8")
+    fallback = tmp_path / "bin" / "llama-server.exe"
+    fallback.parent.mkdir()
+    fallback.write_text("", encoding="utf-8")
+    monkeypatch.delenv("NMESH_LLAMACPP_BIN", raising=False)
+    monkeypatch.setattr(detector.shutil, "which", lambda _: None)
+    monkeypatch.setattr(detector, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "nmesh.runtime.engine.active",
+        lambda: type("Engine", (), {"exe": managed})(),
+    )
+
+    assert detector._resolve_backend_binary("llamacpp", "llama-server", [], []) == (
+        managed.resolve()
+    )
+
+
 def test_backend_version_line_prefers_line_containing_version() -> None:
     assert detector._version_line(
         "Warning: could not connect to a running Ollama instance\n"

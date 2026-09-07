@@ -117,6 +117,26 @@ def test_supervisor_fallback_with_fake_launcher(tmp_path, catalog: list[object])
     supervisor.down()
 
 
+def test_supervisor_unload_adopts_live_state_process(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    planner_save_plan(plan)
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+    (tmp_path / "state.json").write_text(
+        json.dumps({"services": [{"service": "chat", "pid": 1234}]}),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(supervisor, "_entry_alive", lambda _entry: True)
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+    monkeypatch.setattr(supervisor, "_terminator", terminated.append)
+
+    assert supervisor.unload("chat")
+    assert terminated == [1234]
+
+
 def test_supervisor_dry_run_contains_argv(tmp_path, catalog: list[object]) -> None:
     plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
     result = Supervisor(state_path=tmp_path / "state.json").up(plan, dry_run=True)
