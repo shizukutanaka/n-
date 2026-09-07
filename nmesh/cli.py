@@ -1143,7 +1143,7 @@ def _service_running(service: PlannedService, runtime: RuntimeStatus) -> bool:
 
 def _reference_context(
     service: PlannedService,
-) -> tuple[Path, Path, str] | None:
+) -> tuple[Path, Path, str, int] | None:
     active = engine_runtime.active()
     server = (
         active.exe
@@ -1161,8 +1161,15 @@ def _reference_context(
         model = model_ref
     if binary is None or model is None:
         return None
+    try:
+        _, free_ram = free_budgets(detect_hardware())
+        if free_ram < 1.5 * model.stat().st_size:
+            return None
+    except (OSError, RuntimeError):
+        return None
+    threads = max(1, min(os.cpu_count() or 4, 8))
     engine_build = active.tag if active is not None else server.name
-    return binary, model, reference_id(engine_build, model, 8, 32)
+    return binary, model, reference_id(engine_build, model, threads, 32), threads
 
 
 def _bench(args: argparse.Namespace) -> int:
@@ -1186,7 +1193,7 @@ def _bench(args: argparse.Namespace) -> int:
     before_reference = None
     if context is not None:
         try:
-            before_reference = measure_reference(context[0], context[1])
+            before_reference = measure_reference(context[0], context[1], context[3])
         except (OSError, RuntimeError):
             before_reference = None
     try:
@@ -1203,7 +1210,7 @@ def _bench(args: argparse.Namespace) -> int:
     after_reference = None
     if context is not None:
         try:
-            after_reference = measure_reference(context[0], context[1])
+            after_reference = measure_reference(context[0], context[1], context[3])
         except (OSError, RuntimeError):
             after_reference = None
     reference_tps = (
@@ -1233,7 +1240,6 @@ def _bench(args: argparse.Namespace) -> int:
             save_history(history)
         except OSError as error:
             print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
-            return 1
     measurement = controlled.result
     key = benchmark_key(service.model_id, service.quant, service.backend,
                         plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
@@ -1330,6 +1336,11 @@ def _bench(args: argparse.Namespace) -> int:
                 ratio=(
                     reference_tps / reference_baseline
                     if reference_tps is not None and reference_baseline else 0.0
+                ),
+                kept=i18n.t(
+                    "label.bench_kept" if record.stable
+                    else "label.bench_nothing_stored",
+                    language,
                 ),
             ))
         elif reference_tps is None:
