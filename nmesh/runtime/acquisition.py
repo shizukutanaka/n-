@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from nmesh import i18n
+from nmesh.artifacts import record
 from nmesh.paths import nmesh_home
 from nmesh.planner import PlannedService
 
@@ -295,6 +296,10 @@ def acquire(service: PlannedService) -> Acquired:
             for filename in files
         ]
         warning = _artifact_warning(service, chosen, files[0], total_bytes)
+        try:
+            record(repo_id, chosen, total_bytes)
+        except OSError:
+            pass
         return Acquired(
             paths[0], chosen, chosen != service.quant, warning=warning,
             artifact_bytes=total_bytes,

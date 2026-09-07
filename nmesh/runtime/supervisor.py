@@ -17,9 +17,20 @@ from typing import Protocol
 import psutil
 
 from nmesh import i18n
+from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.paths import nmesh_home
-from nmesh.planner import BPW, Plan, PlannedService, build_plan, free_budgets, load_plan, save_plan
+from nmesh.planner import (
+    BPW,
+    Plan,
+    PlannedService,
+    build_plan,
+    estimate_memory,
+    free_budgets,
+    load_plan,
+    save_plan,
+)
+from nmesh.planner.core import _split_memory
 from nmesh.probe import HardwareProfile, detect_hardware
 
 from .acquisition import Acquired, acquire
@@ -331,11 +342,69 @@ class Supervisor:
         model_ref = acquired.model_ref or (
             str(acquired.path) if acquired.path is not None else None
         )
-        if model_ref is None:
+        if model_ref is None and acquired.artifact_bytes is None:
             return plan, service, False
         quant = acquired.quant or service.quant
-        if model_ref == service.model_ref and quant == service.quant:
-            return plan, service, False
+        memory = service.memory
+        real_bytes_warning = None
+        if (
+            acquired.artifact_bytes is not None
+            and acquired.artifact_bytes != service.memory.weight_bytes
+        ):
+            model = next(
+                (item for item in self.catalog() if item.id == service.model_id),
+                None,
+            )
+            if model is not None:
+                profile = self.probe()
+                memory = estimate_memory(
+                    model,
+                    service.quant,
+                    service.context,
+                    parallel_slots=service.memory.parallel_slots,
+                    profile=profile,
+                    kv_quant=service.kv_quant,
+                    budget_source=plan.policy.budget_source,
+                    weight_bytes=float(acquired.artifact_bytes),
+                )
+                layers = service.memory.n_gpu_layers or service.n_gpu_layers or 0
+                gpu_bytes, cpu_bytes = _split_memory(
+                    memory, model.n_layers, layers
+                )
+                memory = replace(
+                    memory,
+                    gpu_bytes=gpu_bytes,
+                    cpu_bytes=cpu_bytes,
+                    n_gpu_layers=layers,
+                )
+                real_bytes_warning = i18n.t(
+                    "warn.real_artifact_replanned",
+                    i18n.lang(),
+                    service=service.name,
+                )
+                plan = replace(
+                    plan,
+                    warnings=[*plan.warnings, real_bytes_warning],
+                )
+                self.notes[service.name] = real_bytes_warning
+        if (
+            model_ref is None
+            or (
+                model_ref == service.model_ref
+                and quant == service.quant
+                and memory == service.memory
+            )
+        ):
+            updated = replace(service, memory=memory)
+            updated_services = [
+                updated if item.name == service.name else item
+                for item in plan.services
+            ]
+            return (
+                replace(plan, services=updated_services),
+                updated,
+                real_bytes_warning is not None,
+            )
         argv = list(service.launch.argv)
         if "-m" in argv:
             argv[argv.index("-m") + 1] = model_ref
@@ -347,6 +416,7 @@ class Supervisor:
             service,
             model_ref=model_ref,
             quant=quant,
+            memory=memory,
             launch=replace(service.launch, argv=argv),
         )
         self.notes[service.name] = (
@@ -376,7 +446,11 @@ class Supervisor:
         if need_gpu <= vram + 1 and need_cpu <= ram + 1:
             return plan
         replanned = build_plan(
-            profile, self.catalog(), replace(plan.policy, budget_source="free"), bench_cache
+            profile,
+            self.catalog(),
+            replace(plan.policy, budget_source="free"),
+            bench_cache=bench_cache,
+            artifact_cache=load_artifact_cache(),
         )
         warning = i18n.t(
             "warn.free_admission", i18n.lang(),
@@ -384,7 +458,17 @@ class Supervisor:
             vram=vram / GIB, ram=ram / GIB,
         )
         if replanned.services:
-            return replace(replanned, warnings=[*replanned.warnings, warning])
+            return replace(
+                replanned,
+                warnings=[*plan.warnings, *replanned.warnings, warning],
+            )
+        if i18n.t("warn.real_artifact_replanned", i18n.lang(),
+                  service="") in " ".join(plan.warnings):
+            return replace(
+                plan,
+                services=[],
+                warnings=[*plan.warnings, warning],
+            )
         return replace(
             plan,
             warnings=[
@@ -669,6 +753,7 @@ class Supervisor:
             current = plan
             self._boot_recovery = False
             actualized = False
+            artifact_replanned = False
             if admit:
                 try:
                     current = self._admit(plan, bench_cache)
@@ -705,11 +790,24 @@ class Supervisor:
                                 )
                             self._record_restart(service.name)
                         if not no_download:
+                            acquired = acquire(service)
                             current, service, changed = self._apply_acquired(
-                                current, service, acquire(service)
+                                current, service, acquired
                             )
                             actualized = actualized or changed
+                            if changed and admit and not artifact_replanned:
+                                current = self._admit(current, bench_cache)
+                                artifact_replanned = True
+                                service = next(
+                                    (
+                                        item for item in current.services
+                                        if item.name == service.name
+                                    ),
+                                    None,
+                                )
                             self.active_plan = current
+                            if service is None:
+                                continue
                         elif service.backend == "ollama":
                             warning = i18n.t(
                                 "warn.ollama_context_default",

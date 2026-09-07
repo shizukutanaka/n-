@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from nmesh import __version__
+from nmesh.artifacts import artifact_key
 from nmesh.catalog import ModelSpec
 from nmesh.eval.cache import EvalSummary
 from nmesh.eval.generated import EXTENDED_TASKS
@@ -27,6 +28,7 @@ BPW = {
     "f16": 16.0, "q8_0": 8.5, "q6_k": 6.6, "q5_k_m": 5.7,
     "q4_k_m": 4.85, "q4_0": 4.55, "q3_k_m": 3.9, "q2_k": 3.35,
 }
+EMB_BPW_FLOOR = 5.5
 QUANT_PENALTY = {
     "f16": 0.0, "q8_0": 0.5, "q6_k": 1.0, "q5_k_m": 2.0,
     "q4_k_m": 3.5, "q4_0": 5.0, "q3_k_m": 9.0, "q2_k": 16.0,
@@ -204,13 +206,14 @@ def _gpu_budget(gpu: GPUInfo, source: str = "total") -> float:
 def estimate_memory(
     model: ModelSpec, quant: str, context: int, parallel_slots: int = 1,
     profile: HardwareProfile | None = None, kv_quant: str = "f16",
-    budget_source: str = "total",
+    budget_source: str = "total", weight_bytes: float | None = None,
 ) -> MemoryEstimate:
     if quant not in BPW:
         raise ValueError(f"Unsupported quantization: {quant}")
     if kv_quant not in {"f16", "q8_0"}:
         raise ValueError(f"Unsupported KV quantization: {kv_quant}")
-    weight_bytes = model.params * BPW[quant] / 8
+    if weight_bytes is None:
+        weight_bytes = structural_weight_bytes(model, quant)
     per_layer_bytes = weight_bytes / model.n_layers
     kv_elem_bytes = {"f16": 2, "q8_0": 1}[kv_quant]
     kv_bytes_per_tok = 2 * model.n_layers * model.n_kv_heads * model.head_dim * kv_elem_bytes
@@ -220,8 +223,22 @@ def estimate_memory(
     return MemoryEstimate(
         weight_bytes, per_layer_bytes, kv_bytes_per_tok, kv_cache_bytes, compute_overhead,
         weight_bytes + kv_cache_bytes + compute_overhead, vram_budget, ram_budget,
-        weight_bytes * 1.05,
+        weight_bytes * 1.05, parallel_slots=parallel_slots,
     )
+
+
+def structural_weight_bytes(model: ModelSpec, quant: str) -> float:
+    bpw = BPW[quant]
+    if model.vocab_size <= 0:
+        return model.params * bpw / 8
+    emb_one = model.vocab_size * model.hidden_size
+    n_emb = 1 if model.head_layout == "shared" else 2
+    elems = model.params + (
+        emb_one if model.head_layout == "duplicate" else 0
+    )
+    emb_elems = emb_one * n_emb
+    body = max(elems - emb_elems, 0.0)
+    return body * bpw / 8 + emb_elems * max(EMB_BPW_FLOOR, bpw) / 8
 
 
 def solve_gpu_layers(memory: MemoryEstimate, n_layers: int) -> int:
@@ -243,7 +260,7 @@ def _gpu_bandwidth(gpu: GPUInfo) -> float:
 
 
 def _throughput(model: ModelSpec, memory: MemoryEstimate, layers: int,
-                profile: HardwareProfile) -> float:
+                profile: HardwareProfile, weight_bytes: float | None = None) -> float:
     """Estimate decode throughput from effective memory bandwidth.
 
     On this machine, q4_k_m predicted 32.1 versus a 30.1 tok/s median
@@ -265,7 +282,7 @@ def _throughput(model: ModelSpec, memory: MemoryEstimate, layers: int,
     else:
         gpu_bw = sum(_gpu_bandwidth(gpu) for gpu in profile.gpus) / len(profile.gpus)
         effective = 1.0 / (gpu_frac / gpu_bw + (1.0 - gpu_frac) / 40.0)
-    return 0.75 * effective * 1e9 / memory.weight_bytes
+    return 0.75 * effective * 1e9 / (weight_bytes or memory.weight_bytes)
 
 
 def _backend(profile: HardwareProfile, model: ModelSpec, layers: int) -> tuple[str, bool]:
@@ -499,6 +516,7 @@ def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: 
 def _candidate_for(
     model: ModelSpec, profile: HardwareProfile, policy: Policy,
     cache: Mapping[object, float] | None,
+    artifact_cache: Mapping[str, int] | None = None,
     reserved_vram_bytes: float = 0.0,
     reserved_ram_bytes: float = 0.0,
     excluded: list[dict[str, str]] | None = None,
@@ -524,14 +542,24 @@ def _candidate_for(
     initial = min(model.max_context, policy.max_context or 8192)
     contexts = list(dict.fromkeys(context for context in (initial, 4096, 2048) if context <= initial))
     candidates: list[_Candidate] = []
-    for quant in BPW:
+    for quant, bpw in BPW.items():
         for context in contexts:
             def estimate_candidate(
                 kv_quant: str, *, _quant: str = quant, _context: int = context,
             ) -> MemoryEstimate:
+                measured_bytes = None
+                if artifact_cache is not None:
+                    repo_id = model.sources.get("hf_gguf", "")
+                    measured_bytes = artifact_cache.get(
+                        artifact_key(repo_id, _quant)
+                    )
                 estimate = estimate_memory(
                     model, _quant, _context, profile=profile, kv_quant=kv_quant,
                     budget_source=policy.budget_source,
+                    weight_bytes=(
+                        float(measured_bytes)
+                        if measured_bytes is not None else None
+                    ),
                 )
                 if model.roles == ["embed"]:
                     activation = min(
@@ -587,7 +615,13 @@ def _candidate_for(
             )
             memory = MemoryEstimate(**{**asdict(base), "cpu_bytes": cpu_bytes,
                                        "gpu_bytes": gpu_bytes, "n_gpu_layers": layers})
-            tps = bench if bench is not None else _throughput(model, memory, layers, profile)
+            tps = bench if bench is not None else _throughput(
+                model,
+                memory,
+                layers,
+                profile,
+                model.params * bpw / 8,
+            )
             if tps < policy.min_decode_tps:
                 if bench is not None and excluded is not None:
                     estimate = _throughput(model, memory, layers, profile)
@@ -1351,7 +1385,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                bench_cache: Mapping[object, float] | None = None,
                eval_cache: Mapping[
                    tuple[str, str, str], float | EvalSummary
-               ] | None = None) -> Plan:
+               ] | None = None,
+               artifact_cache: Mapping[str, int] | None = None) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
     requested_model_ids = {
@@ -1441,7 +1476,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         pools = {role: sorted(
             (candidate for model in catalog_models if role in model.roles
              for candidate in _candidate_for(
-                 model, profile, selected, bench_cache,
+                 model, profile, selected, bench_cache, artifact_cache,
                  reserved_vram_bytes=reserved_vram,
                  reserved_ram_bytes=reserved_ram,
                  excluded=bench_excluded,
@@ -1458,6 +1493,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                      profile,
                      selected,
                      bench_cache,
+                     artifact_cache,
                      allow_unmeasured=model.id.casefold() in requested_model_ids,
                  )),
                 key=lambda item: item.score, reverse=True,
@@ -1725,7 +1761,9 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     if role not in other.roles:
                         continue
                     same_model = other.id == service.model_id
-                    candidates = _candidate_for(other, profile, selected, bench_cache)
+                    candidates = _candidate_for(
+                        other, profile, selected, bench_cache, artifact_cache
+                    )
                     if same_model:
                         candidates = [
                             candidate for candidate in candidates
