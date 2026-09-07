@@ -108,6 +108,20 @@ publisher provenance.
 
 ### KV-cache precision measurement
 
+Speculative decoding is opt-in and evidence-gated. Measure n-gram or draft
+decoding against the active plan's target service with:
+
+```text
+nmesh spec measure --kind ngram --repeats 2
+nmesh spec measure --kind draft --draft C:\path\to\draft.gguf --repeats 2
+nmesh spec show
+```
+
+The planner emits speculation flags only when the stored record matches the
+target artifact, draft identity, and llama.cpp engine, and its decision is
+`allow`. Use `nmesh plan --spec ngram` or `--spec draft` to request a
+configuration; missing or losing evidence leaves speculation disabled.
+
 KV-cache precision is part of benchmark identity. On one Windows CPU x64
 machine, one llama.cpp build, one model, and one context, the controlled
 measurement used engine `b10831` (`0.4.0-dev`, commit `8fe90e1fb`), Qwen2.5

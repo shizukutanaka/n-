@@ -12,8 +12,11 @@ CACHE_PATH = nmesh_home() / "bench.json"
 
 
 def benchmark_key(model_id: str, quant: str, backend: str, gpu_name: str,
-                  n_gpu_layers: int | None, kv_quant: str = "f16") -> str:
+                  n_gpu_layers: int | None, kv_quant: str = "f16",
+                  spec: str = "none") -> str:
     suffix = "" if kv_quant == "f16" else f"|kv{kv_quant}"
+    if spec != "none":
+        suffix += f"|sp{spec}"
     return f"{model_id}|{quant}|{backend}|{gpu_name}|{n_gpu_layers or 0}{suffix}"
 
 

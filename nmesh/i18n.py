@@ -79,7 +79,10 @@ MESSAGES = {
         "warn.admission_skipped": "Free-memory admission skipped: {error}",
         "warn.health_failed": "Service failed health check: {service}",
         "warn.worker_not_coresident": "The worker role was requested, but no strictly smaller generative model fits alongside the lead; delegation remains unavailable.",
-        "warn.quality_prior": "Model ranking uses unverified catalog quality claims; nmesh eval measures them.",
+        "warn.spec_unsupported": "{service}: speculation is unsupported by the detected llama.cpp flags; no speculation flags were emitted.",
+        "warn.spec_refused": "{service}: speculation evidence refused ({reason}); speedups: {speeds}.",
+        "warn.spec_override": "{service}: speculation evidence was bypassed by policy override.",
+        "warn.spec_draft_no_fit": "{service}: draft artifact ({bytes} bytes) does not fit the available memory budget; speculation is disabled.",        "warn.quality_prior": "Model ranking uses unverified catalog quality claims; nmesh eval measures them.",
         "warn.quality_unmeasured": (
             "Unmeasured quality excluded these models from automatic ranking: "
             "{models}{remaining}; nmesh eval measures it."
@@ -119,6 +122,7 @@ MESSAGES = {
         "err.gateway_not_ready": "gateway did not become ready; see {path}",
         "err.bench_up": "Service is not running; run nmesh up first.",
         "err.bench_measure": "Benchmark failed: {error}",
+        "err.spec_draft_required": "--draft is required when --kind draft is used.",
         "err.bench_save": "benchmark failed to save: {error}",
         "err.eval_up": "Service is not running; run nmesh up first.",
         "err.eval_run": "Evaluation failed: {error}",
@@ -320,6 +324,10 @@ MESSAGES = {
         "warn.admission_skipped": "空きメモリ判定をスキップしました: {error}",
         "warn.health_failed": "サービスのヘルスチェックに失敗しました: {service}",
         "warn.worker_not_coresident": "ワーカーロールが要求されましたが、リードと共存できる厳密に小さい生成モデルがありません。委譲は利用できません。",
+        "warn.spec_unsupported": "{service}: \u691c\u51fa\u3055\u308c\u305f llama.cpp \u306e\u30d5\u30e9\u30b0\u3067\u306f\u6295\u6a5f\u7684\u30c7\u30b3\u30fc\u30c9\u3092\u5229\u7528\u3067\u304d\u306a\u3044\u305f\u3081\u3001\u30d5\u30e9\u30b0\u3092\u51fa\u529b\u3057\u307e\u305b\u3093\u3002",
+        "warn.spec_refused": "{service}: \u6295\u6a5f\u7684\u30c7\u30b3\u30fc\u30c9\u306e\u8a3c\u62e0\u3092\u62d2\u5426\u3057\u307e\u3057\u305f\uff08{reason}\uff09\u3002\u901f\u5ea6\u5411\u4e0a: {speeds}\u3002",
+        "warn.spec_override": "{service}: \u30dd\u30ea\u30b7\u30fc\u306e\u4e0a\u66f8\u304d\u306b\u3088\u308a\u6295\u6a5f\u7684\u30c7\u30b3\u30fc\u30c9\u306e\u8a3c\u62e0\u78ba\u8a8d\u3092\u7701\u7565\u3057\u307e\u3057\u305f\u3002",
+        "warn.spec_draft_no_fit": "{service}: \u30c9\u30e9\u30d5\u30c8\u306e\u5b9f\u4f53\u30d5\u30a1\u30a4\u30eb\uff08{bytes} \u30d0\u30a4\u30c8\uff09\u304c\u30e1\u30e2\u30ea\u4e88\u7b97\u306b\u53ce\u307e\u3089\u306a\u3044\u305f\u3081\u3001\u6295\u6a5f\u7684\u30c7\u30b3\u30fc\u30c9\u3092\u7121\u52b9\u306b\u3057\u307e\u3059\u3002",
         "info.resolved_gguf": "解決したGGUF: {name}",
         "err.no_plan": "プランが見つかりません",
         "err.no_active_plan": "アクティブなプランがありません",
@@ -333,6 +341,7 @@ MESSAGES = {
         "err.gateway_unavailable": "ゲートウェイを利用できません: {error}",
         "err.bench_up": "サービスが起動していません。先にnmesh upを実行してください。",
         "err.bench_measure": "ベンチマークに失敗しました: {error}",
+        "err.spec_draft_required": "--kind draft では --draft 必要です",
         "err.autotune_measure": "自動調整に失敗しました: {error}",
         "label.item": "項目",
         "label.value": "値",

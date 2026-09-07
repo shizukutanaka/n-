@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.request
 import zipfile
@@ -78,6 +79,17 @@ from nmesh.runtime.logs import log_path
 from nmesh.runtime.logs import rotate as rotate_log
 from nmesh.runtime.logs import tail as tail_log
 from nmesh.runtime.service_unit import launcher_script, service_unit, watch_unit
+from nmesh.runtime.supervisor import Supervisor
+from nmesh.spec import (
+    KIND_DRAFT,
+    KIND_NGRAM,
+    SpecConfig,
+    from_arms,
+    run_arm,
+)
+from nmesh.spec.record import decide as decide_spec
+from nmesh.spec.record import load_cache as load_spec_cache
+from nmesh.spec.record import save as save_spec
 from nmesh.telemetry import bench_overlay, overlay_report
 from nmesh.telemetry import summary as telemetry_summary
 from nmesh.watch import extract as extract_mentions
@@ -290,7 +302,12 @@ def _make_plan(args: argparse.Namespace) -> object:
                     lang=i18n.lang(),
                     languages=_parse_languages(getattr(args, "lang", None)),
                     model_ids=_parse_model_ids(getattr(args, "model", None)),
-                    eval_evidence=not getattr(args, "ignore_eval_evidence", False))
+                    eval_evidence=not getattr(args, "ignore_eval_evidence", False),
+                    spec=getattr(args, "spec", "none"),
+                    spec_draft=getattr(args, "spec_draft", ""),
+                    spec_n_max=getattr(args, "spec_n_max", 3),
+                    ignore_spec_evidence=getattr(args, "ignore_spec_evidence", False),
+                    )
     live, skipped = overlay_report()
     args._telemetry_keys = len(live)
     args._telemetry_under_load = skipped
@@ -528,6 +545,10 @@ def _up_plan_args(args: argparse.Namespace) -> argparse.Namespace:
         lang=getattr(args, "lang", None),
         model=getattr(args, "model", None),
         ignore_eval_evidence=getattr(args, "ignore_eval_evidence", False),
+        spec=getattr(args, "spec", "none"),
+        spec_draft=getattr(args, "spec_draft", ""),
+        spec_n_max=getattr(args, "spec_n_max", 3),
+        ignore_spec_evidence=getattr(args, "ignore_spec_evidence", False),
         profile=getattr(args, "profile", None),
     )
 
@@ -1109,7 +1130,7 @@ def _bench(args: argparse.Namespace) -> int:
     cache = load_cache()
     key = benchmark_key(service.model_id, service.quant, service.backend,
                         plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
-                        service.n_gpu_layers, service.kv_quant)
+                        service.n_gpu_layers, service.kv_quant, service.spec)
     cache[key] = measurement.decode_tps
     try:
         save_cache(cache)
@@ -1629,6 +1650,177 @@ def _orchestrate_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def _spec_measure_argv(service: PlannedService, kind: str, draft: str,
+                       n_max: int, port: int, enabled: bool) -> list[str]:
+    argv = list(service.launch.argv)
+    cleaned: list[str] = []
+    skip = 0
+    for item in argv:
+        if skip:
+            skip -= 1
+            continue
+        if item in {"--spec-type", "--spec-draft-model", "--spec-draft-n-max"}:
+            skip = 1
+            continue
+        if item == "--port":
+            cleaned.extend([item, str(port)])
+            skip = 1
+            continue
+        cleaned.append(item)
+    if enabled:
+        if kind == KIND_NGRAM:
+            cleaned.extend(["--spec-type", "ngram-simple"])
+        else:
+            cleaned.extend([
+                "--spec-type", "draft-simple",
+                "--spec-draft-model", draft,
+                "--spec-draft-n-max", str(n_max),
+            ])
+    return cleaned
+
+
+def _spec_measure_command(args: argparse.Namespace) -> int:
+    plan = load_plan()
+    language = i18n.lang()
+    if plan is None or not plan.services:
+        print(i18n.t("err.no_active_plan", language), file=sys.stderr)
+        return 1
+    service = None
+    if args.service:
+        service = next((item for item in plan.services if item.name == args.service), None)
+        if service is None:
+            print(i18n.t("err.unknown_service", language, service=args.service), file=sys.stderr)
+            return 1
+    else:
+        service = next(
+            (item for item in plan.services if "1.5b" in item.model_id.casefold()),
+            plan.services[0],
+        )
+    if args.kind == KIND_DRAFT and not args.draft:
+        print(i18n.t("err.spec_draft_required", language), file=sys.stderr)
+        return 2
+    target = RoleIdentity(
+        model_id=service.model_id,
+        quant=service.quant,
+        backend=service.backend,
+        artifact=service_fingerprint(service.backend, service.model_ref) or "",
+    )
+    draft = str(Path(args.draft).expanduser().resolve()) if args.draft else ""
+    draft_identity = (
+        RoleIdentity(Path(draft).stem, "", "llamacpp",
+                     service_fingerprint("llamacpp", draft) or "")
+        if draft else None
+    )
+    spec_config = SpecConfig(kind=args.kind, draft=draft_identity, n_max=3)
+    engine = (
+        engine_runtime.active().version_line
+        if engine_runtime.active() is not None
+        else plan.profile.available_backends.get("llamacpp") or ""
+    )
+    port = 19000 + (os.getpid() % 500)
+    with tempfile.TemporaryDirectory(prefix="nmesh-spec-") as temp:
+        state_path = Path(temp) / "state.json"
+        supervisor = Supervisor(state_path=state_path)
+        try:
+            def arm(enabled: bool):
+                launch = replace(
+                    service.launch,
+                    argv=_spec_measure_argv(
+                        service, args.kind, draft, 3, port, enabled
+                    ),
+                    health_url=f"http://127.0.0.1:{port}/health",
+                )
+                engine = engine_runtime.active()
+                binary = (
+                    str(engine.exe)
+                    if engine is not None and engine.exe.is_file()
+                    else plan.profile.backend_paths.get(service.backend)
+                )
+                if binary:
+                    launch = replace(
+                        launch,
+                        argv=[binary, *launch.argv[1:]],
+                    )
+                item = replace(
+                    service,
+                    port=port,
+                    launch=launch,
+                    spec=args.kind if enabled else "none",
+                    spec_draft=draft if enabled else "",
+                )
+                arm_plan = replace(
+                    plan,
+                    services=[item],
+                    swap_group=[],
+                )
+                supervisor.up(arm_plan, no_download=True, admit=False)
+                base_url = f"http://127.0.0.1:{port}"
+                with httpx.Client(timeout=300) as client:
+                    return run_arm(
+                        client, base_url, item.model_ref,
+                        target=target,
+                        spec=spec_config if enabled else SpecConfig(),
+                        repeats=args.repeats,
+                    )
+
+            reference = arm(False)
+            supervisor.down()
+            candidate = arm(True)
+            record = from_arms(reference, candidate, engine=engine)
+            save_spec(record)
+        except (OSError, RuntimeError, ValueError, httpx.HTTPError) as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        finally:
+            supervisor.down()
+    decision, reason = decide_spec(record)
+    if args.json:
+        _print_json({
+            "target": asdict(record.target),
+            "spec": asdict(record.spec),
+            "engine": record.engine,
+            "classes": [asdict(item) for item in record.classes],
+            "decision": decision,
+            "reason": reason,
+        })
+    else:
+        table = Table(title="nmesh spec measure")
+        for column in ("class", "reference", "candidate", "speedup", "identical", "acceptance"):
+            table.add_column(column)
+        for item in record.classes:
+            table.add_row(
+                item.name, f"{item.reference_tps:.2f}", f"{item.candidate_tps:.2f}",
+                f"{item.speedup:.2f}", str(item.identical), f"{item.acceptance:.2f}",
+            )
+        _console().print(table)
+        print(f"decision: {decision} ({reason})")
+    return 0
+
+
+def _spec_show(args: argparse.Namespace) -> int:
+    records = load_spec_cache()
+    if args.json:
+        _print_json({
+            key: {
+                **asdict(record),
+                "decision": decide_spec(record)[0],
+                "reason": decide_spec(record)[1],
+            }
+            for key, record in records.items()
+        })
+        return 0
+    table = Table(title="nmesh spec")
+    for column in ("target", "kind", "engine", "decision"):
+        table.add_column(column)
+    for record in records.values():
+        table.add_row(
+            record.target.model_id, record.spec.kind, record.engine,
+            decide_spec(record)[0],
+        )
+    _console().print(table)
+    return 0
+
+
 def _offline_items(path: str, sources: Sequence[str]) -> tuple[
     tuple[SourceStatus, ...], tuple[SourceItem, ...]
 ]:
@@ -1928,6 +2120,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--parallel-slots", type=int)
     plan.add_argument("--model", help="comma-separated model IDs")
     plan.add_argument("--ignore-eval-evidence", action="store_true")
+    plan.add_argument("--spec", choices=("none", "ngram", "draft"), default="none")
+    plan.add_argument("--spec-draft", default="")
+    plan.add_argument("--spec-n-max", type=int, default=3)
+    plan.add_argument("--ignore-spec-evidence", action="store_true")
     plan.add_argument("--lang")
     plan.add_argument("--profile")
     up_parser = sub.add_parser("up")
@@ -1941,6 +2137,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--lang")
     up_parser.add_argument("--model", help="comma-separated model IDs")
     up_parser.add_argument("--ignore-eval-evidence", action="store_true")
+    up_parser.add_argument("--spec", choices=("none", "ngram", "draft"), default="none")
+    up_parser.add_argument("--spec-draft", default="")
+    up_parser.add_argument("--spec-n-max", type=int, default=3)
+    up_parser.add_argument("--ignore-spec-evidence", action="store_true")
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=18000)
     reload_parser = sub.add_parser("reload")
@@ -1987,6 +2187,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     measure_parser.add_argument("--json", action="store_true")
     show_parser = orchestrate_commands.add_parser("show")
     show_parser.add_argument("--json", action="store_true")
+    spec_parser = sub.add_parser("spec")
+    spec_commands = spec_parser.add_subparsers(dest="spec_command", required=True)
+    spec_measure = spec_commands.add_parser("measure")
+    spec_measure.add_argument("--kind", choices=("ngram", "draft"), required=True)
+    spec_measure.add_argument("--draft")
+    spec_measure.add_argument("--repeats", type=int, default=2)
+    spec_measure.add_argument("--service")
+    spec_measure.add_argument("--json", action="store_true")
+    spec_show = spec_commands.add_parser("show")
+    spec_show.add_argument("--json", action="store_true")
     eval_parser.add_argument(
         "--suite", choices=("core", "extended", "hard"), default="core",
     )
@@ -2076,6 +2286,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.orchestrate_command == "measure":
             return _orchestrate_measure_command(args)
         return _orchestrate_show(args)
+    if args.command == "spec":
+        if args.spec_command == "measure":
+            return _spec_measure_command(args)
+        return _spec_show(args)
     if args.command == "watch":
         return _watch(args)
     if args.command == "autotune":
