@@ -145,6 +145,7 @@ class PlannedService:
     estimated: bool
     launch: LaunchSpec
     languages: tuple[str, ...] = ("en",)
+    kv_quant: str = "f16"
 
 
 @dataclass(frozen=True)
@@ -324,6 +325,7 @@ def _launch(
     slots: int = 1,
     gpu_fraction: float | None = None,
     backend_flags: frozenset[str] | None = None,
+    kv_quant: str = "f16",
     warnings: list[str] | None = None,
     gpu_devices: tuple[str, ...] | None = None,
     language: str = "en",
@@ -391,6 +393,12 @@ def _launch(
             argv += ["--tensor-split", ",".join(["1"] * tensor_parallel)]
         elif tensor_parallel > 1 and warnings is not None:
             warnings.append(t("warn.tensor_split_unsupported", language))
+        if (
+            backend == "llamacpp"
+            and kv_quant != "f16"
+            and _honors_kv_quant(backend, backend_flags)
+        ):
+            argv += ["--cache-type-k", kv_quant, "--cache-type-v", kv_quant]
         if backend == "llamacpp" and embed_only:
             if not known or "--embeddings" in backend_flags:
                 embedding_flag = "--embeddings"
@@ -464,6 +472,8 @@ class _Candidate:
     decode_tps: float
     backend: str
     installed: bool
+    kv_quant: str
+    requested_kv_quant: str
     score: float
     estimated: bool
 
@@ -512,25 +522,34 @@ def _candidate_for(
     candidates: list[_Candidate] = []
     for quant in BPW:
         for context in contexts:
-            base = estimate_memory(
-                model, quant, context, profile=profile, kv_quant=policy.kv_quant,
-                budget_source=policy.budget_source,
-            )
-            if model.roles == ["embed"]:
-                activation = min(0.02 * base.weight_bytes * math.ceil(context / 512), 512 * 1024**2)
-                overhead = base.compute_overhead + activation
-                base = replace(
-                    base,
-                    kv_bytes_per_tok=0.0,
-                    kv_cache_bytes=0.0,
-                    compute_overhead=overhead,
-                    total_bytes=base.weight_bytes + overhead,
+            def estimate_candidate(
+                kv_quant: str, *, _quant: str = quant, _context: int = context,
+            ) -> MemoryEstimate:
+                estimate = estimate_memory(
+                    model, _quant, _context, profile=profile, kv_quant=kv_quant,
+                    budget_source=policy.budget_source,
                 )
-            base = replace(
-                base,
-                vram_budget=max(base.vram_budget - reserved_vram_bytes, 0.0),
-                ram_budget=max(base.ram_budget - reserved_ram_bytes, 0.0),
-            )
+                if model.roles == ["embed"]:
+                    activation = min(
+                        0.02 * estimate.weight_bytes * math.ceil(_context / 512),
+                        512 * 1024**2,
+                    )
+                    overhead = estimate.compute_overhead + activation
+                    estimate = replace(
+                        estimate,
+                        kv_bytes_per_tok=0.0,
+                        kv_cache_bytes=0.0,
+                        compute_overhead=overhead,
+                        total_bytes=estimate.weight_bytes + overhead,
+                    )
+                return replace(
+                    estimate,
+                    vram_budget=max(estimate.vram_budget - reserved_vram_bytes, 0.0),
+                    ram_budget=max(estimate.ram_budget - reserved_ram_bytes, 0.0),
+                )
+
+            accounted_kv_quant = policy.kv_quant
+            base = estimate_candidate(accounted_kv_quant)
             layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
             if profile.tier == Tier.T0_CPU:
                 layers = 0
@@ -538,6 +557,19 @@ def _candidate_for(
             if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
                 continue
             backend, installed = _backend(profile, model, layers)
+            backend_flags = profile.backend_flags.get(backend)
+            if (
+                policy.kv_quant != "f16"
+                and not _honors_kv_quant(backend, backend_flags)
+            ):
+                accounted_kv_quant = "f16"
+                base = estimate_candidate(accounted_kv_quant)
+                layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
+                if profile.tier == Tier.T0_CPU:
+                    layers = 0
+                gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
+                if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
+                    continue
             if backend == "llamacpp" and profile.backend_gpu_devices.get("llamacpp") == ():
                 layers = 0
                 gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
@@ -573,8 +605,10 @@ def _candidate_for(
             if policy.languages:
                 covers = set(policy.languages).issubset(model.languages)
                 score *= 1.0 if covers else 0.7
-            candidates.append(_Candidate(model, quant, context, memory, layers, tps,
-                                         backend, installed, score, bench is None))
+            candidates.append(_Candidate(
+                model, quant, context, memory, layers, tps, backend, installed,
+                accounted_kv_quant, policy.kv_quant, score, bench is None,
+            ))
             break
     return sorted(candidates, key=lambda item: item.score, reverse=True)
 
@@ -591,12 +625,22 @@ def _split_memory(memory: MemoryEstimate, model_layers: int, layers: int) -> tup
 
 
 GPU_LAYER_FLAGS = ("-ngl", "--gpu-layers", "--n-gpu-layers")
+KV_CACHE_TYPE_FLAGS = ("--cache-type-k", "--cache-type-v")
 
 
 def _supports_gpu_layers(
     flags: frozenset[str] | tuple[str, ...] | None,
 ) -> bool:
     return flags is None or any(flag in flags for flag in GPU_LAYER_FLAGS)
+
+
+def _honors_kv_quant(
+    backend: str,
+    backend_flags: frozenset[str] | tuple[str, ...] | None,
+) -> bool:
+    if backend != "llamacpp":
+        return False
+    return backend_flags is None or all(flag in backend_flags for flag in KV_CACHE_TYPE_FLAGS)
 
 
 def _plan_group(group: list[str], pools: dict[str, list[_Candidate]]) -> _Candidate | None:
@@ -686,6 +730,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         candidate.backend, candidate.model, candidate.quant, candidate.context,
         port, layers or 0, tensor_parallel,
         backend_flags=backend_flags,
+        kv_quant=candidate.kv_quant,
         warnings=warnings,
         gpu_devices=gpu_devices,
         language=language,
@@ -703,7 +748,18 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         profile.tier not in {Tier.T0_CPU, Tier.T1_LOW} or not services,
         memory, candidate.decode_tps, candidate.estimated, launch,
         candidate.model.languages,
+        kv_quant=candidate.kv_quant,
     )
+    if candidate.requested_kv_quant != candidate.kv_quant:
+        warnings.append(
+            t(
+                "warn.kv_quant_unsupported",
+                language,
+                service=name,
+                backend=candidate.backend,
+                requested=candidate.requested_kv_quant,
+            )
+        )
     services.append(service)
     for role in group:
         role_to_service[role] = name
@@ -1933,6 +1989,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             int(sd["n_gpu_layers"]) if sd["n_gpu_layers"] is not None else None, bool(sd["resident"]),
             memory, float(sd["decode_tps"]), bool(sd["estimated"]), launch,
             tuple(str(x) for x in sd.get("languages", ["en"])),
+            kv_quant=str(sd.get("kv_quant", "f16")),
         ))
     rd = data["routing"]
     if not isinstance(rd, dict):

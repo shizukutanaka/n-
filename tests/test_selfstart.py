@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import StringIO
 from types import SimpleNamespace
 
+import pytest
 from rich.console import Console
 
 from nmesh import cli
@@ -21,11 +22,44 @@ def _up_args(**overrides: object) -> SimpleNamespace:
         "lang": None,
         "model": None,
         "ignore_eval_evidence": False,
+        "kv_quant": "f16",
         "profile": None,
         "_simulated": False,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def test_kv_quant_cli_reaches_policy(monkeypatch) -> None:
+    captured = []
+    monkeypatch.setattr(cli, "detect_hardware", lambda: object())
+    monkeypatch.setattr(cli, "load_catalog", list)
+    monkeypatch.setattr(cli, "overlay_report", lambda: ({}, 0))
+    monkeypatch.setattr(cli, "_eval_rates", dict)
+    monkeypatch.setattr(
+        cli,
+        "build_plan",
+        lambda _profile, _catalog, policy, *_args: captured.append(policy) or object(),
+    )
+    cli._make_plan(SimpleNamespace(
+        profile=None,
+        roles="chat",
+        prefer="balanced",
+        context=None,
+        budget="total",
+        kv_quant="q8_0",
+        parallel_slots=None,
+        lang=None,
+        model=None,
+        ignore_eval_evidence=False,
+    ))
+    assert captured[0].kv_quant == "q8_0"
+
+
+def test_invalid_kv_quant_cli_value_is_rejected() -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.main(["plan", "--kv-quant", "int4"])
+    assert error.value.code == 2
 
 
 def _plan(missing_backends: list[str], runnable: bool) -> SimpleNamespace:

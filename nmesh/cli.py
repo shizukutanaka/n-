@@ -270,6 +270,7 @@ def _make_plan(args: argparse.Namespace) -> object:
     roles = [role.strip() for role in args.roles.split(",") if role.strip()]
     policy = Policy(roles=roles or ["chat", "code", "embed"], prefer=args.prefer,
                     max_context=args.context, budget_source=getattr(args, "budget", "total"),
+                    kv_quant=getattr(args, "kv_quant", "f16"),
                     parallel_slots=getattr(args, "parallel_slots", None),
                     lang=i18n.lang(),
                     languages=_parse_languages(getattr(args, "lang", None)),
@@ -462,8 +463,12 @@ def _plan(args: argparse.Namespace) -> int:
             memory.add_column(column)
         for service in result.services:
             item = service.memory
-            memory.add_row(service.name, _bytes(item.weight_bytes), _bytes(item.kv_cache_bytes),
-                           f"{_bytes(item.gpu_bytes)} / {_bytes(item.cpu_bytes)}")
+            memory.add_row(
+                service.name,
+                _bytes(item.weight_bytes),
+                f"{_bytes(item.kv_cache_bytes)} ({service.kv_quant})",
+                f"{_bytes(item.gpu_bytes)} / {_bytes(item.cpu_bytes)}",
+            )
         _console().print(memory)
     return 0
 
@@ -494,6 +499,7 @@ def _up_plan_args(args: argparse.Namespace) -> argparse.Namespace:
         prefer="balanced",
         context=None,
         budget="total",
+        kv_quant=getattr(args, "kv_quant", "f16"),
         parallel_slots=None,
         json=False,
         explain=False,
@@ -1681,6 +1687,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--roles", default="chat,code,embed")
     plan.add_argument("--context", type=int)
     plan.add_argument("--budget", choices=("total", "free"), default="total")
+    plan.add_argument("--kv-quant", choices=("f16", "q8_0"), default="f16")
     plan.add_argument("--parallel-slots", type=int)
     plan.add_argument("--model", help="comma-separated model IDs")
     plan.add_argument("--ignore-eval-evidence", action="store_true")
@@ -1690,6 +1697,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--json", action="store_true")
     up_parser.add_argument("--dry-run", action="store_true")
     up_parser.add_argument("--no-download", action="store_true")
+    up_parser.add_argument("--kv-quant", choices=("f16", "q8_0"), default="f16")
     up_parser.add_argument("--detach", action="store_true")
     up_parser.add_argument("--port", type=int, default=18000)
     up_parser.add_argument("--ignore-free-memory", action="store_true")
