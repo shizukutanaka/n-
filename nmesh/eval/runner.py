@@ -37,6 +37,7 @@ class EvalRun:
     digest: str = ""
     unscorable: int = 0
     reasoning_allowance: int = 0
+    transport_errors: int = 0
 
 
 def _output(value: object) -> str:
@@ -68,7 +69,7 @@ def run(
     base_url: str,
     model_ref: str,
     *,
-    timeout: float = 120.0,
+    timeout: float | None = None,
     reasoning_allowance: int = 0,
 ) -> EvalRun:
     """Ask each task and grade the answer text.
@@ -83,11 +84,25 @@ def run(
     correctly at 512 tokens. Those answerless responses are counted as
     unscorable rather than failed, and `reasoning_allowance` raises every task
     budget by a stated amount so the run says what it measured.
+
+    Request timeouts are derived from each task's token budget by default, using
+    a 2-token-per-second floor and 30 seconds of startup/prefill slack: quiet
+    512-token requests took about 15.5 seconds here, while observed 5.5
+    token-per-second episodes can approach the old 120-second wall clock.
+    This avoids turning measured host slowness into a false model failure.
     """
     outcomes: list[TaskOutcome] = []
     transport_errors = 0
-    with httpx.Client(timeout=timeout) as client:
+    with httpx.Client() as client:
         for task in tasks:
+            transport = False
+            request_timeout = (
+                timeout
+                if timeout is not None
+                else 30.0 + (
+                    task.max_tokens + max(0, reasoning_allowance)
+                ) / 2.0
+            )
             try:
                 response = client.post(
                     f"{base_url.rstrip('/')}/v1/chat/completions",
@@ -98,6 +113,7 @@ def run(
                         "temperature": 0,
                         "stream": False,
                     },
+                    timeout=request_timeout,
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -110,9 +126,15 @@ def run(
                 passed = False if unscorable else bool(task.check(text))
             except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as error:
                 transport_errors += 1
+                transport = True
                 text = _error(error)
                 passed = False
                 unscorable = False
+            value_passed = (
+                None
+                if transport or unscorable or task.value_check is None
+                else bool(task.value_check(text))
+            )
             outcomes.append(
                 TaskOutcome(
                     task.id,
@@ -120,12 +142,10 @@ def run(
                     passed,
                     text[:200],
                     unscorable,
-                    value_passed := (
-                        None
-                        if unscorable or task.value_check is None
-                        else bool(task.value_check(text))
-                    ),
-                    _failure_kind(task, passed, unscorable, value_passed),
+                    value_passed,
+                    "transport"
+                    if transport
+                    else _failure_kind(task, passed, unscorable, value_passed),
                 )
             )
     if outcomes and transport_errors == len(outcomes):
@@ -149,4 +169,5 @@ def run(
         time.time(),
         unscorable=sum(outcome.unscorable for outcome in outcomes),
         reasoning_allowance=max(0, reasoning_allowance),
+        transport_errors=transport_errors,
     )

@@ -36,6 +36,7 @@ class EvalRecord:
     digest: str = ""
     unscorable: int = 0
     reasoning_allowance: int = 0
+    transport_errors: int = 0
 
 
 def _record(data: object) -> EvalRecord | None:
@@ -63,6 +64,7 @@ def _record(data: object) -> EvalRecord | None:
         digest = data.get("digest", "")
         unscorable = data.get("unscorable", 0)
         allowance = data.get("reasoning_allowance", 0)
+        transport_errors = data.get("transport_errors", 0)
         if (
             isinstance(n_tasks, bool)
             or not isinstance(n_tasks, int)
@@ -88,6 +90,9 @@ def _record(data: object) -> EvalRecord | None:
             or isinstance(allowance, bool)
             or not isinstance(allowance, int)
             or allowance < 0
+            or isinstance(transport_errors, bool)
+            or not isinstance(transport_errors, int)
+            or not 0 <= transport_errors <= n_tasks
             or any(
                 not isinstance(key, str) or not isinstance(value, bool)
                 for key, value in task_results.items()
@@ -120,6 +125,7 @@ def _record(data: object) -> EvalRecord | None:
             digest,
             unscorable,
             allowance,
+            transport_errors,
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -166,6 +172,7 @@ def save_eval(run: EvalRun, path: Path | None = None) -> Path:
         run.digest,
         run.unscorable,
         run.reasoning_allowance,
+        run.transport_errors,
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")

@@ -209,6 +209,16 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a positive number") from error
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return parsed
+
+
 def _non_negative_int(value: str) -> int:
     try:
         parsed = int(value)
@@ -381,7 +391,7 @@ def _eval_rates(
     valid, _ = _eval_records(records if records is not None else load_eval_cache())
     latest: dict[tuple[str, str, str], EvalRecord] = {}
     for record in valid.values():
-        if record.unscorable:
+        if record.unscorable or record.transport_errors:
             continue
         key = (
             record.model_id.casefold(),
@@ -431,6 +441,8 @@ def _eval_divergence(
             or record.reasoning_allowance != result.reasoning_allowance
             or record.unscorable
             or result.unscorable
+            or record.transport_errors
+            or result.transport_errors
             or not record.task_results
         ):
             continue
@@ -1405,9 +1417,14 @@ def _eval(args: argparse.Namespace) -> int:
         f"http://127.0.0.1:{service.port}"
     )
     allowance = max(0, getattr(args, "reasoning_allowance", 0) or 0)
+    timeout = getattr(args, "timeout", None)
     try:
         result = eval_run(
-            tasks, base_url, service.model_ref, reasoning_allowance=allowance,
+            tasks,
+            base_url,
+            service.model_ref,
+            timeout=timeout,
+            reasoning_allowance=allowance,
         )
     except RuntimeError as error:
         print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
@@ -1421,6 +1438,7 @@ def _eval(args: argparse.Namespace) -> int:
         suite=args.suite,
         digest=suite_digest(tasks),
         reasoning_allowance=allowance,
+        transport_errors=result.transport_errors,
     )
     cached = load_eval_cache()
     key = eval_key(
@@ -1501,6 +1519,13 @@ def _eval(args: argparse.Namespace) -> int:
             tasks=result.n_tasks,
             allowance=allowance,
         )
+    transport_note = None
+    if result.transport_errors:
+        transport_note = i18n.t(
+            "warn.eval_transport",
+            language,
+            count=result.transport_errors,
+        )
     value_note = None
     if value_checked_failures:
         value_note = i18n.t(
@@ -1536,8 +1561,10 @@ def _eval(args: argparse.Namespace) -> int:
         "n_tasks": result.n_tasks,
         "passed": result.passed,
         "unscorable": result.unscorable,
+        "transport_errors": result.transport_errors,
         "reasoning_allowance": result.reasoning_allowance,
         "unscorable_note": unscorable_note,
+        "transport_note": transport_note,
         "pass_rate": result.pass_rate,
         "pass_rate_ci": list(pass_rate_ci),
         "min_resolvable_difference": minimum_difference,
@@ -1581,6 +1608,8 @@ def _eval(args: argparse.Namespace) -> int:
     _console().print(config_note)
     if unscorable_note is not None:
         _console().print(unscorable_note)
+    if transport_note is not None:
+        _console().print(transport_note)
     if value_note is not None:
         _console().print(value_note)
     if failure_kinds_note is not None:
@@ -2454,6 +2483,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         dest="reasoning_allowance",
         help="extra output tokens per task for models that emit reasoning "
         "before the answer (recorded with the result)",
+    )
+    eval_parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=None,
+        dest="timeout",
+        help="per-task request timeout in seconds; default is derived from "
+        "the task token budget",
     )
     logs_parser = sub.add_parser("logs")
     logs_parser.add_argument("service", nargs="?")
