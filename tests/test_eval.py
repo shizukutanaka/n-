@@ -7,6 +7,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
+import httpx
 import pytest
 
 from nmesh import cli
@@ -133,6 +134,79 @@ def test_runner_all_pass_and_category_rates() -> None:
     assert _EvalHandler.bodies[0]["stream"] is False
     assert _EvalHandler.bodies[0]["max_tokens"] == 8
     assert _EvalHandler.bodies[0]["messages"] == [{"role": "user", "content": "one"}]
+
+
+def test_runner_marks_transport_failures_and_derives_timeout(monkeypatch) -> None:
+    calls: list[float] = []
+    value_checks: list[str] = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return
+
+        def json(self) -> dict[str, object]:
+            return {
+                "choices": [{
+                    "message": {"content": "yes"},
+                    "finish_reason": "stop",
+                }],
+            }
+
+    def post(self, url, *, json, timeout):
+        calls.append(timeout)
+        if json["messages"][0]["content"] == "transport":
+            raise httpx.ReadTimeout("timed out")
+        return Response()
+
+    monkeypatch.setattr(httpx.Client, "post", post)
+    tasks = (
+        Task(
+            "transport", "instruction", "transport", 48, lambda text: True,
+            value_check=lambda text: value_checks.append(text) or True,
+        ),
+        Task(
+            "healthy", "instruction", "healthy", 48, lambda text: text == "yes",
+            value_check=lambda text: value_checks.append(text) or True,
+        ),
+    )
+    result = run(
+        tasks, "http://example.test", "model",
+        reasoning_allowance=512,
+    )
+    outcome = result.outcomes[0]
+    assert calls == [310.0, 310.0]
+    assert outcome.failure_kind == "transport"
+    assert outcome.value_passed is None
+    assert not outcome.passed
+    assert not outcome.unscorable
+    assert result.transport_errors == 1
+    assert value_checks == ["yes"]
+
+
+def test_runner_explicit_timeout_is_used_for_every_request(monkeypatch) -> None:
+    calls: list[float] = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{
+                "message": {"content": "yes"},
+                "finish_reason": "stop",
+            }]}
+
+    def post(self, url, *, json, timeout):
+        calls.append(timeout)
+        return Response()
+
+    monkeypatch.setattr(httpx.Client, "post", post)
+    tasks = (
+        Task("one", "instruction", "one", 48, lambda text: True),
+        Task("two", "instruction", "two", 8, lambda text: True),
+    )
+    run(tasks, "http://example.test", "model", timeout=5.0)
+    assert calls == [5.0, 5.0]
 
 
 def test_exact_eval_statistics() -> None:
@@ -590,6 +664,23 @@ def test_eval_rates_drop_runs_with_unscorable_tasks() -> None:
     assert cli._eval_rates(records) == {}
 
 
+def test_eval_rates_drop_runs_with_transport_errors() -> None:
+    digest = suite_digest(TASKS)
+    records = {
+        "transport": EvalRecord(
+            "model", "f16", "llamacpp", 104, 100, 100 / 104, {}, 1.0,
+            {}, "", "core", digest, 0, 0, 1,
+        ),
+        "valid": EvalRecord(
+            "other", "f16", "llamacpp", 104, 90, 90 / 104, {}, 2.0,
+            {}, "", "core", digest,
+        ),
+    }
+    assert cli._eval_rates(records) == {
+        ("other", "f16", "llamacpp"): EvalSummary(90 / 104, 90, 104, {}),
+    }
+
+
 def test_eval_cli_reports_unscorable_run(monkeypatch, capsys) -> None:
     service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
     result = EvalRun(
@@ -619,6 +710,29 @@ def test_eval_cli_reports_unscorable_run(monkeypatch, capsys) -> None:
     }]
 
 
+def test_eval_cli_reports_transport_failures(monkeypatch, capsys) -> None:
+    service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
+    result = EvalRun(
+        "prior-high", "q4_k_m", "llamacpp", 1, 0, 0.0, {"instruction": 0.0},
+        [TaskOutcome(
+            "transport", "instruction", False, "ReadTimeout: timed out",
+            failure_kind="transport",
+        )],
+        3.0,
+        transport_errors=1,
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
+    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: result)
+    monkeypatch.setattr(cli, "save_eval", lambda value: None)
+    assert cli.main(["eval", "--json"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["transport_errors"] == 1
+    assert "host failures" in output["transport_note"]
+    assert output["unscorable"] == 0
+    assert output["failed"][0]["failure_kind"] == "transport"
+
+
 def test_runner_all_transport_failures_raise() -> None:
     tasks = (Task("one", "instruction", "one", 8, lambda text: True),)
     _EvalHandler.responses = {}
@@ -642,6 +756,7 @@ def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
         "gguf:2:123:abcdef",
         "core",
         suite_digest(TASKS),
+        transport_errors=1,
     )
     save_eval(result, path)
     loaded = load_eval_cache(path)
@@ -651,6 +766,7 @@ def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
         "one": True, "two": False,
     }
     assert loaded[key].artifact == "gguf:2:123:abcdef"
+    assert loaded[key].transport_errors == 1
     assert "outcomes" not in json.loads(path.read_text(encoding="utf-8"))["results"][
         key
     ]
@@ -671,7 +787,16 @@ def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
     path.write_text(json.dumps(legacy), encoding="utf-8")
     assert load_eval_cache(path)["legacy"].task_results == {}
     assert load_eval_cache(path)["legacy"].artifact == ""
+    assert load_eval_cache(path)["legacy"].transport_errors == 0
     legacy["results"]["legacy"]["task_results"] = {"one": "yes"}
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    assert load_eval_cache(path) == {}
+    legacy["results"]["legacy"]["task_results"] = {}
+    legacy["results"]["legacy"]["artifact"] = ""
+    legacy["results"]["legacy"]["transport_errors"] = True
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    assert load_eval_cache(path) == {}
+    legacy["results"]["legacy"]["transport_errors"] = 2
     path.write_text(json.dumps(legacy), encoding="utf-8")
     assert load_eval_cache(path) == {}
     legacy["results"]["legacy"]["task_results"] = {}
@@ -1336,6 +1461,26 @@ def test_eval_divergence_reports_disagreeing_tasks() -> None:
         "discordant_there": 1,
         "zero_power_families": [],
     }]
+
+
+def test_eval_divergence_ignores_transport_contaminated_runs() -> None:
+    result = EvalRun(
+        "model", "f16", "llamacpp", 1, 0, 0.0, {},
+        [TaskOutcome("task", "instruction", False, "", failure_kind="transport")],
+        2.0,
+        transport_errors=1,
+    )
+    record = EvalRecord(
+        "model", "q4_k_m", "ollama", 1, 1, 1.0, {}, 1.0,
+        {"task": True},
+    )
+    assert cli._eval_divergence(result, {"record": record}) == []
+
+    clean_result = replace(result, transport_errors=0)
+    contaminated_record = replace(record, transport_errors=1)
+    assert cli._eval_divergence(
+        clean_result, {"record": contaminated_record},
+    ) == []
 
 
 def test_eval_cli_warns_when_artifact_changes(monkeypatch, capsys) -> None:
