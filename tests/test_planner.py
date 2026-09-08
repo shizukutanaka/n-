@@ -1394,3 +1394,41 @@ def test_embedding_backend_warnings_are_honest() -> None:
         Policy(roles=["embed"], min_decode_tps=0),
     )
     assert any("does not provide an embedding endpoint" in warning for warning in mlx.warnings)
+
+
+def test_context_depth_coverage_warns_without_changing_candidate() -> None:
+    model = ModelSpec(
+        "depth-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], 90.0, "apache", {"hf_gguf": "depth-model"},
+    )
+    policy = Policy(roles=["chat"], min_decode_tps=0)
+    ordinary = build_plan(profile(8), [model], policy)
+    service_key = (
+        ordinary.services[0].model_id,
+        ordinary.services[0].quant,
+        ordinary.services[0].backend,
+    )
+    warned = build_plan(
+        profile(8),
+        [model],
+        policy,
+        eval_depth_coverage={service_key: 1024},
+    )
+    covered = build_plan(
+        profile(8),
+        [model],
+        policy,
+        eval_depth_coverage={service_key: 16384},
+    )
+    missing = build_plan(
+        profile(8),
+        [model],
+        policy,
+        eval_depth_coverage={},
+    )
+    ordinary_service = ordinary.services[0]
+    warned_service = warned.services[0]
+    assert warned_service == ordinary_service
+    assert sum("quality evidence only reaches" in item for item in warned.warnings) == 1
+    assert not any("quality evidence only reaches" in item for item in covered.warnings)
+    assert not any("quality evidence only reaches" in item for item in missing.warnings)

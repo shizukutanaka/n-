@@ -38,6 +38,8 @@ class EvalRecord:
     reasoning_allowance: int = 0
     transport_errors: int = 0
     cache_prompt: bool | None = None
+    depth: int = 0
+    prompt_tokens_max: int = 0
 
 
 def _record(data: object) -> EvalRecord | None:
@@ -67,6 +69,8 @@ def _record(data: object) -> EvalRecord | None:
         allowance = data.get("reasoning_allowance", 0)
         transport_errors = data.get("transport_errors", 0)
         cache_prompt = data.get("cache_prompt")
+        depth = data.get("depth", 0)
+        prompt_tokens_max = data.get("prompt_tokens_max", 0)
         if (
             isinstance(n_tasks, bool)
             or not isinstance(n_tasks, int)
@@ -99,6 +103,12 @@ def _record(data: object) -> EvalRecord | None:
                 cache_prompt is not None
                 and not isinstance(cache_prompt, bool)
             )
+            or isinstance(depth, bool)
+            or not isinstance(depth, int)
+            or depth < 0
+            or isinstance(prompt_tokens_max, bool)
+            or not isinstance(prompt_tokens_max, int)
+            or prompt_tokens_max < 0
             or any(
                 not isinstance(key, str) or not isinstance(value, bool)
                 for key, value in task_results.items()
@@ -133,6 +143,8 @@ def _record(data: object) -> EvalRecord | None:
             allowance,
             transport_errors,
             cache_prompt,
+            depth,
+            prompt_tokens_max,
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -146,12 +158,17 @@ def eval_key(
     digest: str,
     allowance: int = 0,
     cache_prompt: bool | None = None,
+    depth: int = 0,
 ) -> str:
     """Identify a measurement. A token budget change is a measurement change, so
-    runs made with a reasoning allowance never land on an allowance-free key."""
+    runs made with a reasoning allowance never land on an allowance-free key.
+    A depth change is also a measurement change, so deep runs get their own
+    key."""
     suffix = f"|a{allowance}" if allowance else ""
     if cache_prompt is not None:
         suffix += "|c1" if cache_prompt else "|c0"
+    if depth > 0:
+        suffix += f"|d{depth}"
     return f"{model_id}|{quant}|{backend}|{suite}|{digest}{suffix}"
 
 
@@ -178,6 +195,7 @@ def save_eval(run: EvalRun, path: Path | None = None) -> Path:
         run.model_id, run.quant, run.backend, run.suite, run.digest,
         run.reasoning_allowance,
         run.cache_prompt,
+        run.depth,
     )
     records[key] = EvalRecord(
         run.model_id, run.quant, run.backend, run.n_tasks, run.passed,
@@ -190,6 +208,8 @@ def save_eval(run: EvalRun, path: Path | None = None) -> Path:
         run.reasoning_allowance,
         run.transport_errors,
         run.cache_prompt,
+        run.depth,
+        run.prompt_tokens_max,
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")

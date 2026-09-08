@@ -1634,7 +1634,10 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                    tuple[str, str, str], float | EvalSummary
                ] | None = None,
                artifact_cache: Mapping[str, int] | None = None,
-               bench_records: Mapping[str, BenchRecord] | None = None) -> Plan:
+               bench_records: Mapping[str, BenchRecord] | None = None,
+               *,
+               eval_depth_coverage: Mapping[tuple[str, str, str], int] | None = None,
+               ) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
     requested_model_ids = {
@@ -2046,6 +2049,27 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             )
             if model is not None and model.quality is None:
                 selected_unmeasured.add(model.id)
+    if eval_depth_coverage is not None:
+        for service in services:
+            measured_depth = eval_depth_coverage.get(
+                (
+                    service.model_id.casefold(),
+                    service.quant.casefold(),
+                    service.backend.casefold(),
+                ),
+            )
+            if measured_depth is None:
+                continue
+            if service.context > measured_depth:
+                warnings.append(t(
+                    "warn.context_unmeasured",
+                    selected.lang,
+                    model=service.model_id,
+                    quant=service.quant,
+                    backend=service.backend,
+                    context=service.context,
+                    depth=measured_depth,
+                ))
     for model_id in sorted(selected_unmeasured):
         warnings.append(
             t("warn.quality_unmeasured_selected", selected.lang, model=model_id)

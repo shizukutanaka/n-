@@ -1,6 +1,7 @@
 """Deterministic model evaluation."""
 
 from .cache import EvalRecord, EvalSummary, load_eval_cache, save_eval
+from .depth import needle_tasks, padded_prompt
 from .generated import (
     EXTENDED_CATEGORIES,
     EXTENDED_TASKS,
@@ -26,7 +27,9 @@ __all__ = [
     "Task",
     "TaskOutcome",
     "load_eval_cache",
+    "needle_tasks",
     "normalize",
+    "padded_prompt",
     "run",
     "save_eval",
     "suite_digest",

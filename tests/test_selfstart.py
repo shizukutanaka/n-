@@ -40,7 +40,8 @@ def test_kv_quant_cli_reaches_policy(monkeypatch) -> None:
     monkeypatch.setattr(
         cli,
         "build_plan",
-        lambda _profile, _catalog, policy, *_args: captured.append(policy) or object(),
+        lambda _profile, _catalog, policy, *_args, **_kwargs:
+        captured.append(policy) or object(),
     )
     cli._make_plan(SimpleNamespace(
         profile=None,

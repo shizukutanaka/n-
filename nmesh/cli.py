@@ -55,6 +55,7 @@ from nmesh.eval import (
     EvalRun,
     EvalSummary,
     load_eval_cache,
+    needle_tasks,
     save_eval,
     suite_digest,
 )
@@ -383,6 +384,7 @@ def _make_plan(args: argparse.Namespace) -> object:
     args._telemetry_off_reference = telemetry_report.off_reference
     args._telemetry_unknown_depth = telemetry_report.unknown_depth
     cache = {**load_cache(), **live}
+    eval_records = load_eval_cache()
     records = {
         key: value for key, value in load_records().items()
         if key not in live
@@ -392,20 +394,21 @@ def _make_plan(args: argparse.Namespace) -> object:
         load_catalog(),
         policy,
         cache,
-        _eval_rates(),
+        _eval_rates(eval_records),
         load_artifact_cache(),
         records,
+        eval_depth_coverage=_eval_depth_coverage(eval_records),
     )
 
 
 def _eval_records(
     records: Mapping[str, EvalRecord],
 ) -> tuple[
-    dict[tuple[str, str, str, str, str, int, bool | None], EvalRecord],
+    dict[tuple[str, str, str, str, str, int, bool | None, int], EvalRecord],
     list[EvalRecord],
 ]:
     valid: dict[
-        tuple[str, str, str, str, str, int, bool | None], EvalRecord
+        tuple[str, str, str, str, str, int, bool | None, int], EvalRecord
     ] = {}
     stale: list[EvalRecord] = []
     for record in records.values():
@@ -421,6 +424,7 @@ def _eval_records(
             record.digest,
             record.reasoning_allowance,
             record.cache_prompt,
+            record.depth,
         )
         previous = valid.get(key)
         if previous is None or record.at > previous.at:
@@ -434,7 +438,7 @@ def _eval_rates(
     valid, _ = _eval_records(records if records is not None else load_eval_cache())
     latest: dict[tuple[str, str, str], EvalRecord] = {}
     for record in valid.values():
-        if record.unscorable or record.transport_errors:
+        if record.unscorable or record.transport_errors or record.depth > 0:
             continue
         key = (
             record.model_id.casefold(),
@@ -453,6 +457,24 @@ def _eval_rates(
         )
         for key, record in latest.items()
     }
+
+
+def _eval_depth_coverage(
+    records: Mapping[str, EvalRecord],
+) -> dict[tuple[str, str, str], int]:
+    valid, _ = _eval_records(records)
+    coverage: dict[tuple[str, str, str], int] = {}
+    for record in valid.values():
+        if record.unscorable or record.transport_errors:
+            continue
+        key = (
+            record.model_id.casefold(),
+            record.quant.casefold(),
+            record.backend.casefold(),
+        )
+        served = record.prompt_tokens_max or record.depth
+        coverage[key] = max(coverage.get(key, 0), served)
+    return coverage
 
 
 def _stale_grader_notes(records: Mapping[str, EvalRecord]) -> list[str]:
@@ -762,13 +784,15 @@ def _runtime(args: argparse.Namespace) -> int:
                 key: value for key, value in load_records().items()
                 if key not in live
             }
+            eval_records = load_eval_cache()
             plan = build_plan(
                 detect_hardware(), load_catalog(),
                 replace(plan.policy, **updates),
                 {**load_cache(), **live},
-                _eval_rates(),
+                _eval_rates(eval_records),
                 load_artifact_cache(),
                 records,
+                eval_depth_coverage=_eval_depth_coverage(eval_records),
             )
             save_plan(plan)
         cache = {**load_cache(), **bench_overlay()}
@@ -1693,6 +1717,7 @@ def _eval(args: argparse.Namespace) -> int:
     )
     allowance = max(0, getattr(args, "reasoning_allowance", 0) or 0)
     timeout = getattr(args, "timeout", None)
+    depth = max(0, getattr(args, "depth", 0) or 0)
     try:
         result = eval_run(
             tasks,
@@ -1701,6 +1726,7 @@ def _eval(args: argparse.Namespace) -> int:
             timeout=timeout,
             reasoning_allowance=allowance,
             cache_prompt=False if service.backend == "llamacpp" else None,
+            depth=depth,
         )
     except RuntimeError as error:
         print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
@@ -1715,12 +1741,46 @@ def _eval(args: argparse.Namespace) -> int:
         digest=suite_digest(tasks),
         reasoning_allowance=allowance,
         transport_errors=result.transport_errors,
+        depth=depth,
     )
+    context_probe = None
+    context_probe_families: dict[str, dict[str, int]] = {}
+    if depth > 0:
+        probes = needle_tasks(depth, seed=args.suite)
+        try:
+            probe_result = eval_run(
+                probes,
+                base_url,
+                service.model_ref,
+                timeout=timeout,
+                reasoning_allowance=allowance,
+                cache_prompt=False if service.backend == "llamacpp" else None,
+                depth=depth,
+            )
+        except RuntimeError as error:
+            print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
+            return 1
+        families: dict[str, dict[str, int]] = {}
+        for category in ("context.literal", "context.latent"):
+            category_outcomes = [
+                item for item in probe_result.outcomes if item.category == category
+            ]
+            families[category.rsplit(".", 1)[-1]] = {
+                "passed": sum(item.passed for item in category_outcomes),
+                "of": len(category_outcomes),
+            }
+        context_probe = {
+            "passed": probe_result.passed,
+            "of": probe_result.n_tasks,
+            "families": families,
+        }
+        context_probe_families = families
     cached = load_eval_cache()
     key = eval_key(
         result.model_id, result.quant, result.backend, result.suite, result.digest,
         result.reasoning_allowance,
         result.cache_prompt,
+        result.depth,
     )
     previous = cached.get(key)
     artifact_warning = None
@@ -1840,6 +1900,9 @@ def _eval(args: argparse.Namespace) -> int:
         "unscorable": result.unscorable,
         "transport_errors": result.transport_errors,
         "reasoning_allowance": result.reasoning_allowance,
+        "requested_depth": result.depth,
+        "served_depth": result.prompt_tokens_max or None,
+        "served_depth_known": bool(result.prompt_tokens_max),
         "unscorable_note": unscorable_note,
         "transport_note": transport_note,
         "pass_rate": result.pass_rate,
@@ -1859,6 +1922,7 @@ def _eval(args: argparse.Namespace) -> int:
         "config_note": config_note,
         "divergence": divergence,
         "artifact_warning": artifact_warning,
+        "context_probe": context_probe,
     }
     if args.json:
         _print_json(output)
@@ -1877,6 +1941,27 @@ def _eval(args: argparse.Namespace) -> int:
         table.add_row(category, str(category_passed), str(len(category_outcomes)), f"{rate:.1%}")
     _console().print(table)
     _console().print(note)
+    _console().print(i18n.t(
+        "label.eval_depth",
+        language,
+        requested=result.depth,
+        served=(
+            str(result.prompt_tokens_max)
+            if result.prompt_tokens_max else
+            i18n.t("label.unknown", language)
+        ),
+    ))
+    if context_probe is not None:
+        _console().print(i18n.t(
+            "label.eval_context_probe",
+            language,
+            passed=context_probe["passed"],
+            total=context_probe["of"],
+            literal_passed=context_probe_families["literal"]["passed"],
+            literal_total=context_probe_families["literal"]["of"],
+            latent_passed=context_probe_families["latent"]["passed"],
+            latent_total=context_probe_families["latent"]["of"],
+        ))
     for stale_note in stale_grader_notes:
         _console().print(stale_note)
     _console().print(uncertainty_note)
@@ -3002,6 +3087,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     spec_show.add_argument("--json", action="store_true")
     eval_parser.add_argument(
         "--suite", choices=("core", "extended", "hard"), default="core",
+    )
+    eval_parser.add_argument(
+        "--depth",
+        type=_non_negative_int,
+        default=0,
+        help="requested real prompt depth for evaluation evidence",
     )
     eval_parser.add_argument(
         "--reasoning-allowance",

@@ -419,6 +419,13 @@ passing them proves that the value is right, not that the model selected it
 between candidates. The generated extraction family adds decoys and tests that
 selection directly.
 
+`nmesh eval --depth N` records requested and served prompt depth separately and
+keeps deterministic single-needle context probes outside the suite score and
+digest. The planner warns when advertised context exceeds quality evidence but
+does not exclude the candidate. The timeout budget includes the requested
+depth; this matters because the bench's `512` is a nominal prefill parameter
+that tokenises to roughly 336 real prompt tokens, not a real-token depth.
+
 Further controlled checks scoped those eliminations to `arithmetic.subtract`:
 with the same fully expanded 48-token raw ChatML prompt, `top_k=1`,
 `repeat_penalty` pinned to both 1.0 and 1.1, and cold or warm llama.cpp
