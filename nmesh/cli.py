@@ -144,7 +144,12 @@ from nmesh.spec.record import demote_stale as demote_spec_stale
 from nmesh.spec.record import load_cache as load_spec_cache
 from nmesh.spec.record import save as save_spec
 from nmesh.spec.record import save_all as save_all_spec
-from nmesh.telemetry import bench_overlay, overlay_report
+from nmesh.telemetry import (
+    COMPARABLE_DEPTH_FACTOR,
+    REFERENCE_PREFILL_TOKENS,
+    bench_overlay,
+    overlay_report,
+)
 from nmesh.telemetry import summary as telemetry_summary
 from nmesh.watch import extract as extract_mentions
 from nmesh.watch import fetch_qiita, fetch_x, fetch_zenn
@@ -372,9 +377,12 @@ def _make_plan(args: argparse.Namespace) -> object:
                     spec_n_max=getattr(args, "spec_n_max", 3),
                     ignore_spec_evidence=getattr(args, "ignore_spec_evidence", False),
                     )
-    live, skipped = overlay_report()
+    telemetry_report = overlay_report()
+    live = telemetry_report.values
     args._telemetry_keys = len(live)
-    args._telemetry_under_load = skipped
+    args._telemetry_under_load = telemetry_report.under_load
+    args._telemetry_off_reference = telemetry_report.off_reference
+    args._telemetry_unknown_depth = telemetry_report.unknown_depth
     cache = {**load_cache(), **live}
     records = {
         key: value for key, value in load_records().items()
@@ -563,6 +571,24 @@ def _plan(args: argparse.Namespace) -> int:
                 "label.telemetry_under_load",
                 language,
                 count=getattr(args, "_telemetry_under_load", 0),
+            )
+        )
+    if getattr(args, "_telemetry_off_reference", 0):
+        _console().print(
+            i18n.t(
+                "label.telemetry_off_reference",
+                language,
+                count=getattr(args, "_telemetry_off_reference", 0),
+                reference=REFERENCE_PREFILL_TOKENS,
+                factor=COMPARABLE_DEPTH_FACTOR,
+            )
+        )
+    if getattr(args, "_telemetry_unknown_depth", 0):
+        _console().print(
+            i18n.t(
+                "label.telemetry_unknown_depth",
+                language,
+                count=getattr(args, "_telemetry_unknown_depth", 0),
             )
         )
     for hint in result.install_hints:

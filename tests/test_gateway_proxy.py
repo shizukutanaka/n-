@@ -72,14 +72,34 @@ class _CompatStreamHandler(BaseHTTPRequestHandler):
 class _UsageHandler(BaseHTTPRequestHandler):
     request_body: ClassVar[dict[str, object]] = {}
     request_bodies: ClassVar[list[dict[str, object]]] = []
+    stream: ClassVar[bool] = True
     usage_on_every_chunk: ClassVar[bool] = False
     timings: ClassVar[dict[str, object] | None] = None
     cached_tokens: ClassVar[int | None] = None
+    prompt_tokens: ClassVar[int | None] = 23
 
     def do_POST(self) -> None:
         length = int(self.headers["Content-Length"])
         self.__class__.request_body = json.loads(self.rfile.read(length))
         self.__class__.request_bodies.append(self.__class__.request_body)
+        if not self.__class__.stream:
+            usage: dict[str, object] = {"completion_tokens": 17}
+            if self.__class__.prompt_tokens is not None:
+                usage["prompt_tokens"] = self.__class__.prompt_tokens
+            payload_data: dict[str, object] = {
+                "model": self.request_body["model"],
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": usage,
+            }
+            if self.__class__.timings is not None:
+                payload_data["timings"] = self.__class__.timings
+            payload = json.dumps(payload_data).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
@@ -88,14 +108,16 @@ class _UsageHandler(BaseHTTPRequestHandler):
                 "choices": [{"delta": {"content": str(index)}}],
             }
             if self.__class__.usage_on_every_chunk:
-                data["usage"] = {
-                    "prompt_tokens": 23,
-                    "completion_tokens": index + 1,
-                }
+                usage: dict[str, object] = {"completion_tokens": index + 1}
+                if self.__class__.prompt_tokens is not None:
+                    usage["prompt_tokens"] = self.__class__.prompt_tokens
+                data["usage"] = usage
             payload = json.dumps(data).encode()
             self.wfile.write(b"data: " + payload + b"\n\n")
             self.wfile.flush()
-        usage: dict[str, object] = {"prompt_tokens": 23, "completion_tokens": 17}
+        usage = {"completion_tokens": 17}
+        if self.__class__.prompt_tokens is not None:
+            usage["prompt_tokens"] = self.__class__.prompt_tokens
         if self.__class__.cached_tokens is not None:
             usage["prompt_tokens_details"] = {
                 "cached_tokens": self.__class__.cached_tokens,
@@ -260,6 +282,84 @@ def test_llamacpp_stream_injects_usage_filters_unrequested_chunk_and_records_exa
         assert samples[-1].approximate is False
         assert samples[-1].completion_tokens == 17
     finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_telemetry_records_prompt_depth_from_stream_and_nonstream_usage(
+    monkeypatch,
+) -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UsageHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    samples = []
+    monkeypatch.setattr(gateway_module, "record_telemetry", samples.append)
+    try:
+        _UsageHandler.stream = True
+        _UsageHandler.prompt_tokens = 23
+        _UsageHandler.timings = None
+        model = ModelSpec("depth-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+
+        streamed = client.post("/v1/chat/completions", json={
+            "model": "client-model",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert streamed.status_code == 200
+        assert samples[-1].prompt_tokens == 23
+
+        _UsageHandler.stream = False
+        nonstreamed = client.post("/v1/chat/completions", json={
+            "model": "client-model",
+            "stream": False,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert nonstreamed.status_code == 200
+        assert samples[-1].prompt_tokens == 23
+    finally:
+        _UsageHandler.stream = True
+        _UsageHandler.prompt_tokens = 23
+        _UsageHandler.timings = None
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_telemetry_derives_prompt_depth_from_llamacpp_timings(
+    monkeypatch,
+) -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UsageHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    samples = []
+    monkeypatch.setattr(gateway_module, "record_telemetry", samples.append)
+    try:
+        _UsageHandler.stream = True
+        _UsageHandler.prompt_tokens = None
+        _UsageHandler.timings = {
+            "prompt_n": 314,
+            "cache_n": 24,
+            "prompt_ms": 816.236,
+        }
+        model = ModelSpec("timing-depth-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "client-model",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert samples[-1].prompt_tokens == 338
+    finally:
+        _UsageHandler.stream = True
+        _UsageHandler.prompt_tokens = 23
+        _UsageHandler.timings = None
         upstream.shutdown()
         upstream.server_close()
 
