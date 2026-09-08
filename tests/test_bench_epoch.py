@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from nmesh.bench import (
+    EPOCH_MIN_RATIO,
+    BenchRecord,
+    demote_stale,
+    load_cache,
+    load_records,
+    save_records,
+)
 from nmesh.bench.epoch import (
     EPOCH_HISTORY,
     EpochSample,
@@ -10,6 +18,7 @@ from nmesh.bench.epoch import (
     classify,
     find_reference_binary,
     load_history,
+    prune_degraded,
     save_history,
 )
 
@@ -31,6 +40,13 @@ def test_classify_accepts_the_ratio_boundary() -> None:
     assert classify(80.0, 100.0) == "healthy"
     assert classify(79.9, 100.0) == "degraded"
     assert classify(100.0, None) == "unknown"
+
+
+def test_prune_degraded_drops_slow_samples_and_keeps_boundary() -> None:
+    current = 43.2
+    samples = _samples("ref", [19.0, 41.0, current * EPOCH_MIN_RATIO])
+    retained = prune_degraded(samples, current)
+    assert [sample.tps for sample in retained] == [41.0, current * EPOCH_MIN_RATIO]
 
 
 def test_history_is_trimmed_and_reference_ids_are_isolated(tmp_path) -> None:
@@ -79,3 +95,60 @@ def test_measure_reference_reads_llama_bench_json_without_shelling_out(monkeypat
         "llama-bench", "-m", "reference.gguf", "-p", "0", "-n", "32",
         "-r", "2", "-t", "8", "-o", "json",
     ]
+
+
+def _record(reference_id: str, reference_tps: float | None) -> BenchRecord:
+    return BenchRecord(
+        tps=20.0,
+        decode_tps_min=19.0,
+        decode_tps_max=21.0,
+        runs=3,
+        passes=2,
+        control_ratio=1.0,
+        stable=True,
+        measured_at="2025-01-01T00:00:00+00:00",
+        harness="bench-v1",
+        sessions=(20.0, 20.0),
+        reference_tps=reference_tps,
+        reference_id=reference_id,
+        epoch="healthy",
+    )
+
+
+def test_demote_stale_invalidates_faster_disproved_reference(tmp_path) -> None:
+    records = {"stale": _record("ref", 20.0)}
+    assert 48.0 / 20.0 > 1 / EPOCH_MIN_RATIO
+    assert demote_stale(records, "ref", 48.0) == ("stale",)
+    demoted = records["stale"]
+    assert demoted.epoch == "degraded"
+    assert demoted.stable is False
+    assert demoted.sessions == ()
+    assert demoted.tps == 20.0
+    assert demoted.rejected[0] == 20.0
+    assert demoted.last_rejected_reference_tps == 20.0
+    assert demoted.last_rejected_epoch == "healthy"
+    path = tmp_path / "bench.json"
+    save_records(records, path)
+    assert load_records(path)["stale"].sessions == ()
+    assert load_cache(path) == {}
+
+
+def test_demote_stale_ignores_matching_noise_and_unrelated_records() -> None:
+    records = {
+        "noise": _record("ref", 45.0),
+        "other": _record("other", 20.0),
+        "empty": _record("", 20.0),
+        "missing": _record("ref", None),
+    }
+    assert 48.0 / 45.0 <= 1 / EPOCH_MIN_RATIO
+    assert demote_stale(records, "ref", 48.0) == ()
+    assert all(record.epoch == "healthy" for record in records.values())
+
+
+def test_demote_stale_requires_reference_identity_and_value() -> None:
+    records = {
+        "other": _record("other", 20.0),
+        "empty": _record("", 20.0),
+        "missing": _record("ref", None),
+    }
+    assert demote_stale(records, "ref", 48.0) == ()

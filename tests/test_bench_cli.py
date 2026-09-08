@@ -6,7 +6,14 @@ from pathlib import Path
 import pytest
 
 from nmesh import cli
-from nmesh.bench import BenchRecord, BenchResult, ControlledBenchResult, benchmark_key
+from nmesh.bench import (
+    BenchRecord,
+    BenchResult,
+    ControlledBenchResult,
+    EpochSample,
+    baseline,
+    benchmark_key,
+)
 from nmesh.catalog import ModelSpec
 from nmesh.planner import Policy, build_plan
 
@@ -189,6 +196,125 @@ def test_bench_no_reference_keeps_epoch_unknown(monkeypatch, capsys) -> None:
     assert result["reference_baseline"] is None
     assert result["reference_id"] == ""
     assert result["epoch"] == "unknown"
+
+
+def test_bench_demotes_stale_evidence_before_merging_new_session(
+    monkeypatch, capsys,
+) -> None:
+    plan = _plan()
+    service = plan.services[0]
+    key = benchmark_key(
+        service.model_id,
+        service.quant,
+        service.backend,
+        plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
+        service.n_gpu_layers,
+        service.kv_quant,
+        service.spec,
+    )
+    previous = BenchRecord(
+        20.0, 19.0, 21.0, 3, 2, 1.0, True, "old", "bench-v1",
+        (20.0, 20.0), reference_tps=20.0, reference_id="ref",
+        epoch="healthy",
+    )
+    measurement = BenchResult(
+        400.0, 48.0, 0.5, False, 330, "timings", 0, 47.0, 49.0, 3,
+    )
+    controlled = _controlled(measurement)
+    saved = {}
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
+    monkeypatch.setattr(cli, "load_records", lambda: {key: previous})
+    monkeypatch.setattr(cli, "save_records", lambda records: saved.update(records))
+    monkeypatch.setattr(
+        cli, "_reference_context",
+        lambda _service: (Path("llama-bench"), Path("reference.gguf"), "ref", 4),
+    )
+    history_saved = {}
+    monkeypatch.setattr(
+        cli,
+        "load_history",
+        lambda: {
+            "ref": (
+                EpochSample("ref", 20.0, "old-1"),
+                EpochSample("ref", 40.0, "old-2"),
+            ),
+            "other": (EpochSample("other", 10.0, "other"),),
+        },
+    )
+    monkeypatch.setattr(
+        cli, "save_history", lambda history: history_saved.update(history),
+    )
+    monkeypatch.setattr(cli, "measure_reference", lambda *_args: 48.0)
+    monkeypatch.setattr(cli, "measure_controlled", lambda *_args, **_kwargs: controlled)
+
+    assert cli.main(["bench", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["demoted"] == [key]
+    assert result["pruned"] == 1
+    assert result["stored"] is True
+    assert result["confirmations"] == 1
+    assert saved[key].tps == 48.0
+    assert saved[key].sessions == (48.0,)
+    assert baseline(history_saved, "ref") == 48.0
+    assert history_saved["other"] == (EpochSample("other", 10.0, "other"),)
+
+
+def test_bench_degraded_epoch_does_not_demote_existing_evidence(
+    monkeypatch, capsys,
+) -> None:
+    plan = _plan()
+    service = plan.services[0]
+    key = benchmark_key(
+        service.model_id,
+        service.quant,
+        service.backend,
+        plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
+        service.n_gpu_layers,
+        service.kv_quant,
+        service.spec,
+    )
+    previous = BenchRecord(
+        20.0, 19.0, 21.0, 3, 2, 1.0, True, "old", "bench-v1",
+        (20.0, 20.0), reference_tps=20.0, reference_id="ref",
+        epoch="healthy",
+    )
+    measurement = BenchResult(
+        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3,
+    )
+    saved = {}
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
+    monkeypatch.setattr(cli, "load_records", lambda: {key: previous})
+    monkeypatch.setattr(cli, "save_records", lambda records: saved.update(records))
+    monkeypatch.setattr(
+        cli, "_reference_context",
+        lambda _service: (Path("llama-bench"), Path("reference.gguf"), "ref", 4),
+    )
+    history = {"ref": (EpochSample("ref", 48.0, "old"),)}
+    monkeypatch.setattr(cli, "load_history", lambda: history)
+    monkeypatch.setattr(
+        cli,
+        "save_history",
+        lambda _history: (_ for _ in ()).throw(
+            AssertionError("degraded epoch was persisted"),
+        ),
+    )
+    monkeypatch.setattr(cli, "measure_reference", lambda *_args: 20.0)
+    monkeypatch.setattr(
+        cli, "measure_controlled",
+        lambda *_args, **_kwargs: _controlled(measurement),
+    )
+
+    assert cli.main(["bench", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["epoch"] == "degraded"
+    assert result["demoted"] == []
+    assert result["pruned"] == 0
+    assert result["median_tps"] == 20.0
+    assert saved[key].epoch == "healthy"
 
 
 def test_reference_context_skips_when_free_ram_cannot_hold_artifact(

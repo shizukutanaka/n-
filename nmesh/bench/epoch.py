@@ -157,3 +157,15 @@ def classify(current: float, base: float | None) -> str:
     if base is None:
         return "unknown"
     return "healthy" if current >= base * EPOCH_MIN_RATIO else "degraded"
+
+
+def prune_degraded(
+    samples: tuple[EpochSample, ...],
+    current: float,
+) -> tuple[EpochSample, ...]:
+    """Drop samples disproved by a later, faster reference."""
+    return tuple(
+        sample
+        for sample in samples
+        if classify(sample.tps, current) != "degraded"
+    )
