@@ -1,5 +1,3 @@
-# ruff: noqa: I001
-
 from __future__ import annotations
 
 import argparse
@@ -68,12 +66,22 @@ from nmesh.eval.stats import (
     wilson_interval,
 )
 from nmesh.inventory import (
-    Artifact as InventoryArtifact,
     FILE_TYPE_QUANT,
     default_stores,
+)
+from nmesh.inventory import (
+    Artifact as InventoryArtifact,
+)
+from nmesh.inventory import (
     duplicates as inventory_duplicates,
+)
+from nmesh.inventory import (
     label_mismatch as inventory_label_mismatch,
+)
+from nmesh.inventory import (
     scan as scan_inventory,
+)
+from nmesh.inventory import (
     variants as inventory_variants,
 )
 from nmesh.orchestrate import (
