@@ -33,6 +33,8 @@ NO_EVIDENCE = "no_evidence"
 NOT_SUPERIOR = "not_superior"
 #: A positive delegation result lacks repeated confirmation.
 UNCONFIRMED = "unconfirmed"
+#: Repeated delegation results disagree on task outcomes.
+UNSTABLE = "unstable"
 #: The host epoch invalidated the measured cost claim.
 STALE = "stale"
 #: Delegation took less wall-clock time than the lead alone.
@@ -192,6 +194,8 @@ def decide(record: DelegationRecord | None) -> tuple[str, str]:
     if record is None:
         return NO_EVIDENCE, NO_EVIDENCE
     if record.superior:
+        if record.unstable_tasks > 0:
+            return UNSTABLE, UNSTABLE
         if record.repeats >= MIN_REPEATS:
             return ALLOW, ALLOW
         return UNCONFIRMED, UNCONFIRMED

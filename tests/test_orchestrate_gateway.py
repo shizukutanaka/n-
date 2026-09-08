@@ -86,9 +86,11 @@ def test_delegate_model_sums_usage_when_allowed(monkeypatch) -> None:
     plan = _delegation_plan()
     record = _record(plan)
     monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": record})
+    endpoints: list[object] = []
 
     def fake_delegate(client, prompt, max_tokens, *, lead, worker, ledger):
-        del client, prompt, max_tokens, lead, worker
+        del client, prompt, max_tokens
+        endpoints.extend((lead, worker))
         ledger.worker.add(Call("worker", 3, 4, False, 0.0))
         ledger.verify.add(Call("YES", 5, 1, False, 0.0))
         return Delegation(
@@ -115,6 +117,7 @@ def test_delegate_model_sums_usage_when_allowed(monkeypatch) -> None:
         "total_tokens": 13,
     }
     assert response.json()["nmesh_role"] == "worker"
+    assert all(endpoint.cache_prompt is None for endpoint in endpoints)
 
 
 def test_delegate_model_refuses_unconfirmed_evidence(monkeypatch) -> None:
@@ -133,6 +136,24 @@ def test_delegate_model_refuses_unconfirmed_evidence(monkeypatch) -> None:
     assert "nmesh-delegate" not in {item["id"] for item in models}
     assert response.status_code == 409
     assert "unconfirmed" in response.json()["error"]["message"]
+
+
+def test_delegate_model_refuses_unstable_evidence(monkeypatch) -> None:
+    plan = _delegation_plan()
+    record = replace(_record(plan), unstable_tasks=1)
+    monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": record})
+    with TestClient(create_app(plan)) as client:
+        models = client.get("/v1/models").json()["data"]
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "nmesh-delegate",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert "nmesh-delegate" not in {item["id"] for item in models}
+    assert response.status_code == 409
+    assert "unstable" in response.json()["error"]["message"]
 
 
 def test_delegate_model_reports_non_superior_evidence(monkeypatch) -> None:

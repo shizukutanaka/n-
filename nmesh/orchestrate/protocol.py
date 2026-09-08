@@ -22,7 +22,7 @@ import httpx
 #: Bumped whenever the verifier prompt or the escalation rule changes. A
 #: measurement made under a different protocol is not comparable, so this
 #: string is part of the record identity.
-PROTOCOL_VERSION = "delegate-v1"
+PROTOCOL_VERSION = "delegate-v2"
 
 VERIFY_PROMPT = (
     "You are a strict checker. Decide whether the ANSWER satisfies the TASK "
@@ -43,6 +43,7 @@ class Endpoint:
 
     base_url: str
     model_ref: str
+    cache_prompt: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -119,15 +120,18 @@ def complete(
 ) -> Call:
     """Send one deterministic single-turn completion and measure it."""
     started = time.monotonic()
+    payload: dict[str, object] = {
+        "model": endpoint.model_ref,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": 0,
+        "stream": False,
+    }
+    if endpoint.cache_prompt is not None:
+        payload["cache_prompt"] = endpoint.cache_prompt
     response = client.post(
         f"{endpoint.base_url.rstrip('/')}/v1/chat/completions",
-        json={
-            "model": endpoint.model_ref,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": 0,
-            "stream": False,
-        },
+        json=payload,
     )
     response.raise_for_status()
     payload = response.json()

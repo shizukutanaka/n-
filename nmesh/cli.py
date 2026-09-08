@@ -1813,8 +1813,18 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
         runs = [
             orchestrate_measure(
                 tasks,
-                lead=Endpoint(lead_url, lead.model_ref),
-                worker=Endpoint(worker_url, worker.model_ref),
+                lead=Endpoint(
+                    lead_url,
+                    lead.model_ref,
+                    cache_prompt=False if lead.backend == "llamacpp" else None,
+                ),
+                worker=Endpoint(
+                    worker_url,
+                    worker.model_ref,
+                    cache_prompt=(
+                        False if worker.backend == "llamacpp" else None
+                    ),
+                ),
                 lead_identity=lead_identity,
                 worker_identity=worker_identity,
                 suite=args.suite,
