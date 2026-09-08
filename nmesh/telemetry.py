@@ -10,14 +10,14 @@ from pathlib import Path
 
 from nmesh.paths import nmesh_home
 
-REFERENCE_PREFILL_TOKENS = 512
-"""Reference depth used by ``nmesh.bench.runner.measure()``."""
+COMPARABLE_PROMPT_TOKENS = 1024
+"""Real-token ceiling for live samples comparable to the bench reference.
 
-COMPARABLE_DEPTH_FACTOR = 4.0
-"""Maximum comparable depth based on the measured 512-token noise band.
-
-Depths through 2048 stayed within this host's 6.4% healthy noise of the
-512-token reference, while 4096 and deeper prompts fell materially below it.
+Bench uses a nominal 512-token prefill parameter that tokenises to about 336
+real prompt tokens. Live samples through 1024 real tokens measured within 2%
+of that rung (0.985 / 0.981), while about 1520 fell 7% and about 2005 fell
+12%, outside this host's 6.4% healthy noise band. This is a real token count,
+not bench's nominal parameter; the two differ by roughly 1.5x.
 """
 
 @dataclass(frozen=True)
@@ -160,7 +160,7 @@ class Telemetry:
                 if sample.prompt_tokens is None:
                     unknown_depth += 1
                     continue
-                if sample.prompt_tokens > REFERENCE_PREFILL_TOKENS * COMPARABLE_DEPTH_FACTOR:
+                if sample.prompt_tokens > COMPARABLE_PROMPT_TOKENS:
                     off_reference += 1
                     continue
                 groups = approximate if sample.approximate else exact
@@ -208,8 +208,7 @@ def overlay_report(min_samples: int = 5) -> OverlayReport:
 
 
 __all__ = [
-    "COMPARABLE_DEPTH_FACTOR",
-    "REFERENCE_PREFILL_TOKENS",
+    "COMPARABLE_PROMPT_TOKENS",
     "OverlayReport",
     "Sample",
     "Telemetry",

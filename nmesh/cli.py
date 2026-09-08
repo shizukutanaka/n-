@@ -145,8 +145,7 @@ from nmesh.spec.record import load_cache as load_spec_cache
 from nmesh.spec.record import save as save_spec
 from nmesh.spec.record import save_all as save_all_spec
 from nmesh.telemetry import (
-    COMPARABLE_DEPTH_FACTOR,
-    REFERENCE_PREFILL_TOKENS,
+    COMPARABLE_PROMPT_TOKENS,
     bench_overlay,
     overlay_report,
 )
@@ -579,8 +578,7 @@ def _plan(args: argparse.Namespace) -> int:
                 "label.telemetry_off_reference",
                 language,
                 count=getattr(args, "_telemetry_off_reference", 0),
-                reference=REFERENCE_PREFILL_TOKENS,
-                factor=COMPARABLE_DEPTH_FACTOR,
+                tokens=COMPARABLE_PROMPT_TOKENS,
             )
         )
     if getattr(args, "_telemetry_unknown_depth", 0):

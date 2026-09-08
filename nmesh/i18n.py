@@ -188,7 +188,7 @@ MESSAGES = {
         "label.free_budgets": "Budgets use currently-free memory.",
         "label.telemetry_overlay": "Live telemetry overlay: {count} benchmark key(s)",
         "label.telemetry_under_load": "{count} telemetry samples overlapped other requests (or predate concurrency recording) and are excluded from the single-stream decode overlay; a per-request rate measured under load is a different quantity.",
-        "label.telemetry_off_reference": "{count} live samples were measured deeper than {reference} x {factor} prompt tokens and are not used as planning evidence",
+        "label.telemetry_off_reference": "{count} live samples were measured deeper than {tokens} prompt tokens and are not used as planning evidence",
         "label.telemetry_unknown_depth": "{count} live samples predate prompt-depth recording and are not used as planning evidence",
         "label.install": "Install: {hint}",
         "label.warning": "Warning: {warning}",
@@ -294,7 +294,7 @@ MESSAGES = {
         "label.watch_install": "Install with",
     },
     "ja": {
-        "label.telemetry_off_reference": "{count}件のライブサンプルは{reference} x {factor}プロンプトトークンより深く測定されたため、計画の証拠には使用しません",
+        "label.telemetry_off_reference": "{count}件のライブサンプルは{tokens}プロンプトトークンより深く測定されたため、計画の証拠には使用しません",
         "label.telemetry_unknown_depth": "{count}件のライブサンプルはプロンプト深度の記録前のもので、計画の証拠には使用しません",
         "warn.backend_binary_missing": "{backend}: \u6307\u5b9a\u3055\u308c\u305f\u30d0\u30a4\u30ca\u30ea {path} \u306f\u5b9f\u884c\u53ef\u80fd\u3067\u306f\u306a\u3044\u305f\u3081\u3001PATH \u306b\u30d5\u30a9\u30fc\u30eb\u30d0\u30c3\u30af\u305b\u305a\u30d0\u30c3\u30af\u30a8\u30f3\u30c9\u3092\u5229\u7528\u4e0d\u53ef\u3068\u3057\u307e\u3059\u3002",
         "warn.embeddings_unsupported": "{model}: llama.cpp は埋め込みフラグに対応していないため、/v1/embeddings は利用できない可能性があります。",

@@ -17,8 +17,7 @@ from nmesh.catalog import ModelSpec
 from nmesh.gateway import create_app
 from nmesh.planner import Policy, build_plan
 from nmesh.telemetry import (
-    COMPARABLE_DEPTH_FACTOR,
-    REFERENCE_PREFILL_TOKENS,
+    COMPARABLE_PROMPT_TOKENS,
     Sample,
     Telemetry,
 )
@@ -140,16 +139,17 @@ def test_bench_overlay_uses_single_stream_samples_and_reports_skips(tmp_path) ->
     assert report.under_load == 3
 
 
-def test_overlay_excludes_deep_samples_and_counts_them(tmp_path) -> None:
+@pytest.mark.parametrize("prompt_tokens", [1025, 2005, 8192])
+def test_overlay_excludes_deep_samples_and_counts_them(tmp_path, prompt_tokens) -> None:
     store = Telemetry(tmp_path / "telemetry.json")
-    for value in (34.20, 35.0, 33.5):
-        store.record(sample(key="deep", decode_tps=value, prompt_tokens=8192))
+    # 2005 real prompt tokens measured 0.883 of the reference decode rate.
+    store.record(sample(key="deep", decode_tps=34.20, prompt_tokens=prompt_tokens))
     report = store.overlay_report(min_samples=3)
     assert report.values == {}
-    assert report.off_reference == 3
+    assert report.off_reference == 1
 
 
-@pytest.mark.parametrize("prompt_tokens", [256, 2048])
+@pytest.mark.parametrize("prompt_tokens", [256, 1024])
 def test_overlay_accepts_comparable_prompt_depths(tmp_path, prompt_tokens) -> None:
     store = Telemetry(tmp_path / "telemetry.json")
     store.record(sample(key="eligible", decode_tps=45.77, prompt_tokens=prompt_tokens))
@@ -184,10 +184,10 @@ def test_prompt_depth_round_trip(tmp_path) -> None:
     assert store.samples()[0].prompt_tokens == 123
 
 
-def test_reference_depth_agrees_with_bench_default() -> None:
+def test_comparable_depth_exceeds_bench_nominal_default() -> None:
     default = inspect.signature(bench_runner.measure).parameters["prefill_tokens"].default
-    assert default == REFERENCE_PREFILL_TOKENS
-    assert REFERENCE_PREFILL_TOKENS * COMPARABLE_DEPTH_FACTOR == 2048
+    # The nominal 512 is below 1024, and its roughly 336 real tokens are lower still.
+    assert default < COMPARABLE_PROMPT_TOKENS
 
 
 class _TelemetryHandler(BaseHTTPRequestHandler):
