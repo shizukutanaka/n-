@@ -85,6 +85,9 @@ MESSAGES = {
         "warn.spec_draft_no_fit": "{service}: draft artifact ({bytes} bytes) does not fit the available memory budget; speculation is disabled.",
         "warn.spec_draft_gpu_unmodeled": "{service}: draft placement on GPU is not modeled; speculation is disabled.",
         "warn.spec_draft_missing": "{service}: draft artifact {draft} was not found as a local GGUF file; speculation is disabled.",
+        "warn.spec_degraded": "Speculation evidence was measured during a degraded host epoch; the record is saved but cannot enable a positive speed claim.",
+        "warn.spec_demoted": "{count} stored speculation measurements were invalidated because this host is now measurably faster than when they were taken; evidence must be re-measured.",
+        "warn.bench_spec_demoted": "{count} stored speculation measurements were invalidated by a faster shared reference epoch; evidence must be re-measured.",
         "warn.quality_prior": "Model ranking uses unverified catalog quality claims; nmesh eval measures them.",
         "warn.quality_unmeasured": (
             "Unmeasured quality excluded these models from automatic ranking: "
@@ -134,6 +137,7 @@ MESSAGES = {
         "err.spec_draft_required": "--draft is required when --kind draft is used.",
         "err.spec_repeats": "--repeats must be at least 3.",
         "err.spec_no_generative_service": "No generative service (chat, code, or worker) is available for speculation measurement.",
+        "err.spec_transport": "The speculation measurement did not complete at the transport level; nothing was recorded.",
         "label.spec_control": "control A/A: worst ratio {ratio}, identical {identical}",
         "label.spec_ref_spread": "ref spread",
         "label.spec_cand_spread": "cand spread",
@@ -485,6 +489,10 @@ MESSAGES["ja"].update({
     "warn.bench_epoch": "ホストが過去に観測した基準速度の {ratio:.0%} の状態で測定されたため、{kept}。",
     "warn.bench_no_reference": "基準ワークロードを利用できないため、この測定値をエポック間で比較できません。",
     "warn.bench_demoted": "このホストが測定時より明らかに高速になったため、保存済みのベンチマーク測定 {count} 件を無効化しました。証拠を再測定してください。",
+    "warn.spec_degraded": "\u30db\u30b9\u30c8\u304c\u52a3\u5316\u3057\u305f\u30a8\u30dd\u30c3\u30af\u3067\u6295\u6a5f\u3092\u6e2c\u5b9a\u3057\u307e\u3057\u305f\u3002\u8a18\u9332\u306f\u4fdd\u5b58\u3057\u307e\u3059\u304c\u3001\u901f\u5ea6\u5411\u4e0a\u306e\u8a3c\u62e0\u3068\u3057\u3066\u306f\u4f7f\u3048\u307e\u305b\u3093\u3002",
+    "warn.spec_demoted": "\u3053\u306e\u30db\u30b9\u30c8\u304c\u6e2c\u5b9a\u6642\u3088\u308a\u660e\u3089\u304b\u306b\u9ad8\u901f\u306b\u306a\u3063\u305f\u305f\u3081\u3001\u6295\u6a5f\u306e\u4fdd\u5b58\u6e08\u307f\u6e2c\u5b9a {count} \u4ef6\u3092\u7121\u52b9\u5316\u3057\u307e\u3057\u305f\u3002\u518d\u6e2c\u5b9a\u304c\u5fc5\u8981\u3067\u3059\u3002",
+    "warn.bench_spec_demoted": "\u5171\u6709\u53c2\u7167\u30a8\u30dd\u30c3\u30af\u304c\u9ad8\u901f\u306b\u306a\u3063\u305f\u305f\u3081\u3001\u6295\u6a5f\u306e\u4fdd\u5b58\u6e08\u307f\u6e2c\u5b9a {count} \u4ef6\u3092\u7121\u52b9\u5316\u3057\u307e\u3057\u305f\u3002\u518d\u6e2c\u5b9a\u304c\u5fc5\u8981\u3067\u3059\u3002",
+    "err.spec_transport": "\u6295\u6a5f\u306e\u6e2c\u5b9a\u306f\u8ee2\u9001\u30ec\u30d9\u30eb\u3067\u5b8c\u4e86\u3057\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u8a18\u9332\u306f\u884c\u308f\u308c\u3066\u3044\u307e\u305b\u3093\u3002",
     "label.decode_range": "\u30c7\u30b3\u30fc\u30c9\u7bc4\u56f2: {minimum:.2f}\u2013{maximum:.2f} tok/s\uff08\u30b9\u30d7\u30ec\u30c3\u30c9 {spread:.1%}\uff09",
     "label.bench_passes": "ベンチマークパス（{passes}）: {values} tok/s",
     "label.bench_control": "制御比率: {ratio}",
