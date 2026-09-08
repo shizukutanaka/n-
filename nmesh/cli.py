@@ -1,3 +1,5 @@
+# ruff: noqa: I001
+
 from __future__ import annotations
 
 import argparse
@@ -66,19 +68,12 @@ from nmesh.eval.stats import (
     wilson_interval,
 )
 from nmesh.inventory import (
+    Artifact as InventoryArtifact,
     FILE_TYPE_QUANT,
     default_stores,
-)
-from nmesh.inventory import (
-    Artifact as InventoryArtifact,
-)
-from nmesh.inventory import (
     duplicates as inventory_duplicates,
-)
-from nmesh.inventory import (
+    label_mismatch as inventory_label_mismatch,
     scan as scan_inventory,
-)
-from nmesh.inventory import (
     variants as inventory_variants,
 )
 from nmesh.orchestrate import (
@@ -1043,7 +1038,14 @@ def _models_scan(args: argparse.Namespace) -> int:
     ]
     next_extra = max(extra_indexes, default=-1) + 1
     for root in getattr(args, "root", []) or []:
-        stores[f"extra:{next_extra}"] = Path(root).expanduser()
+        root_path = Path(root).expanduser()
+        if not root_path.is_dir():
+            print(
+                f"model root is not an existing directory: {root_path}",
+                file=sys.stderr,
+            )
+            return 1
+        stores[f"extra:{next_extra}"] = root_path
         next_extra += 1
     artifacts = scan_inventory(stores)
     plan = load_plan()
@@ -1054,20 +1056,24 @@ def _models_scan(args: argparse.Namespace) -> int:
     }
     duplicate_groups = inventory_duplicates(artifacts)
     variant_groups = inventory_variants(artifacts)
+    resolved_paths = {
+        artifact.path: str(artifact.path.resolve()).casefold()
+        for artifact in artifacts
+    }
     groups: dict[str, str] = {}
     for index, group in enumerate(duplicate_groups, 1):
         for artifact in group.artifacts:
-            groups[str(artifact.path.resolve()).casefold()] = f"dup:{index}"
+            groups[resolved_paths[artifact.path]] = f"dup:{index}"
     for index, group in enumerate(variant_groups, 1):
         for artifact in group.artifacts:
             groups.setdefault(
-                str(artifact.path.resolve()).casefold(), f"var:{index}"
+                resolved_paths[artifact.path], f"var:{index}"
             )
     artifact_payloads = [
         _inventory_artifact_payload(
             artifact,
-            str(artifact.path.resolve()).casefold() in planned,
-            groups.get(str(artifact.path.resolve()).casefold()),
+            resolved_paths[artifact.path] in planned,
+            groups.get(resolved_paths[artifact.path]),
         )
         for artifact in artifacts
     ]
@@ -1119,7 +1125,7 @@ def _models_scan(args: argparse.Namespace) -> int:
     table = Table(title=i18n.t("models.scan", language))
     for column in ("Store", "Model", "Quant", "Label", "GiB", "Tags", "Planned", "Group"):
         table.add_column(column)
-    for artifact, item in zip(artifacts, artifact_payloads):
+    for artifact, item in zip(artifacts, artifact_payloads, strict=True):
         label = artifact.label or "-"
         if artifact.label_mismatch:
             label = f"{label} != {artifact.quant}"
@@ -1220,9 +1226,7 @@ def _models(args: argparse.Namespace) -> int:
                 "bytes": path.stat().st_size,
                 "quant": quant,
                 "label": label,
-                "label_mismatch": (
-                    quant is not None and label is not None and quant != label
-                ),
+                "label_mismatch": inventory_label_mismatch(quant, label),
                 "quant_source": "header" if info is not None else "label",
                 "planned": str(path.resolve()).casefold() in planned,
             })

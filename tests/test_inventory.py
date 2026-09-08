@@ -69,9 +69,18 @@ def test_header_quant_wins_over_lying_filename(tmp_path: Path) -> None:
     assert artifact.label_mismatch
 
 
+def test_label_mismatch_accepts_a_multi_token_label(tmp_path: Path) -> None:
+    path = _write(tmp_path / "x-f16+q4_k_m.gguf")
+    artifact = inventory.scan({"store": tmp_path})[0]
+    assert artifact.path == path
+    assert artifact.label == "f16+q4_k_m"
+    assert not artifact.label_mismatch
+
+
 def test_duplicates_group_reclaimable_bytes_across_stores(tmp_path: Path) -> None:
     first = _write(tmp_path / "one" / "model.gguf")
     second = _write(tmp_path / "two" / "model.gguf")
+    second.write_bytes(second.read_bytes() + b"larger duplicate payload")
     artifacts = inventory.scan({"one": first.parent, "two": second.parent})
     groups = inventory.duplicates(artifacts)
     assert len(groups) == 1
@@ -165,3 +174,7 @@ def test_cli_scan_and_local_report_header_metadata(
     assert item["label"] == "f16"
     assert item["label_mismatch"]
     assert item["quant_source"] == "header"
+
+    missing = tmp_path / "missing"
+    assert cli.main(["models", "scan", "--json", "--root", str(missing)]) == 1
+    assert "not an existing directory" in capsys.readouterr().err

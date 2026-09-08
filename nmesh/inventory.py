@@ -48,6 +48,14 @@ FILE_TYPE_QUANT = {
 }
 
 
+def label_mismatch(quant: str | None, label: str | None) -> bool:
+    return (
+        quant is not None
+        and label is not None
+        and quant not in label.split("+")
+    )
+
+
 @dataclass(frozen=True)
 class Artifact:
     store: str
@@ -65,7 +73,7 @@ class Artifact:
 
     @property
     def label_mismatch(self) -> bool:
-        return self.quant is not None and self.label is not None and self.quant != self.label
+        return label_mismatch(self.quant, self.label)
 
 
 @dataclass(frozen=True)
@@ -223,7 +231,9 @@ def duplicates(artifacts: list[Artifact] | tuple[Artifact, ...]) -> list[Duplica
         DuplicateGroup(
             identity=identity,
             artifacts=tuple(group),
-            reclaimable_bytes=sum(item.bytes for item in group) - group[0].bytes,
+            reclaimable_bytes=sum(item.bytes for item in group) - max(
+                item.bytes for item in group
+            ),
         )
         for identity, group in sorted(grouped.items())
         if len(group) >= 2

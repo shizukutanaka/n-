@@ -48,7 +48,7 @@ class _HeaderReader:
 
     def string(self) -> str:
         length = self.u64()
-        return self.read(length).decode("utf-8")
+        return self.read(length).decode("utf-8", errors="replace")
 
     def value(self, kind: int) -> object:
         formats = {
