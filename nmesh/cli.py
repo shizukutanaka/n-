@@ -13,7 +13,7 @@ import time
 import urllib.request
 import zipfile
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError
@@ -61,6 +61,12 @@ from nmesh.eval import (
 )
 from nmesh.eval import run as eval_run
 from nmesh.eval.cache import EvalRecord, eval_key
+from nmesh.eval.context import (
+    ContextRecord,
+    FamilyResult,
+    load_context_cache,
+    save_context,
+)
 from nmesh.eval.stats import (
     min_discordant_for_significance,
     min_resolvable_difference,
@@ -389,6 +395,7 @@ def _make_plan(args: argparse.Namespace) -> object:
         key: value for key, value in load_records().items()
         if key not in live
     }
+    eval_depth_coverage, eval_depth_lost = _context_depth_maps()
     return build_plan(
         profile,
         load_catalog(),
@@ -397,7 +404,8 @@ def _make_plan(args: argparse.Namespace) -> object:
         _eval_rates(eval_records),
         load_artifact_cache(),
         records,
-        eval_depth_coverage=_eval_depth_coverage(eval_records),
+        eval_depth_coverage=eval_depth_coverage,
+        eval_depth_lost=eval_depth_lost,
     )
 
 
@@ -459,22 +467,66 @@ def _eval_rates(
     }
 
 
-def _eval_depth_coverage(
-    records: Mapping[str, EvalRecord],
-) -> dict[tuple[str, str, str], int]:
-    valid, _ = _eval_records(records)
-    coverage: dict[tuple[str, str, str], int] = {}
-    for record in valid.values():
-        if record.unscorable or record.transport_errors:
+@dataclass(frozen=True)
+class DepthEvidence:
+    verified: int
+    lost: int
+
+
+def _context_evidence(
+    records: Mapping[str, ContextRecord],
+) -> dict[tuple[str, str, str], DepthEvidence]:
+    latest: dict[tuple[str, str, str, int], ContextRecord] = {}
+    for record in records.values():
+        if record.requested_depth <= 0:
+            continue
+        if record.probe_digest != suite_digest(
+            needle_tasks(record.requested_depth, record.seed)
+        ):
             continue
         key = (
             record.model_id.casefold(),
             record.quant.casefold(),
             record.backend.casefold(),
+            record.requested_depth,
         )
-        served = record.prompt_tokens_max or record.depth
-        coverage[key] = max(coverage.get(key, 0), served)
-    return coverage
+        previous = latest.get(key)
+        if previous is None or record.at > previous.at:
+            latest[key] = record
+    evidence: dict[tuple[str, str, str], DepthEvidence] = {}
+    for record in latest.values():
+        key = (
+            record.model_id.casefold(),
+            record.quant.casefold(),
+            record.backend.casefold(),
+        )
+        served = record.served_depth or record.requested_depth
+        current = evidence.get(key, DepthEvidence(0, 0))
+        if any(family.lost for family in record.families):
+            lost = served if current.lost == 0 else min(current.lost, served)
+            evidence[key] = DepthEvidence(current.verified, lost)
+        elif any(family.attributable for family in record.families):
+            evidence[key] = DepthEvidence(max(current.verified, served), current.lost)
+    return evidence
+
+
+def _context_depth_maps() -> tuple[
+    dict[tuple[str, str, str], int],
+    dict[tuple[str, str, str], int],
+]:
+    evidence = _context_evidence(load_context_cache())
+    return (
+        {
+            key: value.verified
+            for key, value in evidence.items()
+            if value.verified > 0
+        },
+        {
+            key: value.lost
+            for key, value in evidence.items()
+            if value.lost > 0
+        },
+    )
 
 
 def _stale_grader_notes(records: Mapping[str, EvalRecord]) -> list[str]:
@@ -785,6 +837,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 if key not in live
             }
             eval_records = load_eval_cache()
+            eval_depth_coverage, eval_depth_lost = _context_depth_maps()
             plan = build_plan(
                 detect_hardware(), load_catalog(),
                 replace(plan.policy, **updates),
@@ -792,7 +845,8 @@ def _runtime(args: argparse.Namespace) -> int:
                 _eval_rates(eval_records),
                 load_artifact_cache(),
                 records,
-                eval_depth_coverage=_eval_depth_coverage(eval_records),
+                eval_depth_coverage=eval_depth_coverage,
+                eval_depth_lost=eval_depth_lost,
             )
             save_plan(plan)
         cache = {**load_cache(), **bench_overlay()}
@@ -1747,6 +1801,8 @@ def _eval(args: argparse.Namespace) -> int:
     context_probe_families: dict[str, dict[str, int | bool]] = {}
     context_depth_lost: list[tuple[str, int, int, int]] = []
     context_uncontrolled: list[str] = []
+    context_record: ContextRecord | None = None
+    context_path: Path | None = None
     if depth > 0:
         probes = needle_tasks(depth, seed=args.suite)
         try:
@@ -1820,6 +1876,32 @@ def _eval(args: argparse.Namespace) -> int:
             ),
         }
         context_probe_families = families
+        context_record = ContextRecord(
+            result.model_id,
+            result.quant,
+            result.backend,
+            args.suite,
+            depth,
+            probe_result.prompt_tokens_max,
+            suite_digest(probes),
+            tuple(
+                FamilyResult(
+                    category,
+                    int(families[category.rsplit(".", 1)[-1]]["passed"]),
+                    int(families[category.rsplit(".", 1)[-1]]["of"]),
+                    int(families[category.rsplit(".", 1)[-1]]["control_passed"]),
+                    int(families[category.rsplit(".", 1)[-1]]["control_of"]),
+                )
+                for category in (
+                    "context.literal",
+                    "context.latent",
+                    "context.multi",
+                )
+            ),
+            probe_result.at,
+            result.artifact,
+            result.cache_prompt,
+        )
     cached = load_eval_cache()
     key = eval_key(
         result.model_id, result.quant, result.backend, result.suite, result.digest,
@@ -1846,6 +1928,8 @@ def _eval(args: argparse.Namespace) -> int:
         )
     try:
         save_eval(result)
+        if context_record is not None:
+            context_path = save_context(context_record)
     except OSError as error:
         print(i18n.t("err.eval_save", i18n.lang(), error=error), file=sys.stderr)
         return 1
@@ -1900,6 +1984,8 @@ def _eval(args: argparse.Namespace) -> int:
         context_probe["depth_warnings"] = context_depth_warnings
         context_probe["uncontrolled_families"] = context_uncontrolled
         context_probe["uncontrolled_note"] = context_probe_note
+        if context_path is not None:
+            context_probe["saved"] = str(context_path)
     note = i18n.t("note.eval_scope", language, tasks=result.n_tasks)
     pass_rate_ci = wilson_interval(result.passed, result.n_tasks)
     minimum_difference = min_resolvable_difference(result.n_tasks)

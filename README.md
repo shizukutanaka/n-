@@ -421,12 +421,15 @@ selection directly.
 
 `nmesh eval --depth N` records requested and served prompt depth separately and
 keeps deterministic single-needle context probes outside the suite score and
-digest. The planner warns when advertised context exceeds quality evidence but
-does not exclude the candidate. The timeout budget includes the requested
-depth; this matters because the bench's `512` is a nominal prefill parameter
-that tokenises to roughly 336 real prompt tokens, not a real-token depth.
-Context probes also run a paired native-depth control with identical needles;
-only a deep failure whose shallow control passed is reported as a depth failure.
+digest. Planner depth evidence comes only from these controlled probes: the
+hard suite is answerable from the question without reading the context, so a
+padded suite run cannot license a context length. The planner warns when
+advertised context exceeds quality evidence but does not exclude the candidate.
+The timeout budget includes the requested depth; this matters because the
+bench's `512` is a nominal prefill parameter that tokenises to roughly 336 real
+prompt tokens, not a real-token depth. Context probes run a paired native-depth
+control with identical needles; an attributable failure is reported as a
+measured-broken context warning, without clamping or excluding the candidate.
 Measured multi-needle ordered retrieval held to about 15k tokens, while
 aggregation and ordering tasks failed at about 140 tokens on this artifact, so
 those families are not shipped as probes.

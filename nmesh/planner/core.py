@@ -1637,6 +1637,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                bench_records: Mapping[str, BenchRecord] | None = None,
                *,
                eval_depth_coverage: Mapping[tuple[str, str, str], int] | None = None,
+               eval_depth_lost: Mapping[tuple[str, str, str], int] | None = None,
                ) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
@@ -2049,18 +2050,35 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             )
             if model is not None and model.quality is None:
                 selected_unmeasured.add(model.id)
-    if eval_depth_coverage is not None:
+    if eval_depth_coverage is not None or eval_depth_lost is not None:
         for service in services:
-            measured_depth = eval_depth_coverage.get(
-                (
-                    service.model_id.casefold(),
-                    service.quant.casefold(),
-                    service.backend.casefold(),
-                ),
+            key = (
+                service.model_id.casefold(),
+                service.quant.casefold(),
+                service.backend.casefold(),
             )
-            if measured_depth is None:
+            lost_depth = (
+                eval_depth_lost.get(key)
+                if eval_depth_lost is not None
+                else None
+            )
+            if lost_depth is not None and service.context >= lost_depth:
+                warnings.append(t(
+                    "warn.context_depth_broken",
+                    selected.lang,
+                    model=service.model_id,
+                    quant=service.quant,
+                    backend=service.backend,
+                    context=service.context,
+                    depth=lost_depth,
+                ))
                 continue
-            if service.context > measured_depth:
+            measured_depth = (
+                eval_depth_coverage.get(key)
+                if eval_depth_coverage is not None
+                else None
+            )
+            if measured_depth is not None and service.context > measured_depth:
                 warnings.append(t(
                     "warn.context_unmeasured",
                     selected.lang,

@@ -32,6 +32,12 @@ from nmesh.eval import (
     suite_digest,
 )
 from nmesh.eval.cache import EvalRecord, eval_key, load_eval_cache, save_eval
+from nmesh.eval.context import (
+    ContextRecord,
+    FamilyResult,
+    load_context_cache,
+    save_context,
+)
 from nmesh.eval.generated import (
     _ADDITIONS,
     _CHAR_WORDS,
@@ -992,9 +998,9 @@ def test_eval_key_separates_cache_conditions_and_allowance() -> None:
     )
 
 
-def test_eval_rates_ignore_deep_record_but_report_coverage() -> None:
+def test_eval_rates_ignore_deep_record_and_suite_depth_is_not_evidence() -> None:
     digest = suite_digest(TASKS)
-    records = {
+    eval_records = {
         "shallow": EvalRecord(
             "model", "f16", "llamacpp", 16, 8, 0.5, {}, 1.0,
             {}, "", "core", digest,
@@ -1004,9 +1010,77 @@ def test_eval_rates_ignore_deep_record_but_report_coverage() -> None:
             {}, "", "core", digest, depth=4096, prompt_tokens_max=3072,
         ),
     }
-    assert cli._eval_rates(records)[("model", "f16", "llamacpp")].pass_rate == 0.5
-    assert cli._eval_depth_coverage(records) == {
-        ("model", "f16", "llamacpp"): 3072,
+    assert cli._eval_rates(eval_records)[("model", "f16", "llamacpp")].pass_rate == 0.5
+    assert cli._context_evidence({}) == {}
+    probe_digest = suite_digest(needle_tasks(8, "core"))
+    context_records = {
+        "probe": ContextRecord(
+            "model", "f16", "llamacpp", "core", 8, 7, probe_digest,
+            (FamilyResult("context.literal", 8, 8, 8, 8),), 2.0,
+        ),
+    }
+    assert cli._context_evidence(context_records) == {
+        ("model", "f16", "llamacpp"): cli.DepthEvidence(7, 0),
+    }
+
+
+def test_context_cache_round_trip_and_malformed_entries_are_skipped(tmp_path) -> None:
+    path = tmp_path / "context.json"
+    record = ContextRecord(
+        "model", "f16", "llamacpp", "core", 8, 7,
+        suite_digest(needle_tasks(8, "core")),
+        (FamilyResult("context.literal", 8, 8, 8, 8),), 2.0,
+        "artifact", False,
+    )
+    save_context(record, path)
+    loaded = load_context_cache(path)
+    assert loaded
+    assert next(iter(loaded.values())) == record
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    valid = payload["results"].popitem()[1]
+    payload["results"] = {
+        "valid": valid,
+        "bool-depth": {**valid, "requested_depth": True},
+        "passed-too-high": {
+            **valid,
+            "families": [{**valid["families"][0], "passed": 9}],
+        },
+        "empty-families": {**valid, "families": []},
+        "non-dict-family": {**valid, "families": "invalid"},
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    loaded = load_context_cache(path)
+    assert list(loaded) == ["valid"]
+
+
+def test_context_evidence_filters_stale_controls_and_keeps_latest() -> None:
+    def record(
+        depth: int,
+        at: float,
+        families: tuple[FamilyResult, ...],
+        served: int = 0,
+        digest: str | None = None,
+    ) -> ContextRecord:
+        return ContextRecord(
+            "MODEL", "F16", "LlamaCpp", "core", depth, served,
+            digest or suite_digest(needle_tasks(depth, "core")),
+            families, at,
+        )
+
+    passed = (FamilyResult("context.literal", 4, 4, 4, 4),)
+    lost = (FamilyResult("context.literal", 2, 4, 4, 4),)
+    uncontrolled = (FamilyResult("context.literal", 2, 4, 2, 4),)
+    records = {
+        "old": record(4, 1.0, lost, 4),
+        "latest": record(4, 2.0, passed, 3),
+        "deep-lost": record(6, 3.0, lost, 6),
+        "deeper-lost": record(8, 4.0, lost, 8),
+        "uncontrolled": record(2, 5.0, uncontrolled, 2),
+        "stale": record(1024, 6.0, passed, 1000, "stale"),
+        "control": record(0, 7.0, passed, 0),
+    }
+    assert cli._context_evidence(records) == {
+        ("model", "f16", "llamacpp"): cli.DepthEvidence(3, 6),
     }
 
 
@@ -1678,6 +1752,7 @@ def test_eval_cli_depth_runs_suite_and_context_probe_separately(
 
     monkeypatch.setattr(cli, "eval_run", evaluate)
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
+    monkeypatch.setattr(cli, "save_context", lambda value: "context.json")
     assert cli.main(["eval", "--json", "--depth", "4096"]) == 0
     output = json.loads(capsys.readouterr().out)
     assert len(calls) == 3
