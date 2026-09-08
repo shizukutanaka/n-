@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from nmesh.bench.epoch import EPOCH_MIN_RATIO
+from nmesh.bench.epoch import refutes
 from nmesh.paths import nmesh_home
 
 BenchCache = dict[str, float]
@@ -213,7 +213,6 @@ def demote_stale(
     reference_tps: float,
 ) -> tuple[str, ...]:
     """Invalidate evidence disproved by a later, faster reference."""
-    threshold = 1 / EPOCH_MIN_RATIO
     demoted: list[str] = []
     timestamp = _now()
     for key, previous in records.items():
@@ -222,8 +221,7 @@ def demote_stale(
             or previous.reference_id != reference_id
             or previous.reference_tps is None
             or previous.reference_tps <= 0
-            or reference_tps <= 0
-            or reference_tps / previous.reference_tps <= threshold
+            or not refutes(previous.reference_tps, reference_tps)
         ):
             continue
         records[key] = BenchRecord(

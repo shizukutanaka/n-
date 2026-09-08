@@ -69,7 +69,11 @@ from nmesh.orchestrate import (
     Endpoint,
     RoleIdentity,
     decide,
+    decide_cost,
     from_run,
+)
+from nmesh.orchestrate import (
+    demote_stale as demote_delegation_stale,
 )
 from nmesh.orchestrate import (
     load_cache as load_delegation_cache,
@@ -79,6 +83,9 @@ from nmesh.orchestrate import (
 )
 from nmesh.orchestrate import (
     save as save_delegation,
+)
+from nmesh.orchestrate import (
+    save_all as save_all_delegation,
 )
 from nmesh.paths import nmesh_home
 from nmesh.planner import (
@@ -1268,6 +1275,7 @@ def _bench(args: argparse.Namespace) -> int:
     records = load_records()
     demoted: tuple[str, ...] = ()
     spec_demoted: tuple[str, ...] = ()
+    delegation_demoted: tuple[str, ...] = ()
     if (
         reference_tps is not None
         and reference_key
@@ -1281,6 +1289,18 @@ def _bench(args: argparse.Namespace) -> int:
         if spec_demoted:
             try:
                 save_all_spec(spec_records)
+            except OSError as error:
+                print(
+                    i18n.t("err.bench_save", i18n.lang(), error=error),
+                    file=sys.stderr,
+                )
+        delegation_records = load_delegation_cache()
+        delegation_demoted = demote_delegation_stale(
+            delegation_records, reference_key, reference_tps,
+        )
+        if delegation_demoted:
+            try:
+                save_all_delegation(delegation_records)
             except OSError as error:
                 print(
                     i18n.t("err.bench_save", i18n.lang(), error=error),
@@ -1318,6 +1338,7 @@ def _bench(args: argparse.Namespace) -> int:
               "epoch": epoch,
               "demoted": list(demoted),
               "spec_demoted": list(spec_demoted),
+              "delegation_demoted": list(delegation_demoted),
               "pruned": pruned,
               "prefill_tps": measurement.prefill_tps,
               "ttft_s": measurement.ttft_s, "approximate": measurement.approximate,
@@ -1400,6 +1421,12 @@ def _bench(args: argparse.Namespace) -> int:
                 "warn.bench_spec_demoted",
                 language,
                 count=len(spec_demoted),
+            ))
+        if delegation_demoted:
+            _console().print(i18n.t(
+                "warn.bench_orchestrate_demoted",
+                language,
+                count=len(delegation_demoted),
             ))
         if decode_spread > 0.25:
             _console().print(i18n.t(
@@ -1705,6 +1732,7 @@ def _orchestration_url(service: PlannedService) -> str:
 
 
 def _orchestrate_measure_command(args: argparse.Namespace) -> int:
+    language = i18n.lang()
     plan = load_plan()
     if plan is None or not plan.services:
         print(i18n.t("err.orchestrate_plan", i18n.lang()), file=sys.stderr)
@@ -1755,10 +1783,31 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
         print(i18n.t("err.orchestrate_up", i18n.lang()), file=sys.stderr)
         return 1
     if not args.worker_url and not _service_running(worker, runtime_status()):
-        print(i18n.t("err.orchestrate_up", i18n.lang()), file=sys.stderr)
+        print(i18n.t("err.orchestrate_up", language), file=sys.stderr)
         return 1
     lead_identity = _orchestration_identity(lead)
     worker_identity = _orchestration_identity(worker)
+    reference_context = (
+        None if args.no_reference else _reference_context(lead)
+    )
+    history = load_history()
+    reference_key = (
+        reference_context[2] if reference_context is not None else ""
+    )
+    reference_baseline = (
+        baseline(history, reference_key)
+        if reference_context is not None else None
+    )
+    before_reference = None
+    if reference_context is not None:
+        try:
+            before_reference = measure_reference(
+                reference_context[0],
+                reference_context[1],
+                reference_context[3],
+            )
+        except (OSError, RuntimeError):
+            before_reference = None
     try:
         run = orchestrate_measure(
             tasks,
@@ -1769,15 +1818,87 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
             suite=args.suite,
             reasoning_allowance=max(0, args.reasoning_allowance),
         )
-        save_delegation(run)
+        after_reference = None
+        if reference_context is not None:
+            try:
+                after_reference = measure_reference(
+                    reference_context[0],
+                    reference_context[1],
+                    reference_context[3],
+                )
+            except (OSError, RuntimeError):
+                after_reference = None
+        reference_tps = (
+            statistics.mean((before_reference, after_reference))
+            if before_reference is not None and after_reference is not None
+            else None
+        )
+        epoch = (
+            classify(reference_tps, reference_baseline)
+            if reference_tps is not None else "unknown"
+        )
+        pruned = 0
+        if (
+            reference_tps is not None
+            and reference_key
+            and epoch in {"healthy", "unknown"}
+        ):
+            samples = history.get(reference_key, ())
+            retained = prune_degraded(samples, reference_tps)
+            pruned = len(samples) - len(retained)
+            history[reference_key] = (
+                EpochSample(
+                    reference_id=reference_key,
+                    tps=reference_tps,
+                    measured_at=datetime.now(timezone.utc).isoformat(),
+                ),
+                *retained,
+            )[:EPOCH_HISTORY]
+            try:
+                save_history(history)
+            except OSError as error:
+                print(
+                    i18n.t("err.bench_save", language, error=error),
+                    file=sys.stderr,
+                )
+        save_delegation(
+            run,
+            reference_id=reference_key,
+            reference_tps=reference_tps or 0.0,
+            epoch=epoch,
+        )
+        delegation_records = load_delegation_cache()
+        demoted: tuple[str, ...] = ()
+        if (
+            reference_tps is not None
+            and reference_key
+            and epoch in {"healthy", "unknown"}
+        ):
+            demoted = demote_delegation_stale(
+                delegation_records, reference_key, reference_tps,
+            )
+            if demoted:
+                try:
+                    save_all_delegation(delegation_records)
+                except OSError as error:
+                    print(
+                        i18n.t("err.bench_save", language, error=error),
+                        file=sys.stderr,
+                    )
     except (OSError, RuntimeError, ValueError, httpx.HTTPError) as error:
         print(
-            i18n.t("err.orchestrate_measure", i18n.lang(), error=error),
+            i18n.t("err.orchestrate_measure", language, error=error),
             file=sys.stderr,
         )
         return 1
-    record = from_run(run)
+    record = from_run(
+        run,
+        reference_id=reference_key,
+        reference_tps=reference_tps or 0.0,
+        epoch=epoch,
+    )
     decision, reason = decide(record)
+    cost, cost_reason = decide_cost(record)
     output = {
         "n": run.n_tasks,
         "worker_passed": run.worker_passed,
@@ -1800,6 +1921,15 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
         "verify_overhead": run.verify_overhead,
         "seconds_solo": run.seconds_solo,
         "seconds_delegated": run.seconds_delegated,
+        "reference_tps": reference_tps,
+        "reference_id": reference_key,
+        "epoch": epoch,
+        "demoted": len(demoted),
+        "pruned": pruned,
+        "cost": cost,
+        "cost_reason": cost_reason,
+        "seconds_ratio": record.seconds_ratio,
+        "token_ratio": record.token_ratio,
         "gate": decision,
         "reason": reason,
         "digest": run.digest,
@@ -1808,7 +1938,6 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
     if args.json:
         _print_json(output)
         return 0
-    language = i18n.lang()
     _console().print("\n".join((
         i18n.t("label.orchestrate_summary", language, n=run.n_tasks),
         i18n.t(
@@ -1855,6 +1984,16 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
         ),
         i18n.t("label.orchestrate_gate", language, decision=decision, reason=reason),
     )))
+    if epoch == "degraded":
+        _console().print(i18n.t("warn.orchestrate_degraded", language))
+    elif reference_tps is None and not args.no_reference:
+        _console().print(i18n.t("warn.bench_no_reference", language))
+    if demoted:
+        _console().print(i18n.t(
+            "warn.orchestrate_demoted",
+            language,
+            count=len(demoted),
+        ))
     return 0
 
 
@@ -1867,6 +2006,8 @@ def _orchestrate_show(args: argparse.Namespace) -> int:
                 **asdict(record),
                 "gate": decide(record)[0],
                 "reason": decide(record)[1],
+                "cost": decide_cost(record)[0],
+                "cost_reason": decide_cost(record)[1],
             }
             for record in records.values()
         ])
@@ -1883,6 +2024,8 @@ def _orchestrate_show(args: argparse.Namespace) -> int:
         "delegated_passed",
         "lead_passed",
         "gate",
+        "epoch",
+        "cost",
     ):
         table.add_column(column)
     for record in sorted(records.values(), key=lambda item: item.at, reverse=True):
@@ -1894,6 +2037,8 @@ def _orchestrate_show(args: argparse.Namespace) -> int:
             str(record.delegated_passed),
             str(record.lead_passed),
             decide(record)[0],
+            record.epoch,
+            decide_cost(record)[0],
         )
     _console().print(table)
     return 0
@@ -2585,6 +2730,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     measure_parser.add_argument("--worker-url")
     measure_parser.add_argument("--reasoning-allowance", type=int, default=0)
     measure_parser.add_argument("--limit", type=_positive_int)
+    measure_parser.add_argument("--no-reference", action="store_true")
     measure_parser.add_argument("--json", action="store_true")
     show_parser = orchestrate_commands.add_parser("show")
     show_parser.add_argument("--json", action="store_true")

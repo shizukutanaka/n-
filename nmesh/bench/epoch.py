@@ -13,9 +13,11 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from nmesh import evidence
 from nmesh.paths import nmesh_home
 
-EPOCH_MIN_RATIO = 0.80
+EPOCH_MIN_RATIO = evidence.EPOCH_MIN_RATIO
+refutes = evidence.refutes
 EPOCH_HISTORY = 12
 EPOCH_PATH = nmesh_home() / "epoch.json"
 

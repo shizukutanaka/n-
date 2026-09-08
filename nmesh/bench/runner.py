@@ -5,11 +5,14 @@ import statistics
 import time
 import uuid
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import httpx
 
 from nmesh.bench.cache import MIN_CONTROL_RATIO
-from nmesh.planner import PlannedService
+
+if TYPE_CHECKING:
+    from nmesh.planner import PlannedService
 
 
 @dataclass(frozen=True)
