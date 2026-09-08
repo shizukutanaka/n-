@@ -384,6 +384,7 @@ def _make_plan(args: argparse.Namespace) -> object:
     args._telemetry_off_reference = telemetry_report.off_reference
     args._telemetry_unknown_depth = telemetry_report.unknown_depth
     cache = {**load_cache(), **live}
+    eval_records = load_eval_cache()
     records = {
         key: value for key, value in load_records().items()
         if key not in live
@@ -393,10 +394,10 @@ def _make_plan(args: argparse.Namespace) -> object:
         load_catalog(),
         policy,
         cache,
-        _eval_rates(),
+        _eval_rates(eval_records),
         load_artifact_cache(),
         records,
-        eval_depth_coverage=_eval_depth_coverage(load_eval_cache()),
+        eval_depth_coverage=_eval_depth_coverage(eval_records),
     )
 
 
@@ -783,14 +784,15 @@ def _runtime(args: argparse.Namespace) -> int:
                 key: value for key, value in load_records().items()
                 if key not in live
             }
+            eval_records = load_eval_cache()
             plan = build_plan(
                 detect_hardware(), load_catalog(),
                 replace(plan.policy, **updates),
                 {**load_cache(), **live},
-                _eval_rates(),
+                _eval_rates(eval_records),
                 load_artifact_cache(),
                 records,
-                eval_depth_coverage=_eval_depth_coverage(load_eval_cache()),
+                eval_depth_coverage=_eval_depth_coverage(eval_records),
             )
             save_plan(plan)
         cache = {**load_cache(), **bench_overlay()}
@@ -1742,6 +1744,7 @@ def _eval(args: argparse.Namespace) -> int:
         depth=depth,
     )
     context_probe = None
+    context_probe_families: dict[str, dict[str, int]] = {}
     if depth > 0:
         probes = needle_tasks(depth, seed=args.suite)
         try:
@@ -1771,6 +1774,7 @@ def _eval(args: argparse.Namespace) -> int:
             "of": probe_result.n_tasks,
             "families": families,
         }
+        context_probe_families = families
     cached = load_eval_cache()
     key = eval_key(
         result.model_id, result.quant, result.backend, result.suite, result.digest,
@@ -1948,7 +1952,16 @@ def _eval(args: argparse.Namespace) -> int:
         ),
     ))
     if context_probe is not None:
-        _console().print(f"context_probe: {json.dumps(context_probe)}")
+        _console().print(i18n.t(
+            "label.eval_context_probe",
+            language,
+            passed=context_probe["passed"],
+            total=context_probe["of"],
+            literal_passed=context_probe_families["literal"]["passed"],
+            literal_total=context_probe_families["literal"]["of"],
+            latent_passed=context_probe_families["latent"]["passed"],
+            latent_total=context_probe_families["latent"]["of"],
+        ))
     for stale_note in stale_grader_notes:
         _console().print(stale_note)
     _console().print(uncertainty_note)

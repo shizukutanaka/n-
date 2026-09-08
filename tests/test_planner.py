@@ -1420,8 +1420,15 @@ def test_context_depth_coverage_warns_without_changing_candidate() -> None:
         policy,
         eval_depth_coverage={service_key: 16384},
     )
+    missing = build_plan(
+        profile(8),
+        [model],
+        policy,
+        eval_depth_coverage={},
+    )
     ordinary_service = ordinary.services[0]
     warned_service = warned.services[0]
     assert warned_service == ordinary_service
     assert sum("quality evidence only reaches" in item for item in warned.warnings) == 1
     assert not any("quality evidence only reaches" in item for item in covered.warnings)
+    assert not any("quality evidence only reaches" in item for item in missing.warnings)

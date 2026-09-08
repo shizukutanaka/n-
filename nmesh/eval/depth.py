@@ -52,6 +52,7 @@ def _sentence(rng: random.Random) -> str:
 
 
 def _estimate_tokens(text: str) -> int:
+    # A top-level import would cycle through gateway, orchestrate, and eval.
     from nmesh.gateway.tokens import estimate_tokens
 
     return estimate_tokens(text)
@@ -107,7 +108,7 @@ def _literal_task(target: int, seed: str, index: int, position: float) -> Task:
         return match is not None and match.group() == code
 
     return Task(
-        f"context.literal.p{position * 100:.1f}.{index}",
+        f"context.literal.p{round(position * 100)}.{index}",
         "context.literal",
         _needle_prompt(
             question, needle, target, f"{seed}|literal|{index}|{position}", position,
@@ -119,10 +120,10 @@ def _literal_task(target: int, seed: str, index: int, position: float) -> Task:
 
 
 def _latent_task(target: int, seed: str, index: int, position: float) -> Task:
-    city, _country = _CITIES[index % len(_CITIES)]
+    city, country = _CITIES[index % len(_CITIES)]
     name = _NAMES[index]
-    needle = f"{name} was in {city}."
-    question = "Who was in the country containing that location? Answer with the name only."
+    needle = f"{name} spent the whole quarter working out of {city}."
+    question = f"Which person spent the quarter in {country}? Answer with the name only."
 
     def check(text: str) -> bool:
         if not text.split():
@@ -130,7 +131,7 @@ def _latent_task(target: int, seed: str, index: int, position: float) -> Task:
         return text.split()[0].strip("`\"' .!,。") == name
 
     return Task(
-        f"context.latent.p{position * 100:.1f}.{index}",
+        f"context.latent.p{round(position * 100)}.{index}",
         "context.latent",
         _needle_prompt(
             question, needle, target, f"{seed}|latent|{index}|{position}", position,

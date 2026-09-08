@@ -2057,8 +2057,9 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     service.quant.casefold(),
                     service.backend.casefold(),
                 ),
-                0,
             )
+            if measured_depth is None:
+                continue
             if service.context > measured_depth:
                 warnings.append(t(
                     "warn.context_unmeasured",

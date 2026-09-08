@@ -270,10 +270,23 @@ def test_needle_tasks_have_both_positions_and_validated_checkers() -> None:
             assert task.check(answer.group(1))
             assert not task.check("000000")
         else:
-            answer = re.search(r"([A-Z][a-z]+) was in ", task.prompt)
+            answer = re.search(
+                r"([A-Z][a-z]+) spent the whole quarter working out of "
+                r"([A-Z][a-z]+)\.",
+                task.prompt,
+            )
             assert answer is not None
             assert task.check(answer.group(1) + "!")
             assert not task.check("Wrong")
+            city = answer.group(2)
+            country = next(country for _city, country in (
+                ("Osaka", "Japan"), ("Lyon", "France"), ("Bergen", "Norway"),
+                ("Cusco", "Peru"), ("Perth", "Australia"), ("Split", "Croatia"),
+            ) if _city == city)
+            question = task.prompt.rsplit("Answer the question below.\n\n", 1)[-1]
+            assert city in task.prompt
+            assert country in question
+            assert city not in question
         assert not task.check("")
 
 
