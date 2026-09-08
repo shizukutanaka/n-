@@ -20,6 +20,7 @@ from pathlib import Path
 from nmesh.evidence import refutes
 from nmesh.paths import nmesh_home
 
+from .aggregate import MIN_REPEATS
 from .measure import DelegationRun, RoleIdentity
 
 ALPHA = 0.05
@@ -30,6 +31,8 @@ ALLOW = "allow"
 NO_EVIDENCE = "no_evidence"
 #: A measurement exists and does not show delegation ahead of the lead.
 NOT_SUPERIOR = "not_superior"
+#: A positive delegation result lacks repeated confirmation.
+UNCONFIRMED = "unconfirmed"
 #: The host epoch invalidated the measured cost claim.
 STALE = "stale"
 #: Delegation took less wall-clock time than the lead alone.
@@ -73,6 +76,8 @@ class DelegationRecord:
     reference_tps: float = 0.0
     epoch: str = "unknown"
     at: float = 0.0
+    repeats: int = 1
+    unstable_tasks: int = 0
 
     @property
     def seconds_ratio(self) -> float:
@@ -141,6 +146,8 @@ def from_run(
         reference_tps=reference_tps,
         epoch=epoch,
         at=run.at,
+        repeats=run.repeats,
+        unstable_tasks=run.unstable_tasks,
     )
 
 
@@ -185,7 +192,9 @@ def decide(record: DelegationRecord | None) -> tuple[str, str]:
     if record is None:
         return NO_EVIDENCE, NO_EVIDENCE
     if record.superior:
-        return ALLOW, ALLOW
+        if record.repeats >= MIN_REPEATS:
+            return ALLOW, ALLOW
+        return UNCONFIRMED, UNCONFIRMED
     return NOT_SUPERIOR, NOT_SUPERIOR
 
 
@@ -416,6 +425,8 @@ def _parse(data: object) -> DelegationRecord | None:
     reference_id = data.get("reference_id", "")
     reference_tps = data.get("reference_tps", 0.0)
     epoch = data.get("epoch", "unknown")
+    repeats = data.get("repeats", 1)
+    unstable_tasks = data.get("unstable_tasks", 0)
     if (
         not isinstance(reference_id, str)
         or isinstance(reference_tps, bool)
@@ -424,6 +435,12 @@ def _parse(data: object) -> DelegationRecord | None:
         or reference_tps < 0
         or not isinstance(epoch, str)
         or epoch not in {"unknown", "healthy", "degraded"}
+        or isinstance(repeats, bool)
+        or not isinstance(repeats, int)
+        or repeats < 1
+        or isinstance(unstable_tasks, bool)
+        or not isinstance(unstable_tasks, int)
+        or unstable_tasks < 0
     ):
         return None
     return DelegationRecord(
@@ -441,6 +458,8 @@ def _parse(data: object) -> DelegationRecord | None:
         reference_tps=float(reference_tps),
         epoch=epoch,
         at=float(at),
+        repeats=repeats,
+        unstable_tasks=unstable_tasks,
         seconds_solo=float(seconds["seconds_solo"]),
         seconds_delegated=float(seconds["seconds_delegated"]),
         lead_tokens_solo=tokens["lead_tokens_solo"],

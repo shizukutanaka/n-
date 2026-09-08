@@ -1,5 +1,6 @@
 """Evidence-gated lead/worker delegation for local models."""
 
+from .aggregate import MIN_REPEATS, combine
 from .measure import (
     Comparison,
     DelegationRun,
@@ -26,6 +27,7 @@ from .record import (
     NO_EVIDENCE,
     NOT_SUPERIOR,
     STALE,
+    UNCONFIRMED,
     UNVERIFIED,
     DelegationRecord,
     best_for,
@@ -45,10 +47,12 @@ __all__ = [
     "ALPHA",
     "CHEAPER",
     "COSTLIER",
+    "MIN_REPEATS",
     "NOT_SUPERIOR",
     "NO_EVIDENCE",
     "PROTOCOL_VERSION",
     "STALE",
+    "UNCONFIRMED",
     "UNVERIFIED",
     "VERIFY_PROMPT",
     "Comparison",
@@ -61,6 +65,7 @@ __all__ = [
     "TaskRow",
     "VerifierReport",
     "best_for",
+    "combine",
     "complete",
     "decide",
     "decide_cost",
