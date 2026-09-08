@@ -1235,6 +1235,7 @@ def _bench(args: argparse.Namespace) -> int:
             decode_tokens=args.tokens,
             runs=args.runs,
             passes=args.passes,
+            cache_prompt=False if service.backend == "llamacpp" else None,
         )
     except (OSError, RuntimeError) as error:
         print(i18n.t("err.bench_measure", i18n.lang(), error=error), file=sys.stderr)

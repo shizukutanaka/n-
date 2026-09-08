@@ -748,6 +748,42 @@ tasks) plans 1.5B instead; `--ignore-eval-evidence` restores the 0.5B plan and
 the contradiction warning. With the bundled priors the two orders agree, so no
 reversal is visible there.
 
+#### Benchmark prompt-cache exposure
+
+`nmesh bench` sends no `cache_prompt` either, so the same question was measured
+on this box rather than inferred from the eval result. On llama.cpp
+(qwen2.5-1.5b-instruct q4_k_m, 512-token prefill, three runs per arm) reuse
+stops at the chat template: `cache_n` was 0, 24, 25 tokens out of ~337, the
+processed count stayed at 310–337, and the numbers do not move when reuse is
+disabled (prefill median 423.8 versus 414.1 tok/s, decode 44.1 versus 43.2
+tok/s — both inside the 6.4% spread this host shows when healthy). Running the
+same arm after a 2048-token unrelated prompt changed nothing (`cache_n` 24,
+24, 24). So bench was not contaminated, and the reason is the prompt shape:
+the prompt is `f"{nonce} " + filler`, so a fresh uuid leads every measurement.
+
+That protection is load-bearing rather than incidental. Moving the same nonce
+behind the filler — a shape any refactor could produce — let llama.cpp reuse
+304–305 of ~338 prompt tokens, dropped the processed count to 34, and inflated
+the ttft-derived rate from ~370 to 1605–1671 tok/s (4.3x). `nmesh bench` uses
+that ttft-derived rate whenever the upstream reports no llama.cpp `timings`,
+and Ollama is exactly that case: its OpenAI-compatible stream carries
+`choices`, `created`, `id`, `model`, `object`, `system_fingerprint`, `usage`
+and nothing else — no `timings`, no `prompt_tokens_details.cached_tokens`.
+Measured against Ollama 0.33.2 (qwen2.5:0.5b-instruct), a leading nonce reports
+385–391 tok/s while a trailing nonce reports 1500–1556 tok/s (4.0x), and no
+field in the response says a single token was reused. On that backend the
+prompt shape is the only available defense, so it is now stated in the code and
+locked by a test.
+
+Two changes follow from the measurements. Bench sends `cache_prompt: false` to
+llama.cpp services so the measurement stops depending on the prompt shape
+there; the measured cost is nothing, which is why bench records are not split
+by cache condition the way eval records are (unlike eval, no measured value
+moves, so splitting identity would invalidate stored evidence and buy nothing).
+And where the upstream does report cached tokens, the ttft fallback now rates
+only the tokens the server actually processed instead of the whole prompt, and
+reports the source as `cached` when fewer than 16 tokens were processed.
+
 #### GGUF artifact identity
 
 The former GGUF resolver selected by filename substring rather than by a
