@@ -21,6 +21,7 @@ from nmesh.orchestrate import (
     PROTOCOL_VERSION,
     STALE,
     UNCONFIRMED,
+    UNSTABLE,
     UNVERIFIED,
     Endpoint,
     RoleIdentity,
@@ -40,6 +41,34 @@ from nmesh.orchestrate import (
 from nmesh.orchestrate.protocol import Call
 
 measure_module = importlib.import_module("nmesh.orchestrate.measure")
+
+
+def test_complete_only_sends_cache_prompt_when_configured() -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+            }
+
+    class Client:
+        def __init__(self) -> None:
+            self.payloads: list[dict[str, object]] = []
+
+        def post(self, _url: str, *, json: dict[str, object]) -> Response:
+            self.payloads.append(json)
+            return Response()
+
+    client = Client()
+    protocol_module.complete(client, Endpoint("url", "model"), "prompt", 4)
+    protocol_module.complete(
+        client, Endpoint("url", "model", cache_prompt=False), "prompt", 4,
+    )
+    assert "cache_prompt" not in client.payloads[0]
+    assert client.payloads[1]["cache_prompt"] is False
 
 
 def _record_run() -> measure_module.DelegationRun:
@@ -290,6 +319,22 @@ def test_quality_gate_is_independent_of_host_epoch() -> None:
     assert decide(replace(record, repeats=1)) == (UNCONFIRMED, UNCONFIRMED)
 
 
+def test_quality_gate_rejects_unstable_superior_evidence() -> None:
+    record = from_run(replace(_record_run(), repeats=2, unstable_tasks=1))
+    assert decide(record) == (UNSTABLE, UNSTABLE)
+    assert decide(replace(record, unstable_tasks=0)) == (ALLOW, ALLOW)
+    assert decide(replace(record, repeats=1, unstable_tasks=0)) == (
+        UNCONFIRMED, UNCONFIRMED
+    )
+    not_superior = replace(
+        record,
+        delegated_passed=1,
+        delegated_p=0.9,
+        unstable_tasks=1,
+    )
+    assert decide(not_superior) == (NOT_SUPERIOR, NOT_SUPERIOR)
+
+
 def test_cost_decision_and_ratios() -> None:
     record = from_run(_record_run(), reference_id="ref", reference_tps=50.0)
     assert decide_cost(None) == (NO_EVIDENCE, NO_EVIDENCE)
@@ -396,15 +441,15 @@ def test_orchestrate_measure_no_reference_reports_unverified_cost(
         profile=SimpleNamespace(),
     )
     saved: dict[str, object] = {}
-    calls: list[object] = []
+    calls: list[dict[str, object]] = []
     monkeypatch.setattr(cli, "load_plan", lambda: plan)
     monkeypatch.setattr(
         cli, "_orchestration_identity",
         lambda item: RoleIdentity(item.model_id, item.quant, item.backend),
     )
     def fake_measure(*args: object, **kwargs: object) -> measure_module.DelegationRun:
-        del args, kwargs
-        calls.append(object())
+        del args
+        calls.append(kwargs)
         return _record_run()
 
     monkeypatch.setattr(cli, "orchestrate_measure", fake_measure)
@@ -425,6 +470,51 @@ def test_orchestrate_measure_no_reference_reports_unverified_cost(
     assert result["unstable_tasks"] == 0
     assert len(calls) == 2
     assert saved["reference_tps"] == 0.0
+    assert all(
+        endpoint.cache_prompt is False
+        for call in calls
+        for endpoint in (call["lead"], call["worker"])
+    )
+
+
+def test_orchestrate_measure_leaves_cache_prompt_unset_for_other_engines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lead = SimpleNamespace(
+        name="lead", model_id="lead", quant="q4", backend="llamacpp",
+        model_ref="lead.gguf", roles=("chat",), port=1,
+    )
+    worker = SimpleNamespace(
+        name="worker", model_id="worker", quant="q4", backend="ollama",
+        model_ref="worker", roles=("worker",), port=2,
+    )
+    plan = SimpleNamespace(
+        services=[lead, worker],
+        routing=SimpleNamespace(role_to_service={"chat": "lead", "worker": "worker"}),
+        profile=SimpleNamespace(),
+    )
+    endpoints: list[tuple[Endpoint, Endpoint]] = []
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(
+        cli, "_orchestration_identity",
+        lambda item: RoleIdentity(item.model_id, item.quant, item.backend),
+    )
+    monkeypatch.setattr(
+        cli,
+        "orchestrate_measure",
+        lambda _tasks, **kwargs: (
+            endpoints.append((kwargs["lead"], kwargs["worker"])) or _record_run()
+        ),
+    )
+    monkeypatch.setattr(cli, "save_delegation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "load_delegation_cache", dict)
+    assert cli.main([
+        "orchestrate", "measure", "--lead-url", "lead", "--worker-url",
+        "worker", "--no-reference", "--repeats", "1",
+    ]) == 0
+    assert len(endpoints) == 1
+    assert endpoints[0][0].cache_prompt is False
+    assert endpoints[0][1].cache_prompt is None
 
 
 def test_orchestrate_measure_degraded_epoch_stales_only_cost(
