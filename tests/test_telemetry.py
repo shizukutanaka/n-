@@ -143,10 +143,11 @@ def test_bench_overlay_uses_single_stream_samples_and_reports_skips(tmp_path) ->
 def test_overlay_excludes_deep_samples_and_counts_them(tmp_path, prompt_tokens) -> None:
     store = Telemetry(tmp_path / "telemetry.json")
     # 2005 real prompt tokens measured 0.883 of the reference decode rate.
-    store.record(sample(key="deep", decode_tps=34.20, prompt_tokens=prompt_tokens))
+    for value in (34.20, 35.0, 33.5):
+        store.record(sample(key="deep", decode_tps=value, prompt_tokens=prompt_tokens))
     report = store.overlay_report(min_samples=3)
     assert report.values == {}
-    assert report.off_reference == 1
+    assert report.off_reference == 3
 
 
 @pytest.mark.parametrize("prompt_tokens", [256, 1024])
