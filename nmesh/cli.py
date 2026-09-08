@@ -2201,7 +2201,9 @@ def _spec_show(args: argparse.Namespace) -> int:
         })
         return 0
     table = Table(title="nmesh spec")
-    for column in ("target", "kind", "engine", "control", "decision"):
+    for column in (
+        "target", "kind", "engine", "control", "epoch", "decision",
+    ):
         table.add_column(column)
     for record in records.values():
         control_text = ", ".join(
@@ -2211,6 +2213,7 @@ def _spec_show(args: argparse.Namespace) -> int:
         table.add_row(
             record.target.model_id, record.spec.kind, record.engine,
             control_text,
+            record.epoch,
             decide_spec(record)[0],
         )
     _console().print(table)
