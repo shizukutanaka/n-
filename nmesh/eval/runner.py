@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import httpx
 
+from .depth import padded_prompt
 from .suite import Task
 
 
@@ -39,6 +40,8 @@ class EvalRun:
     reasoning_allowance: int = 0
     transport_errors: int = 0
     cache_prompt: bool | None = None
+    depth: int = 0
+    prompt_tokens_max: int = 0
 
 
 def _output(value: object) -> str:
@@ -73,6 +76,7 @@ def run(
     timeout: float | None = None,
     reasoning_allowance: int = 0,
     cache_prompt: bool | None = None,
+    depth: int = 0,
 ) -> EvalRun:
     """Ask each task and grade the answer text.
 
@@ -87,14 +91,17 @@ def run(
     unscorable rather than failed, and `reasoning_allowance` raises every task
     budget by a stated amount so the run says what it measured.
 
-    Request timeouts are derived from each task's token budget by default, using
-    a 2-token-per-second floor and 30 seconds of startup/prefill slack: quiet
-    512-token requests took about 15.5 seconds here, while observed 5.5
-    token-per-second episodes can approach the old 120-second wall clock.
-    This avoids turning measured host slowness into a false model failure.
+    Request timeouts are derived from each task's token budget and requested
+    prompt depth by default: ``30 + (max_tokens + allowance) / 2 + depth / 20``.
+    Quiet prefill here measured about 242 tokens per second, while PR #58
+    measured multi-minute episodes about 9x slower (about 27 tokens per
+    second), so a 20-token-per-second prefill floor remains below the worst
+    observed episode. This prevents the 62-second prefill at about 15k tokens
+    from colliding with the 62-second budget of a 64-token task.
     """
     outcomes: list[TaskOutcome] = []
     transport_errors = 0
+    prompt_tokens_max = 0
     with httpx.Client() as client:
         for task in tasks:
             transport = False
@@ -103,12 +110,17 @@ def run(
                 if timeout is not None
                 else 30.0 + (
                     task.max_tokens + max(0, reasoning_allowance)
-                ) / 2.0
+                ) / 2.0 + depth / 20.0
             )
             try:
+                prompt = (
+                    padded_prompt(task.prompt, depth, f"{task.id}|{depth}")
+                    if depth > 0 and not task.category.startswith("context.")
+                    else task.prompt
+                )
                 request: dict[str, object] = {
                     "model": model_ref,
-                    "messages": [{"role": "user", "content": task.prompt}],
+                    "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": task.max_tokens + max(0, reasoning_allowance),
                     "temperature": 0,
                     "stream": False,
@@ -122,6 +134,14 @@ def run(
                 )
                 response.raise_for_status()
                 payload = response.json()
+                usage = payload.get("usage") if isinstance(payload, dict) else None
+                reported = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+                if (
+                    isinstance(reported, int)
+                    and not isinstance(reported, bool)
+                    and reported >= 0
+                ):
+                    prompt_tokens_max = max(prompt_tokens_max, reported)
                 choices = payload.get("choices") if isinstance(payload, dict) else None
                 first = choices[0] if isinstance(choices, list) and choices else None
                 message = first.get("message") if isinstance(first, dict) else None
@@ -176,4 +196,6 @@ def run(
         reasoning_allowance=max(0, reasoning_allowance),
         transport_errors=transport_errors,
         cache_prompt=cache_prompt,
+        depth=depth,
+        prompt_tokens_max=prompt_tokens_max,
     )

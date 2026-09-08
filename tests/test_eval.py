@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import threading
@@ -11,6 +12,7 @@ import httpx
 import pytest
 
 from nmesh import cli
+from nmesh.bench.runner import measure
 from nmesh.catalog import ModelSpec
 from nmesh.eval import (
     CATEGORIES,
@@ -24,7 +26,9 @@ from nmesh.eval import (
     EvalSummary,
     Task,
     TaskOutcome,
+    needle_tasks,
     normalize,
+    padded_prompt,
     suite_digest,
 )
 from nmesh.eval.cache import EvalRecord, eval_key, load_eval_cache, save_eval
@@ -58,6 +62,7 @@ from nmesh.eval.stats import (
 )
 from nmesh.planner import Policy, build_plan
 from nmesh.runtime import RuntimeStatus
+from nmesh.telemetry import COMPARABLE_PROMPT_TOKENS
 
 from .test_planner import profile
 
@@ -202,6 +207,74 @@ def test_runner_marks_transport_failures_and_derives_timeout(monkeypatch) -> Non
     assert not outcome.unscorable
     assert result.transport_errors == 1
     assert value_checks == ["yes"]
+
+
+def test_runner_depth_timeout_and_served_prompt_tokens(monkeypatch) -> None:
+    calls: list[float] = []
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return
+
+        def json(self) -> dict[str, object]:
+            return {
+                "choices": [{
+                    "message": {"content": "yes"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 15000},
+            }
+
+    def post(self, url, *, json, timeout):
+        calls.append(timeout)
+        assert len(json["messages"][0]["content"]) > len("question")
+        return Response()
+
+    monkeypatch.setattr(httpx.Client, "post", post)
+    task = Task("depth", "instruction", "question", 8, lambda text: text == "yes")
+    result = run((task,), "http://example.test", "model", depth=15000)
+    assert calls == [30.0 + 8 / 2.0 + 750.0]
+    assert result.depth == 15000
+    assert result.prompt_tokens_max == 15000
+
+
+def test_padded_prompt_is_deterministic_and_grows() -> None:
+    short = padded_prompt("Answer this.", 64, "same")
+    repeat = padded_prompt("Answer this.", 64, "same")
+    other = padded_prompt("Answer this.", 64, "other")
+    longer = padded_prompt("Answer this.", 256, "same")
+    assert short == repeat
+    assert short != other
+    assert short.endswith("Answer this.")
+    assert len(longer) > len(short)
+
+
+def test_bench_nominal_reference_is_below_real_depth_ceiling() -> None:
+    nominal = inspect.signature(measure).parameters["prefill_tokens"].default
+    assert isinstance(nominal, int)
+    # Bench's nominal 512 token parameter tokenises to roughly 336 real tokens.
+    assert nominal < COMPARABLE_PROMPT_TOKENS
+
+
+def test_needle_tasks_have_both_positions_and_validated_checkers() -> None:
+    tasks = needle_tasks(4096, "core")
+    assert len(tasks) == 16
+    assert {task.category for task in tasks} == {
+        "context.literal", "context.latent",
+    }
+    assert {task.id.split(".")[2] for task in tasks} == {"p10", "p90"}
+    for task in tasks:
+        if task.category == "context.literal":
+            answer = re.search(r"is ([0-9a-f]{6})\.", task.prompt)
+            assert answer is not None
+            assert task.check(answer.group(1))
+            assert not task.check("000000")
+        else:
+            answer = re.search(r"([A-Z][a-z]+) was in ", task.prompt)
+            assert answer is not None
+            assert task.check(answer.group(1) + "!")
+            assert not task.check("Wrong")
+        assert not task.check("")
 
 
 def test_runner_explicit_timeout_is_used_for_every_request(monkeypatch) -> None:
@@ -812,6 +885,8 @@ def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
     assert load_eval_cache(path)["legacy"].artifact == ""
     assert load_eval_cache(path)["legacy"].transport_errors == 0
     assert load_eval_cache(path)["legacy"].cache_prompt is None
+    assert load_eval_cache(path)["legacy"].depth == 0
+    assert load_eval_cache(path)["legacy"].prompt_tokens_max == 0
     legacy["results"]["legacy"]["task_results"] = {"one": "yes"}
     path.write_text(json.dumps(legacy), encoding="utf-8")
     assert load_eval_cache(path) == {}
@@ -831,6 +906,11 @@ def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
     legacy["results"]["legacy"]["cache_prompt"] = "false"
     path.write_text(json.dumps(legacy), encoding="utf-8")
     assert load_eval_cache(path) == {}
+    for invalid in (-1, True):
+        legacy["results"]["legacy"]["cache_prompt"] = None
+        legacy["results"]["legacy"]["depth"] = invalid
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+        assert load_eval_cache(path) == {}
     path.write_text("{broken", encoding="utf-8")
     assert load_eval_cache(path) == {}
     assert load_eval_cache(tmp_path / "missing.json") == {}
@@ -861,6 +941,28 @@ def test_eval_key_separates_cache_conditions_and_allowance() -> None:
     assert eval_key(*base, allowance=504, cache_prompt=False) == (
         "model|f16|llamacpp|core|digest|a504|c0"
     )
+    assert eval_key(*base, depth=0) == "model|f16|llamacpp|core|digest"
+    assert eval_key(*base, depth=4096) == (
+        "model|f16|llamacpp|core|digest|d4096"
+    )
+
+
+def test_eval_rates_ignore_deep_record_but_report_coverage() -> None:
+    digest = suite_digest(TASKS)
+    records = {
+        "shallow": EvalRecord(
+            "model", "f16", "llamacpp", 16, 8, 0.5, {}, 1.0,
+            {}, "", "core", digest,
+        ),
+        "deep": EvalRecord(
+            "model", "f16", "llamacpp", 16, 16, 1.0, {}, 2.0,
+            {}, "", "core", digest, depth=4096, prompt_tokens_max=3072,
+        ),
+    }
+    assert cli._eval_rates(records)[("model", "f16", "llamacpp")].pass_rate == 0.5
+    assert cli._eval_depth_coverage(records) == {
+        ("model", "f16", "llamacpp"): 3072,
+    }
 
 
 def _quality_models() -> list[ModelSpec]:
@@ -1490,6 +1592,37 @@ def test_eval_cli_default_and_compliance_categories(monkeypatch) -> None:
                      "--categories", "compliance"]) == 0
     assert len(captured) == 8
     assert {task.category for task in captured} == {"compliance"}
+
+
+def test_eval_cli_depth_runs_suite_and_context_probe_separately(
+    monkeypatch, capsys,
+) -> None:
+    service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
+    calls: list[tuple[tuple[Task, ...], dict[str, object]]] = []
+    result = EvalRun("prior-high", "f16", "llamacpp", 16, 16, 1.0, {}, [], 3.0)
+
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
+
+    def evaluate(tasks, base_url, model_ref, **kwargs):
+        calls.append((tuple(tasks), kwargs))
+        return result
+
+    monkeypatch.setattr(cli, "eval_run", evaluate)
+    monkeypatch.setattr(cli, "save_eval", lambda value: None)
+    assert cli.main(["eval", "--json", "--depth", "4096"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert len(calls) == 2
+    assert all(call[1]["depth"] == 4096 for call in calls)
+    assert not any(task.category.startswith("context.") for task in calls[0][0])
+    assert all(task.category.startswith("context.") for task in calls[1][0])
+    assert output["requested_depth"] == 4096
+    assert output["served_depth"] is None
+    assert output["served_depth_known"] is False
+    assert output["context_probe"]["families"] == {
+        "literal": {"passed": 0, "of": 0},
+        "latent": {"passed": 0, "of": 0},
+    }
 
 
 def test_eval_cli_extended_suite(monkeypatch, capsys) -> None:
