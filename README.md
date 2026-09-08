@@ -679,36 +679,60 @@ keeping the contradiction warning.
 
 #### Quantization evidence
 
-Pass rates are keyed by `(model, quant, backend)`, so measurements distinguish
-quantizations of the same model. The completed eight-rung measurement for
-`qwen2.5-1.5b-instruct` used the hard suite, digest
-`v2:500f11b813a020c3`, and the same llama.cpp configuration throughout:
+Pass rates are keyed by `(model, quant, backend, suite, digest, allowance,
+cache_prompt)`, so measurements distinguish quantizations of the same model and
+never mix the two prompt-cache conditions described below. The completed
+eight-rung measurement for `qwen2.5-1.5b-instruct` used the hard suite, digest
+`v2:500f11b813a020c3`, and the same llama.cpp configuration throughout. Every
+rung was measured twice with prompt-cache reuse disabled; both repeats agreed on
+every one of the 130 task outcomes, with no unscorable answers and no transport
+failures:
 
-| quant | `QUANT_PENALTY` | file GiB | passed/130 |
-| --- | ---: | ---: | ---: |
-| f16 | 0.0 | 3.32 | 100 |
-| q8_0 | 0.5 | 1.76 | 99 |
-| q6_k | 1.0 | 1.36 | 100 |
-| q5_k_m | 2.0 | 1.20 | 101 |
-| q4_k_m | 3.5 | 1.04 | 100 |
-| q4_0 | 5.0 | 0.99 | 91 |
-| q3_k_m | 9.0 | 0.86 | 93 |
-| q2_k | 16.0 | 0.70 | 63 |
+| quant | `QUANT_PENALTY` | file GiB | passed/130 | passed/130 with reuse |
+| --- | ---: | ---: | ---: | ---: |
+| f16 | 0.0 | 3.32 | 100 | 100 |
+| q8_0 | 0.5 | 1.76 | 99 | 99 |
+| q6_k | 1.0 | 1.36 | 100 | 100 |
+| q5_k_m | 2.0 | 1.20 | 101 | 101 |
+| q4_k_m | 3.5 | 1.04 | 98 | 100 |
+| q4_0 | 5.0 | 0.99 | 92 | 91 |
+| q3_k_m | 9.0 | 0.86 | 95 | 93 |
+| q2_k | 16.0 | 0.70 | 65 | 63 |
 
-Adjacent exact McNemar p-values in penalty order were: f16/q8_0 `1.0`,
-q8_0/q6_k `1.0`, q6_k/q5_k_m `1.0`, q5_k_m/q4_k_m `1.0`,
-q4_k_m/q4_0 `0.035156`, q4_0/q3_k_m `0.814529`, and
-q3_k_m/q2_k `0.000005`. Thus the measurable steps are q4_k_m → q4_0 and
-q3_k_m → q2_k; all other adjacent steps are indistinguishable under this
-suite.
+Adjacent exact McNemar p-values in penalty order are: f16/q8_0 `1.0`,
+q8_0/q6_k `1.0`, q6_k/q5_k_m `1.0`, q5_k_m/q4_k_m `0.453125`,
+q4_k_m/q4_0 `0.179565`, q4_0/q3_k_m `0.647606`, and
+q3_k_m/q2_k `0.0000028`. The only measurable step is q3_k_m → q2_k; every
+other adjacent step is indistinguishable under this suite.
 
-On this model, machine, binary, and suite, the ladder collapses into three
-indistinguishable bands: `{f16, q8_0, q6_k, q5_k_m, q4_k_m}` at 99–101/130,
-`{q4_0, q3_k_m}` at 91–93/130, and `{q2_k}` at 63/130. The 3.5 penalty
-points between f16 and q4_k_m buy no measurable quality here while costing
-2.28 GiB of weights. This is one model on one machine under one suite, not a
-general claim about quantization. The `QUANT_PENALTY` values were not changed:
-one model's ladder cannot set a constant that applies to every model.
+On this model, machine, binary, and suite, the ladder collapses into two
+indistinguishable bands: `{f16, q8_0, q6_k, q5_k_m, q4_k_m, q4_0, q3_k_m}` at
+92–101/130 and `{q2_k}` at 65/130. The 9.0 penalty points between f16 and
+q3_k_m buy no measurable quality here while costing 2.46 GiB of weights. This is
+one model on one machine under one suite, not a general claim about
+quantization. The `QUANT_PENALTY` values were not changed: one model's ladder
+cannot set a constant that applies to every model.
+
+The right-hand column is what the same suite reported before eval controlled
+prompt-cache reuse, and it is not the same ladder. With reuse the q4_k_m/q4_0
+step measured `0.035156`, which is how this document previously reported
+q4_k_m → q4_0 as a measurable step; disabling reuse moves the same pair to
+`0.179565`. Reuse inflated the gap in both re-measured pairs — q4_k_m/q3_k_m
+went from 7 tasks (`0.143463`) to 3 tasks (`0.607239`) — because llama.cpp
+reuses the slot's KV prefix, so a measurement depends on what the server
+processed before it. Each arm is internally repeatable (two to three repeats per
+arm agreed on every task, whether the server was fresh or had 130 to 260 tasks
+of history in front of it), which is why the earlier single-run numbers looked
+solid: the contamination is systematic, not noisy, and no spread check can see
+it. `nmesh eval` now sends `cache_prompt: false` to llama.cpp services and
+records the condition in the measurement key (`|c0`), so records made under
+reuse are kept but never compared against cache-clean ones. Records carrying no
+condition — everything measured before this change, including the right-hand
+column — are legacy and are never compared against `|c0` records; on llama.cpp
+they have to be re-measured. Sampling fields stay out: adding `top_k: 1` and
+`seed: 0` on top of greedy decoding also moved single tasks (q4_k_m 100 → 101,
+q3_k_m 93 → 94), which says those tasks sit at the decision boundary, not that
+the fields make the measurement more reproducible.
 
 Measurement-to-plan identity is case-insensitive on model id, quant, and
 backend because record quants come from artifact names (`Q4_K_M`,
