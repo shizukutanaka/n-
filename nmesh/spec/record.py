@@ -18,9 +18,10 @@ import json
 import math
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+from nmesh.bench.epoch import EPOCH_MIN_RATIO
 from nmesh.orchestrate.measure import RoleIdentity
 from nmesh.orchestrate.record import role_key
 from nmesh.paths import nmesh_home
@@ -53,6 +54,8 @@ NOT_FASTER = "not_faster"
 MIXED = "mixed"
 #: The repeats disagreed with each other, so nothing was established.
 UNSTABLE = "unstable"
+# The host epoch invalidated a positive speed claim.
+STALE = "stale"
 
 # The quiet-machine cross-launch spread was 3.3--5.3%; a 10% threshold is
 # roughly twice that noise floor and far below the 1.6--2.8x contamination
@@ -94,6 +97,9 @@ class SpecRecord:
     repeats: int
     classes: tuple[ClassEvidence, ...]
     control: tuple[ControlEvidence, ...] = ()
+    reference_id: str = ""
+    reference_tps: float = 0.0
+    epoch: str = "unknown"
     at: float = 0.0
 
     @property
@@ -123,6 +129,10 @@ class SpecRecord:
             return NOT_FASTER
         if self.regressions:
             return MIXED
+        # A degraded host can invalidate only a positive speed claim:
+        # identity and regression rejections remain valid in any host state.
+        if self.epoch == "degraded":
+            return STALE
         return ALLOW
 
 
@@ -132,6 +142,9 @@ def from_arms(
     *,
     engine: str,
     control_arm: ArmRun,
+    reference_id: str = "",
+    reference_tps: float = 0.0,
+    epoch: str = "unknown",
 ) -> SpecRecord:
     """Turn a reference/candidate pair into a storable record."""
     comparisons: Sequence[ClassComparison] = compare(reference, candidate)
@@ -162,6 +175,9 @@ def from_arms(
             )
             for item in control(reference, control_arm)
         ),
+        reference_id=reference_id,
+        reference_tps=reference_tps,
+        epoch=epoch,
         at=max(reference.at, candidate.at, control_arm.at),
     )
 
@@ -238,6 +254,15 @@ def save(record: SpecRecord, path: Path | None = None) -> Path:
     target = cache_path(path)
     records = load_cache(target)
     records[record_key(record)] = record
+    return save_all(records, target)
+
+
+def save_all(
+    records: Mapping[str, SpecRecord],
+    path: Path | None = None,
+) -> Path:
+    """Atomically persist the complete speculation cache."""
+    target = cache_path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     try:
@@ -261,6 +286,29 @@ def save(record: SpecRecord, path: Path | None = None) -> Path:
             pass
         raise
     return target
+
+
+def demote_stale(
+    records: dict[str, SpecRecord],
+    reference_id: str,
+    reference_tps: float,
+) -> tuple[str, ...]:
+    """Invalidate positive speed claims disproved by a faster epoch."""
+    threshold = 1 / EPOCH_MIN_RATIO
+    demoted: list[str] = []
+    for key, record in records.items():
+        if (
+            not reference_id
+            or record.reference_id != reference_id
+            or record.reference_tps <= 0
+            or reference_tps <= 0
+            or not math.isfinite(reference_tps)
+            or reference_tps < record.reference_tps * threshold
+        ):
+            continue
+        records[key] = replace(record, epoch="degraded")
+        demoted.append(key)
+    return tuple(sorted(demoted))
 
 
 def _identity(data: object) -> RoleIdentity | None:
@@ -364,6 +412,9 @@ def _parse(data: object) -> SpecRecord | None:
     at = _number(data.get("at"))
     rows = data.get("classes")
     control_rows = data.get("control")
+    reference_id = data.get("reference_id", "")
+    reference_tps = _number(data.get("reference_tps", 0.0))
+    epoch = data.get("epoch", "unknown")
     if (
         target is None
         or spec is None
@@ -382,6 +433,10 @@ def _parse(data: object) -> SpecRecord | None:
                 or isinstance(control_rows, (str, bytes))
             )
         )
+        or not isinstance(reference_id, str)
+        or reference_tps is None
+        or not isinstance(epoch, str)
+        or epoch not in {"unknown", "healthy", "degraded"}
     ):
         return None
     parsed = [item for row in rows if (item := _class(row)) is not None]
@@ -407,6 +462,9 @@ def _parse(data: object) -> SpecRecord | None:
         repeats=repeats,
         classes=tuple(parsed),
         control=tuple(parsed_control),
+        reference_id=reference_id,
+        reference_tps=reference_tps,
+        epoch=epoch,
         at=at,
     )
 
@@ -420,6 +478,7 @@ __all__ = [
     "NOT_FASTER",
     "NOT_IDENTICAL",
     "NO_EVIDENCE",
+    "STALE",
     "UNSTABLE",
     "ClassEvidence",
     "ControlEvidence",
@@ -427,9 +486,11 @@ __all__ = [
     "best_for",
     "cache_path",
     "decide",
+    "demote_stale",
     "from_arms",
     "load_cache",
     "record_key",
     "save",
+    "save_all",
     "spec_key",
 ]

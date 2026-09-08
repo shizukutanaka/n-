@@ -3,12 +3,13 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 import nmesh.planner.core as planner_core
 import nmesh.spec.measure as spec_measure
 from nmesh import cli
-from nmesh.bench import benchmark_key
+from nmesh.bench import EPOCH_MIN_RATIO, benchmark_key
 from nmesh.catalog import load_catalog
 from nmesh.orchestrate.measure import RoleIdentity
 from nmesh.planner import Policy, build_plan, save_plan
@@ -20,6 +21,7 @@ from nmesh.spec import (
     NOT_FASTER,
     NOT_IDENTICAL,
     SPEC_HARNESS_VERSION,
+    STALE,
     UNSTABLE,
     ArmRun,
     ClassEvidence,
@@ -30,6 +32,7 @@ from nmesh.spec import (
     Workload,
     control,
     decide,
+    demote_stale,
     engine_identity,
     from_arms,
     load_cache,
@@ -37,7 +40,14 @@ from nmesh.spec import (
 )
 
 
-def _record(*, identical: bool = True, speedup: float = 1.2) -> SpecRecord:
+def _record(
+    *,
+    identical: bool = True,
+    speedup: float = 1.2,
+    epoch: str = "unknown",
+    reference_id: str = "",
+    reference_tps: float = 0.0,
+) -> SpecRecord:
     target = RoleIdentity("target", "q4_k_m", "llamacpp", "artifact")
     return SpecRecord(
         target=target,
@@ -58,6 +68,9 @@ def _record(*, identical: bool = True, speedup: float = 1.2) -> SpecRecord:
             ),
         ),
         control=(ControlEvidence("copy", 1.0, True),),
+        epoch=epoch,
+        reference_id=reference_id,
+        reference_tps=reference_tps,
         at=1.0,
     )
 
@@ -129,6 +142,129 @@ def test_legacy_record_without_spreads_defaults_to_zero(tmp_path: Path) -> None:
     restored = next(iter(load_cache(path).values()))
     assert restored.classes[0].reference_spread == 0.0
     assert restored.classes[0].candidate_spread == 0.0
+
+
+def test_legacy_record_without_epoch_fields_defaults_and_allows(
+    tmp_path: Path,
+) -> None:
+    record = _record()
+    path = tmp_path / "spec.json"
+    save(record, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entry = payload["results"][next(iter(payload["results"]))]
+    for field in ("epoch", "reference_id", "reference_tps"):
+        entry.pop(field)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    restored = next(iter(load_cache(path).values()))
+    assert restored.epoch == "unknown"
+    assert restored.reference_id == ""
+    assert restored.reference_tps == 0.0
+    assert decide(restored) == (ALLOW, ALLOW)
+
+
+@pytest.mark.parametrize(
+    ("epoch", "speedup", "identical", "control", "expected"),
+    [
+        ("degraded", 1.2, True, True, STALE),
+        ("degraded", 1.2, False, True, NOT_IDENTICAL),
+        ("degraded", 1.2, True, False, UNSTABLE),
+        ("degraded", 1.0, True, True, NOT_FASTER),
+    ],
+)
+def test_degraded_epoch_preserves_stronger_rejections(
+    epoch: str,
+    speedup: float,
+    identical: bool,
+    control: bool,
+    expected: str,
+) -> None:
+    record = _record(
+        epoch=epoch,
+        speedup=speedup,
+        identical=identical,
+    )
+    if not control:
+        record = replace(
+            record, control=(ControlEvidence("copy", 0.5, True),)
+        )
+    assert decide(record) == (expected, expected)
+
+
+def test_degraded_epoch_mixed_and_healthy_allow() -> None:
+    mixed = SpecRecord(
+        target=_record().target,
+        spec=_record().spec,
+        engine="llama.cpp",
+        harness=SPEC_HARNESS_VERSION,
+        repeats=3,
+        classes=(
+            ClassEvidence("copy", 1.2, True, 10.0, 12.0, 1.0),
+            ClassEvidence("prose", 0.9, True, 10.0, 9.0, 1.0),
+        ),
+        control=(ControlEvidence("copy", 1.0, True),),
+        epoch="degraded",
+    )
+    assert decide(mixed) == (MIXED, MIXED)
+    assert decide(_record(epoch="healthy")) == (ALLOW, ALLOW)
+
+
+@pytest.mark.parametrize(
+    "field_value",
+    ["invalid", 1, None],
+)
+def test_invalid_epoch_is_rejected(tmp_path: Path, field_value: object) -> None:
+    record = _record()
+    path = tmp_path / "spec.json"
+    save(record, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entry = payload["results"][next(iter(payload["results"]))]
+    entry["epoch"] = field_value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load_cache(path) == {}
+
+
+@pytest.mark.parametrize("value", [-1, float("inf"), True])
+def test_invalid_reference_tps_is_rejected(tmp_path: Path, value: object) -> None:
+    record = _record()
+    path = tmp_path / "spec.json"
+    save(record, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entry = payload["results"][next(iter(payload["results"]))]
+    entry["reference_tps"] = value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load_cache(path) == {}
+
+
+def test_invalid_reference_id_is_rejected(tmp_path: Path) -> None:
+    record = _record()
+    path = tmp_path / "spec.json"
+    save(record, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entry = payload["results"][next(iter(payload["results"]))]
+    entry["reference_id"] = 1
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load_cache(path) == {}
+
+
+def test_spec_demote_stale_uses_epoch_constant() -> None:
+    records = {
+        "old": _record(reference_id="ref", reference_tps=20.0),
+        "noise": _record(reference_id="ref", reference_tps=45.0),
+        "legacy": _record(reference_id="", reference_tps=20.0),
+        "other": _record(reference_id="other", reference_tps=20.0),
+        "zero": _record(reference_id="ref", reference_tps=0.0),
+    }
+    demoted = demote_stale(
+        records,
+        "ref",
+        20.0 / EPOCH_MIN_RATIO,
+    )
+    assert demoted == ("old",)
+    assert records["old"].epoch == "degraded"
+    assert records["noise"].epoch == "unknown"
+    assert records["legacy"].epoch == "unknown"
+    assert records["other"].epoch == "unknown"
+    assert records["zero"].epoch == "unknown"
 
 
 def test_control_failure_is_unstable() -> None:
@@ -252,10 +388,16 @@ def test_from_arms_carries_rate_spreads() -> None:
         candidate,
         engine="engine",
         control_arm=control_arm,
+        reference_id="ref",
+        reference_tps=42.0,
+        epoch="healthy",
     )
     evidence = record.classes[0]
     assert evidence.reference_spread == 0.2
     assert evidence.candidate_spread == (4.0 / 12.0)
+    assert record.reference_id == "ref"
+    assert record.reference_tps == 42.0
+    assert record.epoch == "healthy"
 
 
 def test_spec_decision_table_includes_mixed_regression() -> None:
@@ -534,3 +676,97 @@ def test_spec_cli_validates_draft_and_kind(
     assert "repeats" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         cli.main(["spec", "measure", "--kind", "unknown"])
+
+
+def test_spec_cli_no_reference_records_unknown_epoch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    plan = _planned_spec(tmp_path, monkeypatch, decision=None)
+    arms = iter(
+        (
+            _arm(rate=10.0),
+            _arm(
+                spec=SpecConfig(kind=KIND_NGRAM, n_max=3),
+                rate=12.0,
+            ),
+            _arm(rate=10.0),
+        )
+    )
+
+    class FakeSupervisor:
+        def __init__(self, *, state_path: Path) -> None:
+            self.state_path = state_path
+
+        def up(self, *_args, **_kwargs) -> None:
+            return None
+
+        def down(self) -> None:
+            return None
+
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(
+        cli,
+        "_reference_context",
+        lambda _service: (_ for _ in ()).throw(
+            AssertionError("reference should be disabled")
+        ),
+    )
+    monkeypatch.setattr(cli, "run_arm", lambda *_args, **_kwargs: next(arms))
+    monkeypatch.setattr(cli, "engine_identity", lambda _profile: "engine")
+    monkeypatch.setattr(cli.engine_runtime, "active", lambda: None)
+    monkeypatch.setattr(cli, "service_fingerprint", lambda *_args: "artifact")
+
+    assert cli.main([
+        "spec", "measure", "--kind", "ngram", "--no-reference", "--json",
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["epoch"] == "unknown"
+    assert result["reference_id"] == ""
+    assert result["reference_tps"] is None
+    assert result["demoted"] == 0
+
+    records = load_cache(tmp_path / "spec.json")
+    assert next(iter(records.values())).epoch == "unknown"
+
+
+def test_spec_cli_transport_failure_writes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    plan = _planned_spec(tmp_path, monkeypatch, decision=None)
+
+    class FakeSupervisor:
+        def __init__(self, *, state_path: Path) -> None:
+            self.state_path = state_path
+
+        def up(self, *_args, **_kwargs) -> None:
+            return None
+
+        def down(self) -> None:
+            return None
+
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(cli, "_reference_context", lambda _service: None)
+    monkeypatch.setattr(cli, "engine_identity", lambda _profile: "engine")
+    monkeypatch.setattr(cli.engine_runtime, "active", lambda: None)
+    monkeypatch.setattr(cli, "service_fingerprint", lambda *_args: "artifact")
+    monkeypatch.setattr(
+        cli,
+        "run_arm",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            httpx.ReadTimeout("timed out")
+        ),
+    )
+
+    assert cli.main([
+        "spec", "measure", "--kind", "ngram", "--no-reference",
+    ]) == 1
+    assert "transport" in capsys.readouterr().err.lower()
+    assert not (tmp_path / "spec.json").exists()

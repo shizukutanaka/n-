@@ -222,11 +222,21 @@ def test_bench_demotes_stale_evidence_before_merging_new_session(
     )
     controlled = _controlled(measurement)
     saved = {}
+    spec_saved = {}
     monkeypatch.setattr(cli, "load_plan", lambda: plan)
     monkeypatch.setattr(cli, "runtime_status", lambda: object())
     monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
     monkeypatch.setattr(cli, "load_records", lambda: {key: previous})
     monkeypatch.setattr(cli, "save_records", lambda records: saved.update(records))
+    monkeypatch.setattr(cli, "load_spec_cache", lambda: {"spec": object()})
+    monkeypatch.setattr(
+        cli,
+        "demote_spec_stale",
+        lambda records, reference_id, reference_tps: ("spec",),
+    )
+    monkeypatch.setattr(
+        cli, "save_all_spec", lambda records: spec_saved.update(records),
+    )
     monkeypatch.setattr(
         cli, "_reference_context",
         lambda _service: (Path("llama-bench"), Path("reference.gguf"), "ref", 4),
@@ -252,6 +262,7 @@ def test_bench_demotes_stale_evidence_before_merging_new_session(
     assert cli.main(["bench", "--json"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["demoted"] == [key]
+    assert result["spec_demoted"] == ["spec"]
     assert result["pruned"] == 1
     assert result["stored"] is True
     assert result["confirmations"] == 1
@@ -259,6 +270,7 @@ def test_bench_demotes_stale_evidence_before_merging_new_session(
     assert saved[key].sessions == (48.0,)
     assert baseline(history_saved, "ref") == 48.0
     assert history_saved["other"] == (EpochSample("other", 10.0, "other"),)
+    assert "spec" in spec_saved
 
 
 def test_bench_degraded_epoch_does_not_demote_existing_evidence(
