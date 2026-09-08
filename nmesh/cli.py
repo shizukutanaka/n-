@@ -2041,7 +2041,6 @@ def _eval(args: argparse.Namespace) -> int:
             language,
             passed=context_probe["control_passed"],
             total=context_probe["control_of"],
-            attributable=context_probe["attributable"],
         ))
         for warning in context_depth_warnings:
             _console().print(warning)

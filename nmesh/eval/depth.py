@@ -180,7 +180,7 @@ def _multi_task(target: int, seed: str, index: int) -> Task:
     codes = [case.hex[8:14] for case in cases]
     needles = tuple(
         f"The access code for case {case_id} is {code}."
-        for case_id, code in zip(case_ids, codes)
+        for case_id, code in zip(case_ids, codes, strict=True)
     )
     question = (
         "List the access codes for cases "
