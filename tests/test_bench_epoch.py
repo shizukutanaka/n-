@@ -143,6 +143,13 @@ def test_demote_stale_invalidates_faster_disproved_reference(tmp_path) -> None:
     assert load_cache(path) == {}
 
 
+def test_demote_stale_accepts_exact_epoch_boundary() -> None:
+    records = {"boundary": _record("ref", 20.0)}
+    assert demote_stale(records, "ref", 20.0 / EPOCH_MIN_RATIO) == (
+        "boundary",
+    )
+
+
 def test_demote_stale_ignores_matching_noise_and_unrelated_records() -> None:
     records = {
         "noise": _record("ref", 45.0),

@@ -1878,7 +1878,13 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
                 delegation_records, reference_key, reference_tps,
             )
             if demoted:
-                save_all_delegation(delegation_records)
+                try:
+                    save_all_delegation(delegation_records)
+                except OSError as error:
+                    print(
+                        i18n.t("err.bench_save", language, error=error),
+                        file=sys.stderr,
+                    )
     except (OSError, RuntimeError, ValueError, httpx.HTTPError) as error:
         print(
             i18n.t("err.orchestrate_measure", language, error=error),

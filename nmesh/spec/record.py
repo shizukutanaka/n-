@@ -21,7 +21,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from nmesh.bench.epoch import refutes
+from nmesh.evidence import refutes
 from nmesh.orchestrate.measure import RoleIdentity
 from nmesh.orchestrate.record import role_key
 from nmesh.paths import nmesh_home

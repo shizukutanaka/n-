@@ -236,6 +236,20 @@ def test_delegation_demotion_preserves_quality_fields() -> None:
     ) == ()
 
 
+def test_delegation_demotion_accepts_exact_epoch_boundary() -> None:
+    record = from_run(
+        _record_run(),
+        reference_id="ref",
+        reference_tps=20.0,
+        epoch="healthy",
+    )
+    records = {"boundary": record}
+    assert demote_stale(records, "ref", 20.0 / EPOCH_MIN_RATIO) == (
+        "boundary",
+    )
+    assert records["boundary"] == replace(record, epoch="degraded")
+
+
 def test_delegation_record_round_trip_defaults_and_validation(tmp_path: Path) -> None:
     path = tmp_path / "delegation.json"
     record = from_run(
@@ -353,3 +367,57 @@ def test_orchestrate_measure_degraded_epoch_stales_only_cost(
     assert result["epoch"] == "degraded"
     assert result["cost"] == STALE
     assert result["gate"] == ALLOW
+
+
+def test_orchestrate_measure_demotion_write_failure_keeps_success(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    service = SimpleNamespace(
+        name="lead", model_id="lead", quant="q4", backend="llamacpp",
+        model_ref="lead.gguf", roles=("chat",), port=1,
+    )
+    worker = SimpleNamespace(
+        name="worker", model_id="worker", quant="q4", backend="llamacpp",
+        model_ref="worker.gguf", roles=("worker",), port=2,
+    )
+    plan = SimpleNamespace(
+        services=[service, worker],
+        routing=SimpleNamespace(role_to_service={"chat": "lead", "worker": "worker"}),
+        profile=SimpleNamespace(),
+    )
+    old_record = from_run(
+        _record_run(),
+        reference_id="ref",
+        reference_tps=20.0,
+        epoch="healthy",
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(
+        cli, "_orchestration_identity",
+        lambda item: RoleIdentity(item.model_id, item.quant, item.backend),
+    )
+    monkeypatch.setattr(cli, "orchestrate_measure", lambda *args, **kwargs: _record_run())
+    monkeypatch.setattr(cli, "save_delegation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "load_delegation_cache", lambda: {"old": old_record})
+    monkeypatch.setattr(
+        cli, "_reference_context",
+        lambda _: (Path("llama-bench"), Path("reference.gguf"), "ref", 4),
+    )
+    monkeypatch.setattr(cli, "load_history", dict)
+    monkeypatch.setattr(cli, "save_history", lambda _history: None)
+    monkeypatch.setattr(cli, "measure_reference", lambda *_args: 50.0)
+    monkeypatch.setattr(
+        cli,
+        "save_all_delegation",
+        lambda _records: (_ for _ in ()).throw(OSError("readonly")),
+    )
+    assert cli.main([
+        "orchestrate", "measure", "--lead-url", "lead", "--worker-url",
+        "worker", "--json",
+    ]) == 0
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["demoted"] == 1
+    assert result["gate"] == ALLOW
+    assert "readonly" in captured.err

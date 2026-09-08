@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from nmesh.bench.epoch import refutes
+from nmesh.evidence import refutes
 from nmesh.paths import nmesh_home
 
 from .measure import DelegationRun, RoleIdentity
