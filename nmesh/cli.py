@@ -24,7 +24,7 @@ from rich.console import Console
 from rich.table import Table
 
 from nmesh import i18n
-from nmesh.artifact import service_fingerprint
+from nmesh.artifact import gguf_info, service_fingerprint
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.bench import (
     EPOCH_HISTORY,
@@ -64,6 +64,22 @@ from nmesh.eval.stats import (
     min_discordant_for_significance,
     min_resolvable_difference,
     wilson_interval,
+)
+from nmesh.inventory import (
+    FILE_TYPE_QUANT,
+    default_stores,
+)
+from nmesh.inventory import (
+    Artifact as InventoryArtifact,
+)
+from nmesh.inventory import (
+    duplicates as inventory_duplicates,
+)
+from nmesh.inventory import (
+    scan as scan_inventory,
+)
+from nmesh.inventory import (
+    variants as inventory_variants,
 )
 from nmesh.orchestrate import (
     Endpoint,
@@ -994,7 +1010,160 @@ def _reload(args: argparse.Namespace) -> int:
     return 0
 
 
+def _inventory_artifact_payload(
+    artifact: InventoryArtifact,
+    planned: bool,
+    group: str | None,
+) -> dict[str, object]:
+    return {
+        "store": artifact.store,
+        "path": str(artifact.path),
+        "bytes": artifact.bytes,
+        "arch": artifact.arch,
+        "name": artifact.name,
+        "tensors": artifact.tensors,
+        "elements": artifact.elements,
+        "file_type": artifact.file_type,
+        "quant": artifact.quant,
+        "label": artifact.label,
+        "label_mismatch": artifact.label_mismatch,
+        "tags": list(artifact.tags),
+        "identity": artifact.identity,
+        "planned": planned,
+        "group": group,
+    }
+
+
+def _models_scan(args: argparse.Namespace) -> int:
+    stores = default_stores()
+    extra_indexes = [
+        int(name.split(":", 1)[1])
+        for name in stores
+        if name.startswith("extra:") and name.split(":", 1)[1].isdigit()
+    ]
+    next_extra = max(extra_indexes, default=-1) + 1
+    for root in getattr(args, "root", []) or []:
+        stores[f"extra:{next_extra}"] = Path(root).expanduser()
+        next_extra += 1
+    artifacts = scan_inventory(stores)
+    plan = load_plan()
+    planned = {
+        str(Path(service.model_ref).resolve()).casefold()
+        for service in (plan.services if plan is not None else [])
+        if service.model_ref
+    }
+    duplicate_groups = inventory_duplicates(artifacts)
+    variant_groups = inventory_variants(artifacts)
+    groups: dict[str, str] = {}
+    for index, group in enumerate(duplicate_groups, 1):
+        for artifact in group.artifacts:
+            groups[str(artifact.path.resolve()).casefold()] = f"dup:{index}"
+    for index, group in enumerate(variant_groups, 1):
+        for artifact in group.artifacts:
+            groups.setdefault(
+                str(artifact.path.resolve()).casefold(), f"var:{index}"
+            )
+    artifact_payloads = [
+        _inventory_artifact_payload(
+            artifact,
+            str(artifact.path.resolve()).casefold() in planned,
+            groups.get(str(artifact.path.resolve()).casefold()),
+        )
+        for artifact in artifacts
+    ]
+    store_totals: dict[str, dict[str, object]] = {}
+    for store, root in stores.items():
+        store_artifacts = [artifact for artifact in artifacts if artifact.store == store]
+        total_bytes = sum(artifact.bytes for artifact in store_artifacts)
+        store_totals[store] = {
+            "path": str(root),
+            "files": len(store_artifacts),
+            "bytes": total_bytes,
+            "gib": total_bytes / 1024**3,
+        }
+    reclaimable_bytes = sum(group.reclaimable_bytes for group in duplicate_groups)
+    total_bytes = sum(artifact.bytes for artifact in artifacts)
+    payload = {
+        "stores": store_totals,
+        "artifacts": artifact_payloads,
+        "duplicates": [
+            {
+                "identity": group.identity,
+                "artifacts": [str(item.path) for item in group.artifacts],
+                "reclaimable_bytes": group.reclaimable_bytes,
+            }
+            for group in duplicate_groups
+        ],
+        "variants": [
+            {
+                "arch": group.arch,
+                "quant": group.quant,
+                "name": group.name,
+                "artifacts": [str(item.path) for item in group.artifacts],
+            }
+            for group in variant_groups
+        ],
+        "totals": {
+            "files": len(artifacts),
+            "bytes": total_bytes,
+            "gib": total_bytes / 1024**3,
+            "reclaimable_bytes": reclaimable_bytes,
+            "reclaimable_gib": reclaimable_bytes / 1024**3,
+            "variant_groups": len(variant_groups),
+        },
+    }
+    if args.json:
+        _print_json(payload)
+        return 0
+    language = i18n.lang()
+    table = Table(title=i18n.t("models.scan", language))
+    for column in ("Store", "Model", "Quant", "Label", "GiB", "Tags", "Planned", "Group"):
+        table.add_column(column)
+    for artifact, item in zip(artifacts, artifact_payloads):
+        label = artifact.label or "-"
+        if artifact.label_mismatch:
+            label = f"{label} != {artifact.quant}"
+        table.add_row(
+            artifact.store,
+            str(artifact.path),
+            artifact.quant or "-",
+            label,
+            f"{artifact.bytes / 1024**3:.2f}",
+            ",".join(artifact.tags) or "-",
+            str(item["planned"]),
+            str(item["group"] or "-"),
+        )
+    _console().print(table)
+    for store, summary in store_totals.items():
+        _console().print(i18n.t(
+            "models.scan_store",
+            language,
+            store=store,
+            files=summary["files"],
+            gib=summary["gib"],
+        ))
+    _console().print(i18n.t(
+        "models.scan_total",
+        language,
+        files=payload["totals"]["files"],
+        gib=payload["totals"]["gib"],
+    ))
+    _console().print(i18n.t(
+        "models.scan_reclaimable",
+        language,
+        gib=payload["totals"]["reclaimable_gib"],
+    ))
+    _console().print(i18n.t(
+        "models.scan_variants",
+        language,
+        count=payload["totals"]["variant_groups"],
+    ))
+    return 0
+
+
 def _models(args: argparse.Namespace) -> int:
+    if getattr(args, "models_command", None) == "scan":
+        return _models_scan(args)
     if getattr(args, "models_command", None) in {"local", "rm"}:
         model_root = nmesh_home() / "models"
         if args.models_command == "rm":
@@ -1039,23 +1208,34 @@ def _models(args: argparse.Namespace) -> int:
         }
         items = []
         for path in sorted(model_root.rglob("*.gguf")) if model_root.exists() else []:
-            quant = parse_label(path.name)
+            info = gguf_info(path)
+            label = parse_label(path.name)
+            quant = (
+                FILE_TYPE_QUANT.get(info.file_type)
+                if info is not None
+                else label
+            )
             items.append({
                 "path": str(path),
                 "bytes": path.stat().st_size,
                 "quant": quant,
+                "label": label,
+                "label_mismatch": (
+                    quant is not None and label is not None and quant != label
+                ),
+                "quant_source": "header" if info is not None else "label",
                 "planned": str(path.resolve()).casefold() in planned,
             })
         if args.json:
             _print_json(items)
         else:
             table = Table(title=i18n.t("models.local", i18n.lang()))
-            for column in ("Path", "Bytes", "Quant", "Planned"):
+            for column in ("Path", "Bytes", "Quant", "Label", "Planned"):
                 table.add_column(column)
             for item in items:
                 table.add_row(
                     item["path"], str(item["bytes"]), str(item["quant"] or "-"),
-                    str(item["planned"]),
+                    str(item["label"] or "-"), str(item["planned"]),
                 )
             _console().print(table)
         return 0
@@ -2833,6 +3013,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     model_commands = models.add_subparsers(dest="models_command")
     model_list = model_commands.add_parser("local")
     model_list.add_argument("--json", action="store_true")
+    model_scan = model_commands.add_parser("scan")
+    model_scan.add_argument("--json", action="store_true")
+    model_scan.add_argument("--root", action="append", default=[])
     model_rm = model_commands.add_parser("rm")
     model_rm.add_argument("name")
     model_rm.add_argument("--force", action="store_true")
