@@ -37,6 +37,7 @@ class EvalRecord:
     unscorable: int = 0
     reasoning_allowance: int = 0
     transport_errors: int = 0
+    cache_prompt: bool | None = None
 
 
 def _record(data: object) -> EvalRecord | None:
@@ -65,6 +66,7 @@ def _record(data: object) -> EvalRecord | None:
         unscorable = data.get("unscorable", 0)
         allowance = data.get("reasoning_allowance", 0)
         transport_errors = data.get("transport_errors", 0)
+        cache_prompt = data.get("cache_prompt")
         if (
             isinstance(n_tasks, bool)
             or not isinstance(n_tasks, int)
@@ -93,6 +95,10 @@ def _record(data: object) -> EvalRecord | None:
             or isinstance(transport_errors, bool)
             or not isinstance(transport_errors, int)
             or not 0 <= transport_errors <= n_tasks
+            or (
+                cache_prompt is not None
+                and not isinstance(cache_prompt, bool)
+            )
             or any(
                 not isinstance(key, str) or not isinstance(value, bool)
                 for key, value in task_results.items()
@@ -126,17 +132,26 @@ def _record(data: object) -> EvalRecord | None:
             unscorable,
             allowance,
             transport_errors,
+            cache_prompt,
         )
     except (KeyError, TypeError, ValueError):
         return None
 
 
 def eval_key(
-    model_id: str, quant: str, backend: str, suite: str, digest: str, allowance: int = 0,
+    model_id: str,
+    quant: str,
+    backend: str,
+    suite: str,
+    digest: str,
+    allowance: int = 0,
+    cache_prompt: bool | None = None,
 ) -> str:
     """Identify a measurement. A token budget change is a measurement change, so
     runs made with a reasoning allowance never land on an allowance-free key."""
     suffix = f"|a{allowance}" if allowance else ""
+    if cache_prompt is not None:
+        suffix += "|c1" if cache_prompt else "|c0"
     return f"{model_id}|{quant}|{backend}|{suite}|{digest}{suffix}"
 
 
@@ -162,6 +177,7 @@ def save_eval(run: EvalRun, path: Path | None = None) -> Path:
     key = eval_key(
         run.model_id, run.quant, run.backend, run.suite, run.digest,
         run.reasoning_allowance,
+        run.cache_prompt,
     )
     records[key] = EvalRecord(
         run.model_id, run.quant, run.backend, run.n_tasks, run.passed,
@@ -173,6 +189,7 @@ def save_eval(run: EvalRun, path: Path | None = None) -> Path:
         run.unscorable,
         run.reasoning_allowance,
         run.transport_errors,
+        run.cache_prompt,
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")

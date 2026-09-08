@@ -374,8 +374,13 @@ def _make_plan(args: argparse.Namespace) -> object:
 
 def _eval_records(
     records: Mapping[str, EvalRecord],
-) -> tuple[dict[tuple[str, str, str, str, str, int], EvalRecord], list[EvalRecord]]:
-    valid: dict[tuple[str, str, str, str, str, int], EvalRecord] = {}
+) -> tuple[
+    dict[tuple[str, str, str, str, str, int, bool | None], EvalRecord],
+    list[EvalRecord],
+]:
+    valid: dict[
+        tuple[str, str, str, str, str, int, bool | None], EvalRecord
+    ] = {}
     stale: list[EvalRecord] = []
     for record in records.values():
         tasks = SUITES.get(record.suite)
@@ -389,6 +394,7 @@ def _eval_records(
             record.suite,
             record.digest,
             record.reasoning_allowance,
+            record.cache_prompt,
         )
         previous = valid.get(key)
         if previous is None or record.at > previous.at:
@@ -450,6 +456,7 @@ def _eval_divergence(
             or (record.quant, record.backend) == (result.quant, result.backend)
             or record.digest != result.digest
             or record.reasoning_allowance != result.reasoning_allowance
+            or record.cache_prompt != result.cache_prompt
             or record.unscorable
             or result.unscorable
             or record.transport_errors
@@ -1476,6 +1483,7 @@ def _eval(args: argparse.Namespace) -> int:
             service.model_ref,
             timeout=timeout,
             reasoning_allowance=allowance,
+            cache_prompt=False if service.backend == "llamacpp" else None,
         )
     except RuntimeError as error:
         print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
@@ -1495,6 +1503,7 @@ def _eval(args: argparse.Namespace) -> int:
     key = eval_key(
         result.model_id, result.quant, result.backend, result.suite, result.digest,
         result.reasoning_allowance,
+        result.cache_prompt,
     )
     previous = cached.get(key)
     artifact_warning = None

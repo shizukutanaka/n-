@@ -27,7 +27,7 @@ from nmesh.eval import (
     normalize,
     suite_digest,
 )
-from nmesh.eval.cache import EvalRecord, load_eval_cache, save_eval
+from nmesh.eval.cache import EvalRecord, eval_key, load_eval_cache, save_eval
 from nmesh.eval.generated import (
     _ADDITIONS,
     _CHAR_WORDS,
@@ -134,6 +134,27 @@ def test_runner_all_pass_and_category_rates() -> None:
     assert _EvalHandler.bodies[0]["stream"] is False
     assert _EvalHandler.bodies[0]["max_tokens"] == 8
     assert _EvalHandler.bodies[0]["messages"] == [{"role": "user", "content": "one"}]
+    assert "cache_prompt" not in _EvalHandler.bodies[0]
+    assert result.cache_prompt is None
+
+
+def test_runner_sends_cache_prompt_when_configured() -> None:
+    tasks = (Task("one", "instruction", "one", 8, lambda text: text == "yes"),)
+    _EvalHandler.responses = {"one": (200, "yes")}
+    _EvalHandler.bodies = []
+    server = _serve()
+    try:
+        result = run(
+            tasks,
+            f"http://127.0.0.1:{server.server_address[1]}",
+            "model",
+            cache_prompt=False,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert _EvalHandler.bodies[0]["cache_prompt"] is False
+    assert result.cache_prompt is False
 
 
 def test_runner_marks_transport_failures_and_derives_timeout(monkeypatch) -> None:
@@ -757,16 +778,18 @@ def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
         "core",
         suite_digest(TASKS),
         transport_errors=1,
+        cache_prompt=False,
     )
     save_eval(result, path)
     loaded = load_eval_cache(path)
-    key = f"model|q4_k_m|llamacpp|core|{suite_digest(TASKS)}"
+    key = f"model|q4_k_m|llamacpp|core|{suite_digest(TASKS)}|c0"
     assert loaded[key].pass_rate == 0.5
     assert loaded[key].task_results == {
         "one": True, "two": False,
     }
     assert loaded[key].artifact == "gguf:2:123:abcdef"
     assert loaded[key].transport_errors == 1
+    assert loaded[key].cache_prompt is False
     assert "outcomes" not in json.loads(path.read_text(encoding="utf-8"))["results"][
         key
     ]
@@ -788,6 +811,7 @@ def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
     assert load_eval_cache(path)["legacy"].task_results == {}
     assert load_eval_cache(path)["legacy"].artifact == ""
     assert load_eval_cache(path)["legacy"].transport_errors == 0
+    assert load_eval_cache(path)["legacy"].cache_prompt is None
     legacy["results"]["legacy"]["task_results"] = {"one": "yes"}
     path.write_text(json.dumps(legacy), encoding="utf-8")
     assert load_eval_cache(path) == {}
@@ -801,6 +825,10 @@ def test_eval_cache_round_trip_and_corrupt_file(tmp_path) -> None:
     assert load_eval_cache(path) == {}
     legacy["results"]["legacy"]["task_results"] = {}
     legacy["results"]["legacy"]["artifact"] = 1
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    assert load_eval_cache(path) == {}
+    legacy["results"]["legacy"]["artifact"] = ""
+    legacy["results"]["legacy"]["cache_prompt"] = "false"
     path.write_text(json.dumps(legacy), encoding="utf-8")
     assert load_eval_cache(path) == {}
     path.write_text("{broken", encoding="utf-8")
@@ -819,6 +847,20 @@ def test_eval_cache_keeps_suites_separate(tmp_path) -> None:
     records = load_eval_cache(path)
     assert len(records) == 2
     assert cli._eval_rates(records)[("model", "f16", "llamacpp")].n_tasks == 104
+
+
+def test_eval_key_separates_cache_conditions_and_allowance() -> None:
+    base = ("model", "f16", "llamacpp", "core", "digest")
+    assert eval_key(*base) == "model|f16|llamacpp|core|digest"
+    assert eval_key(*base, cache_prompt=False) == (
+        "model|f16|llamacpp|core|digest|c0"
+    )
+    assert eval_key(*base, cache_prompt=True) == (
+        "model|f16|llamacpp|core|digest|c1"
+    )
+    assert eval_key(*base, allowance=504, cache_prompt=False) == (
+        "model|f16|llamacpp|core|digest|a504|c0"
+    )
 
 
 def _quality_models() -> list[ModelSpec]:
@@ -1296,6 +1338,20 @@ def test_eval_rates_are_keyed_by_configuration(monkeypatch) -> None:
     }
 
 
+def test_eval_records_keep_cache_conditions_separate() -> None:
+    digest = suite_digest(TASKS)
+    reuse = EvalRecord(
+        "model", "f16", "llamacpp", 16, 8, 0.5, {}, 1.0,
+        digest=digest,
+        cache_prompt=None,
+    )
+    clean = replace(reuse, passed=12, pass_rate=0.75, at=2.0, cache_prompt=False)
+    valid, stale = cli._eval_records({"reuse": reuse, "clean": clean})
+    assert stale == []
+    assert len(valid) == 2
+    assert {record.cache_prompt for record in valid.values()} == {None, False}
+
+
 def test_mixed_case_eval_quant_matches_planned_configuration() -> None:
     digest = suite_digest(TASKS)
     records = {
@@ -1379,14 +1435,41 @@ def test_eval_cli_category_filter(monkeypatch) -> None:
     result = EvalRun("prior-high", "f16", "llamacpp", 1, 1, 1.0, {"format": 1.0}, [], 3.0)
     monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
     monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
-    monkeypatch.setattr(cli, "eval_run", lambda tasks, base_url, model_ref, **kwargs: (
-        captured.extend(tasks) or result
-    ))
+    kwargs_seen = {}
+    monkeypatch.setattr(
+        cli,
+        "eval_run",
+        lambda tasks, base_url, model_ref, **kwargs: (
+            captured.extend(tasks) or kwargs_seen.update(kwargs) or result
+        ),
+    )
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
     monkeypatch.setattr(cli, "_print_json", lambda value: None)
     assert cli.main(["eval", "--json", "--categories", "format"]) == 0
     assert captured
     assert {task.category for task in captured} == {"format"}
+    assert kwargs_seen["cache_prompt"] is False
+
+
+def test_eval_cli_omits_cache_prompt_for_non_llamacpp(monkeypatch) -> None:
+    service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
+    service = replace(service_plan.services[0], backend="ollama")
+    service_plan = replace(service_plan, services=[service])
+    result = EvalRun("prior-high", "f16", "ollama", 1, 1, 1.0, {}, [], 3.0)
+    kwargs_seen = {}
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
+    monkeypatch.setattr(
+        cli,
+        "eval_run",
+        lambda tasks, base_url, model_ref, **kwargs: (
+            kwargs_seen.update(kwargs) or result
+        ),
+    )
+    monkeypatch.setattr(cli, "save_eval", lambda value: None)
+    monkeypatch.setattr(cli, "_print_json", lambda value: None)
+    assert cli.main(["eval", "--json"]) == 0
+    assert kwargs_seen["cache_prompt"] is None
 
 
 def test_eval_cli_default_and_compliance_categories(monkeypatch) -> None:
@@ -1461,6 +1544,7 @@ def test_eval_divergence_reports_disagreeing_tasks() -> None:
         "discordant_there": 1,
         "zero_power_families": [],
     }]
+    assert cli._eval_divergence(replace(result, cache_prompt=False), records) == []
 
 
 def test_eval_divergence_ignores_transport_contaminated_runs() -> None:

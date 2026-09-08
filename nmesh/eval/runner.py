@@ -38,6 +38,7 @@ class EvalRun:
     unscorable: int = 0
     reasoning_allowance: int = 0
     transport_errors: int = 0
+    cache_prompt: bool | None = None
 
 
 def _output(value: object) -> str:
@@ -71,6 +72,7 @@ def run(
     *,
     timeout: float | None = None,
     reasoning_allowance: int = 0,
+    cache_prompt: bool | None = None,
 ) -> EvalRun:
     """Ask each task and grade the answer text.
 
@@ -104,15 +106,18 @@ def run(
                 ) / 2.0
             )
             try:
+                request: dict[str, object] = {
+                    "model": model_ref,
+                    "messages": [{"role": "user", "content": task.prompt}],
+                    "max_tokens": task.max_tokens + max(0, reasoning_allowance),
+                    "temperature": 0,
+                    "stream": False,
+                }
+                if cache_prompt is not None:
+                    request["cache_prompt"] = cache_prompt
                 response = client.post(
                     f"{base_url.rstrip('/')}/v1/chat/completions",
-                    json={
-                        "model": model_ref,
-                        "messages": [{"role": "user", "content": task.prompt}],
-                        "max_tokens": task.max_tokens + max(0, reasoning_allowance),
-                        "temperature": 0,
-                        "stream": False,
-                    },
+                    json=request,
                     timeout=request_timeout,
                 )
                 response.raise_for_status()
@@ -170,4 +175,5 @@ def run(
         unscorable=sum(outcome.unscorable for outcome in outcomes),
         reasoning_allowance=max(0, reasoning_allowance),
         transport_errors=transport_errors,
+        cache_prompt=cache_prompt,
     )
