@@ -134,12 +134,12 @@ def complete(
         json=payload,
     )
     response.raise_for_status()
-    payload = response.json()
+    body = response.json()
     return Call(
-        text=_content(payload),
-        prompt_tokens=_usage(payload, "prompt_tokens"),
-        completion_tokens=_usage(payload, "completion_tokens"),
-        unscorable=_truncated_empty(payload),
+        text=_content(body),
+        prompt_tokens=_usage(body, "prompt_tokens"),
+        completion_tokens=_usage(body, "completion_tokens"),
+        unscorable=_truncated_empty(body),
         seconds=time.monotonic() - started,
     )
 
