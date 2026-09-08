@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -50,10 +51,13 @@ def test_bench_json_reports_spread_and_warns(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
     monkeypatch.setattr(cli, "load_records", dict)
     monkeypatch.setattr(cli, "save_records", lambda _records: None)
+    cache_prompts = []
     monkeypatch.setattr(cli, "measure_controlled", lambda *_args, **_kwargs:
-                        _controlled(measurement))
+                        (cache_prompts.append(_kwargs["cache_prompt"])
+                         or _controlled(measurement)))
     assert cli.main(["bench", "--json", "--runs", "3"]) == 0
     result = json.loads(capsys.readouterr().out)
+    assert cache_prompts == [False]
     assert result["runs"] == 3
     assert result["decode_tps_min"] == 10.0
     assert result["decode_tps_max"] == 30.0
@@ -61,6 +65,34 @@ def test_bench_json_reports_spread_and_warns(monkeypatch, capsys) -> None:
 
     assert cli.main(["bench", "--runs", "3"]) == 0
     assert "not reproducible" in capsys.readouterr().out
+
+
+def test_bench_cli_leaves_cache_prompt_unset_for_non_llamacpp(
+    monkeypatch, capsys,
+) -> None:
+    plan = _plan()
+    service = replace(plan.services[0], backend="ollama")
+    plan = replace(plan, services=[service])
+    measurement = BenchResult(
+        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3,
+    )
+    cache_prompts = []
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
+    monkeypatch.setattr(cli, "load_records", dict)
+    monkeypatch.setattr(cli, "save_records", lambda _records: None)
+    monkeypatch.setattr(
+        cli,
+        "measure_controlled",
+        lambda *_args, **kwargs: (
+            cache_prompts.append(kwargs["cache_prompt"])
+            or _controlled(measurement)
+        ),
+    )
+    assert cli.main(["bench", "--json", "--no-reference"]) == 0
+    capsys.readouterr()
+    assert cache_prompts == [None]
 
 
 def test_bench_narrow_spread_has_no_reproducibility_warning(monkeypatch, capsys) -> None:

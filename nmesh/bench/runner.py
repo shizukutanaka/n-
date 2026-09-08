@@ -43,7 +43,14 @@ _FILLER = "benchmark filler text "
 
 
 def _prompt(tokens: int, nonce: str) -> str:
-    """Create a prompt using approximately four characters per token."""
+    """Create a prompt with a leading nonce and approximately four characters per token.
+
+    The nonce must lead every measurement so consecutive prompts share no
+    measurable prefix. Some backends, including Ollama's OpenAI endpoint,
+    ignore cache controls and report no cached-token count, making the prompt
+    shape the only defense against reuse; a trailing nonce measured 4.0x
+    inflation in that fallback path.
+    """
     return f"{nonce} " + _FILLER * max(1, round(tokens * 4 / len(_FILLER)))
 
 
@@ -61,9 +68,15 @@ def _float_value(value: object) -> float | None:
     return float(value)
 
 
-def _measure_once(service: PlannedService, base_url: str, prefill_tokens: int,
-                  decode_tokens: int) -> BenchResult:
-    body = {
+def _measure_once(
+    service: PlannedService,
+    base_url: str,
+    prefill_tokens: int,
+    decode_tokens: int,
+    *,
+    cache_prompt: bool | None = None,
+) -> BenchResult:
+    request: dict[str, object] = {
         "model": service.model_ref,
         "messages": [{
             "role": "user",
@@ -74,6 +87,8 @@ def _measure_once(service: PlannedService, base_url: str, prefill_tokens: int,
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    if cache_prompt is not None:
+        request["cache_prompt"] = cache_prompt
     first_time: float | None = None
     last_time: float | None = None
     chunks = 0
@@ -81,18 +96,20 @@ def _measure_once(service: PlannedService, base_url: str, prefill_tokens: int,
     timings: dict[str, object] | None = None
     started = time.perf_counter()
     with httpx.Client(timeout=httpx.Timeout(300.0, connect=10.0)) as client, \
-            client.stream("POST", f"{base_url}/v1/chat/completions", json=body) as response:
+            client.stream(
+                "POST", f"{base_url}/v1/chat/completions", json=request,
+            ) as response:
         response.raise_for_status()
         for line in response.iter_lines():
             if not line or not line.startswith("data:") or line[5:].strip() == "[DONE]":
                 continue
             try:
-                payload = json.loads(line[5:].strip())
+                chunk = json.loads(line[5:].strip())
             except json.JSONDecodeError:
-                payload = {}
-            candidate_usage = payload.get("usage") if isinstance(payload, dict) else None
-            candidate_timings = payload.get("timings") if isinstance(payload, dict) else None
-            choices = payload.get("choices") if isinstance(payload, dict) else None
+                chunk = {}
+            candidate_usage = chunk.get("usage") if isinstance(chunk, dict) else None
+            candidate_timings = chunk.get("timings") if isinstance(chunk, dict) else None
+            choices = chunk.get("choices") if isinstance(chunk, dict) else None
             if isinstance(candidate_usage, dict):
                 usage = candidate_usage
             if isinstance(candidate_timings, dict):
@@ -141,8 +158,9 @@ def _measure_once(service: PlannedService, base_url: str, prefill_tokens: int,
         )
     else:
         prefill_count = prompt_count if prompt_count is not None else prefill_tokens
-        prefill_tps = prefill_count / ttft
-        prefill_source = "ttft"
+        processed = max(prefill_count - cached, 0)
+        prefill_tps = processed / ttft
+        prefill_source = "cached" if cached > 0 and processed < 16 else "ttft"
     if predicted_n is not None and predicted_n >= 1 and predicted_ms is not None and predicted_ms > 0:
         decode_tps = predicted_n / (predicted_ms / 1000)
     elif completion_count is not None:
@@ -169,10 +187,17 @@ def _measure_once(service: PlannedService, base_url: str, prefill_tokens: int,
 
 
 def measure(service: PlannedService, base_url: str, prefill_tokens: int = 512,
-            decode_tokens: int = 128, runs: int = 3) -> BenchResult:
+            decode_tokens: int = 128, runs: int = 3, *,
+            cache_prompt: bool | None = None) -> BenchResult:
     if runs < 1:
         raise ValueError("runs must be at least 1")
-    results = [_measure_once(service, base_url, prefill_tokens, decode_tokens) for _ in range(runs)]
+    results = [
+        _measure_once(
+            service, base_url, prefill_tokens, decode_tokens,
+            cache_prompt=cache_prompt,
+        )
+        for _ in range(runs)
+    ]
     sources = {item.prefill_source for item in results}
     source = (
         "ttft" if "ttft" in sources
@@ -206,11 +231,16 @@ def measure_controlled(
     decode_tokens: int = 128,
     runs: int = 3,
     passes: int = 2,
+    *,
+    cache_prompt: bool | None = None,
 ) -> ControlledBenchResult:
     if passes < 1:
         raise ValueError("passes must be at least 1")
     results = [
-        measure(service, base_url, prefill_tokens, decode_tokens, runs)
+        measure(
+            service, base_url, prefill_tokens, decode_tokens, runs,
+            cache_prompt=cache_prompt,
+        )
         for _ in range(passes)
     ]
     pass_tps = tuple(item.decode_tps for item in results)

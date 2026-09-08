@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from typing import ClassVar
 
 import nmesh.planner.core as planner_core
-from nmesh.bench import benchmark_key
+from nmesh.bench import benchmark_key, runner
 from nmesh.bench.cache import (
     BenchRecord,
     load_cache,
@@ -11,7 +12,7 @@ from nmesh.bench.cache import (
     merge_measurement,
     save_records,
 )
-from nmesh.bench.runner import BenchResult, measure_controlled
+from nmesh.bench.runner import BenchResult, measure, measure_controlled
 from nmesh.catalog import ModelSpec
 from nmesh.planner import Policy
 
@@ -172,15 +173,120 @@ def test_unknown_epoch_keeps_the_existing_merge_behavior() -> None:
 
 def test_measure_controlled_uses_pass_control(monkeypatch) -> None:
     results = iter([_result(40.0), _result(41.0)])
+    cache_prompts = []
     monkeypatch.setattr(
         "nmesh.bench.runner.measure",
-        lambda *_args, **_kwargs: next(results),
+        lambda *_args, **kwargs: (
+            cache_prompts.append(kwargs["cache_prompt"]) or next(results)
+        ),
     )
-    controlled = measure_controlled(object(), "http://test", passes=2)
+    controlled = measure_controlled(
+        object(), "http://test", passes=2, cache_prompt=False,
+    )
     assert controlled.pass_tps == (40.0, 41.0)
     assert controlled.control_ratio == 40.0 / 41.0
     assert controlled.stable is True
     assert controlled.result.decode_tps == 40.5
+    assert cache_prompts == [False, False]
+
+
+def test_measure_forwards_cache_prompt(monkeypatch) -> None:
+    cache_prompts = []
+    monkeypatch.setattr(
+        "nmesh.bench.runner._measure_once",
+        lambda *_args, **kwargs: (
+            cache_prompts.append(kwargs["cache_prompt"]) or _result(40.0)
+        ),
+    )
+    measure(object(), "http://test", runs=2, cache_prompt=True)
+    assert cache_prompts == [True, True]
+
+
+class _BenchStream:
+    def __init__(self, lines):
+        self._lines = lines
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_lines(self):
+        return iter(self._lines)
+
+
+class _BenchClient:
+    requests: ClassVar[list[dict[str, object]]] = []
+    lines: ClassVar[list[str]] = []
+
+    def __init__(self, **_kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def stream(self, _method, _url, *, json):
+        self.requests.append(json)
+        return _BenchStream(self.lines)
+
+
+def _ttft_lines(prompt_tokens: int, cached_tokens: int) -> list[str]:
+    return [
+        (
+            "data: "
+            + json.dumps({
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "prompt_tokens_details": {"cached_tokens": cached_tokens},
+                },
+                "choices": [],
+            })
+        ),
+        'data: {"choices": [{"delta": {"content": "ok"}}]}',
+        "data: [DONE]",
+    ]
+
+
+def test_bench_request_cache_prompt_and_ttft_cached_token_fallback(monkeypatch) -> None:
+    service = type("Service", (), {"model_ref": "model"})()
+    _BenchClient.requests = []
+    _BenchClient.lines = _ttft_lines(100, 60)
+    monkeypatch.setattr(runner.httpx, "Client", _BenchClient)
+    monkeypatch.setattr(runner.time, "perf_counter", iter((0.0, 2.0)).__next__)
+    uncached = runner._measure_once(service, "http://test", 100, 8)
+    assert "cache_prompt" not in _BenchClient.requests[-1]
+    assert uncached.prefill_tps == 40 / 2
+    assert uncached.prefill_source == "ttft"
+
+    _BenchClient.lines = _ttft_lines(70, 60)
+    monkeypatch.setattr(runner.time, "perf_counter", iter((0.0, 2.0)).__next__)
+    cached = runner._measure_once(
+        service, "http://test", 100, 8, cache_prompt=False,
+    )
+    assert _BenchClient.requests[-1]["cache_prompt"] is False
+    assert cached.prefill_tps == 10 / 2
+    assert cached.prefill_source == "cached"
+
+    _BenchClient.lines = _ttft_lines(100, 0)
+    monkeypatch.setattr(runner.time, "perf_counter", iter((0.0, 2.0)).__next__)
+    no_cache = runner._measure_once(
+        service, "http://test", 100, 8, cache_prompt=True,
+    )
+    assert _BenchClient.requests[-1]["cache_prompt"] is True
+    assert no_cache.prefill_tps == 100 / 2
+    assert no_cache.prefill_source == "ttft"
+
+
+def test_bench_prompt_nonce_leads_filler() -> None:
+    assert runner._prompt(32, "nonce").startswith("nonce ")
+    # The leading nonce keeps prompt reuse from contaminating measurements.
 
 
 def test_measure_controlled_rejects_unstable_and_single_pass(monkeypatch) -> None:
