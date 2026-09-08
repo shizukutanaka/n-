@@ -7,6 +7,7 @@ measurements remain observed values and are never rescaled.
 from __future__ import annotations
 
 import json
+import math
 import statistics
 import subprocess
 from dataclasses import asdict, dataclass
@@ -157,6 +158,17 @@ def classify(current: float, base: float | None) -> str:
     if base is None:
         return "unknown"
     return "healthy" if current >= base * EPOCH_MIN_RATIO else "degraded"
+
+
+def refutes(recorded_tps: float, reference_tps: float) -> bool:
+    """Return whether a faster reference disproves recorded throughput."""
+    return (
+        math.isfinite(recorded_tps)
+        and recorded_tps > 0
+        and math.isfinite(reference_tps)
+        and reference_tps > 0
+        and reference_tps >= recorded_tps / EPOCH_MIN_RATIO
+    )
 
 
 def prune_degraded(

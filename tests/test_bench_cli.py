@@ -223,6 +223,7 @@ def test_bench_demotes_stale_evidence_before_merging_new_session(
     controlled = _controlled(measurement)
     saved = {}
     spec_saved = {}
+    delegation_saved = {}
     monkeypatch.setattr(cli, "load_plan", lambda: plan)
     monkeypatch.setattr(cli, "runtime_status", lambda: object())
     monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
@@ -236,6 +237,17 @@ def test_bench_demotes_stale_evidence_before_merging_new_session(
     )
     monkeypatch.setattr(
         cli, "save_all_spec", lambda records: spec_saved.update(records),
+    )
+    monkeypatch.setattr(cli, "load_delegation_cache", lambda: {"delegation": object()})
+    monkeypatch.setattr(
+        cli,
+        "demote_delegation_stale",
+        lambda records, reference_id, reference_tps: ("delegation",),
+    )
+    monkeypatch.setattr(
+        cli,
+        "save_all_delegation",
+        lambda records: delegation_saved.update(records),
     )
     monkeypatch.setattr(
         cli, "_reference_context",
@@ -263,11 +275,13 @@ def test_bench_demotes_stale_evidence_before_merging_new_session(
     result = json.loads(capsys.readouterr().out)
     assert result["demoted"] == [key]
     assert result["spec_demoted"] == ["spec"]
+    assert result["delegation_demoted"] == ["delegation"]
     assert result["pruned"] == 1
     assert result["stored"] is True
     assert result["confirmations"] == 1
     assert saved[key].tps == 48.0
     assert saved[key].sessions == (48.0,)
+    assert "delegation" in delegation_saved
     assert baseline(history_saved, "ref") == 48.0
     assert history_saved["other"] == (EpochSample("other", 10.0, "other"),)
     assert "spec" in spec_saved

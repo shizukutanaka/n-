@@ -19,6 +19,7 @@ from nmesh.bench.epoch import (
     find_reference_binary,
     load_history,
     prune_degraded,
+    refutes,
     save_history,
 )
 
@@ -40,6 +41,15 @@ def test_classify_accepts_the_ratio_boundary() -> None:
     assert classify(80.0, 100.0) == "healthy"
     assert classify(79.9, 100.0) == "degraded"
     assert classify(100.0, None) == "unknown"
+
+
+def test_refutes_uses_the_epoch_threshold_and_rejects_invalid_values() -> None:
+    assert not refutes(0.0, 50.0)
+    assert not refutes(float("nan"), 50.0)
+    assert not refutes(40.0, 0.0)
+    assert not refutes(40.0, 40.0 / EPOCH_MIN_RATIO - 0.01)
+    assert refutes(40.0, 40.0 / EPOCH_MIN_RATIO)
+    assert refutes(40.0, 40.0 / EPOCH_MIN_RATIO + 0.01)
 
 
 def test_prune_degraded_drops_slow_samples_and_keeps_boundary() -> None:

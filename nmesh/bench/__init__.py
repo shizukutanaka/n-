@@ -26,6 +26,7 @@ from .epoch import (
     measure_reference,
     prune_degraded,
     reference_id,
+    refutes,
     save_history,
 )
 from .runner import BenchResult, ControlledBenchResult, measure, measure_controlled
@@ -58,6 +59,7 @@ __all__ = [
     "merge_measurement",
     "prune_degraded",
     "reference_id",
+    "refutes",
     "save_cache",
     "save_history",
     "save_records",

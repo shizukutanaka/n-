@@ -21,7 +21,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from nmesh.bench.epoch import EPOCH_MIN_RATIO
+from nmesh.bench.epoch import refutes
 from nmesh.orchestrate.measure import RoleIdentity
 from nmesh.orchestrate.record import role_key
 from nmesh.paths import nmesh_home
@@ -294,16 +294,12 @@ def demote_stale(
     reference_tps: float,
 ) -> tuple[str, ...]:
     """Invalidate positive speed claims disproved by a faster epoch."""
-    threshold = 1 / EPOCH_MIN_RATIO
     demoted: list[str] = []
     for key, record in records.items():
         if (
             not reference_id
             or record.reference_id != reference_id
-            or record.reference_tps <= 0
-            or reference_tps <= 0
-            or not math.isfinite(reference_tps)
-            or reference_tps < record.reference_tps * threshold
+            or not refutes(record.reference_tps, reference_tps)
         ):
             continue
         records[key] = replace(record, epoch="degraded")

@@ -14,9 +14,10 @@ import json
 import math
 import os
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+from nmesh.bench.epoch import refutes
 from nmesh.paths import nmesh_home
 
 from .measure import DelegationRun, RoleIdentity
@@ -29,6 +30,14 @@ ALLOW = "allow"
 NO_EVIDENCE = "no_evidence"
 #: A measurement exists and does not show delegation ahead of the lead.
 NOT_SUPERIOR = "not_superior"
+#: The host epoch invalidated the measured cost claim.
+STALE = "stale"
+#: Delegation took less wall-clock time than the lead alone.
+CHEAPER = "cheaper"
+#: Delegation did not take less wall-clock time.
+COSTLIER = "costlier"
+#: The cost measurement has no host-state identity.
+UNVERIFIED = "unverified"
 
 
 @dataclass(frozen=True)
@@ -60,7 +69,24 @@ class DelegationRecord:
     unscorable: int
     reasoning_allowance: int
     protocol: str
-    at: float
+    reference_id: str = ""
+    reference_tps: float = 0.0
+    epoch: str = "unknown"
+    at: float = 0.0
+
+    @property
+    def seconds_ratio(self) -> float:
+        return (
+            self.seconds_delegated / self.seconds_solo
+            if self.seconds_solo > 0 else 0.0
+        )
+
+    @property
+    def token_ratio(self) -> float:
+        return (
+            self.lead_tokens_delegated / self.lead_tokens_solo
+            if self.lead_tokens_solo > 0 else 0.0
+        )
 
     @property
     def superior(self) -> bool:
@@ -77,7 +103,13 @@ class DelegationRecord:
         return self.ceiling_passed > self.lead_passed and self.ceiling_p < ALPHA
 
 
-def from_run(run: DelegationRun) -> DelegationRecord:
+def from_run(
+    run: DelegationRun,
+    *,
+    reference_id: str = "",
+    reference_tps: float = 0.0,
+    epoch: str = "unknown",
+) -> DelegationRecord:
     """Drop the per-task rows and keep the comparable summary."""
     return DelegationRecord(
         lead=run.lead,
@@ -105,6 +137,9 @@ def from_run(run: DelegationRun) -> DelegationRecord:
         unscorable=run.unscorable,
         reasoning_allowance=run.reasoning_allowance,
         protocol=run.protocol,
+        reference_id=reference_id,
+        reference_tps=reference_tps,
+        epoch=epoch,
         at=run.at,
     )
 
@@ -154,6 +189,42 @@ def decide(record: DelegationRecord | None) -> tuple[str, str]:
     return NOT_SUPERIOR, NOT_SUPERIOR
 
 
+def decide_cost(record: DelegationRecord | None) -> tuple[str, str]:
+    """Return the independent wall-clock cost decision."""
+    if record is None:
+        return NO_EVIDENCE, NO_EVIDENCE
+    if record.seconds_solo <= 0 or record.seconds_delegated <= 0:
+        return NO_EVIDENCE, NO_EVIDENCE
+    if (
+        not record.reference_id
+        or record.reference_tps <= 0
+    ):
+        return UNVERIFIED, UNVERIFIED
+    if record.epoch == "degraded":
+        return STALE, STALE
+    decision = CHEAPER if record.seconds_ratio < 1.0 else COSTLIER
+    return decision, decision
+
+
+def demote_stale(
+    records: dict[str, DelegationRecord],
+    reference_id: str,
+    reference_tps: float,
+) -> tuple[str, ...]:
+    """Invalidate cost claims disproved by a faster shared reference."""
+    demoted: list[str] = []
+    for key, record in records.items():
+        if (
+            not reference_id
+            or record.reference_id != reference_id
+            or not refutes(record.reference_tps, reference_tps)
+        ):
+            continue
+        records[key] = replace(record, epoch="degraded")
+        demoted.append(key)
+    return tuple(sorted(demoted))
+
+
 def best_for(
     cache: Mapping[str, DelegationRecord],
     lead: RoleIdentity,
@@ -191,12 +262,33 @@ def load_cache(path: Path | None = None) -> dict[str, DelegationRecord]:
     }
 
 
-def save(run: DelegationRun, path: Path | None = None) -> Path:
+def save(
+    run: DelegationRun,
+    path: Path | None = None,
+    *,
+    reference_id: str = "",
+    reference_tps: float = 0.0,
+    epoch: str = "unknown",
+) -> Path:
     """Merge one measurement into the cache and return the file written."""
     target = cache_path(path)
     records = load_cache(target)
-    record = from_run(run)
+    record = from_run(
+        run,
+        reference_id=reference_id,
+        reference_tps=reference_tps,
+        epoch=epoch,
+    )
     records[record_key(record)] = record
+    return save_all(records, target)
+
+
+def save_all(
+    records: Mapping[str, DelegationRecord],
+    path: Path | None = None,
+) -> Path:
+    """Atomically persist the complete delegation cache."""
+    target = cache_path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     try:
@@ -321,6 +413,19 @@ def _parse(data: object) -> DelegationRecord | None:
         )
     ):
         return None
+    reference_id = data.get("reference_id", "")
+    reference_tps = data.get("reference_tps", 0.0)
+    epoch = data.get("epoch", "unknown")
+    if (
+        not isinstance(reference_id, str)
+        or isinstance(reference_tps, bool)
+        or not isinstance(reference_tps, (int, float))
+        or not math.isfinite(reference_tps)
+        or reference_tps < 0
+        or not isinstance(epoch, str)
+        or epoch not in {"unknown", "healthy", "degraded"}
+    ):
+        return None
     return DelegationRecord(
         lead=lead,
         worker=worker,
@@ -332,6 +437,9 @@ def _parse(data: object) -> DelegationRecord | None:
         ceiling_p=ceiling_p,
         reasoning_allowance=allowance,
         protocol=protocol,
+        reference_id=reference_id,
+        reference_tps=float(reference_tps),
+        epoch=epoch,
         at=float(at),
         seconds_solo=float(seconds["seconds_solo"]),
         seconds_delegated=float(seconds["seconds_delegated"]),
