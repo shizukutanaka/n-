@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from nmesh.bench.epoch import EPOCH_MIN_RATIO
 from nmesh.paths import nmesh_home
 
 BenchCache = dict[str, float]
@@ -141,7 +142,7 @@ def _record(value: object) -> BenchRecord | None:
         or not isinstance(harness, str)
         or runs < 1
         or passes < 1
-        or not sessions
+        or (not sessions and epoch != "degraded")
     ):
         return None
     return BenchRecord(
@@ -204,6 +205,52 @@ def save_records(records: dict[str, BenchRecord], path: Path | None = None) -> P
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def demote_stale(
+    records: dict[str, BenchRecord],
+    reference_id: str,
+    reference_tps: float,
+) -> tuple[str, ...]:
+    """Invalidate evidence disproved by a later, faster reference."""
+    threshold = 1 / EPOCH_MIN_RATIO
+    demoted: list[str] = []
+    timestamp = _now()
+    for key, previous in records.items():
+        if (
+            not reference_id
+            or previous.reference_id != reference_id
+            or previous.reference_tps is None
+            or previous.reference_tps <= 0
+            or reference_tps <= 0
+            or reference_tps / previous.reference_tps <= threshold
+        ):
+            continue
+        records[key] = BenchRecord(
+            tps=previous.tps,
+            decode_tps_min=previous.decode_tps_min,
+            decode_tps_max=previous.decode_tps_max,
+            runs=previous.runs,
+            passes=previous.passes,
+            control_ratio=previous.control_ratio,
+            stable=False,
+            measured_at=previous.measured_at,
+            harness=previous.harness,
+            sessions=(),
+            rejected=(previous.tps, *previous.rejected)[:3],
+            last_control_ratio=previous.control_ratio,
+            last_rejected_at=timestamp,
+            last_rejected_min=previous.decode_tps_min,
+            last_rejected_max=previous.decode_tps_max,
+            reference_tps=previous.reference_tps,
+            reference_id=previous.reference_id,
+            epoch="degraded",
+            last_rejected_reference_tps=previous.reference_tps,
+            last_rejected_reference_id=previous.reference_id,
+            last_rejected_epoch=previous.epoch,
+        )
+        demoted.append(key)
+    return tuple(sorted(demoted))
 
 
 def merge_measurement(

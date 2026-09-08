@@ -33,6 +33,7 @@ from nmesh.bench import (
     benchmark_key,
     choose_reference_model,
     classify,
+    demote_stale,
     find_reference_binary,
     load_cache,
     load_history,
@@ -1245,6 +1246,13 @@ def _bench(args: argparse.Namespace) -> int:
                         plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
                         service.n_gpu_layers, service.kv_quant, service.spec)
     records = load_records()
+    demoted: tuple[str, ...] = ()
+    if (
+        reference_tps is not None
+        and reference_key
+        and epoch in {"healthy", "unknown"}
+    ):
+        demoted = demote_stale(records, reference_key, reference_tps)
     stored = controlled.stable and epoch != "degraded"
     record = merge_measurement(
         records,
@@ -1275,6 +1283,7 @@ def _bench(args: argparse.Namespace) -> int:
               "reference_baseline": reference_baseline,
               "reference_id": reference_key,
               "epoch": epoch,
+              "demoted": list(demoted),
               "prefill_tps": measurement.prefill_tps,
               "ttft_s": measurement.ttft_s, "approximate": measurement.approximate,
               "prompt_tokens": measurement.prompt_tokens,
@@ -1345,6 +1354,12 @@ def _bench(args: argparse.Namespace) -> int:
             ))
         elif reference_tps is None:
             _console().print(i18n.t("warn.bench_no_reference", language))
+        if demoted:
+            _console().print(i18n.t(
+                "warn.bench_demoted",
+                language,
+                count=len(demoted),
+            ))
         if decode_spread > 0.25:
             _console().print(i18n.t(
                 "warn.bench_reproducibility",
