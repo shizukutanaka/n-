@@ -11,6 +11,7 @@ from nmesh.bench import (
     BenchResult,
     ControlledBenchResult,
     EpochSample,
+    baseline,
     benchmark_key,
 )
 from nmesh.catalog import ModelSpec
@@ -230,18 +231,34 @@ def test_bench_demotes_stale_evidence_before_merging_new_session(
         cli, "_reference_context",
         lambda _service: (Path("llama-bench"), Path("reference.gguf"), "ref", 4),
     )
-    monkeypatch.setattr(cli, "load_history", dict)
-    monkeypatch.setattr(cli, "save_history", lambda _history: None)
+    history_saved = {}
+    monkeypatch.setattr(
+        cli,
+        "load_history",
+        lambda: {
+            "ref": (
+                EpochSample("ref", 20.0, "old-1"),
+                EpochSample("ref", 40.0, "old-2"),
+            ),
+            "other": (EpochSample("other", 10.0, "other"),),
+        },
+    )
+    monkeypatch.setattr(
+        cli, "save_history", lambda history: history_saved.update(history),
+    )
     monkeypatch.setattr(cli, "measure_reference", lambda *_args: 48.0)
     monkeypatch.setattr(cli, "measure_controlled", lambda *_args, **_kwargs: controlled)
 
     assert cli.main(["bench", "--json"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["demoted"] == [key]
+    assert result["pruned"] == 1
     assert result["stored"] is True
     assert result["confirmations"] == 1
     assert saved[key].tps == 48.0
     assert saved[key].sessions == (48.0,)
+    assert baseline(history_saved, "ref") == 48.0
+    assert history_saved["other"] == (EpochSample("other", 10.0, "other"),)
 
 
 def test_bench_degraded_epoch_does_not_demote_existing_evidence(
@@ -276,11 +293,15 @@ def test_bench_degraded_epoch_does_not_demote_existing_evidence(
         cli, "_reference_context",
         lambda _service: (Path("llama-bench"), Path("reference.gguf"), "ref", 4),
     )
+    history = {"ref": (EpochSample("ref", 48.0, "old"),)}
+    monkeypatch.setattr(cli, "load_history", lambda: history)
     monkeypatch.setattr(
-        cli, "load_history",
-        lambda: {"ref": (EpochSample("ref", 48.0, "old"),)},
+        cli,
+        "save_history",
+        lambda _history: (_ for _ in ()).throw(
+            AssertionError("degraded epoch was persisted"),
+        ),
     )
-    monkeypatch.setattr(cli, "save_history", lambda _history: None)
     monkeypatch.setattr(cli, "measure_reference", lambda *_args: 20.0)
     monkeypatch.setattr(
         cli, "measure_controlled",
@@ -291,6 +312,7 @@ def test_bench_degraded_epoch_does_not_demote_existing_evidence(
     result = json.loads(capsys.readouterr().out)
     assert result["epoch"] == "degraded"
     assert result["demoted"] == []
+    assert result["pruned"] == 0
     assert result["median_tps"] == 20.0
     assert saved[key].epoch == "healthy"
 

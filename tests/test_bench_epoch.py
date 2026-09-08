@@ -18,6 +18,7 @@ from nmesh.bench.epoch import (
     classify,
     find_reference_binary,
     load_history,
+    prune_degraded,
     save_history,
 )
 
@@ -39,6 +40,13 @@ def test_classify_accepts_the_ratio_boundary() -> None:
     assert classify(80.0, 100.0) == "healthy"
     assert classify(79.9, 100.0) == "degraded"
     assert classify(100.0, None) == "unknown"
+
+
+def test_prune_degraded_drops_slow_samples_and_keeps_boundary() -> None:
+    current = 43.2
+    samples = _samples("ref", [19.0, 41.0, current * EPOCH_MIN_RATIO])
+    retained = prune_degraded(samples, current)
+    assert [sample.tps for sample in retained] == [41.0, current * EPOCH_MIN_RATIO]
 
 
 def test_history_is_trimmed_and_reference_ids_are_isolated(tmp_path) -> None:

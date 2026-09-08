@@ -42,6 +42,7 @@ from nmesh.bench import (
     measure_controlled,
     measure_reference,
     merge_measurement,
+    prune_degraded,
     reference_id,
     save_history,
     save_records,
@@ -1224,18 +1225,22 @@ def _bench(args: argparse.Namespace) -> int:
         classify(reference_tps, reference_baseline)
         if reference_tps is not None else "unknown"
     )
+    pruned = 0
     if (
         reference_tps is not None
         and reference_key
         and epoch in {"healthy", "unknown"}
     ):
+        samples = history.get(reference_key, ())
+        retained = prune_degraded(samples, reference_tps)
+        pruned = len(samples) - len(retained)
         history[reference_key] = (
             EpochSample(
                 reference_id=reference_key,
                 tps=reference_tps,
                 measured_at=datetime.now(timezone.utc).isoformat(),
             ),
-            *history.get(reference_key, ()),
+            *retained,
         )[:EPOCH_HISTORY]
         try:
             save_history(history)
@@ -1284,6 +1289,7 @@ def _bench(args: argparse.Namespace) -> int:
               "reference_id": reference_key,
               "epoch": epoch,
               "demoted": list(demoted),
+              "pruned": pruned,
               "prefill_tps": measurement.prefill_tps,
               "ttft_s": measurement.ttft_s, "approximate": measurement.approximate,
               "prompt_tokens": measurement.prompt_tokens,

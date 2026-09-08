@@ -24,6 +24,7 @@ from .epoch import (
     find_reference_binary,
     load_history,
     measure_reference,
+    prune_degraded,
     reference_id,
     save_history,
 )
@@ -55,6 +56,7 @@ __all__ = [
     "measure_controlled",
     "measure_reference",
     "merge_measurement",
+    "prune_degraded",
     "reference_id",
     "save_cache",
     "save_history",
