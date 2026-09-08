@@ -165,6 +165,24 @@ def _timing_metrics(timings: object) -> tuple[float | None, float | None]:
     return decode, prefill
 
 
+def _prompt_depth(usage: object, timings: object) -> int | None:
+    if isinstance(usage, Mapping):
+        prompt_tokens = _upstream_int(usage.get("prompt_tokens"))
+        if prompt_tokens is not None:
+            return prompt_tokens if prompt_tokens >= 0 else None
+    if not isinstance(timings, Mapping):
+        return None
+    prompt_n = _upstream_int(timings.get("prompt_n"))
+    cache_n = _upstream_int(timings.get("cache_n"))
+    if prompt_n is None:
+        return None
+    if prompt_n < 0 or (cache_n is not None and cache_n < 0):
+        return None
+    # Cached prefill still counts: decode runs at the KV position set by the
+    # whole prompt, whether those tokens were recomputed or reused.
+    return prompt_n + (cache_n or 0)
+
+
 def _is_chat_request(request: Mapping[str, object]) -> bool:
     return "messages" in request
 
@@ -1048,6 +1066,7 @@ def create_app(
                                 not exact,
                                 timing_prefill,
                                 in_flight_peak,
+                                prompt_tokens=_prompt_depth(usage, timings),
                             ))
                         except Exception:  # noqa: BLE001, S110
                             pass
@@ -1107,6 +1126,7 @@ def create_app(
                     not exact,
                     timing_prefill,
                     in_flight_peak,
+                    prompt_tokens=_prompt_depth(usage, timings),
                 ))
             except Exception:  # noqa: BLE001, S110
                 pass

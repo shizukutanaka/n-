@@ -10,6 +10,15 @@ from pathlib import Path
 
 from nmesh.paths import nmesh_home
 
+COMPARABLE_PROMPT_TOKENS = 1024
+"""Real-token ceiling for live samples comparable to the bench reference.
+
+Bench uses a nominal 512-token prefill parameter that tokenises to about 336
+real prompt tokens. Live samples through 1024 real tokens measured within 2%
+of that rung (0.985 / 0.981), while about 1520 fell 7% and about 2005 fell
+12%, outside this host's 6.4% healthy noise band. This is a real token count,
+not bench's nominal parameter; the two differ by roughly 1.5x.
+"""
 
 @dataclass(frozen=True)
 class Sample:
@@ -23,6 +32,15 @@ class Sample:
     approximate: bool = True
     prefill_tps: float | None = None
     in_flight: int | None = None
+    prompt_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class OverlayReport:
+    values: dict[str, float]
+    under_load: int
+    off_reference: int
+    unknown_depth: int
 
 
 class Telemetry:
@@ -44,6 +62,7 @@ class Telemetry:
                 bool(item.get("approximate", True)),
                 float(item["prefill_tps"]) if item.get("prefill_tps") is not None else None,
                 int(item["in_flight"]) if item.get("in_flight") is not None else None,
+                int(item["prompt_tokens"]) if item.get("prompt_tokens") is not None else None,
             ) for item in values if isinstance(item, dict)]
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             return []
@@ -125,16 +144,24 @@ class Telemetry:
         per-request rate fell. This is one model on one CPU machine with
         llama.cpp and does not generalize.
         """
-        return self.overlay_report(min_samples)[0]
+        return self.overlay_report(min_samples).values
 
-    def overlay_report(self, min_samples: int = 5) -> tuple[dict[str, float], int]:
+    def overlay_report(self, min_samples: int = 5) -> OverlayReport:
         exact: dict[str, list[float]] = {}
         approximate: dict[str, list[float]] = {}
-        skipped = 0
+        under_load = 0
+        off_reference = 0
+        unknown_depth = 0
         for sample in self.samples():
             if sample.decode_tps is not None:
                 if sample.in_flight != 1:
-                    skipped += 1
+                    under_load += 1
+                    continue
+                if sample.prompt_tokens is None:
+                    unknown_depth += 1
+                    continue
+                if sample.prompt_tokens > COMPARABLE_PROMPT_TOKENS:
+                    off_reference += 1
                     continue
                 groups = approximate if sample.approximate else exact
                 groups.setdefault(sample.key, []).append(sample.decode_tps)
@@ -146,10 +173,15 @@ class Telemetry:
                 selected[key] = approximate[key]
         for key, values in approximate.items():
             selected.setdefault(key, values)
-        return ({
-            key: statistics.median(values)
-            for key, values in selected.items() if len(values) >= min_samples
-        }, skipped)
+        return OverlayReport(
+            values={
+                key: statistics.median(values)
+                for key, values in selected.items() if len(values) >= min_samples
+            },
+            under_load=under_load,
+            off_reference=off_reference,
+            unknown_depth=unknown_depth,
+        )
 
 
 _default = Telemetry()
@@ -171,11 +203,18 @@ def bench_overlay(min_samples: int = 5) -> dict[str, float]:
     return _default.bench_overlay(min_samples)
 
 
-def overlay_report(min_samples: int = 5) -> tuple[dict[str, float], int]:
+def overlay_report(min_samples: int = 5) -> OverlayReport:
     return _default.overlay_report(min_samples)
 
 
 __all__ = [
-    "Sample", "Telemetry", "bench_overlay", "overlay_report", "record", "summary",
+    "COMPARABLE_PROMPT_TOKENS",
+    "OverlayReport",
+    "Sample",
+    "Telemetry",
+    "bench_overlay",
+    "overlay_report",
+    "record",
+    "summary",
     "summary_by_approximate",
 ]

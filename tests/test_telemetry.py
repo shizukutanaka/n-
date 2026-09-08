@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import threading
 import time
@@ -10,11 +11,16 @@ from typing import ClassVar
 import pytest
 from fastapi.testclient import TestClient
 
+import nmesh.bench.runner as bench_runner
 from nmesh import telemetry
 from nmesh.catalog import ModelSpec
 from nmesh.gateway import create_app
 from nmesh.planner import Policy, build_plan
-from nmesh.telemetry import Sample, Telemetry
+from nmesh.telemetry import (
+    COMPARABLE_PROMPT_TOKENS,
+    Sample,
+    Telemetry,
+)
 
 from .test_planner import profile
 
@@ -29,9 +35,10 @@ def sample(
     approximate: bool = True,
     prefill_tps: float | None = None,
     in_flight: int | None = 1,
+    prompt_tokens: int | None = 512,
 ) -> Sample:
     return Sample(service, key, decode_tps, ttft_s, total_s, 20, at, approximate,
-                  prefill_tps, in_flight)
+                  prefill_tps, in_flight, prompt_tokens)
 
 
 def test_record_round_trip_and_trim(tmp_path) -> None:
@@ -97,6 +104,7 @@ def test_old_telemetry_samples_default_to_approximate(tmp_path) -> None:
     assert loaded.approximate is True
     assert loaded.prefill_tps is None
     assert loaded.in_flight is None
+    assert loaded.prompt_tokens is None
     assert Telemetry(path).bench_overlay() == {}
 
 
@@ -126,7 +134,61 @@ def test_bench_overlay_uses_single_stream_samples_and_reports_skips(tmp_path) ->
     for value in (30.0, 32.0, 34.0):
         store.record(sample(key="busy", decode_tps=value, in_flight=4))
     assert store.bench_overlay(min_samples=3) == {"single": 12.0}
-    assert store.overlay_report(min_samples=3) == ({"single": 12.0}, 3)
+    report = store.overlay_report(min_samples=3)
+    assert report.values == {"single": 12.0}
+    assert report.under_load == 3
+
+
+@pytest.mark.parametrize("prompt_tokens", [1025, 2005, 8192])
+def test_overlay_excludes_deep_samples_and_counts_them(tmp_path, prompt_tokens) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    # 2005 real prompt tokens measured 0.883 of the reference decode rate.
+    for value in (34.20, 35.0, 33.5):
+        store.record(sample(key="deep", decode_tps=value, prompt_tokens=prompt_tokens))
+    report = store.overlay_report(min_samples=3)
+    assert report.values == {}
+    assert report.off_reference == 3
+
+
+@pytest.mark.parametrize("prompt_tokens", [256, 1024])
+def test_overlay_accepts_comparable_prompt_depths(tmp_path, prompt_tokens) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    store.record(sample(key="eligible", decode_tps=45.77, prompt_tokens=prompt_tokens))
+    report = store.overlay_report(min_samples=1)
+    assert report.values == {"eligible": 45.77}
+    assert report.off_reference == 0
+
+
+def test_overlay_mixed_depth_fixture_uses_shallow_measured_median(tmp_path) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    for _ in range(3):
+        store.record(sample(key="mixed-depth", decode_tps=45.77, prompt_tokens=256))
+    for _ in range(3):
+        store.record(sample(key="mixed-depth", decode_tps=34.20, prompt_tokens=8192))
+    report = store.overlay_report(min_samples=3)
+    # Measured 256-token requests were 45.77 tok/s; 8192-token requests were 34.20.
+    assert report.values == {"mixed-depth": 45.77}
+    assert report.off_reference == 3
+
+
+def test_overlay_excludes_unknown_prompt_depth_and_counts_it(tmp_path) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    store.record(sample(key="unknown", decode_tps=20.0, prompt_tokens=None))
+    report = store.overlay_report(min_samples=1)
+    assert report.values == {}
+    assert report.unknown_depth == 1
+
+
+def test_prompt_depth_round_trip(tmp_path) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    store.record(sample(prompt_tokens=123))
+    assert store.samples()[0].prompt_tokens == 123
+
+
+def test_comparable_depth_exceeds_bench_nominal_default() -> None:
+    default = inspect.signature(bench_runner.measure).parameters["prefill_tokens"].default
+    # The nominal 512 is below 1024, and its roughly 336 real tokens are lower still.
+    assert default < COMPARABLE_PROMPT_TOKENS
 
 
 class _TelemetryHandler(BaseHTTPRequestHandler):

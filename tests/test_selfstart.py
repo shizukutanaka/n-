@@ -8,6 +8,7 @@ from rich.console import Console
 
 from nmesh import cli
 from nmesh.runtime import RuntimeStatus
+from nmesh.telemetry import OverlayReport
 
 
 def _up_args(**overrides: object) -> SimpleNamespace:
@@ -34,7 +35,7 @@ def test_kv_quant_cli_reaches_policy(monkeypatch) -> None:
     captured = []
     monkeypatch.setattr(cli, "detect_hardware", lambda: object())
     monkeypatch.setattr(cli, "load_catalog", list)
-    monkeypatch.setattr(cli, "overlay_report", lambda: ({}, 0))
+    monkeypatch.setattr(cli, "overlay_report", lambda: OverlayReport({}, 0, 0, 0))
     monkeypatch.setattr(cli, "_eval_rates", dict)
     monkeypatch.setattr(
         cli,

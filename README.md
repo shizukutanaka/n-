@@ -315,6 +315,9 @@ machine with llama.cpp and one model, four and eight overlapping requests
 reduced the per-request decode rates to 36.64 and 23.30 tok/s versus about
 46.2 tok/s alone, while aggregate server throughput rose; this scope does not
 generalize.
+The benchmark uses a nominal 512-token prefill parameter that tokenises to
+roughly 336 real prompt tokens. Served samples deeper than 1024 real prompt
+tokens remain recorded but are not used as planning evidence.
 HTTP response bodies remain English because `/v1/*` errors and authentication
 details are machine-facing API contracts for clients.
 
