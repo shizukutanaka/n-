@@ -1744,7 +1744,9 @@ def _eval(args: argparse.Namespace) -> int:
         depth=depth,
     )
     context_probe = None
-    context_probe_families: dict[str, dict[str, int]] = {}
+    context_probe_families: dict[str, dict[str, int | bool]] = {}
+    context_depth_lost: list[tuple[str, int, int, int]] = []
+    context_uncontrolled: list[str] = []
     if depth > 0:
         probes = needle_tasks(depth, seed=args.suite)
         try:
@@ -1760,19 +1762,62 @@ def _eval(args: argparse.Namespace) -> int:
         except RuntimeError as error:
             print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
             return 1
-        families: dict[str, dict[str, int]] = {}
-        for category in ("context.literal", "context.latent"):
+        try:
+            control_result = eval_run(
+                needle_tasks(0, seed=args.suite),
+                base_url,
+                service.model_ref,
+                timeout=timeout,
+                reasoning_allowance=allowance,
+                cache_prompt=False if service.backend == "llamacpp" else None,
+                depth=0,
+            )
+        except RuntimeError as error:
+            print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
+            return 1
+        families: dict[str, dict[str, int | bool]] = {}
+        for category in ("context.literal", "context.latent", "context.multi"):
             category_outcomes = [
                 item for item in probe_result.outcomes if item.category == category
             ]
-            families[category.rsplit(".", 1)[-1]] = {
-                "passed": sum(item.passed for item in category_outcomes),
-                "of": len(category_outcomes),
+            control_outcomes = [
+                item for item in control_result.outcomes if item.category == category
+            ]
+            passed = sum(item.passed for item in category_outcomes)
+            total = len(category_outcomes)
+            control_passed = sum(item.passed for item in control_outcomes)
+            control_total = len(control_outcomes)
+            attributable = control_total > 0 and control_passed == control_total
+            family = category.rsplit(".", 1)[-1]
+            families[family] = {
+                "passed": passed,
+                "of": total,
+                "control_passed": control_passed,
+                "control_of": control_total,
+                "attributable": attributable,
             }
+            if not attributable:
+                context_uncontrolled.append(family)
+            elif passed < total:
+                context_depth_lost.append((
+                    family,
+                    passed,
+                    total,
+                    probe_result.prompt_tokens_max or depth,
+                ))
+        control_passed = sum(
+            int(values["control_passed"]) for values in families.values()
+        )
+        control_of = sum(int(values["control_of"]) for values in families.values())
         context_probe = {
             "passed": probe_result.passed,
             "of": probe_result.n_tasks,
             "families": families,
+            "control_passed": control_passed,
+            "control_of": control_of,
+            "attributable": all(
+                bool(values["attributable"]) for values in families.values()
+            ),
         }
         context_probe_families = families
     cached = load_eval_cache()
@@ -1828,6 +1873,33 @@ def _eval(args: argparse.Namespace) -> int:
         "form": sum(outcome.failure_kind == "form" for outcome in failed_outcomes),
     }
     language = i18n.lang()
+    context_depth_warnings = [
+        i18n.t(
+            "warn.context_depth_lost",
+            language,
+            model=result.model_id,
+            quant=result.quant,
+            backend=result.backend,
+            family=family,
+            passed=passed,
+            of=total,
+            depth=served_depth,
+        )
+        for family, passed, total, served_depth in context_depth_lost
+    ]
+    context_probe_note = (
+        i18n.t(
+            "note.context_probe_uncontrolled",
+            language,
+            families=", ".join(context_uncontrolled),
+        )
+        if context_uncontrolled
+        else None
+    )
+    if context_probe is not None:
+        context_probe["depth_warnings"] = context_depth_warnings
+        context_probe["uncontrolled_families"] = context_uncontrolled
+        context_probe["uncontrolled_note"] = context_probe_note
     note = i18n.t("note.eval_scope", language, tasks=result.n_tasks)
     pass_rate_ci = wilson_interval(result.passed, result.n_tasks)
     minimum_difference = min_resolvable_difference(result.n_tasks)
@@ -1961,7 +2033,20 @@ def _eval(args: argparse.Namespace) -> int:
             literal_total=context_probe_families["literal"]["of"],
             latent_passed=context_probe_families["latent"]["passed"],
             latent_total=context_probe_families["latent"]["of"],
+            multi_passed=context_probe_families["multi"]["passed"],
+            multi_total=context_probe_families["multi"]["of"],
         ))
+        _console().print(i18n.t(
+            "label.eval_context_control",
+            language,
+            passed=context_probe["control_passed"],
+            total=context_probe["control_of"],
+            attributable=context_probe["attributable"],
+        ))
+        for warning in context_depth_warnings:
+            _console().print(warning)
+        if context_probe_note is not None:
+            _console().print(context_probe_note)
     for stale_note in stale_grader_notes:
         _console().print(stale_note)
     _console().print(uncertainty_note)

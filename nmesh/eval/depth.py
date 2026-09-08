@@ -10,6 +10,14 @@ cost about 0.4, 3.1, 14.7, 35.7, and 63.0 seconds respectively, or about
 242 prefill tokens per second in the quiet run. These measurements justify
 recording depth coverage and warning about evidence gaps, not excluding a
 context that fits the KV cache.
+
+The paired probes also include four scattered multi-code tasks: they scored
+7/8 natively, then 4/4 at about 1,200 tokens, 3/4 at 5,000, 4/4 at 10,000,
+and 3/4 at 15,000. Aggregate tasks scored 4/8 natively and 1/4, 2/4, 0/4,
+and 2/4 deeply; order tasks scored 2/8 natively and 1/4, 1/4, 2/4, and 1/4
+deeply. Aggregate and order therefore fail at about 140 tokens on this
+artifact, so a family whose shallow control fails cannot be read as a depth
+result.
 """
 
 from __future__ import annotations
@@ -17,6 +25,7 @@ from __future__ import annotations
 import random
 import re
 import uuid
+from collections.abc import Sequence
 
 from .suite import Task
 
@@ -96,6 +105,26 @@ def _needle_prompt(
     return prefix + " ".join(sentences) + suffix + question
 
 
+def _scattered_prompt(
+    question: str,
+    needles: Sequence[str],
+    target: int,
+    seed: str,
+) -> str:
+    prefix = "Reference material:\n"
+    suffix = "\nEnd of reference material.\n\nAnswer the question below.\n\n"
+    rng = random.Random(seed)
+    sentences = _filler(
+        rng,
+        target,
+        prefix + suffix + " ".join(needles) + question,
+    )
+    for index, needle in enumerate(needles):
+        position = round(len(sentences) * (index + 1) / (len(needles) + 1))
+        sentences.insert(position + index, needle)
+    return prefix + " ".join(sentences) + suffix + question
+
+
 def _literal_task(target: int, seed: str, index: int, position: float) -> Task:
     case = uuid.uuid5(uuid.NAMESPACE_URL, f"{seed}|literal|{index}|{position}")
     case_id = case.hex[:8]
@@ -142,10 +171,51 @@ def _latent_task(target: int, seed: str, index: int, position: float) -> Task:
     )
 
 
+def _multi_task(target: int, seed: str, index: int) -> Task:
+    cases = tuple(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"{seed}|multi|{index}|{number}")
+        for number in range(4)
+    )
+    case_ids = tuple(case.hex[:8] for case in cases)
+    codes = [case.hex[8:14] for case in cases]
+    needles = tuple(
+        f"The access code for case {case_id} is {code}."
+        for case_id, code in zip(case_ids, codes)
+    )
+    question = (
+        "List the access codes for cases "
+        + ", ".join(case_ids)
+        + " in exactly that order, separated by commas. "
+        "Answer with the four codes only."
+    )
+
+    def check(text: str) -> bool:
+        return _HEX_RE.findall(text.casefold())[:4] == codes
+
+    prompt = (
+        _scattered_prompt(
+            question,
+            needles,
+            target,
+            f"{seed}|multi|{index}",
+        )
+        if target > 0
+        else "\n".join(needles) + f"\n\n{question}"
+    )
+    return Task(
+        f"context.multi.{index}",
+        "context.multi",
+        prompt,
+        64,
+        check,
+        grades="value",
+    )
+
+
 def needle_tasks(target: int, seed: str) -> tuple[Task, ...]:
-    """Return deterministic literal and latent single-needle retrieval probes."""
-    positions = (0.0,) if target == 0 else (0.1, 0.9)
-    return tuple(
+    """Return paired literal, latent, and scattered multi-code probes."""
+    positions = (0.1, 0.9)
+    tasks = tuple(
         task
         for position in positions
         for index in range(4)
@@ -154,6 +224,7 @@ def needle_tasks(target: int, seed: str) -> tuple[Task, ...]:
             _latent_task(target, seed, index, position),
         )
     )
+    return tasks + tuple(_multi_task(target, seed, index) for index in range(4))
 
 
 __all__ = ["needle_tasks", "padded_prompt"]

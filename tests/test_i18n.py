@@ -46,6 +46,16 @@ def test_translation_is_failure_tolerant() -> None:
     assert t("warn.language_coverage", "ja") != ""
 
 
+def test_context_probe_messages_exist_in_both_languages() -> None:
+    for key in (
+        "warn.context_depth_lost",
+        "note.context_probe_uncontrolled",
+        "label.eval_context_control",
+    ):
+        assert t(key, "en")
+        assert t(key, "ja")
+
+
 def test_language_resolution_precedence_and_fallback(monkeypatch) -> None:
     monkeypatch.setenv("NMESH_LANG", "ja_JP.UTF-8")
     assert lang() == "ja"
