@@ -68,6 +68,7 @@ from nmesh.eval.stats import (
 from nmesh.orchestrate import (
     Endpoint,
     RoleIdentity,
+    combine,
     decide,
     decide_cost,
     from_run,
@@ -1809,15 +1810,19 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
         except (OSError, RuntimeError):
             before_reference = None
     try:
-        run = orchestrate_measure(
-            tasks,
-            lead=Endpoint(lead_url, lead.model_ref),
-            worker=Endpoint(worker_url, worker.model_ref),
-            lead_identity=lead_identity,
-            worker_identity=worker_identity,
-            suite=args.suite,
-            reasoning_allowance=max(0, args.reasoning_allowance),
-        )
+        runs = [
+            orchestrate_measure(
+                tasks,
+                lead=Endpoint(lead_url, lead.model_ref),
+                worker=Endpoint(worker_url, worker.model_ref),
+                lead_identity=lead_identity,
+                worker_identity=worker_identity,
+                suite=args.suite,
+                reasoning_allowance=max(0, args.reasoning_allowance),
+            )
+            for _ in range(args.repeats)
+        ]
+        run = combine(runs)
         after_reference = None
         if reference_context is not None:
             try:
@@ -1930,6 +1935,8 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
         "cost_reason": cost_reason,
         "seconds_ratio": record.seconds_ratio,
         "token_ratio": record.token_ratio,
+        "repeats": run.repeats,
+        "unstable_tasks": run.unstable_tasks,
         "gate": decision,
         "reason": reason,
         "digest": run.digest,
@@ -1983,6 +1990,12 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
             delegated_seconds=run.seconds_delegated,
         ),
         i18n.t("label.orchestrate_gate", language, decision=decision, reason=reason),
+        i18n.t(
+            "label.orchestrate_repeats",
+            language,
+            repeats=run.repeats,
+            unstable=run.unstable_tasks,
+        ),
     )))
     if epoch == "degraded":
         _console().print(i18n.t("warn.orchestrate_degraded", language))
@@ -2026,6 +2039,8 @@ def _orchestrate_show(args: argparse.Namespace) -> int:
         "gate",
         "epoch",
         "cost",
+        "repeats",
+        "unstable",
     ):
         table.add_column(column)
     for record in sorted(records.values(), key=lambda item: item.at, reverse=True):
@@ -2039,6 +2054,8 @@ def _orchestrate_show(args: argparse.Namespace) -> int:
             decide(record)[0],
             record.epoch,
             decide_cost(record)[0],
+            str(record.repeats),
+            str(record.unstable_tasks),
         )
     _console().print(table)
     return 0
@@ -2729,6 +2746,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     measure_parser.add_argument("--lead-url")
     measure_parser.add_argument("--worker-url")
     measure_parser.add_argument("--reasoning-allowance", type=int, default=0)
+    measure_parser.add_argument("--repeats", type=_positive_int, default=2)
     measure_parser.add_argument("--limit", type=_positive_int)
     measure_parser.add_argument("--no-reference", action="store_true")
     measure_parser.add_argument("--json", action="store_true")

@@ -114,6 +114,8 @@ class DelegationRun:
     protocol: str
     at: float
     rows: list[TaskRow] = field(default_factory=list)
+    repeats: int = 1
+    unstable_tasks: int = 0
 
     @property
     def verify_overhead(self) -> float:

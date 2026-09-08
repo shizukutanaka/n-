@@ -20,10 +20,12 @@ from nmesh.orchestrate import (
     NOT_SUPERIOR,
     PROTOCOL_VERSION,
     STALE,
+    UNCONFIRMED,
     UNVERIFIED,
     Endpoint,
     RoleIdentity,
     best_for,
+    combine,
     decide,
     decide_cost,
     delegate,
@@ -65,6 +67,86 @@ def _record_run() -> measure_module.DelegationRun:
         protocol=PROTOCOL_VERSION,
         at=1.0,
     )
+
+
+def _rows(*outcomes: tuple[str, bool, bool, bool, bool]) -> list[measure_module.TaskRow]:
+    return [
+        measure_module.TaskRow(
+            id=task_id,
+            category="hard",
+            worker_passed=worker,
+            lead_passed=lead,
+            delegated_passed=delegated,
+            accepted=accepted,
+            unparsed_verdict=False,
+            unscorable=False,
+        )
+        for task_id, worker, lead, delegated, accepted in outcomes
+    ]
+
+
+def test_combine_preserves_worst_quality_block_and_aggregates_timings() -> None:
+    first = replace(
+        _record_run(),
+        delegated_passed=2,
+        ceiling_passed=2,
+        delegated_vs_lead=measure_module.Comparison(1, 0, 0.01),
+        seconds_solo=1.0,
+        seconds_delegated=4.0,
+        at=2.0,
+        rows=_rows(
+            ("one", True, False, True, True),
+            ("two", False, True, True, False),
+        ),
+    )
+    second = replace(
+        first,
+        delegated_passed=1,
+        ceiling_passed=1,
+        delegated_vs_lead=measure_module.Comparison(0, 1, 0.9),
+        seconds_solo=3.0,
+        seconds_delegated=2.0,
+        at=4.0,
+        rows=_rows(
+            ("one", True, False, False, True),
+            ("two", False, True, True, False),
+        ),
+    )
+    combined = combine((first, second))
+    assert combined.delegated_passed == 1
+    assert combined.ceiling_passed == 1
+    assert combined.delegated_vs_lead.p == 0.9
+    assert combined.seconds_solo == 2.0
+    assert combined.seconds_delegated == 3.0
+    assert combined.at == 4.0
+    assert combined.repeats == 2
+    assert combined.unstable_tasks == 1
+    assert combined.rows == second.rows
+
+
+def test_combine_identical_runs_have_no_unstable_tasks() -> None:
+    run = replace(
+        _record_run(),
+        rows=_rows(
+            ("one", True, False, True, True),
+            ("two", False, True, True, False),
+        ),
+    )
+    combined = combine((run, replace(run, at=3.0)))
+    assert combined.unstable_tasks == 0
+
+
+def test_combine_rejects_empty_mismatched_identity_and_task_ids() -> None:
+    with pytest.raises(ValueError):
+        combine(())
+    run = replace(
+        _record_run(),
+        rows=_rows(("one", True, False, True, True)),
+    )
+    with pytest.raises(ValueError):
+        combine((run, replace(run, suite="core")))
+    with pytest.raises(ValueError):
+        combine((run, replace(run, rows=_rows(("two", True, False, True, True)))))
 
 
 def test_read_verdict_accepts_unambiguous_verdicts() -> None:
@@ -168,7 +250,8 @@ def test_record_round_trip_and_gate(tmp_path: Path) -> None:
     save(run, path)
     cache = load_cache(path)
     record = next(iter(cache.values()))
-    assert decide(record) == (ALLOW, ALLOW)
+    assert decide(record) == (UNCONFIRMED, UNCONFIRMED)
+    assert decide(replace(record, repeats=2)) == (ALLOW, ALLOW)
     assert best_for(cache, lead, worker, PROTOCOL_VERSION) == record
     path.write_text("{", encoding="utf-8")
     assert load_cache(path) == {}
@@ -196,10 +279,15 @@ def test_gate_rejects_non_superior_records(tmp_path: Path) -> None:
 
 
 def test_quality_gate_is_independent_of_host_epoch() -> None:
-    record = from_run(_record_run(), reference_id="ref", reference_tps=50.0)
+    record = from_run(
+        replace(_record_run(), repeats=2),
+        reference_id="ref",
+        reference_tps=50.0,
+    )
     assert decide(record) == (ALLOW, ALLOW)
     assert decide(replace(record, epoch="healthy")) == (ALLOW, ALLOW)
     assert decide(replace(record, epoch="degraded")) == (ALLOW, ALLOW)
+    assert decide(replace(record, repeats=1)) == (UNCONFIRMED, UNCONFIRMED)
 
 
 def test_cost_decision_and_ratios() -> None:
@@ -274,6 +362,12 @@ def test_delegation_record_round_trip_defaults_and_validation(tmp_path: Path) ->
         ("reference_id", 1),
         ("reference_tps", -1.0),
         ("reference_tps", float("nan")),
+        ("repeats", 0),
+        ("repeats", True),
+        ("repeats", "2"),
+        ("unstable_tasks", -1),
+        ("unstable_tasks", True),
+        ("unstable_tasks", "1"),
     ):
         invalid = dict(legacy)
         invalid[field] = value
@@ -302,12 +396,18 @@ def test_orchestrate_measure_no_reference_reports_unverified_cost(
         profile=SimpleNamespace(),
     )
     saved: dict[str, object] = {}
+    calls: list[object] = []
     monkeypatch.setattr(cli, "load_plan", lambda: plan)
     monkeypatch.setattr(
         cli, "_orchestration_identity",
         lambda item: RoleIdentity(item.model_id, item.quant, item.backend),
     )
-    monkeypatch.setattr(cli, "orchestrate_measure", lambda *args, **kwargs: _record_run())
+    def fake_measure(*args: object, **kwargs: object) -> measure_module.DelegationRun:
+        del args, kwargs
+        calls.append(object())
+        return _record_run()
+
+    monkeypatch.setattr(cli, "orchestrate_measure", fake_measure)
     monkeypatch.setattr(
         cli, "save_delegation",
         lambda run, **kwargs: saved.update({"run": run, **kwargs}),
@@ -321,6 +421,9 @@ def test_orchestrate_measure_no_reference_reports_unverified_cost(
     result = json.loads(capsys.readouterr().out)
     assert result["cost"] == UNVERIFIED
     assert result["reference_id"] == ""
+    assert result["repeats"] == 2
+    assert result["unstable_tasks"] == 0
+    assert len(calls) == 2
     assert saved["reference_tps"] == 0.0
 
 

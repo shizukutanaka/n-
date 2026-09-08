@@ -64,6 +64,7 @@ def _record(plan: object) -> DelegationRecord:
         reasoning_allowance=0,
         protocol=PROTOCOL_VERSION,
         at=1.0,
+        repeats=2,
     )
 
 
@@ -114,6 +115,24 @@ def test_delegate_model_sums_usage_when_allowed(monkeypatch) -> None:
         "total_tokens": 13,
     }
     assert response.json()["nmesh_role"] == "worker"
+
+
+def test_delegate_model_refuses_unconfirmed_evidence(monkeypatch) -> None:
+    plan = _delegation_plan()
+    record = replace(_record(plan), repeats=1)
+    monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": record})
+    with TestClient(create_app(plan)) as client:
+        models = client.get("/v1/models").json()["data"]
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "nmesh-delegate",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert "nmesh-delegate" not in {item["id"] for item in models}
+    assert response.status_code == 409
+    assert "unconfirmed" in response.json()["error"]["message"]
 
 
 def test_delegate_model_reports_non_superior_evidence(monkeypatch) -> None:
