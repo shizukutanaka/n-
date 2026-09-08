@@ -232,6 +232,15 @@ MESSAGES = {
             "approximately 15k prompt tokens on the measured host and artifact; "
             "this is an evidence gap, not a known failure."
         ),
+        "warn.context_depth_lost": (
+            "{model} at {quant} on {backend}: {family} probes passed the shallow "
+            "control but only {passed}/{of} at {depth} real prompt tokens — this "
+            "is a measured depth failure, not task difficulty."
+        ),
+        "note.context_probe_uncontrolled": (
+            "The {families} context probe families failed the shallow control, "
+            "so their deep result says nothing about depth."
+        ),
         "note.eval_config": "This pass rate applies to {model} at {quant} on {backend} only. Measured here: the same model at the same Q4_K_M label scored 12/16 on llama.cpp and 13/16 on Ollama.",
         "note.eval_divergence": "{config}: pass rate {other_rate} there vs {rate} here; {count} of the {compared} compared tasks disagree ({ids}). Measured here: two fp16 configurations of Qwen2.5 0.5B both scored 9/16 while disagreeing on 2 tasks in opposite directions, so an equal pass rate does not mean equivalent behaviour.",
         "warn.eval_artifact_changed": "{model} at {quant} on {backend}: the cached pass rate was measured on artifact {previous}, but this service loads {current}. The same model/quant label can map to different weight files, so the cached rate does not describe this artifact.",
@@ -246,7 +255,8 @@ MESSAGES = {
         "label.eval_failed": "Failed task IDs: {ids}",
         "label.eval_title": "nmesh eval",
         "label.eval_depth": "Requested prompt depth: {requested}; served depth: {served}",
-        "label.eval_context_probe": "Context probes: {passed}/{total} (literal {literal_passed}/{literal_total}, latent {latent_passed}/{latent_total})",
+        "label.eval_context_probe": "Context probes: {passed}/{total} (literal {literal_passed}/{literal_total}, latent {latent_passed}/{latent_total}, multi {multi_passed}/{multi_total})",
+        "label.eval_context_control": "Context probe controls: {passed}/{total}",
         "err.orchestrate_plan": "No saved plan with runnable services found.",
         "err.orchestrate_service": "Could not resolve lead {lead} and worker {worker} from the plan.",
         "err.orchestrate_nongenerative": "The selected {role} service {service} is not generative; choose a chat, code, or worker service.",
@@ -538,6 +548,8 @@ MESSAGES["ja"].update({
     "note.eval_uncertainty": "全体合格率の95% Wilson区間: {lo:.1%}–{hi:.1%}。この{tasks}問のスイートは、正確検定（α=0.05）で{minimum:.1%}未満の合格率差を解決できません。",
     "warn.eval_config_mismatch": "{model}: \u8a55\u4fa1\u5408\u683c\u7387\u306f\u5b58\u5728\u3057\u307e\u3059\u304c\u3001\u8a08\u753b\u3055\u308c\u305f\u69cb\u6210\uff08{quant}\u3001{backend}\uff09\u306e\u3082\u306e\u3067\u306f\u3042\u308a\u307e\u305b\u3093\u3002\u6e2c\u5b9a\u5408\u683c\u7387\u306f\u91cf\u5b50\u5316\u65b9\u6cd5\u3084\u30d0\u30c3\u30af\u30a8\u30f3\u30c9\u9593\u3067\u79fb\u690d\u3067\u304d\u307e\u305b\u3093\u3002\u5b9f\u884c\u4e2d\u306e\u30b5\u30fc\u30d3\u30b9\u306b\u5bfe\u3057\u3066 nmesh eval \u3092\u518d\u5b9f\u884c\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
     "warn.context_unmeasured": "{model} ({quant} / {backend}): KV\u30ad\u30e3\u30c3\u30b7\u30e5\u304c\u53ce\u307e\u308b\u305f\u3081\u3001\u8a08\u753b\u306f\u30b3\u30f3\u30c6\u30ad\u30b9\u30c8 {context} \u3092\u63b2\u8f09\u3057\u307e\u3059\u304c\u3001\u54c1\u8cea\u306e\u8a55\u4fa1\u8a3c\u62e0\u306f\u5b9f\u30d7\u30ed\u30f3\u30d7\u30c8\u30c8\u30fc\u30af\u30f3 {depth} \u307e\u3067\u3067\u3059\u3002\u6e2c\u5b9a\u3057\u305f\u30db\u30b9\u30c8\u3068\u30a2\u30fc\u30c6\u30a3\u30d5\u30a1\u30af\u30c8\u3067\u306f\u30b7\u30f3\u30b0\u30eb\u30cb\u30fc\u30c9\u53d6\u5f97\u304c\u7d04 15k \u30d7\u30ed\u30f3\u30d7\u30c8\u30c8\u30fc\u30af\u30f3\u307e\u3067\u7dad\u6301\u3055\u308c\u307e\u3057\u305f\u3002\u3053\u308c\u306f\u65e2\u77e5\u306e\u5931\u6557\u3067\u306f\u306a\u304f\u3001\u8a3c\u62e0\u306e\u7a7a\u767d\u3067\u3059\u3002",
+    "warn.context_depth_lost": "{model} \u306e {quant} / {backend} \u3067\u3001{family} \u30d7\u30ed\u30fc\u30d6\u306f\u6d45\u3044\u30b3\u30f3\u30c8\u30ed\u30fc\u30eb\u306b\u5408\u683c\u3057\u307e\u3057\u305f\u304c\u3001\u5b9f\u30d7\u30ed\u30f3\u30d7\u30c8\u30c8\u30fc\u30af\u30f3 {depth} \u3067\u306f {passed}/{of} \u306b\u3068\u3069\u307e\u308a\u307e\u3057\u305f\u3002\u3053\u308c\u306f\u8ab2\u984c\u96e3\u6613\u5ea6\u3067\u306f\u306a\u304f\u3001\u6e2c\u5b9a\u3055\u308c\u305f\u6df1\u5ea6\u5931\u6557\u3067\u3059\u3002",
+    "note.context_probe_uncontrolled": "{families} \u306e\u6587\u8108\u30d7\u30ed\u30fc\u30d6\u30d5\u30a1\u30df\u30ea\u30fc\u306f\u6d45\u3044\u30b3\u30f3\u30c8\u30ed\u30fc\u30eb\u306b\u5931\u6557\u3057\u305f\u305f\u3081\u3001\u6df1\u5ea6\u306e\u7d50\u679c\u304b\u3089\u306f\u6df1\u5ea6\u306b\u3064\u3044\u3066\u4f55\u3082\u5224\u5b9a\u3067\u304d\u307e\u305b\u3093\u3002",
     "note.eval_config": "\u3053\u306e\u5408\u683c\u7387\u306f {model} \u306e {quant} \u3092 {backend} \u3067\u5b9f\u884c\u3057\u305f\u5834\u5408\u306b\u306e\u307f\u9069\u7528\u3055\u308c\u307e\u3059\u3002\u6e2c\u5b9a\u7d50\u679c: \u540c\u3058\u30e2\u30c7\u30eb\u3067\u540c\u3058 Q4_K_M \u30e9\u30d9\u30eb\u3067\u3082\u3001llama.cpp \u306f 12/16\u3001Ollama \u306f 13/16 \u3067\u3057\u305f\u3002",
     "note.eval_divergence": "{config}: \u305d\u306e\u69cb\u6210\u306e\u5408\u683c\u7387\u306f {other_rate}\u3001\u3053\u3061\u3089\u306f {rate} \u3067\u3059\u3002\u6bd4\u8f03\u3057\u305f {compared}\u554f\u306e\u3046\u3061 {count}\u554f\u3067\u5224\u5b9a\u304c\u98df\u3044\u9055\u3044\u307e\u3057\u305f\uff08{ids}\uff09\u3002\u5b9f\u6e2c\u3067\u306f Qwen2.5 0.5B \u306e\u540c\u3058 fp16 \u69cb\u6210\u304c\u4e21\u65b9\u3068\u3082 9/16 \u3067\u3042\u308a\u306a\u304c\u3089 2\u554f\u3067\u9006\u65b9\u5411\u306b\u98df\u3044\u9055\u3044\u3001\u5408\u683c\u7387\u304c\u540c\u3058\u3067\u3082\u6319\u52d5\u304c\u540c\u7b49\u3068\u306f\u9650\u308a\u307e\u305b\u3093\u3002",
     "warn.eval_unscorable": "{tasks}\u554f\u306e\u3046\u3061 {count}\u554f\u304c\u3001\u51fa\u529b\u4e88\u7b97\u3092\u4f7f\u3044\u5207\u308b\u307e\u3067\u306b\u56de\u7b54\u672c\u6587\u3092\u8fd4\u3057\u307e\u305b\u3093\u3067\u3057\u305f\uff08finish_reason=length \u3067 content \u304c\u7a7a\uff09\u3002\u3053\u306e\u5b9f\u884c\u306f\u30e2\u30c7\u30eb\u3067\u306a\u304f\u4e88\u7b97\u3092\u6e2c\u3063\u3066\u3044\u308b\u306e\u3067\u3001\u8a08\u753b\u306e\u6839\u62e0\u306b\u306f\u4f7f\u3044\u307e\u305b\u3093\u3002\u5b9f\u6e2c: gemma-4-26B-A4B \u306f\u30b9\u30a4\u30fc\u30c8\u4e88\u7b97\u3067 104\u554f\u5168\u3066\u304c\u7a7a\u3001512\u30c8\u30fc\u30af\u30f3\u3067\u306f\u6b63\u3057\u304f\u7b54\u3048\u307e\u3057\u305f\u3002\u73fe\u5728\u306e allowance: {allowance} \u30c8\u30fc\u30af\u30f3\u3002`nmesh eval --reasoning-allowance N` \u3067\u5897\u3084\u305b\u307e\u3059\u3002",
@@ -578,7 +590,8 @@ MESSAGES["ja"].update({
     "label.eval_failed": "\u5931\u6557\u30bf\u30b9\u30afID: {ids}",
     "label.eval_title": "nmesh eval",
     "label.eval_depth": "\u8981\u6c42\u30d7\u30ed\u30f3\u30d7\u30c8\u6df1\u5ea6: {requested}\uff1b\u5b9f\u969b\u306e\u6df1\u5ea6: {served}",
-    "label.eval_context_probe": "\u6587\u8108\u30d7\u30ed\u30fc\u30d6: {passed}/{total} (\u30ea\u30c6\u30e9\u30eb {literal_passed}/{literal_total}\u3001\u30e9\u30c6\u30f3\u30c8 {latent_passed}/{latent_total})",
+    "label.eval_context_probe": "\u6587\u8108\u30d7\u30ed\u30fc\u30d6: {passed}/{total} (\u30ea\u30c6\u30e9\u30eb {literal_passed}/{literal_total}\u3001\u30e9\u30c6\u30f3\u30c8 {latent_passed}/{latent_total}\u3001\u8907\u6570\u30b3\u30fc\u30c9 {multi_passed}/{multi_total})",
+    "label.eval_context_control": "\u6587\u8108\u30d7\u30ed\u30fc\u30d6\u30b3\u30f3\u30c8\u30ed\u30fc\u30eb: {passed}/{total}",
     "err.orchestrate_plan": "\u5b9f\u884c\u53ef\u80fd\u306a\u30b5\u30fc\u30d3\u30b9\u3092\u542b\u3080\u4fdd\u5b58\u6e08\u307f\u8a08\u753b\u304c\u3042\u308a\u307e\u305b\u3093\u3002",
     "err.orchestrate_service": "\u8a08\u753b\u304b\u3089 lead {lead} \u3068 worker {worker} \u3092\u89e3\u6c7a\u3067\u304d\u307e\u305b\u3093\u3002",
     "err.orchestrate_nongenerative": "\u9078\u629e\u3055\u308c\u305f {role} \u30b5\u30fc\u30d3\u30b9 {service} \u306f\u751f\u6210\u7528\u3067\u306f\u3042\u308a\u307e\u305b\u3093\u3002chat\u3001code\u3001worker \u306e\u30b5\u30fc\u30d3\u30b9\u3092\u9078\u629e\u3057\u3066\u304f\u3060\u3055\u3044\u3002",

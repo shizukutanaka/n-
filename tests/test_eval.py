@@ -258,18 +258,20 @@ def test_bench_nominal_reference_is_below_real_depth_ceiling() -> None:
 
 def test_needle_tasks_have_both_positions_and_validated_checkers() -> None:
     tasks = needle_tasks(4096, "core")
-    assert len(tasks) == 16
+    assert len(tasks) == 20
     assert {task.category for task in tasks} == {
-        "context.literal", "context.latent",
+        "context.literal", "context.latent", "context.multi",
     }
-    assert {task.id.split(".")[2] for task in tasks} == {"p10", "p90"}
+    assert {task.id.split(".")[2] for task in tasks if task.category != "context.multi"} == {
+        "p10", "p90",
+    }
     for task in tasks:
         if task.category == "context.literal":
             answer = re.search(r"is ([0-9a-f]{6})\.", task.prompt)
             assert answer is not None
             assert task.check(answer.group(1))
             assert not task.check("000000")
-        else:
+        elif task.category == "context.latent":
             answer = re.search(
                 r"([A-Z][a-z]+) spent the whole quarter working out of "
                 r"([A-Z][a-z]+)\.",
@@ -287,7 +289,37 @@ def test_needle_tasks_have_both_positions_and_validated_checkers() -> None:
             assert city in task.prompt
             assert country in question
             assert city not in question
+        elif task.category == "context.multi":
+            codes = re.findall(r"is ([0-9a-f]{6})\.", task.prompt)
+            assert len(codes) == 4
+            assert task.check(",".join(codes))
+            assert task.check(", ".join(codes))
+            assert not task.check(",".join(reversed(codes)))
+            assert not task.check(",".join(codes[:3]))
         assert not task.check("")
+
+
+def test_needle_tasks_have_paired_control_content() -> None:
+    control = needle_tasks(0, "core")
+    deep = needle_tasks(8192, "core")
+    assert [task.id for task in control] == [task.id for task in deep]
+    for control_task, deep_task in zip(control, deep):
+        assert control_task.category == deep_task.category
+        if control_task.category == "context.multi":
+            pattern = r"is ([0-9a-f]{6})\."
+            control_answers = re.findall(pattern, control_task.prompt)
+            deep_answers = re.findall(pattern, deep_task.prompt)
+            assert control_answers == deep_answers
+        elif control_task.category == "context.literal":
+            pattern = r"is ([0-9a-f]{6})\."
+            assert re.search(pattern, control_task.prompt).group(1) == re.search(
+                pattern, deep_task.prompt,
+            ).group(1)
+        else:
+            pattern = r"([A-Z][a-z]+) spent the whole quarter"
+            assert re.search(pattern, control_task.prompt).group(1) == re.search(
+                pattern, deep_task.prompt,
+            ).group(1)
 
 
 def test_runner_explicit_timeout_is_used_for_every_request(monkeypatch) -> None:
@@ -1614,28 +1646,69 @@ def test_eval_cli_depth_runs_suite_and_context_probe_separately(
     calls: list[tuple[tuple[Task, ...], dict[str, object]]] = []
     result = EvalRun("prior-high", "f16", "llamacpp", 16, 16, 1.0, {}, [], 3.0)
 
+    def outcomes(statuses: dict[str, list[bool]]) -> list[TaskOutcome]:
+        return [
+            TaskOutcome(f"{category}.{index}", category, passed, "")
+            for category, values in statuses.items()
+            for index, passed in enumerate(values)
+        ]
+
     monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
     monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
 
     def evaluate(tasks, base_url, model_ref, **kwargs):
         calls.append((tuple(tasks), kwargs))
+        if kwargs["depth"] == 4096 and len(calls) == 2:
+            return EvalRun(
+                "prior-high", "f16", "llamacpp", 20, 11, 0.55, {}, outcomes({
+                    "context.literal": [True] * 8,
+                    "context.latent": [False] * 8,
+                    "context.multi": [True, True, True, False],
+                }), 3.0, prompt_tokens_max=8192,
+            )
+        if len(calls) == 3:
+            return EvalRun(
+                "prior-high", "f16", "llamacpp", 20, 12, 0.6, {}, outcomes({
+                    "context.literal": [True] * 8,
+                    "context.latent": [False] * 8,
+                    "context.multi": [True] * 4,
+                }), 3.0,
+            )
         return result
 
     monkeypatch.setattr(cli, "eval_run", evaluate)
     monkeypatch.setattr(cli, "save_eval", lambda value: None)
     assert cli.main(["eval", "--json", "--depth", "4096"]) == 0
     output = json.loads(capsys.readouterr().out)
-    assert len(calls) == 2
-    assert all(call[1]["depth"] == 4096 for call in calls)
+    assert len(calls) == 3
+    assert [call[1]["depth"] for call in calls] == [4096, 4096, 0]
     assert not any(task.category.startswith("context.") for task in calls[0][0])
     assert all(task.category.startswith("context.") for task in calls[1][0])
+    assert all(task.category.startswith("context.") for task in calls[2][0])
     assert output["requested_depth"] == 4096
     assert output["served_depth"] is None
     assert output["served_depth_known"] is False
     assert output["context_probe"]["families"] == {
-        "literal": {"passed": 0, "of": 0},
-        "latent": {"passed": 0, "of": 0},
+        "literal": {
+            "passed": 8, "of": 8, "control_passed": 8, "control_of": 8,
+            "attributable": True,
+        },
+        "latent": {
+            "passed": 0, "of": 8, "control_passed": 0, "control_of": 8,
+            "attributable": False,
+        },
+        "multi": {
+            "passed": 3, "of": 4, "control_passed": 4, "control_of": 4,
+            "attributable": True,
+        },
     }
+    assert output["context_probe"]["control_passed"] == 12
+    assert output["context_probe"]["control_of"] == 20
+    assert output["context_probe"]["attributable"] is False
+    assert len(output["context_probe"]["depth_warnings"]) == 1
+    assert "multi" in output["context_probe"]["depth_warnings"][0]
+    assert output["context_probe"]["uncontrolled_families"] == ["latent"]
+    assert "latent" in output["context_probe"]["uncontrolled_note"]
 
 
 def test_eval_cli_extended_suite(monkeypatch, capsys) -> None:

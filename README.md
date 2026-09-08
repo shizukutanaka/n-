@@ -425,6 +425,11 @@ digest. The planner warns when advertised context exceeds quality evidence but
 does not exclude the candidate. The timeout budget includes the requested
 depth; this matters because the bench's `512` is a nominal prefill parameter
 that tokenises to roughly 336 real prompt tokens, not a real-token depth.
+Context probes also run a paired native-depth control with identical needles;
+only a deep failure whose shallow control passed is reported as a depth failure.
+Measured multi-needle ordered retrieval held to about 15k tokens, while
+aggregation and ordering tasks failed at about 140 tokens on this artifact, so
+those families are not shipped as probes.
 
 Further controlled checks scoped those eliminations to `arithmetic.subtract`:
 with the same fully expanded 48-token raw ChatML prompt, `top_k=1`,
