@@ -3217,6 +3217,17 @@ def _evidence(args: argparse.Namespace) -> int:
             "reasons": 16,
             "remeasure": 11,
         }
+        fold_columns = {"model", "reasons", "remeasure"}
+        if kind == "depth":
+            max_widths.update({
+                "model": 8,
+                "backend": 7,
+                "scope": 21,
+                "value": 8,
+                "reasons": 8,
+                "remeasure": 7,
+            })
+            fold_columns.update({"scope", "value"})
         for column in (
             "model", "quant", "backend", "scope", "value", "usable",
             "reasons", "remeasure",
@@ -3227,9 +3238,9 @@ def _evidence(args: argparse.Namespace) -> int:
                     "overflow": "fold",
                     "no_wrap": False,
                 }
-                if column in {"model", "reasons", "remeasure"} else {}
+                if column in fold_columns else {}
             )
-            if column not in {"model", "reasons", "remeasure"}:
+            if column not in fold_columns:
                 options = {"max_width": max_widths[column]}
             table.add_column(
                 i18n.t(f"evidence.column.{column}", language),
@@ -3243,8 +3254,7 @@ def _evidence(args: argparse.Namespace) -> int:
                 row.get("suite", "")
                 if kind == "eval"
                 else (
-                    f"requested={row['requested_depth']} "
-                    f"served={row['served_depth']}"
+                    f"req {row['requested_depth']} / served {row['served_depth']}"
                     if kind == "depth" else ""
                 )
             )
@@ -3254,6 +3264,13 @@ def _evidence(args: argparse.Namespace) -> int:
             value = str(row["value"])
             if kind == "bench":
                 value = f"{float(row['value']):.1f} tok/s"
+            elif kind == "depth":
+                if value.endswith(" verified"):
+                    value = "verified"
+                elif value.endswith(" lost"):
+                    value = "lost"
+                else:
+                    value = "—"
             table.add_row(
                 str(row["model_id"]),
                 str(row["quant"]),
@@ -3269,6 +3286,8 @@ def _evidence(args: argparse.Namespace) -> int:
             _console().print(
                 f"{reason}: {i18n.t(f'evidence.reason.{reason}', language)}"
             )
+        if kind == "depth":
+            _console().print(i18n.t("evidence.depth_json_hint", language))
     if not records:
         _console().print(i18n.t("evidence.empty", language))
     return 0

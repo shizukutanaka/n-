@@ -160,6 +160,13 @@ def test_evidence_table_folds_reasons_and_remeasure_at_narrow_width(
             "bench-v1",
         ),
     })
+    probe_digest = suite_digest(needle_tasks(8, "core"))
+    _write_records(tmp_path, "context.json", {
+        "depth": ContextRecord(
+            "depth-model", "f16", "llamacpp", "core", 8, 8, probe_digest,
+            (FamilyResult("literal", 8, 8, 8, 8),), 1.0,
+        ),
+    })
     console = Console(width=80, record=True, color_system=None)
     monkeypatch.setattr(cli, "_console", lambda: console)
 
@@ -170,6 +177,8 @@ def test_evidence_table_folds_reasons_and_remeasure_at_narrow_width(
     assert "harness_mismatch" in output
     assert "nmesh bench" in output
     assert "20.0 tok/s" in output
+    assert "req 8 / served 8" in output
+    assert "verified" in output
 
 
 def test_superseded_records_are_explained_and_all_unusable_rows_have_reasons(
