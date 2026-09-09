@@ -1,4 +1,4 @@
-"""Shared evidence predicates that sit below the package layers."""
+"""Shared low-level evidence predicates."""
 
 from __future__ import annotations
 

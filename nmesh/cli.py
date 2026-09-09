@@ -13,7 +13,7 @@ import time
 import urllib.request
 import zipfile
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError
@@ -61,6 +61,7 @@ from nmesh.eval import (
     suite_digest,
 )
 from nmesh.eval import run as eval_run
+from nmesh.eval import select as eval_select
 from nmesh.eval.cache import EvalRecord, eval_key
 from nmesh.eval.context import (
     ContextRecord,
@@ -68,11 +69,18 @@ from nmesh.eval.context import (
     load_context_cache,
     save_context,
 )
+from nmesh.eval.select import (
+    context_depth_evidence,
+    effective_context_records,
+    planner_eval_records,
+    valid_eval_records,
+)
 from nmesh.eval.stats import (
     min_discordant_for_significance,
     min_resolvable_difference,
     wilson_interval,
 )
+from nmesh.evidence_inventory import collect_evidence
 from nmesh.inventory import (
     FILE_TYPE_QUANT,
     default_stores,
@@ -417,53 +425,16 @@ def _make_plan(args: argparse.Namespace) -> object:
     )
 
 
-def _eval_records(
-    records: Mapping[str, EvalRecord],
-) -> tuple[
-    dict[tuple[str, str, str, str, str, int, bool | None, int], EvalRecord],
-    list[EvalRecord],
-]:
-    valid: dict[
-        tuple[str, str, str, str, str, int, bool | None, int], EvalRecord
-    ] = {}
-    stale: list[EvalRecord] = []
-    for record in records.values():
-        tasks = SUITES.get(record.suite)
-        if tasks is None or record.digest != suite_digest(tasks):
-            stale.append(record)
-            continue
-        key = (
-            record.model_id,
-            record.quant,
-            record.backend,
-            record.suite,
-            record.digest,
-            record.reasoning_allowance,
-            record.cache_prompt,
-            record.depth,
-        )
-        previous = valid.get(key)
-        if previous is None or record.at > previous.at:
-            valid[key] = record
-    return valid, stale
+_eval_records = valid_eval_records
+_context_records = effective_context_records
+_context_evidence = context_depth_evidence
+DepthEvidence = eval_select.DepthEvidence
 
 
 def _eval_rates(
     records: Mapping[str, EvalRecord] | None = None,
 ) -> dict[tuple[str, str, str], EvalSummary]:
-    valid, _ = _eval_records(records if records is not None else load_eval_cache())
-    latest: dict[tuple[str, str, str], EvalRecord] = {}
-    for record in valid.values():
-        if record.unscorable or record.transport_errors or record.depth > 0:
-            continue
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
-        previous = latest.get(key)
-        if previous is None or record.at > previous.at:
-            latest[key] = record
+    latest = _eval_planner_records(records)
     return {
         key: EvalSummary(
             record.pass_rate,
@@ -475,47 +446,12 @@ def _eval_rates(
     }
 
 
-@dataclass(frozen=True)
-class DepthEvidence:
-    verified: int
-    lost: int
-
-
-def _context_evidence(
-    records: Mapping[str, ContextRecord],
-) -> dict[tuple[str, str, str], DepthEvidence]:
-    latest: dict[tuple[str, str, str, int], ContextRecord] = {}
-    for record in records.values():
-        if record.requested_depth <= 0:
-            continue
-        if record.probe_digest != suite_digest(
-            needle_tasks(record.requested_depth, record.seed)
-        ):
-            continue
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-            record.requested_depth,
-        )
-        previous = latest.get(key)
-        if previous is None or record.at > previous.at:
-            latest[key] = record
-    evidence: dict[tuple[str, str, str], DepthEvidence] = {}
-    for record in latest.values():
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
-        served = record.served_depth or record.requested_depth
-        current = evidence.get(key, DepthEvidence(0, 0))
-        if any(family.lost for family in record.families):
-            lost = served if current.lost == 0 else min(current.lost, served)
-            evidence[key] = DepthEvidence(current.verified, lost)
-        elif any(family.attributable for family in record.families):
-            evidence[key] = DepthEvidence(max(current.verified, served), current.lost)
-    return evidence
+def _eval_planner_records(
+    records: Mapping[str, EvalRecord] | None = None,
+) -> dict[tuple[str, str, str], EvalRecord]:
+    return planner_eval_records(
+        records if records is not None else load_eval_cache()
+    )
 
 
 def _context_depth_maps() -> tuple[
@@ -3233,6 +3169,65 @@ def _run_prompt(args: argparse.Namespace) -> int:
     return 1
 
 
+def _evidence(args: argparse.Namespace) -> int:
+    payload = collect_evidence()
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    language = i18n.lang()
+    records = payload["records"]
+    assert isinstance(records, list)
+    for kind, title_key in (
+        ("bench", "evidence.bench_title"),
+        ("eval", "evidence.eval_title"),
+        ("depth", "evidence.depth_title"),
+    ):
+        table = Table(title=i18n.t(title_key, language))
+        for column in (
+            "kind", "model", "quant", "backend", "scope", "value",
+            "usable", "reasons", "remeasure",
+        ):
+            table.add_column(i18n.t(f"evidence.column.{column}", language))
+        seen_reasons: set[str] = set()
+        for row in records:
+            if row["kind"] != kind:
+                continue
+            scope = (
+                row.get("suite", "")
+                if kind == "eval"
+                else (
+                    f"requested={row['requested_depth']} "
+                    f"served={row['served_depth']}"
+                    if kind == "depth" else ""
+                )
+            )
+            reasons = row["reasons"]
+            assert isinstance(reasons, list)
+            seen_reasons.update(str(reason) for reason in reasons)
+            value = str(row["value"])
+            if kind == "bench":
+                value = f"{value} tok/s"
+            table.add_row(
+                str(row["kind"]),
+                str(row["model_id"]),
+                str(row["quant"]),
+                str(row["backend"]),
+                str(scope),
+                value,
+                str(row["usable"]),
+                ", ".join(str(reason) for reason in reasons),
+                str(row["remeasure"]),
+            )
+        _console().print(table)
+        for reason in sorted(seen_reasons):
+            _console().print(
+                f"{reason}: {i18n.t(f'evidence.reason.{reason}', language)}"
+            )
+    if not records:
+        _console().print(i18n.t("evidence.empty", language))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_output()
     parser = argparse.ArgumentParser(prog="nmesh")
@@ -3361,6 +3356,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="per-task request timeout in seconds; default is derived from "
         "the task token budget",
     )
+    evidence_parser = sub.add_parser("evidence")
+    evidence_parser.add_argument("--json", action="store_true")
     logs_parser = sub.add_parser("logs")
     logs_parser.add_argument("service", nargs="?")
     logs_parser.add_argument("--lines", type=_positive_int, default=50)
@@ -3438,6 +3435,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _logs(args)
     if args.command == "eval":
         return _eval(args)
+    if args.command == "evidence":
+        return _evidence(args)
     if args.command == "orchestrate":
         if args.orchestrate_command == "measure":
             return _orchestrate_measure_command(args)

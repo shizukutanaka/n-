@@ -443,6 +443,19 @@ against host incidents, not a new measurement source: 12 product repetitions
 produced 288 unchanged grades. Changing a probe rule changes its digest, so
 older `context.json` records become stale and must be re-measured.
 
+`nmesh evidence` inventories saved benchmark, evaluation, and depth records,
+including the reason codes that make a record unusable and the command needed to
+remeasure it. Benchmark reasons include `harness_mismatch`, `unstable`,
+`epoch_degraded`, and `unconfirmed`; evaluation reasons include `suite_unknown`,
+`grader_digest_mismatch`, `unscorable`, `transport_errors`, and `depth_scoped`;
+depth reasons include `probe_digest_mismatch`, `control_failed`, and
+`depth_lost`; `superseded` marks an older valid record replaced by a newer
+record for the same configuration. Depth values show served depth and each
+probe family's passed/total and control counts; `verified` or `lost` is shown
+only when the existing depth-evidence selection establishes that status. Rows
+that need new evidence point to `nmesh bench`,
+`nmesh eval --suite <suite>`, or `nmesh eval --depth <requested_depth>`.
+
 Further controlled checks scoped those eliminations to `arithmetic.subtract`:
 with the same fully expanded 48-token raw ChatML prompt, `top_k=1`,
 `repeat_penalty` pinned to both 1.0 and 1.1, and cold or warm llama.cpp
