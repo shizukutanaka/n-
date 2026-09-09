@@ -3206,12 +3206,35 @@ def _evidence(args: argparse.Namespace) -> int:
         ("eval", "evidence.eval_title"),
         ("depth", "evidence.depth_title"),
     ):
-        table = Table(title=i18n.t(title_key, language))
+        table = Table(title=i18n.t(title_key, language), padding=(0, 0))
+        max_widths = {
+            "model": 10,
+            "quant": 5,
+            "backend": 8,
+            "scope": 8,
+            "value": 10,
+            "usable": 6,
+            "reasons": 16,
+            "remeasure": 11,
+        }
         for column in (
-            "kind", "model", "quant", "backend", "scope", "value",
-            "usable", "reasons", "remeasure",
+            "model", "quant", "backend", "scope", "value", "usable",
+            "reasons", "remeasure",
         ):
-            table.add_column(i18n.t(f"evidence.column.{column}", language))
+            options = (
+                {
+                    "max_width": max_widths[column],
+                    "overflow": "fold",
+                    "no_wrap": False,
+                }
+                if column in {"model", "reasons", "remeasure"} else {}
+            )
+            if column not in {"model", "reasons", "remeasure"}:
+                options = {"max_width": max_widths[column]}
+            table.add_column(
+                i18n.t(f"evidence.column.{column}", language),
+                **options,
+            )
         seen_reasons: set[str] = set()
         for row in records:
             if row["kind"] != kind:
@@ -3230,16 +3253,15 @@ def _evidence(args: argparse.Namespace) -> int:
             seen_reasons.update(str(reason) for reason in reasons)
             value = str(row["value"])
             if kind == "bench":
-                value = f"{value} tok/s"
+                value = f"{float(row['value']):.1f} tok/s"
             table.add_row(
-                str(row["kind"]),
                 str(row["model_id"]),
                 str(row["quant"]),
                 str(row["backend"]),
                 str(scope),
                 value,
                 str(row["usable"]),
-                ", ".join(str(reason) for reason in reasons),
+                "\n".join(str(reason) for reason in reasons),
                 str(row["remeasure"]),
             )
         _console().print(table)
