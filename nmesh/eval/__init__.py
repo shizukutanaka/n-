@@ -1,6 +1,13 @@
 """Deterministic model evaluation."""
 
 from .cache import EvalRecord, EvalSummary, load_eval_cache, save_eval
+from .context import (
+    ContextRecord,
+    FamilyResult,
+    context_key,
+    load_context_cache,
+    save_context,
+)
 from .depth import needle_tasks, padded_prompt
 from .generated import (
     EXTENDED_CATEGORIES,
@@ -21,16 +28,21 @@ __all__ = [
     "HARD_SUITE_TASKS",
     "SUITES",
     "TASKS",
+    "ContextRecord",
     "EvalRecord",
     "EvalRun",
     "EvalSummary",
+    "FamilyResult",
     "Task",
     "TaskOutcome",
+    "context_key",
+    "load_context_cache",
     "load_eval_cache",
     "needle_tasks",
     "normalize",
     "padded_prompt",
     "run",
+    "save_context",
     "save_eval",
     "suite_digest",
 ]

@@ -49,6 +49,7 @@ def test_translation_is_failure_tolerant() -> None:
 def test_context_probe_messages_exist_in_both_languages() -> None:
     for key in (
         "warn.context_depth_lost",
+        "warn.context_depth_broken",
         "note.context_probe_uncontrolled",
         "label.eval_context_control",
     ):
