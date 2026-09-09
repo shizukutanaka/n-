@@ -12,7 +12,7 @@ from nmesh.paths import nmesh_home
 
 BenchCache = dict[str, float]
 CACHE_PATH = nmesh_home() / "bench.json"
-BENCH_HARNESS_VERSION = "bench-v1"
+BENCH_HARNESS_VERSION = "bench-v2"
 MIN_CONTROL_RATIO = 0.90
 
 
@@ -276,10 +276,11 @@ def merge_measurement(
         and epoch != "degraded"
     )
     previous = records.get(key)
+    comparable = previous is not None and previous.harness == harness
     if stable:
         sessions = (
             (tps, *previous.sessions)[:5]
-            if previous is not None and previous.stable
+            if comparable and previous is not None and previous.stable
             else (tps,)
         )
         newest = sessions[0]
@@ -302,33 +303,40 @@ def merge_measurement(
             measured_at=timestamp,
             harness=harness,
             sessions=sessions,
-            rejected=previous.rejected if previous is not None else (),
+            rejected=previous.rejected if comparable and previous is not None else (),
             last_control_ratio=(
-                previous.last_control_ratio if previous is not None else None
+                previous.last_control_ratio
+                if comparable and previous is not None else None
             ),
             last_rejected_at=(
-                previous.last_rejected_at if previous is not None else ""
+                previous.last_rejected_at
+                if comparable and previous is not None else ""
             ),
             last_rejected_min=(
-                previous.last_rejected_min if previous is not None else None
+                previous.last_rejected_min
+                if comparable and previous is not None else None
             ),
             last_rejected_max=(
-                previous.last_rejected_max if previous is not None else None
+                previous.last_rejected_max
+                if comparable and previous is not None else None
             ),
             reference_tps=reference_tps,
             reference_id=reference_id,
             epoch=epoch,
             last_rejected_reference_tps=(
-                previous.last_rejected_reference_tps if previous is not None else None
+                previous.last_rejected_reference_tps
+                if comparable and previous is not None else None
             ),
             last_rejected_reference_id=(
-                previous.last_rejected_reference_id if previous is not None else ""
+                previous.last_rejected_reference_id
+                if comparable and previous is not None else ""
             ),
             last_rejected_epoch=(
-                previous.last_rejected_epoch if previous is not None else "unknown"
+                previous.last_rejected_epoch
+                if comparable and previous is not None else "unknown"
             ),
         )
-    elif previous is not None and previous.stable:
+    elif comparable and previous is not None and previous.stable:
         record = BenchRecord(
             tps=previous.tps,
             decode_tps_min=previous.decode_tps_min,
@@ -353,8 +361,10 @@ def merge_measurement(
             last_rejected_epoch=epoch,
         )
     else:
-        rejected = ((tps, *previous.rejected)[:3]
-                    if previous is not None else (tps,))
+        rejected = (
+            (tps, *previous.rejected)[:3]
+            if comparable and previous is not None else (tps,)
+        )
         record = BenchRecord(
             tps=tps,
             decode_tps_min=decode_tps_min,

@@ -29,7 +29,13 @@ from .epoch import (
     refutes,
     save_history,
 )
-from .runner import BenchResult, ControlledBenchResult, measure, measure_controlled
+from .runner import (
+    MIN_DECODE_TOKENS,
+    BenchResult,
+    ControlledBenchResult,
+    measure,
+    measure_controlled,
+)
 
 __all__ = [
     "BENCH_HARNESS_VERSION",
@@ -37,6 +43,7 @@ __all__ = [
     "EPOCH_MIN_RATIO",
     "EPOCH_PATH",
     "MIN_CONTROL_RATIO",
+    "MIN_DECODE_TOKENS",
     "BenchCache",
     "BenchRecord",
     "BenchResult",

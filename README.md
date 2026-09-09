@@ -841,6 +841,19 @@ And where the upstream does report cached tokens, the ttft fallback now rates
 only the tokens the server actually processed instead of the whole prompt, and
 reports the source as `cached` when fewer than 16 tokens were processed.
 
+Decode throughput is computed over the decode steps, `predicted_n - 1`, because
+llama.cpp's `predicted_ms` excludes the prefill token. The old numerator recorded
+1,000,000.0 tok/s at one token, 93.14 at two, and 62.34 at four, although steady
+state was about 47 tok/s; the stored sessions reached
+`[62.34, 93.14, 1000000.0, 47.75, 46.99]` and the median was inflated by 31%.
+A bracketed ladder against a 128-token reference measured arm/reference ratios of
+0.9761 (n=2), 0.9988 (n=4), 0.9994 (n=16), 1.0117 (n=32), 1.0093 (n=64), and
+0.9911 (n=128). This is why `benchmark_key()` does not include generation
+length or prompt depth: the corrected rate is length-independent, and bench
+prompt depth is fixed rather than user-selected. `--tokens` is an upper bound;
+bench records the served decode length and warns when EOS stops before the
+requested length, while a one-token response is not measurable.
+
 #### GGUF artifact identity
 
 The former GGUF resolver selected by filename substring rather than by a

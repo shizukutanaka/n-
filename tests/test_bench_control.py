@@ -69,6 +69,7 @@ def test_unstable_records_are_hidden_but_prior_evidence_survives(tmp_path) -> No
         runs=3,
         passes=2,
         control_ratio=0.2,
+        harness="bench-v1",
     )
     save_records(records, path)
     loaded = load_records(path)["key"]
@@ -99,6 +100,7 @@ def test_degraded_epoch_preserves_prior_record_and_is_hidden_without_session(
         reference_tps=24.0,
         reference_id="ref",
         epoch="degraded",
+        harness="bench-v1",
     )
     record = records["key"]
     assert record.tps == 48.0

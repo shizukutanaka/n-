@@ -486,9 +486,9 @@ def test_bench_runner_uses_upstream_timings_and_unique_prompts() -> None:
         )
         assert result.prefill_source == "timings"
         assert result.prefill_tps == pytest.approx(404.29, rel=1e-3)
-        assert result.decode_tps == pytest.approx(41.92, rel=1e-3)
-        assert result.decode_tps_min == pytest.approx(41.92, rel=1e-3)
-        assert result.decode_tps_max == pytest.approx(41.92, rel=1e-3)
+        assert result.decode_tps == pytest.approx(39.30, rel=1e-3)
+        assert result.decode_tps_min == pytest.approx(39.30, rel=1e-3)
+        assert result.decode_tps_max == pytest.approx(39.30, rel=1e-3)
         assert result.runs == 3
         assert result.approximate is False
         assert result.cached_prompt_tokens == 0
