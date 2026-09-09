@@ -8,6 +8,10 @@ Use `nmesh plan --lang ja,en` or `nmesh up --lang ja,en` to softly prioritize
 models that claim those languages. This is not a hard filter: nmesh still
 selects a runnable model when no candidate claims every requested language.
 Catalog language lists are publisher/vendor claims, not measured benchmarks.
+
+`nmesh plan --roles chat,embed` and `nmesh up --roles chat,embed` make the
+requested roles strict. Without `--roles`, a role with no local candidate is
+reported as a warning and the remaining runnable services can still start.
 # nmesh
 
 nmesh は、ローカル LLM のためのハードウェア自動検出、モデル選択、メモリ見積もり、
