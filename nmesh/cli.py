@@ -28,6 +28,7 @@ from nmesh.artifact import gguf_info, service_fingerprint
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.bench import (
     EPOCH_HISTORY,
+    MIN_DECODE_TOKENS,
     EpochSample,
     baseline,
     benchmark_key,
@@ -1586,10 +1587,13 @@ def _bench(args: argparse.Namespace) -> int:
     key = benchmark_key(service.model_id, service.quant, service.backend,
                         plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
                         service.n_gpu_layers, service.kv_quant, service.spec)
-    records = load_records()
     demoted: tuple[str, ...] = ()
     spec_demoted: tuple[str, ...] = ()
     delegation_demoted: tuple[str, ...] = ()
+    stored = controlled.stable and epoch != "degraded"
+    language = i18n.lang()
+    warnings: list[str] = []
+    records = load_records()
     if (
         reference_tps is not None
         and reference_key
@@ -1605,7 +1609,7 @@ def _bench(args: argparse.Namespace) -> int:
                 save_all_spec(spec_records)
             except OSError as error:
                 print(
-                    i18n.t("err.bench_save", i18n.lang(), error=error),
+                    i18n.t("err.bench_save", language, error=error),
                     file=sys.stderr,
                 )
         delegation_records = load_delegation_cache()
@@ -1617,35 +1621,67 @@ def _bench(args: argparse.Namespace) -> int:
                 save_all_delegation(delegation_records)
             except OSError as error:
                 print(
-                    i18n.t("err.bench_save", i18n.lang(), error=error),
+                    i18n.t("err.bench_save", language, error=error),
                     file=sys.stderr,
                 )
-    stored = controlled.stable and epoch != "degraded"
-    record = merge_measurement(
-        records,
-        key,
-        tps=measurement.decode_tps,
-        decode_tps_min=measurement.decode_tps_min,
-        decode_tps_max=measurement.decode_tps_max,
-        runs=measurement.runs,
-        passes=args.passes,
-        control_ratio=controlled.control_ratio,
-        reference_tps=reference_tps,
-        reference_id=reference_key,
-        epoch=epoch,
-    )
-    try:
-        save_records(records)
-    except OSError as error:
-        print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
-        return 1
-    decode_spread = (
-        (measurement.decode_tps_max - measurement.decode_tps_min)
-        / measurement.decode_tps
-        if measurement.decode_tps else 0.0
-    )
-    result = {"key": key, "prefill_tokens": 512, "decode_tokens": args.tokens,
-              "median_tps": record.tps, "session_tps": measurement.decode_tps,
+    if measurement.decode_tokens_served < MIN_DECODE_TOKENS:
+        warnings.append(i18n.t(
+            "warn.bench_decode_unmeasurable",
+            language,
+            requested=args.tokens,
+            served=measurement.decode_tokens_served,
+            minimum=MIN_DECODE_TOKENS,
+        ))
+        stored = False
+        record = None
+        decode_spread = None
+        if (
+            reference_tps is not None
+            and reference_key
+            and epoch in {"healthy", "unknown"}
+        ):
+            try:
+                save_records(records)
+            except OSError as error:
+                print(i18n.t("err.bench_save", language, error=error), file=sys.stderr)
+                return 1
+    else:
+        if measurement.decode_tokens_served < args.tokens:
+            warnings.append(i18n.t(
+                "warn.bench_decode_short",
+                language,
+                requested=args.tokens,
+                served=measurement.decode_tokens_served,
+            ))
+        record = merge_measurement(
+            records,
+            key,
+            tps=measurement.decode_tps,
+            decode_tps_min=measurement.decode_tps_min,
+            decode_tps_max=measurement.decode_tps_max,
+            runs=measurement.runs,
+            passes=args.passes,
+            control_ratio=controlled.control_ratio,
+            reference_tps=reference_tps,
+            reference_id=reference_key,
+            epoch=epoch,
+        )
+        try:
+            save_records(records)
+        except OSError as error:
+            print(i18n.t("err.bench_save", language, error=error), file=sys.stderr)
+            return 1
+        decode_spread = (
+            (measurement.decode_tps_max - measurement.decode_tps_min)
+            / measurement.decode_tps
+            if measurement.decode_tps else 0.0
+        )
+    result = {
+              "key": key, "prefill_tokens": 512,
+              "decode_tokens_requested": args.tokens,
+              "decode_tokens_served": measurement.decode_tokens_served,
+              "median_tps": record.tps if record is not None else None,
+              "session_tps": measurement.decode_tps if record is not None else None,
               "reference_tps": reference_tps,
               "reference_baseline": reference_baseline,
               "reference_id": reference_key,
@@ -1660,41 +1696,58 @@ def _bench(args: argparse.Namespace) -> int:
               "prefill_source": measurement.prefill_source,
               "cached_prompt_tokens": measurement.cached_prompt_tokens,
               "runs": measurement.runs,
-              "decode_tps_min": measurement.decode_tps_min,
-              "decode_tps_max": measurement.decode_tps_max,
+              "decode_tps_min": (
+                  measurement.decode_tps_min if record is not None else None
+              ),
+              "decode_tps_max": (
+                  measurement.decode_tps_max if record is not None else None
+              ),
               "decode_spread": decode_spread,
               "passes": args.passes,
               "pass_tps": list(controlled.pass_tps),
               "control_ratio": controlled.control_ratio,
               "stable": controlled.stable,
               "stored": stored,
-              "confirmations": record.confirmations}
+              "confirmations": record.confirmations if record is not None else 0,
+              "warnings": warnings}
     if args.json:
         _print_json(result)
     else:
         marker = "~" if measurement.approximate else ""
         prefill_marker = "~" if measurement.prefill_source != "timings" else ""
-        language = i18n.lang()
-        _console().print("\n".join((
-            i18n.t("label.median_decode", language, marker=marker,
-                   value=measurement.decode_tps),
-            i18n.t("label.decode_range", language,
-                   minimum=measurement.decode_tps_min,
-                   maximum=measurement.decode_tps_max,
-                   spread=decode_spread),
+        lines = []
+        if record is not None:
+            lines.extend((
+                i18n.t("label.median_decode", language, marker=marker,
+                       value=measurement.decode_tps),
+                i18n.t("label.decode_range", language,
+                       minimum=measurement.decode_tps_min,
+                       maximum=measurement.decode_tps_max,
+                       spread=decode_spread),
+            ))
+        lines.extend((
             i18n.t("label.prefill", language, marker=prefill_marker,
                    value=measurement.prefill_tps),
             i18n.t("label.ttft", language, marker=marker, value=measurement.ttft_s),
-            i18n.t("label.bench_passes", language,
-                   passes=args.passes, values=", ".join(
-                       f"{value:.2f}" for value in controlled.pass_tps
-                   )),
-            i18n.t("label.bench_control", language,
-                   ratio=(
-                       f"{controlled.control_ratio:.1%}"
-                       if controlled.control_ratio is not None else "n/a"
-                   )),
-        )))
+        ))
+        if record is not None:
+            lines.append(i18n.t(
+                "label.bench_passes",
+                language,
+                passes=args.passes,
+                values=", ".join(f"{value:.2f}" for value in controlled.pass_tps),
+            ))
+        lines.append(i18n.t(
+            "label.bench_control",
+            language,
+            ratio=(
+                f"{controlled.control_ratio:.1%}"
+                if controlled.control_ratio is not None else "n/a"
+            ),
+        ))
+        _console().print("\n".join(lines))
+        for warning in warnings:
+            _console().print(warning)
         if args.passes == 1:
             _console().print(i18n.t("warn.bench_no_control", language))
         elif not controlled.stable:
@@ -1703,7 +1756,7 @@ def _bench(args: argparse.Namespace) -> int:
                 language,
                 ratio=controlled.control_ratio or 0.0,
                 kept=i18n.t(
-                    "label.bench_kept" if record.stable
+                    "label.bench_kept" if record is not None and record.stable
                     else "label.bench_nothing_stored",
                     language,
                 ),
@@ -1717,7 +1770,7 @@ def _bench(args: argparse.Namespace) -> int:
                     if reference_tps is not None and reference_baseline else 0.0
                 ),
                 kept=i18n.t(
-                    "label.bench_kept" if record.stable
+                    "label.bench_kept" if record is not None and record.stable
                     else "label.bench_nothing_stored",
                     language,
                 ),
@@ -1742,7 +1795,7 @@ def _bench(args: argparse.Namespace) -> int:
                 language,
                 count=len(delegation_demoted),
             ))
-        if decode_spread > 0.25:
+        if decode_spread is not None and decode_spread > 0.25:
             _console().print(i18n.t(
                 "warn.bench_reproducibility",
                 language,

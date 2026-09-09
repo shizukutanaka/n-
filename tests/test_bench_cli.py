@@ -44,7 +44,7 @@ def test_bench_runs_rejects_zero() -> None:
 def test_bench_json_reports_spread_and_warns(monkeypatch, capsys) -> None:
     plan = _plan()
     measurement = BenchResult(
-        400.0, 20.0, 0.5, False, 330, "timings", 0, 10.0, 30.0, 3,
+        400.0, 20.0, 0.5, False, 330, "timings", 0, 10.0, 30.0, 3, 128,
     )
     monkeypatch.setattr(cli, "load_plan", lambda: plan)
     monkeypatch.setattr(cli, "runtime_status", lambda: object())
@@ -74,7 +74,7 @@ def test_bench_cli_leaves_cache_prompt_unset_for_non_llamacpp(
     service = replace(plan.services[0], backend="ollama")
     plan = replace(plan, services=[service])
     measurement = BenchResult(
-        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3,
+        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3, 128,
     )
     cache_prompts = []
     monkeypatch.setattr(cli, "load_plan", lambda: plan)
@@ -95,10 +95,100 @@ def test_bench_cli_leaves_cache_prompt_unset_for_non_llamacpp(
     assert cache_prompts == [None]
 
 
+def test_bench_unmeasurable_decode_is_not_stored(monkeypatch, capsys) -> None:
+    plan = _plan()
+    measurement = BenchResult(
+        400.0, 0.0, 0.5, False, 330, "timings", 0, 0.0, 0.0, 3, 1,
+    )
+    saved = []
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
+    monkeypatch.setattr(cli, "load_records", dict)
+    monkeypatch.setattr(cli, "save_records", saved.append)
+    monkeypatch.setattr(
+        cli, "measure_controlled", lambda *_args, **_kwargs: _controlled(measurement),
+    )
+
+    assert cli.main(["bench", "--json", "--no-reference", "--tokens", "1"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["decode_tokens_requested"] == 1
+    assert result["decode_tokens_served"] == 1
+    assert result["stored"] is False
+    assert result["warnings"]
+    assert "no decode measurement was recorded" in result["warnings"][0]
+    assert saved == []
+
+    assert cli.main(["bench", "--no-reference", "--tokens", "1"]) == 0
+    output = capsys.readouterr().out
+    assert "no decode measurement was recorded" in output
+    assert "median decode" not in output
+
+    old_records = {
+        "old": BenchRecord(
+            tps=20.0,
+            decode_tps_min=19.0,
+            decode_tps_max=21.0,
+            runs=3,
+            passes=2,
+            control_ratio=1.0,
+            stable=True,
+            measured_at="old",
+            harness="bench-v2",
+            sessions=(20.0,),
+            reference_tps=20.0,
+            reference_id="ref",
+            epoch="healthy",
+        ),
+    }
+    saved.clear()
+    monkeypatch.setattr(cli, "load_records", lambda: old_records)
+    monkeypatch.setattr(
+        cli, "_reference_context",
+        lambda _service: (Path("server"), Path("model"), "ref", 1),
+    )
+    monkeypatch.setattr(cli, "load_history", dict)
+    monkeypatch.setattr(cli, "save_history", lambda _history: None)
+    monkeypatch.setattr(cli, "measure_reference", lambda *_args: 30.0)
+    monkeypatch.setattr(cli, "load_spec_cache", dict)
+    monkeypatch.setattr(cli, "load_delegation_cache", dict)
+
+    assert cli.main(["bench", "--json", "--tokens", "1"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["demoted"] == ["old"]
+    assert old_records["old"].stable is False
+    assert saved
+    assert saved[-1]["old"].stable is False
+
+
+def test_bench_short_decode_warns_but_stores(monkeypatch, capsys) -> None:
+    plan = _plan()
+    measurement = BenchResult(
+        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3, 2,
+    )
+    saved = []
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
+    monkeypatch.setattr(cli, "load_records", dict)
+    monkeypatch.setattr(cli, "save_records", saved.append)
+    monkeypatch.setattr(
+        cli, "measure_controlled", lambda *_args, **_kwargs: _controlled(measurement),
+    )
+
+    assert cli.main(["bench", "--json", "--no-reference", "--tokens", "4"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["decode_tokens_requested"] == 4
+    assert result["decode_tokens_served"] == 2
+    assert result["stored"] is True
+    assert "max_tokens is an upper bound" in result["warnings"][0]
+    assert saved
+
+
 def test_bench_narrow_spread_has_no_reproducibility_warning(monkeypatch, capsys) -> None:
     plan = _plan()
     measurement = BenchResult(
-        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3,
+        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3, 128,
     )
     monkeypatch.setattr(cli, "load_plan", lambda: plan)
     monkeypatch.setattr(cli, "runtime_status", lambda: object())
@@ -124,12 +214,12 @@ def test_bench_json_keeps_session_tps_when_control_is_rejected(monkeypatch, caps
         service.spec,
     )
     previous = BenchRecord(
-        48.0, 47.0, 49.0, 3, 2, 0.99, True, "old", "bench-v1",
+        48.0, 47.0, 49.0, 3, 2, 0.99, True, "old", "bench-v2",
         (48.0, 48.2),
     )
     noisy = ControlledBenchResult(
         result=BenchResult(
-            100.0, 5.0, 0.5, False, 330, "timings", 0, 4.9, 5.1, 6,
+            100.0, 5.0, 0.5, False, 330, "timings", 0, 4.9, 5.1, 6, 128,
         ),
         pass_tps=(5.0, 45.0),
         control_ratio=5.0 / 45.0,
@@ -154,7 +244,7 @@ def test_bench_reference_is_measured_around_controlled_passes(
 ) -> None:
     plan = _plan()
     measurement = BenchResult(
-        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3,
+        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3, 128,
     )
     saved = {}
     monkeypatch.setattr(cli, "load_plan", lambda: plan)
@@ -202,7 +292,7 @@ def test_bench_reference_is_measured_around_controlled_passes(
 def test_bench_no_reference_keeps_epoch_unknown(monkeypatch, capsys) -> None:
     plan = _plan()
     measurement = BenchResult(
-        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3,
+        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3, 128,
     )
     monkeypatch.setattr(cli, "load_plan", lambda: plan)
     monkeypatch.setattr(cli, "runtime_status", lambda: object())
@@ -245,12 +335,12 @@ def test_bench_demotes_stale_evidence_before_merging_new_session(
         service.spec,
     )
     previous = BenchRecord(
-        20.0, 19.0, 21.0, 3, 2, 1.0, True, "old", "bench-v1",
+        20.0, 19.0, 21.0, 3, 2, 1.0, True, "old", "bench-v2",
         (20.0, 20.0), reference_tps=20.0, reference_id="ref",
         epoch="healthy",
     )
     measurement = BenchResult(
-        400.0, 48.0, 0.5, False, 330, "timings", 0, 47.0, 49.0, 3,
+        400.0, 48.0, 0.5, False, 330, "timings", 0, 47.0, 49.0, 3, 128,
     )
     controlled = _controlled(measurement)
     saved = {}
@@ -334,12 +424,12 @@ def test_bench_degraded_epoch_does_not_demote_existing_evidence(
         service.spec,
     )
     previous = BenchRecord(
-        20.0, 19.0, 21.0, 3, 2, 1.0, True, "old", "bench-v1",
+        20.0, 19.0, 21.0, 3, 2, 1.0, True, "old", "bench-v2",
         (20.0, 20.0), reference_tps=20.0, reference_id="ref",
         epoch="healthy",
     )
     measurement = BenchResult(
-        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3,
+        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3, 128,
     )
     saved = {}
     monkeypatch.setattr(cli, "load_plan", lambda: plan)

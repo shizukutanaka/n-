@@ -15,6 +15,11 @@ if TYPE_CHECKING:
     from nmesh.planner import PlannedService
 
 
+# A decode rate needs at least one decode step; llama.cpp reports predicted_ms
+# over the n-1 steps after prefill, so a single served token measures nothing.
+MIN_DECODE_TOKENS = 2
+
+
 @dataclass(frozen=True)
 class BenchResult:
     prefill_tps: float
@@ -27,6 +32,7 @@ class BenchResult:
     decode_tps_min: float = 0.0
     decode_tps_max: float = 0.0
     runs: int = 1
+    decode_tokens_served: int = 0
 
 
 @dataclass(frozen=True)
@@ -161,12 +167,27 @@ def _measure_once(
         processed = max(prefill_count - cached, 0)
         prefill_tps = processed / ttft
         prefill_source = "cached" if cached > 0 and processed < 16 else "ttft"
-    if predicted_n is not None and predicted_n >= 1 and predicted_ms is not None and predicted_ms > 0:
-        decode_tps = predicted_n / (predicted_ms / 1000)
-    elif completion_count is not None:
+    if (
+        predicted_n is not None
+        and predicted_n >= MIN_DECODE_TOKENS
+        and predicted_ms is not None
+        and predicted_ms > 0
+    ):
+        # llama.cpp reports predicted_ms for n-1 decode steps: n=1 is zero, n=2 is one.
+        decode_tps = (predicted_n - 1) / (predicted_ms / 1000)
+    elif completion_count is not None and completion_count >= MIN_DECODE_TOKENS:
         decode_tps = max(completion_count - 1, 0) / elapsed
-    else:
+    elif chunks >= MIN_DECODE_TOKENS:
         decode_tps = max(chunks - 1, 0) / elapsed
+    else:
+        decode_tps = 0.0
+    decode_tokens_served = (
+        completion_count
+        if completion_count is not None
+        else predicted_n
+        if predicted_n is not None
+        else chunks
+    )
     approximate = not (
         prompt_count is not None and completion_count is not None
         or prompt_n is not None
@@ -183,6 +204,7 @@ def _measure_once(
         decode_tps,
         decode_tps,
         1,
+        decode_tokens_served,
     )
 
 
@@ -221,6 +243,7 @@ def measure(service: PlannedService, base_url: str, prefill_tokens: int = 512,
         min(item.decode_tps for item in results),
         max(item.decode_tps for item in results),
         len(results),
+        int(statistics.median(item.decode_tokens_served for item in results)),
     )
 
 
@@ -272,6 +295,7 @@ def measure_controlled(
         min(item.decode_tps_min for item in results),
         max(item.decode_tps_max for item in results),
         sum(item.runs for item in results),
+        int(statistics.median(item.decode_tokens_served for item in results)),
     )
     return ControlledBenchResult(
         result=merged,

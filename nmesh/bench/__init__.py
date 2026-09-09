@@ -10,7 +10,6 @@ from .cache import (
     load_cache,
     load_records,
     merge_measurement,
-    save_cache,
     save_records,
 )
 from .epoch import (
@@ -29,7 +28,13 @@ from .epoch import (
     refutes,
     save_history,
 )
-from .runner import BenchResult, ControlledBenchResult, measure, measure_controlled
+from .runner import (
+    MIN_DECODE_TOKENS,
+    BenchResult,
+    ControlledBenchResult,
+    measure,
+    measure_controlled,
+)
 
 __all__ = [
     "BENCH_HARNESS_VERSION",
@@ -37,6 +42,7 @@ __all__ = [
     "EPOCH_MIN_RATIO",
     "EPOCH_PATH",
     "MIN_CONTROL_RATIO",
+    "MIN_DECODE_TOKENS",
     "BenchCache",
     "BenchRecord",
     "BenchResult",
@@ -60,7 +66,6 @@ __all__ = [
     "prune_degraded",
     "reference_id",
     "refutes",
-    "save_cache",
     "save_history",
     "save_records",
 ]
