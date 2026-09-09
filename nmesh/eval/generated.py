@@ -26,6 +26,7 @@ from .suite import (
     _bool_value,
     _contains_cased,
     _contains_ci,
+    _contains_standalone,
     _exact,
     _items_value,
     _japanese_only,
@@ -86,7 +87,7 @@ _MAXIMA = (
     ("7, 19, 3, 11", 19),
     ("1024, 999, 1200, 88", 1200),
     ("45, 45, 46, 12", 46),
-    ("3, 300, 30, 3000", 3000),
+    ("3, 300, 3000, 30", 3000),
 )
 _SUBSTRINGS = (
     ("Extract the model name and output it alone: "
@@ -106,10 +107,22 @@ _SUBSTRINGS = (
      "Q4_K_M", ("exporter", "blob was")),
 )
 _JAPANESE = (
-    ("次の英文を日本語に訳し、訳文だけを出力してください: 'The dog runs.'", "犬"),
-    ("次の英文を日本語に訳し、訳文だけを出力してください: 'I drink water.'", "水"),
-    ("次の英文を日本語に訳し、訳文だけを出力してください: 'The book is new.'", "本"),
-    ("日本で最も高い山の名前だけを日本語で出力してください。", "富士"),
+    (
+        "次の英文を日本語に訳し、訳文だけを出力してください: 'The dog runs.'",
+        "犬", _contains_ci("犬"), "",
+    ),
+    (
+        "次の英文を日本語に訳し、訳文だけを出力してください: 'I drink water.'",
+        "水", _contains_ci("水"), "",
+    ),
+    (
+        "次の英文を日本語に訳し、訳文だけを出力してください: 'The book is new.'",
+        "本", _contains_standalone("本", "日"), "ja_token:v2",
+    ),
+    (
+        "日本で最も高い山の名前だけを日本語で出力してください。",
+        "富士", _contains_ci("富士"), "",
+    ),
 )
 
 
@@ -157,10 +170,6 @@ def _json_value(key: str, expected: bool | int):
     return check
 
 
-def _person_value(name: str, age: str):
-    return lambda text: name.casefold() in text.casefold() and age in text
-
-
 def _build() -> tuple[Task, ...]:
     tasks: list[Task] = []
     for left, right, total in _ADDITIONS:
@@ -206,7 +215,7 @@ def _build() -> tuple[Task, ...]:
             f"instruction.echo.{word}", "instruction",
             f"Reply with exactly the word {word} and nothing else.",
             16, _exact(word),
-            value_check=_contains_ci(word),
+            grades="form",
         ))
     for count in _ITEM_COUNTS:
         tasks.append(Task(
@@ -221,7 +230,7 @@ def _build() -> tuple[Task, ...]:
             'Return only JSON with exactly the keys "name" and "age" for this '
             f"sentence: '{name} is {age} years old.' No markdown, no commentary.",
             48, _json_person(name, age),
-            value_check=_person_value(name, age),
+            grades="form",
         ))
     for word in _CHAR_WORDS:
         tasks.append(Task(
@@ -237,13 +246,14 @@ def _build() -> tuple[Task, ...]:
             'Return only JSON of the form {"even": <true or false>} stating whether '
             f"{number} is even. No other text.",
             32, _json_value("even", even),
+            rule="bool:v2",
             value_check=_bool_value(even),
         ))
     for index, (sentence, address, target) in enumerate(_EMAILS):
         tasks.append(Task(
             f"extraction.email.{index}", "extraction",
             f"Give the {target} from this text: '{sentence}'",
-            32, _only_email(address), grades="value",
+            32, _only_email(address), rule="email:v2", grades="value",
         ))
     for index, (sentence, iso, target) in enumerate(_DATES):
         tasks.append(Task(
@@ -255,7 +265,7 @@ def _build() -> tuple[Task, ...]:
         tasks.append(Task(
             f"extraction.max.{index}", "extraction",
             f"Output only the largest number in this list: {listing}.",
-            16, _number(largest), grades="value",
+            16, _number(largest), rule="max:v2", grades="value",
         ))
     for index, (prompt, expected, rivals) in enumerate(_SUBSTRINGS):
         tasks.append(Task(
@@ -266,7 +276,7 @@ def _build() -> tuple[Task, ...]:
         tasks.append(Task(
             f"compliance.email.{index}", "compliance",
             f"Output only the {target}, no other words: '{sentence}'",
-            32, _exact(address),
+            32, _exact(address), rule="email:v2",
             value_check=_only_email(address),
         ))
     for index, (sentence, iso, target) in enumerate(_DATES[:3]):
@@ -284,11 +294,12 @@ def _build() -> tuple[Task, ...]:
             32, _exact(expected),
             value_check=_only_span(expected, _rivals),
         ))
-    for index, (prompt, required) in enumerate(_JAPANESE):
+    for index, (prompt, required, value_check, rule) in enumerate(_JAPANESE):
         tasks.append(Task(
             f"multilingual.ja.{index}", "multilingual", prompt, 48,
             _japanese_only(required),
-            value_check=_contains_ci(required),
+            rule=rule,
+            value_check=value_check,
         ))
     return tuple(tasks)
 

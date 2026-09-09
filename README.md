@@ -583,8 +583,9 @@ verifier changes pass/fail without changing the digest, while bumping
 `GRADER_VERSION` invalidates every stored record including the 104-task ones
 the evidence override depends on. Tasks now carry a `rule` string that is
 hashed when set, so a repaired verifier invalidates only the suites containing
-it; the `extended` digest is byte-identical and the `hard` digest is now
-`v2:500f11b813a020c3`.
+it; the repaired task rules in this PR change the affected suite digests, so
+the earlier `extended` and `hard` records are superseded and must be
+re-measured.
 
 The remaining floored tasks are also not one thing. On
 `instruction.initials.quick_amber_fox` the 1.5B answered `Q A F` — the right
@@ -596,7 +597,11 @@ reports how many failures were value-correct and form-wrong. On this run that
 was `3` of the 1.5B's `5` value-checked failures (`Q A F`, `Paris`, `7`) and
 `3` of the 0.5B's `10`. Those failures measure output discipline, not
 capability, and reporting them as capability is what PR #38 had already
-corrected one level up.
+corrected one level up. These splits were produced by value rules superseded
+by this PR. On q2_k, `multilingual.katakana.model` answered `モード` but was
+counted value-correct through the Latin `model` copied from the prompt;
+`multilingual.kanji_number.17` and `.30` answered the prompt's own Arabic
+`17` and `30`.
 
 Both tests now report the power they actually realised. `nmesh eval` prints,
 per compared configuration, how many of the shared tasks disagreed, in which
@@ -616,6 +621,14 @@ every failure is now classifiable as a wrong answer or a form failure through
 its declared grading scope. This split is one model on one machine with one
 binary and one suite; it does not generalize to other quantization ladders or
 hardware.
+
+#### Suite grader audit
+
+Before this PR, 2 of 130 hard-suite pass-rate graders and 23 of 130
+value graders accepted the prompt verbatim. The invariant test now forbids
+every shipped task grader from accepting the prompt, a refusal, or the prompt
+next to a wrong value. `extraction.max.4` was structural only: real answers
+were `3000`.
 
 ### Periodic external watch
 
@@ -709,8 +722,12 @@ keeping the contradiction warning.
 Pass rates are keyed by `(model, quant, backend, suite, digest, allowance,
 cache_prompt)`, so measurements distinguish quantizations of the same model and
 never mix the two prompt-cache conditions described below. The completed
-eight-rung measurement for `qwen2.5-1.5b-instruct` used the hard suite, digest
-`v2:500f11b813a020c3`, and the same llama.cpp configuration throughout. Every
+eight-rung measurement for `qwen2.5-1.5b-instruct` used the hard suite and the
+same llama.cpp configuration throughout. The q3_k_m count included one task
+that passed on a wrong answer: `extraction.email` answered
+`ops@nmesh-ops@example.com`, which was accepted because the expected address
+was merely a substring. The repaired graders change the suite digest, so this
+table is superseded pending re-measurement. Every
 rung was measured twice with prompt-cache reuse disabled; both repeats agreed on
 every one of the 130 task outcomes, with no unscorable answers and no transport
 failures:

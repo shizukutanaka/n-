@@ -21,6 +21,7 @@ from .suite import (
     _exact,
     _japanese_only,
     _only_date,
+    _only_span,
     _yes_no_value,
     normalize,
 )
@@ -96,13 +97,14 @@ def _contains_any(required: tuple[str, ...]) -> Callable[[str], bool]:
     )
 
 
-def _numeral_value(forms: tuple[str, ...], arabic: str) -> Callable[[str], bool]:
-    """True when the text names the target number, in kanji or in digits."""
+def _numeral_value(forms: tuple[str, ...]) -> Callable[[str], bool]:
+    """True when the answer names the target number in kanji.
 
+    The Arabic form is the prompt's own token, so accepting it scored a
+    restated question as value-correct.
+    """
     def check(text: str) -> bool:
-        value = normalize(text)
-        runs = set(_KANJI_DIGITS.findall(value)) | set(re.findall(r"\d+", value))
-        return bool(runs & (set(forms) | {arabic}))
+        return bool(set(_KANJI_DIGITS.findall(normalize(text))) & set(forms))
 
     return check
 
@@ -182,24 +184,28 @@ HARD_TASKS: tuple[Task, ...] = (
         "instruction.nth_word.3", "instruction",
         "Output only the third word of this sentence, nothing else: 'The planner "
         "selects a model for the machine.'", 24, _exact("selects"),
-        value_check=_contains_ci("selects"),
+        rule="nth_word:v2",
+        value_check=_only_span("selects", ("planner", "machine")),
     ),
     Task(
         "instruction.nth_word.5", "instruction",
         "Output only the fifth word of this sentence, nothing else: 'The gateway "
         "routes every incoming request quickly.'", 24, _exact("incoming"),
-        value_check=_contains_ci("incoming"),
+        rule="nth_word:v2",
+        value_check=_only_span("incoming", ("gateway", "quickly")),
     ),
     Task(
         "arithmetic.prime.91", "arithmetic",
         "Answer with only the word yes or no, nothing else: is 91 a prime number?",
         16, _exact("no"),
+        rule="yesno:v2",
         value_check=_yes_no_value(False),
     ),
     Task(
         "arithmetic.prime.97", "arithmetic",
         "Answer with only the word yes or no, nothing else: is 97 a prime number?",
         16, _exact("yes"),
+        rule="yesno:v2",
         value_check=_yes_no_value(True),
     ),
     Task(
@@ -231,29 +237,31 @@ HARD_TASKS: tuple[Task, ...] = (
         "multilingual.katakana.computer", "multilingual",
         "「computer」をカタカナで書いてください。カタカナ以外は出力しないでください。",
         32, _katakana_only("コンピ"),
-        value_check=_contains_any(("コンピ", "computer", "計算機")),
+        rule="katakana:v2",
+        value_check=_contains_any(("コンピ", "計算機")),
     ),
     Task(
         "multilingual.katakana.model", "multilingual",
         "「model」をカタカナで書いてください。カタカナ以外は出力しないでください。",
         32, _katakana_only("モデル"),
-        value_check=_contains_any(("モデル", "model", "模型")),
+        rule="katakana:v2",
+        value_check=_contains_any(("モデル", "模型")),
     ),
     Task(
         "multilingual.kanji_number.17", "multilingual",
         "17 を漢数字で書いてください。漢数字だけを出力してください。",
         24,
         _kanji_number(("十七", "一十七", "壹拾柒", "壱拾七")),
-        rule="kanji_number:v2",
-        value_check=_numeral_value(("十七", "一十七", "壹拾柒", "壱拾七"), "17"),
+        rule="kanji_number:v3",
+        value_check=_numeral_value(("十七", "一十七", "壹拾柒", "壱拾七")),
     ),
     Task(
         "multilingual.kanji_number.30", "multilingual",
         "30 を漢数字で書いてください。漢数字だけを出力してください。",
         24,
         _kanji_number(("三十", "参拾", "參拾")),
-        rule="kanji_number:v2",
-        value_check=_numeral_value(("三十", "参拾", "參拾"), "30"),
+        rule="kanji_number:v3",
+        value_check=_numeral_value(("三十", "参拾", "參拾")),
     ),
     Task(
         "multilingual.lang_lock.paris", "multilingual",

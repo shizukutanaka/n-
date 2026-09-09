@@ -75,7 +75,10 @@ def _exact(expected: str) -> Callable[[str], bool]:
     return check
 
 
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_EMAIL_RE = re.compile(
+    r"(?<![A-Za-z0-9._%+@-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+    r"(?![A-Za-z0-9@-])"
+)
 _ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -121,6 +124,12 @@ def _contains_ci(expected: str) -> Callable[[str], bool]:
     return lambda text: expected.casefold() in text.casefold()
 
 
+def _contains_standalone(expected: str, not_after: str) -> Callable[[str], bool]:
+    """Value-level: the token must appear outside the prompt's own word."""
+    pattern = re.compile(rf"(?<!{re.escape(not_after)}){re.escape(expected)}")
+    return lambda text: bool(pattern.search(text))
+
+
 def _contains_cased(expected: str) -> Callable[[str], bool]:
     """Value-level for case tasks: the exact casing must appear."""
     return lambda text: expected in text
@@ -128,15 +137,15 @@ def _contains_cased(expected: str) -> Callable[[str], bool]:
 
 def _bool_value(expected: bool) -> Callable[[str], bool]:
     def check(text: str) -> bool:
-        found = re.findall(r"true|false", text.lower())
-        return bool(found) and (found[-1] == "true") is expected
+        found = set(re.findall(r"true|false", text.lower()))
+        return found == {"true" if expected else "false"}
     return check
 
 
 def _yes_no_value(expected: bool) -> Callable[[str], bool]:
     def check(text: str) -> bool:
-        found = re.findall(r"\byes\b|\bno\b", text.lower())
-        return bool(found) and (found[-1] == "yes") is expected
+        found = set(re.findall(r"\byes\b|\bno\b", text.lower()))
+        return found == {"yes" if expected else "no"}
     return check
 
 
@@ -184,7 +193,7 @@ TASKS: tuple[Task, ...] = (
         "Reply with exactly the word Acknowledged and nothing else.",
         16,
         _exact("Acknowledged"),
-        value_check=_contains_ci("Acknowledged"),
+        grades="form",
     ),
     Task(
         "instruction.single_word",
@@ -228,6 +237,7 @@ TASKS: tuple[Task, ...] = (
         "12 is even. No other text.",
         32,
         lambda text: (_json_object(text) or {}).get("even") is True,
+        rule="bool:v2",
         value_check=_bool_value(True),
     ),
     Task(
@@ -274,10 +284,12 @@ TASKS: tuple[Task, ...] = (
     Task(
         "extraction.email",
         "extraction",
-        "Extract the email address and output it alone: "
-        "'Contact ops at nmesh-ops@example.com before Friday.'",
+        "Extract the email address of the person to contact and output it alone: "
+        "'Contact ops at nmesh-ops@example.com before Friday; "
+        "archive@example.com is unmonitored.'",
         32,
         _only_email("nmesh-ops@example.com"),
+        rule="email:v2",
         grades="value",
     ),
     Task(

@@ -66,6 +66,7 @@ from nmesh.eval.stats import (
     min_resolvable_difference,
     wilson_interval,
 )
+from nmesh.eval.suite import _bool_value, _only_email
 from nmesh.planner import Policy, build_plan
 from nmesh.runtime import RuntimeStatus
 from nmesh.telemetry import COMPARABLE_PROMPT_TOKENS
@@ -477,9 +478,9 @@ def test_hard_suite_and_graders() -> None:
     assert len(SUITES["hard"]) == 130
     assert len({task.id for task in SUITES["hard"]}) == 130
     assert not {task.id for task in HARD_TASKS} & {task.id for task in EXTENDED_TASKS}
-    assert suite_digest(SUITES["extended"]) == "v2:6d66196138326699"
-    assert suite_digest(HARD_SUITE_TASKS) == "v2:500f11b813a020c3"
-    assert suite_digest(EXTENDED_TASKS) == "v2:6d66196138326699"
+    assert suite_digest(SUITES["extended"]) == "v2:86e41db848586057"
+    assert suite_digest(HARD_SUITE_TASKS) == "v2:22237baff8c47e35"
+    assert suite_digest(EXTENDED_TASKS) == "v2:86e41db848586057"
     assert all(
         task.grades in {"value", "form", "value+form"}
         for task in HARD_SUITE_TASKS
@@ -513,25 +514,24 @@ def test_hard_suite_and_graders() -> None:
         assert not task.check(rejected), task_id
 
     kanji_17 = next(task for task in HARD_TASKS if task.id == "multilingual.kanji_number.17")
-    assert kanji_17.rule == "kanji_number:v2"
+    assert kanji_17.rule == "kanji_number:v3"
     for answer in ("十七", "一十七", "壹拾柒", "壱拾七"):
         assert kanji_17.check(answer)
     assert not kanji_17.check("十八")
     assert not kanji_17.check('17 を漢数字で書くと "壹柒" です。')
     assert kanji_17.value_check is not None
-    assert kanji_17.value_check("壹拾柒")
-    assert kanji_17.value_check('17 を漢数字で書くと "壹柒" です。')
-    assert not kanji_17.value_check("壹柒")
-    assert not kanji_17.value_check("十八")
+    assert kanji_17.value_check("十七です")
+    assert not kanji_17.value_check("17")
+    assert not kanji_17.value_check("三十一")
 
     kanji_30 = next(task for task in HARD_TASKS if task.id == "multilingual.kanji_number.30")
-    assert kanji_30.rule == "kanji_number:v2"
+    assert kanji_30.rule == "kanji_number:v3"
     for answer in ("三十", "参拾", "參拾"):
         assert kanji_30.check(answer)
     assert not kanji_30.check("三十一")
     assert kanji_30.value_check is not None
     assert not kanji_30.value_check("三十一")
-    assert kanji_30.value_check('30 の漢数字は "30" です。')
+    assert not kanji_30.value_check("30")
     assert kanji_30.value_check("三十")
     assert kanji_30.value_check("参拾")
 
@@ -543,7 +543,7 @@ def test_hard_suite_and_graders() -> None:
     assert seven.check("七")
     assert seven.check("七日")
     assert not seven.check("7")
-    assert suite_digest(SUITES["hard"]) == "v2:500f11b813a020c3"
+    assert suite_digest(SUITES["hard"]) == "v2:22237baff8c47e35"
 
 
 def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
@@ -586,7 +586,7 @@ def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
         expected[f"compliance.date.{index}"] = iso
     for index, (_, span, _rivals) in enumerate(_SUBSTRINGS[:2]):
         expected[f"compliance.span.{index}"] = span
-    for index, (_, required) in enumerate(_JAPANESE):
+    for index, (_, required, _value_check, _rule) in enumerate(_JAPANESE):
         expected[f"multilingual.ja.{index}"] = f"\u3053\u308c\u306f{required}\u3067\u3059"
 
     wrong = {
@@ -616,6 +616,49 @@ def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
         assert task.check(answer), task.id
         assert task.check(f"```\n{answer}\n```"), task.id
         assert not task.check(wrong[task.category]), task.id
+
+
+def test_shipped_graders_reject_prompt_copies_and_refusals() -> None:
+    """Depth probes are out of scope because their prompts legitimately contain the needle."""
+    for suite_name, tasks in SUITES.items():
+        for task in tasks:
+            candidates = (
+                ("prompt", task.prompt),
+                ("refusal", "I cannot answer that."),
+                ("prompt-plus-wrong", f"{task.prompt}\nzzz-not-the-answer-4242"),
+                ("wrong-plus-prompt", f"zzz-not-the-answer-4242\n{task.prompt}"),
+            )
+            graders = [("check", task.check)]
+            if task.value_check is not None:
+                graders.append(("value_check", task.value_check))
+            for grader_name, grader in graders:
+                for candidate_kind, candidate in candidates:
+                    assert not grader(candidate), (
+                        f"{suite_name} {task.id} {grader_name} accepted "
+                        f"{candidate_kind}"
+                    )
+
+
+def test_repaired_suite_value_graders_reject_measured_false_positives() -> None:
+    email = next(task for task in TASKS if task.id == "extraction.email")
+    assert not _only_email("nmesh-ops@example.com")("ops@nmesh-ops@example.com")
+    assert email.check("The email address to contact is nmesh-ops@example.com.")
+
+    katakana = next(
+        task for task in HARD_TASKS if task.id == "multilingual.katakana.model"
+    )
+    assert katakana.value_check is not None
+    assert not katakana.value_check("「model」はカタカナでは「モード」になります。")
+
+    kanji = next(
+        task for task in HARD_TASKS if task.id == "multilingual.kanji_number.17"
+    )
+    assert kanji.value_check is not None
+    assert not kanji.value_check("17")
+    assert not kanji.value_check("三十一")
+    assert kanji.value_check("十七です")
+
+    assert not _bool_value(True)("true or false")
 
 
 def test_value_extraction_and_compliance_grading() -> None:
