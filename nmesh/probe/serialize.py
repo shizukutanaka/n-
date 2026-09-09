@@ -2,10 +2,55 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from .models import GPUInfo, HardwareProfile, Tier
+from .models import (
+    GPUInfo,
+    HardwareProfile,
+    OperatingSystem,
+    Tier,
+    Vendor,
+    VramSource,
+)
 
 _OS = {"windows", "linux", "macos"}
 _VENDORS = {"nvidia", "amd", "intel", "apple", "unknown"}
+
+
+def _operating_system(value: str) -> OperatingSystem:
+    if value == "windows":
+        return "windows"
+    if value == "linux":
+        return "linux"
+    if value == "macos":
+        return "macos"
+    raise ValueError("profile field 'os' must be windows, linux, or macos")
+
+
+def _vendor(value: str) -> Vendor:
+    if value == "nvidia":
+        return "nvidia"
+    if value == "amd":
+        return "amd"
+    if value == "intel":
+        return "intel"
+    if value == "apple":
+        return "apple"
+    if value == "unknown":
+        return "unknown"
+    raise ValueError("profile field 'vendor' is invalid")
+
+
+def _vram_source(value: str) -> VramSource:
+    if value == "nvml":
+        return "nvml"
+    if value == "smi":
+        return "smi"
+    if value == "registry":
+        return "registry"
+    if value == "sysfs":
+        return "sysfs"
+    if value == "unknown":
+        return "unknown"
+    raise ValueError("profile field 'vram_source' is invalid")
 
 
 def _field(data: Mapping[str, object], name: str) -> object:
@@ -54,14 +99,27 @@ def _string_map(
     return result
 
 
+def _required_string_map(
+    values: Mapping[str, object],
+    name: str,
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for key, value in values.items():
+        if not isinstance(key, str):
+            raise TypeError(f"profile field {name} keys must be strings")
+        if not isinstance(value, str):
+            raise TypeError(f"profile field {name}.{key} must be a string")
+        result[key] = value
+    return result
+
+
 def profile_from_dict(data: Mapping[str, object]) -> HardwareProfile:
     if not isinstance(data, Mapping):
         raise TypeError("profile must be an object")
-    os_name = _field(data, "os")
-    if not isinstance(os_name, str):
+    os_value = _field(data, "os")
+    if not isinstance(os_value, str):
         raise TypeError("profile field 'os' must be a string")
-    if os_name not in _OS:
-        raise ValueError("profile field 'os' must be windows, linux, or macos")
+    os_name = _operating_system(os_value)
     gpus_value = _field(data, "gpus")
     if not isinstance(gpus_value, list):
         raise TypeError("profile field 'gpus' must be a list")
@@ -72,8 +130,7 @@ def profile_from_dict(data: Mapping[str, object]) -> HardwareProfile:
         vendor = _field(raw, "vendor")
         if not isinstance(vendor, str):
             raise TypeError(f"profile field 'gpus[{index}].vendor' must be a string")
-        if vendor not in _VENDORS:
-            raise ValueError(f"profile field 'gpus[{index}].vendor' is invalid")
+        vendor = _vendor(vendor)
         cap = raw.get("compute_capability")
         if cap is not None:
             if not isinstance(cap, (list, tuple)):
@@ -101,11 +158,12 @@ def profile_from_dict(data: Mapping[str, object]) -> HardwareProfile:
             raise TypeError(
                 f"profile field 'gpus[{index}].driving_display' must be a boolean"
             )
-        vram_source = raw.get("vram_source", "unknown")
-        if not isinstance(vram_source, str):
+        vram_source_value = raw.get("vram_source", "unknown")
+        if not isinstance(vram_source_value, str):
             raise TypeError(
                 f"profile field 'gpus[{index}].vram_source' must be a string"
             )
+        vram_source = _vram_source(vram_source_value)
         gpu_name = _field(raw, "name")
         if not isinstance(gpu_name, str):
             raise TypeError(f"profile field 'gpus[{index}].name' must be a string")
@@ -158,5 +216,5 @@ def profile_from_dict(data: Mapping[str, object]) -> HardwareProfile:
         _boolean_field(data, "unified_memory"), gpus,
         _string_map(available, "available_backends", nullable=True),
         tier, [], flags,
-        _string_map(paths_raw, "backend_paths"), devices, [],
+        _required_string_map(paths_raw, "backend_paths"), devices, [],
     )
