@@ -73,6 +73,7 @@ from nmesh.eval.stats import (
     min_resolvable_difference,
     wilson_interval,
 )
+from nmesh.evidence import collect_evidence
 from nmesh.inventory import (
     FILE_TYPE_QUANT,
     default_stores,
@@ -451,6 +452,21 @@ def _eval_records(
 def _eval_rates(
     records: Mapping[str, EvalRecord] | None = None,
 ) -> dict[tuple[str, str, str], EvalSummary]:
+    latest = _eval_planner_records(records)
+    return {
+        key: EvalSummary(
+            record.pass_rate,
+            record.passed,
+            record.n_tasks,
+            record.task_results,
+        )
+        for key, record in latest.items()
+    }
+
+
+def _eval_planner_records(
+    records: Mapping[str, EvalRecord] | None = None,
+) -> dict[tuple[str, str, str], EvalRecord]:
     valid, _ = _eval_records(records if records is not None else load_eval_cache())
     latest: dict[tuple[str, str, str], EvalRecord] = {}
     for record in valid.values():
@@ -464,15 +480,7 @@ def _eval_rates(
         previous = latest.get(key)
         if previous is None or record.at > previous.at:
             latest[key] = record
-    return {
-        key: EvalSummary(
-            record.pass_rate,
-            record.passed,
-            record.n_tasks,
-            record.task_results,
-        )
-        for key, record in latest.items()
-    }
+    return latest
 
 
 @dataclass(frozen=True)
@@ -484,6 +492,26 @@ class DepthEvidence:
 def _context_evidence(
     records: Mapping[str, ContextRecord],
 ) -> dict[tuple[str, str, str], DepthEvidence]:
+    evidence: dict[tuple[str, str, str], DepthEvidence] = {}
+    for record in _context_records(records):
+        key = (
+            record.model_id.casefold(),
+            record.quant.casefold(),
+            record.backend.casefold(),
+        )
+        served = record.served_depth or record.requested_depth
+        current = evidence.get(key, DepthEvidence(0, 0))
+        if any(family.lost for family in record.families):
+            lost = served if current.lost == 0 else min(current.lost, served)
+            evidence[key] = DepthEvidence(current.verified, lost)
+        elif any(family.attributable for family in record.families):
+            evidence[key] = DepthEvidence(max(current.verified, served), current.lost)
+    return evidence
+
+
+def _context_records(
+    records: Mapping[str, ContextRecord],
+) -> tuple[ContextRecord, ...]:
     latest: dict[tuple[str, str, str, int], ContextRecord] = {}
     for record in records.values():
         if record.requested_depth <= 0:
@@ -501,21 +529,7 @@ def _context_evidence(
         previous = latest.get(key)
         if previous is None or record.at > previous.at:
             latest[key] = record
-    evidence: dict[tuple[str, str, str], DepthEvidence] = {}
-    for record in latest.values():
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
-        served = record.served_depth or record.requested_depth
-        current = evidence.get(key, DepthEvidence(0, 0))
-        if any(family.lost for family in record.families):
-            lost = served if current.lost == 0 else min(current.lost, served)
-            evidence[key] = DepthEvidence(current.verified, lost)
-        elif any(family.attributable for family in record.families):
-            evidence[key] = DepthEvidence(max(current.verified, served), current.lost)
-    return evidence
+    return tuple(latest.values())
 
 
 def _context_depth_maps() -> tuple[
@@ -3233,6 +3247,65 @@ def _run_prompt(args: argparse.Namespace) -> int:
     return 1
 
 
+def _evidence(args: argparse.Namespace) -> int:
+    payload = collect_evidence()
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    language = i18n.lang()
+    records = payload["records"]
+    assert isinstance(records, list)
+    for kind, title_key in (
+        ("bench", "evidence.bench_title"),
+        ("eval", "evidence.eval_title"),
+        ("depth", "evidence.depth_title"),
+    ):
+        table = Table(title=i18n.t(title_key, language))
+        for column in (
+            "kind", "model", "quant", "backend", "scope", "value",
+            "usable", "reasons", "remeasure",
+        ):
+            table.add_column(i18n.t(f"evidence.column.{column}", language))
+        seen_reasons: set[str] = set()
+        for row in records:
+            if row["kind"] != kind:
+                continue
+            scope = (
+                row.get("suite", "")
+                if kind == "eval"
+                else (
+                    f"requested={row['requested_depth']} "
+                    f"served={row['served_depth']}"
+                    if kind == "depth" else ""
+                )
+            )
+            reasons = row["reasons"]
+            assert isinstance(reasons, list)
+            seen_reasons.update(str(reason) for reason in reasons)
+            value = str(row["value"])
+            if kind == "bench":
+                value = f"{value} tok/s"
+            table.add_row(
+                str(row["kind"]),
+                str(row["model_id"]),
+                str(row["quant"]),
+                str(row["backend"]),
+                str(scope),
+                value,
+                str(row["usable"]),
+                ", ".join(str(reason) for reason in reasons),
+                str(row["remeasure"]),
+            )
+        _console().print(table)
+        for reason in sorted(seen_reasons):
+            _console().print(
+                f"{reason}: {i18n.t(f'evidence.reason.{reason}', language)}"
+            )
+    if not records:
+        _console().print(i18n.t("evidence.empty", language))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_output()
     parser = argparse.ArgumentParser(prog="nmesh")
@@ -3361,6 +3434,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="per-task request timeout in seconds; default is derived from "
         "the task token budget",
     )
+    evidence_parser = sub.add_parser("evidence")
+    evidence_parser.add_argument("--json", action="store_true")
     logs_parser = sub.add_parser("logs")
     logs_parser.add_argument("service", nargs="?")
     logs_parser.add_argument("--lines", type=_positive_int, default=50)
@@ -3438,6 +3513,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _logs(args)
     if args.command == "eval":
         return _eval(args)
+    if args.command == "evidence":
+        return _evidence(args)
     if args.command == "orchestrate":
         if args.orchestrate_command == "measure":
             return _orchestrate_measure_command(args)
