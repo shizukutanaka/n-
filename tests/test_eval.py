@@ -280,7 +280,12 @@ def test_needle_tasks_have_both_positions_and_validated_checkers() -> None:
             answer = re.search(r"is ([0-9a-f]{6})\.", task.prompt)
             assert answer is not None
             assert task.check(answer.group(1))
+            case_id = re.search(r"case ([0-9a-f]{8})", task.prompt).group(1)
+            assert task.check(
+                f"The access code for case {case_id} is {answer.group(1)}.",
+            )
             assert not task.check("000000")
+            assert not task.check(case_id[:6])
         elif task.category == "context.latent":
             answer = re.search(
                 r"([A-Z][a-z]+) spent the whole quarter working out of "
@@ -288,13 +293,20 @@ def test_needle_tasks_have_both_positions_and_validated_checkers() -> None:
                 task.prompt,
             )
             assert answer is not None
-            assert task.check(answer.group(1) + "!")
-            assert not task.check("Wrong")
             city = answer.group(2)
-            country = next(country for _city, country in (
+            country = next(country_name for _city, country_name in (
                 ("Osaka", "Japan"), ("Lyon", "France"), ("Bergen", "Norway"),
                 ("Cusco", "Peru"), ("Perth", "Australia"), ("Split", "Croatia"),
             ) if _city == city)
+            assert task.check(answer.group(1) + "!")
+            assert task.check(f"The person who spent the quarter in {country} is {answer.group(1)}.")
+            assert not task.check("Wrong")
+            other = next(item for item in ("Marta", "Devrim", "Ines", "Kwame")
+                         if item != answer.group(1))
+            assert not task.check(
+                f"The person who spent the quarter in {country} is "
+                f"{answer.group(1)} and {other}.",
+            )
             question = task.prompt.rsplit("Answer the question below.\n\n", 1)[-1]
             assert city in task.prompt
             assert country in question
@@ -304,13 +316,23 @@ def test_needle_tasks_have_both_positions_and_validated_checkers() -> None:
             assert len(codes) == 4
             assert task.check(",".join(codes))
             assert task.check(", ".join(codes))
+            case_ids = re.findall(r"case ([0-9a-f]{8})", task.prompt)[:4]
+            assert task.check(" ".join(
+                f"The access code for case {case_id} is {code}."
+                for case_id, code in zip(case_ids, codes, strict=True)
+            ))
             assert not task.check(",".join(reversed(codes)))
             assert not task.check(",".join(codes[:3]))
         elif task.category == "context.update":
             codes = re.findall(r"(?:is|to) ([0-9a-f]{6})\.", task.prompt)
             assert len(codes) == 2
             assert task.check(codes[1])
+            case_id = re.search(r"case ([0-9a-f]{8})", task.prompt).group(1)
+            assert task.check(
+                f"The current access code for case {case_id} is {codes[1]}.",
+            )
             assert not task.check(codes[0])
+            assert not task.check(case_id[:6])
         assert not task.check("")
 
 
@@ -348,6 +370,12 @@ def test_needle_tasks_have_paired_control_content() -> None:
             assert deep_task.prompt.index(control_codes[0]) < deep_task.prompt.index(
                 "Correction:",
             )
+
+
+def test_context_probe_grader_rules_change_digest() -> None:
+    tasks = needle_tasks(128, "core")
+    legacy = tuple(replace(task, rule="") for task in tasks)
+    assert suite_digest(tasks) != suite_digest(legacy)
 
 
 def test_runner_explicit_timeout_is_used_for_every_request(monkeypatch) -> None:
@@ -1091,7 +1119,7 @@ def test_context_evidence_filters_stale_controls_and_keeps_latest() -> None:
 
     passed = (FamilyResult("context.literal", 4, 4, 4, 4),)
     lost = (FamilyResult("context.literal", 2, 4, 4, 4),)
-    uncontrolled = (FamilyResult("context.literal", 2, 4, 2, 4),)
+    uncontrolled = (FamilyResult("context.literal", 0, 0, 2, 4),)
     records = {
         "old": record(4, 1.0, lost, 4),
         "latest": record(4, 2.0, passed, 3),
@@ -1106,18 +1134,18 @@ def test_context_evidence_filters_stale_controls_and_keeps_latest() -> None:
     }
 
 
-def test_context_evidence_requires_all_pooled_controls() -> None:
+def test_context_evidence_uses_task_paired_controls() -> None:
     digest = suite_digest(needle_tasks(4, "core"))
-    uncontrolled = ContextRecord(
+    paired = ContextRecord(
         "model", "f16", "llamacpp", "core", 4, 4, digest,
-        (FamilyResult("context.update", 0, 4, 4, 8),), 1.0,
+        (FamilyResult("context.update", 2, 4, 4, 8),), 1.0,
     )
-    lost = ContextRecord(
+    no_paired_tasks = ContextRecord(
         "model", "f16", "llamacpp", "core", 4, 4, digest,
-        (FamilyResult("context.update", 0, 4, 8, 8),), 2.0,
+        (FamilyResult("context.update", 0, 0, 4, 8),), 2.0,
     )
-    assert cli._context_evidence({"uncontrolled": uncontrolled}) == {}
-    assert cli._context_evidence({"lost": lost}) == {
+    assert cli._context_evidence({"no-paired": no_paired_tasks}) == {}
+    assert cli._context_evidence({"paired": paired}) == {
         ("model", "f16", "llamacpp"): cli.DepthEvidence(0, 4),
     }
 
@@ -1770,25 +1798,27 @@ def test_eval_cli_depth_runs_suite_and_context_probe_separately(
 
     def evaluate(tasks, base_url, model_ref, **kwargs):
         calls.append((tuple(tasks), kwargs))
+        if kwargs["depth"] == 0 and len(calls) in {2, 4}:
+            return EvalRun(
+                "prior-high", "f16", "llamacpp", 24, 16, 2 / 3, {}, outcomes({
+                        "context.literal": (
+                            [False] + [True] * 7 if len(calls) == 2 else [True] * 8
+                        ),
+                        "context.latent": [False] * 8,
+                        "context.multi": [True] * 4,
+                        "context.update": [True] * 4,
+                }), 3.0,
+            )
         if kwargs["depth"] == 4096 and any(
             task.category.startswith("context.") for task in tasks
         ):
             return EvalRun(
                 "prior-high", "f16", "llamacpp", 24, 13, 13 / 24, {}, outcomes({
-                    "context.literal": [True] * 8,
+                    "context.literal": [False] + [True] * 7,
                     "context.latent": [False] * 8,
                     "context.multi": [True, True, True, False],
                     "context.update": [True] * 4,
                 }), 3.0, prompt_tokens_max=8192,
-            )
-        if len(calls) == 4:
-            return EvalRun(
-                "prior-high", "f16", "llamacpp", 24, 16, 2 / 3, {}, outcomes({
-                    "context.literal": [True] * 16,
-                    "context.latent": [False] * 16,
-                    "context.multi": [True] * 8,
-                    "context.update": [True] * 8,
-                }), 3.0,
             )
         return result
 
@@ -1808,11 +1838,11 @@ def test_eval_cli_depth_runs_suite_and_context_probe_separately(
     assert output["served_depth_known"] is False
     assert output["context_probe"]["families"] == {
         "literal": {
-            "passed": 8, "of": 8, "control_passed": 16, "control_of": 16,
+            "passed": 7, "of": 7, "control_passed": 15, "control_of": 16,
             "attributable": True,
         },
         "latent": {
-            "passed": 0, "of": 8, "control_passed": 0, "control_of": 16,
+            "passed": 0, "of": 0, "control_passed": 0, "control_of": 16,
             "attributable": False,
         },
         "multi": {
@@ -1824,7 +1854,7 @@ def test_eval_cli_depth_runs_suite_and_context_probe_separately(
             "attributable": True,
         },
     }
-    assert output["context_probe"]["control_passed"] == 32
+    assert output["context_probe"]["control_passed"] == 31
     assert output["context_probe"]["control_of"] == 48
     assert output["context_probe"]["attributable"] is False
     assert len(output["context_probe"]["depth_warnings"]) == 1

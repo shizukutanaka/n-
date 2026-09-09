@@ -11,6 +11,14 @@ from nmesh.paths import nmesh_home
 
 @dataclass(frozen=True)
 class FamilyResult:
+    """Per-family task-paired depth evidence.
+
+    ``of`` counts deep tasks whose own shallow control passed in every
+    control run, and ``passed`` counts those tasks that also passed deeply.
+    ``control_passed`` and ``control_of`` retain pooled raw control counts for
+    reporting; they do not reject the family as a whole.
+    """
+
     name: str
     passed: int
     of: int
@@ -19,7 +27,7 @@ class FamilyResult:
 
     @property
     def attributable(self) -> bool:
-        return self.control_of > 0 and self.control_passed == self.control_of
+        return self.of > 0
 
     @property
     def lost(self) -> bool:

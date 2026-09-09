@@ -429,13 +429,19 @@ The timeout budget includes the requested depth; this matters because the
 bench's `512` is a nominal prefill parameter that tokenises to roughly 336 real
 prompt tokens, not a real-token depth. The shipped probe families are literal,
 latent, multi, and update. Context probes run identical-needle native-depth
-controls before and after the deep run; a family is attributable only when
-both controls are perfect, and an attributable failure is reported as a
-measured-broken context warning without clamping or excluding the candidate.
+controls before and after the deep run; a deep task counts as evidence only
+when its own control task passed in both control runs, and an attributable
+failure is reported as a measured-broken context warning without clamping or
+excluding the candidate.
 Multi-needle ordered retrieval held to about 15k tokens; two-hop retrieval had
-4/4 then 2/4 shallow controls and is not shipped, while count failed at about
-200 tokens and is also not shipped. Adding a probe family changes the probe
-digest, so older `context.json` records become stale and must be re-measured.
+4/4 then 2/4 shallow controls across instances and is not shipped, while count
+failed at about 200 tokens and is also not shipped. Probe grading considers
+only standalone six-character codes, so an eight-character case id cannot be
+mistaken for an answer. Attribution is per task pair rather than rejecting a
+whole family after one control miss. The controls are a cheap safeguard
+against host incidents, not a new measurement source: 12 product repetitions
+produced 288 unchanged grades. Changing a probe rule changes its digest, so
+older `context.json` records become stale and must be re-measured.
 
 Further controlled checks scoped those eliminations to `arithmetic.subtract`:
 with the same fully expanded 48-token raw ChatML prompt, `top_k=1`,
