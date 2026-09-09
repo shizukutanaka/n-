@@ -6,19 +6,77 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from nmesh import i18n
+from nmesh.artifacts import record
 from nmesh.paths import nmesh_home
-from nmesh.planner import BPW, PlannedService
+from nmesh.planner import PlannedService
 
-QUANT_ALIASES = {
-    "f16": ("f16", "fp16"),
-    "q8_0": ("q8_0", "q8"),
-    "q6_k": ("q6_k",),
-    "q5_k_m": ("q5_k_m",),
-    "q4_k_m": ("q4_k_m",),
-    "q4_0": ("q4_0",),
-    "q3_k_m": ("q3_k_m",),
-    "q2_k": ("q2_k",),
+# These are llama.cpp's nominal figures for ordering candidates, not nmesh
+# measurements. Artifact bytes can deviate substantially: qwen2.5-0.5b
+# q4_k_m measured at 1.64x the nominal estimate.
+NOMINAL_GGUF_BPW = {
+    "f32": 32.0,
+    "bf16": 16.0,
+    "f16": 16.0,
+    "q8_0": 8.5,
+    "q6_k": 6.6,
+    "q5_k_m": 5.7,
+    "q5_k_s": 5.5,
+    "q5_1": 6.0,
+    "q5_0": 5.5,
+    "q4_k_m": 4.85,
+    "q4_k_s": 4.6,
+    "q4_1": 5.0,
+    "q4_0": 4.55,
+    "q3_k_l": 4.3,
+    "q3_k_m": 3.9,
+    "q3_k_s": 3.5,
+    "q2_k": 3.35,
+    "iq4_nl": 4.5,
+    "iq4_xs": 4.25,
+    "iq3_m": 3.66,
+    "iq3_s": 3.44,
+    "iq3_xs": 3.3,
+    "iq3_xxs": 3.06,
+    "iq2_m": 2.7,
+    "iq2_s": 2.5,
+    "iq2_xs": 2.31,
+    "iq2_xxs": 2.06,
+    "iq1_m": 1.75,
+    "iq1_s": 1.56,
+    "tq1_0": 1.69,
+    "tq2_0": 2.06,
+    "q2_k_l": 3.6,
+    "q3_k_xl": 4.5,
+    "q4_k_l": 5.1,
+    "q4_k_xl": 5.2,
+    "q5_k_l": 5.9,
+    "q6_k_l": 6.8,
+    "q8_0_l": 8.7,
+    "q4_0_4_4": 4.55,
+    "q4_0_4_8": 4.55,
+    "q4_0_8_8": 4.55,
 }
+_BARE_QUANT_TOKENS = ("q8", "q4", "q5", "q6", "q3", "q2")
+_UNRANKED_QUANT_TOKENS = ("q3_k", "q4_k", "q5_k")
+_REPACK_LABELS = frozenset({"q4_0_4_4", "q4_0_4_8", "q4_0_8_8"})
+_LABEL_ALIASES = {"fp16": "f16", "fp32": "f32"}
+_LABEL_TOKENS = tuple(
+    sorted(
+        (
+            *NOMINAL_GGUF_BPW,
+            *_BARE_QUANT_TOKENS,
+            *_UNRANKED_QUANT_TOKENS,
+            "fp16",
+            "fp32",
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+_LABEL_RE = re.compile(
+    rf"(?<![a-z0-9])(?:{'|'.join(map(re.escape, _LABEL_TOKENS))})(?![a-z0-9])",
+    re.IGNORECASE,
+)
 _SPLIT_RE = re.compile(
     r"^(?P<prefix>.+?)[-_.](?P<part>\d{5})-of-(?P<total>\d{5})\.gguf$",
     re.IGNORECASE,
@@ -32,27 +90,37 @@ class Acquired:
     substituted: bool
     model_ref: str | None = None
     warning: str | None = None
+    artifact_bytes: int | None = None
 
 
-def _gguf_files(repo_id: str) -> list[str]:
+def parse_label(filename: str) -> str | None:
+    stem = Path(filename).name
+    stem = re.sub(r"\.gguf$", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"[-_.]\d{5}-of-\d{5}$", "", stem, flags=re.IGNORECASE)
+    labels: list[str] = []
+    for match in _LABEL_RE.finditer(stem):
+        token = match.group(0).lower()
+        label = _LABEL_ALIASES.get(token, token)
+        if label not in labels:
+            labels.append(label)
+    return "+".join(labels) if labels else None
+
+
+def _gguf_files(repo_id: str) -> dict[str, int | None]:
     from huggingface_hub import HfApi
 
-    return [
-        name for name in HfApi().list_repo_files(repo_id)
-        if name.lower().endswith(".gguf")
-    ]
-
-
-def _matches_quant(filename: str, quant: str) -> bool:
-    stem = Path(filename).name
-    return any(
-        re.search(
-            rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])",
-            stem,
-            re.IGNORECASE,
-        )
-        for alias in QUANT_ALIASES[quant]
-    )
+    result: dict[str, int | None] = {}
+    info = HfApi().model_info(repo_id, files_metadata=True)
+    for sibling in info.siblings:
+        name = getattr(sibling, "rfilename", None)
+        if not isinstance(name, str) or not name.lower().endswith(".gguf"):
+            continue
+        size = getattr(sibling, "size", None)
+        if size is None:
+            lfs = getattr(sibling, "lfs", None)
+            size = getattr(lfs, "size", None) if lfs is not None else None
+        result[name] = int(size) if size is not None else None
+    return result
 
 
 def _split_files(files: list[str], selected: str) -> list[str] | None:
@@ -75,38 +143,93 @@ def _split_files(files: list[str], selected: str) -> list[str] | None:
     return [siblings[index] for index in range(1, total + 1)]
 
 
-def _files_for_quant(files: list[str], quant: str) -> list[str] | None:
-    matches = sorted(filename for filename in files if _matches_quant(filename, quant))
-    if not matches:
-        return None
-    for filename in matches:
-        selected = _split_files(files, filename)
-        if selected is not None:
-            return selected
-    return None
-
-
-def _resolve_gguf(repo_id: str, quant: str) -> tuple[str, list[str]]:
-    if quant not in BPW:
+def _resolve_gguf(repo_id: str, quant: str) -> tuple[str, list[str], int]:
+    first_label = quant.split("+", 1)[0]
+    planned_bpw = NOMINAL_GGUF_BPW.get(first_label)
+    if planned_bpw is None:
         raise RuntimeError(f"Unsupported planned quantization: {quant}")
-    files = _gguf_files(repo_id)
-    available = [
-        candidate for candidate in BPW
-        if _files_for_quant(files, candidate) is not None
+    metadata = _gguf_files(repo_id)
+    sizes = metadata
+    files = list(metadata)
+    found_labels = sorted({
+        label for filename in files
+        if (label := parse_label(filename)) is not None
+    })
+    candidates: list[tuple[str, list[str], int]] = []
+    seen: set[tuple[str, ...]] = set()
+    for filename in files:
+        label = parse_label(filename)
+        if label is None or label in _REPACK_LABELS:
+            continue
+        selected = _split_files(files, filename)
+        if selected is None or tuple(selected) in seen:
+            continue
+        seen.add(tuple(selected))
+        total = sum(sizes.get(part) or 0 for part in selected)
+        candidates.append((label, selected, total))
+
+    excluded_repack_labels = sorted(
+        label for label in found_labels if label in _REPACK_LABELS
+    )
+    exact = [candidate for candidate in candidates if candidate[0] == quant]
+    if exact:
+        return min(exact, key=lambda candidate: candidate[2])
+
+    eligible = [
+        candidate for candidate in candidates
+        if (
+            NOMINAL_GGUF_BPW.get(candidate[0].split("+", 1)[0]) is not None
+            and NOMINAL_GGUF_BPW[candidate[0].split("+", 1)[0]] <= planned_bpw
+        )
     ]
-    planned_bpw = BPW[quant]
-    eligible = [candidate for candidate in available if BPW[candidate] <= planned_bpw]
     if not eligible:
-        published = ", ".join(available) or "none"
+        published = ", ".join(found_labels) or "none"
+        repacks = ", ".join(excluded_repack_labels) or "none"
         raise RuntimeError(
             f"No GGUF at or below planned quant {quant} in {repo_id}; "
-            f"published quants: {published}"
+            f"published labels: {published}; excluded repacks: {repacks}"
         )
-    chosen = max(eligible, key=BPW.__getitem__)
-    resolved = _files_for_quant(files, chosen)
-    if resolved is None:
-        raise RuntimeError(f"Unable to resolve GGUF files for {chosen} in {repo_id}")
-    return chosen, resolved
+    eligible.sort(key=lambda candidate: (
+        -NOMINAL_GGUF_BPW[candidate[0].split("+", 1)[0]],
+        "+" in candidate[0],
+        candidate[2],
+        candidate[0],
+    ))
+    return eligible[0]
+
+
+def _artifact_warning(
+    service: PlannedService,
+    label: str | None,
+    filename: str,
+    actual_bytes: int | None,
+) -> str | None:
+    warnings: list[str] = []
+    if label is not None and "+" in label:
+        warnings.append(
+            i18n.t(
+                "warn.gguf_mixed_precision",
+                i18n.lang(),
+                service=service.name,
+                planned=service.quant,
+                label=label,
+                filename=filename,
+            )
+        )
+    estimate = service.memory.weight_bytes
+    if actual_bytes is not None and estimate > 0 and (
+        abs(actual_bytes - estimate) > estimate * 0.10
+    ):
+        warnings.append(
+            i18n.t(
+                "warn.gguf_size_mismatch",
+                i18n.lang(),
+                service=service.name,
+                actual=actual_bytes,
+                estimated=round(estimate),
+            )
+        )
+    return " ".join(warnings) or None
 
 
 def acquire(service: PlannedService) -> Acquired:
@@ -150,11 +273,18 @@ def acquire(service: PlannedService) -> Acquired:
     if service.backend == "llamacpp":
         target = Path(service.model_ref)
         if target.exists():
-            return Acquired(target, service.quant, False)
+            artifact_bytes = target.stat().st_size
+            actual_label = parse_label(target.name)
+            quant = actual_label or service.quant
+            warning = _artifact_warning(service, actual_label, target.name, artifact_bytes)
+            return Acquired(
+                target, quant, quant != service.quant, warning=warning,
+                artifact_bytes=artifact_bytes,
+            )
         repo_id = service.download_repo
         if repo_id is None:
             raise RuntimeError("No Hugging Face GGUF repository configured")
-        chosen, files = _resolve_gguf(repo_id, service.quant)
+        chosen, files, total_bytes = _resolve_gguf(repo_id, service.quant)
         from huggingface_hub import hf_hub_download
 
         paths = [
@@ -165,5 +295,13 @@ def acquire(service: PlannedService) -> Acquired:
             ))
             for filename in files
         ]
-        return Acquired(paths[0], chosen, chosen != service.quant)
+        warning = _artifact_warning(service, chosen, files[0], total_bytes)
+        try:
+            record(repo_id, chosen, total_bytes)
+        except OSError:
+            pass
+        return Acquired(
+            paths[0], chosen, chosen != service.quant, warning=warning,
+            artifact_bytes=total_bytes,
+        )
     return Acquired(Path(service.model_ref), None, False)

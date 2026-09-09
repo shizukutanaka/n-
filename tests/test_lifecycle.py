@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +13,8 @@ from nmesh import cli
 from nmesh.catalog import load_catalog
 from nmesh.planner import Policy, build_plan
 from nmesh.runtime import service_unit as service_unit_module
-from nmesh.runtime.service_unit import service_unit
+from nmesh.runtime.logs import log_path, open_log, tail
+from nmesh.runtime.service_unit import launcher_script, service_unit
 from nmesh.runtime.supervisor import Supervisor
 
 from .test_planner import profile
@@ -29,6 +31,112 @@ def test_gateway_state_is_terminated_and_removed(tmp_path: Path) -> None:
     assert supervisor.down(foreign=True).running is False
     assert terminated == [os.getpid()]
     assert not (tmp_path / "state.json").exists()
+
+
+def test_runtime_log_rotation_and_tail(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "4")
+    first = open_log("chat")
+    first.write(b"old\n")
+    first.close()
+    second = open_log("chat")
+    second.write(b"new\n")
+    second.close()
+
+    assert log_path("chat").read_bytes() == b"new\n"
+    assert log_path("chat").with_name("chat.log.1").read_bytes() == b"old\n"
+    assert tail("chat") == ["new"]
+
+
+def test_runtime_log_tail_handles_missing_and_invalid_utf8(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    assert tail("missing") == []
+    path = log_path("chat")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"one\nbad \xff\n\nthree\n")
+
+    assert tail("chat", 2) == ["bad \ufffd", "three"]
+
+
+def test_supervisor_captures_backend_output(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    plan = build_plan(profile(64, (24,)), load_catalog(), Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        launch=replace(
+            plan.services[0].launch,
+            argv=[sys.executable, "-c", "print('captured backend output')"],
+            health_url=None,
+        ),
+    )
+    supervisor = Supervisor()
+    process = supervisor._launch(service)
+    assert process.wait(timeout=10) == 0
+
+    assert "captured backend output" in log_path(service.name).read_text()
+
+
+def test_unhealthy_message_includes_backend_log_tail(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    handle = open_log("chat")
+    handle.write(b"backend failed to start\n")
+    handle.close()
+
+    message = Supervisor()._unhealthy_message("chat")
+
+    assert "Service did not become healthy: chat" in message
+    assert "backend failed to start" in message
+
+
+def test_logs_cli(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    handle = open_log("chat")
+    handle.write(b"first\nsecond\n")
+    handle.close()
+
+    assert cli.main(["logs"]) == 0
+    assert capsys.readouterr().out.strip() == "chat"
+    assert cli.main(["logs", "chat", "--lines", "1"]) == 0
+    assert capsys.readouterr().out.strip() == "second"
+    assert cli.main(["logs", "chat", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["service"] == "chat"
+    assert payload["lines"] == ["first", "second"]
+    assert cli.main(["logs", "missing"]) == 1
+    assert "No log found" in capsys.readouterr().err
+    assert cli.main(["logs", "../x"]) == 1
+    assert "No log found" in capsys.readouterr().err
+
+
+def test_unload_cli(monkeypatch, capsys) -> None:
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"unloaded": ["chat"]}'
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    assert cli.main(["unload", "chat"]) == 0
+    assert "chat" in capsys.readouterr().out
+
+    class EmptyResponse(Response):
+        def read(self):
+            return b'{"unloaded": []}'
+
+    monkeypatch.setattr(
+        cli.urllib.request, "urlopen", lambda *_args, **_kwargs: EmptyResponse()
+    )
+    assert cli.main(["unload", "missing"]) == 1
+    assert "not unloaded" in capsys.readouterr().err
 
 
 def test_gateway_non_owner_is_retained(tmp_path: Path) -> None:
@@ -249,24 +357,75 @@ def test_fallback_only_scales_context_with_parallel_flag(tmp_path: Path) -> None
     assert plain.launch.argv[plain.launch.argv.index("-c") + 1] == str(plain.context)
 
 
-def test_service_units_are_pure_and_platform_specific(monkeypatch) -> None:
+def test_service_units_are_pure_and_platform_specific(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("nmesh.runtime.service_unit.sys.executable", "/resolved/python")
+    monkeypatch.setattr(service_unit_module, "nmesh_home", lambda: tmp_path)
+
+    launcher_name, launcher = launcher_script(19000, "posix")
+    assert launcher_name.endswith(".sh")
+    assert launcher.startswith("#!/bin/sh\n")
+    assert "\r" not in launcher
+    assert "gateway.env" in launcher
+    assert 'NMESH_HOME="$script_dir"' in launcher
+    assert "exec /resolved/python -m nmesh.gateway.server --port 19000" in launcher
 
     filename, text, command = service_unit(19000, "posix")
     assert filename.endswith(".service")
-    assert "/resolved/python" in text
-    assert "19000" in text
+    assert "ExecStart=" in text
+    assert "nmesh-gateway-launcher.sh" in text
     assert command.startswith("systemctl --user")
 
     monkeypatch.setattr(service_unit_module.os, "name", "posix")
     monkeypatch.setattr(service_unit_module.sys, "platform", "darwin")
     filename, text, command = service_unit(19001)
     assert filename.endswith(".plist")
-    assert "/resolved/python" in text
-    assert "19001" in text
+    assert "nmesh-gateway-launcher.sh" in text
+    assert "<key>KeepAlive</key><true/>" in text
     assert command.startswith("launchctl")
+
+    launcher_name, launcher = launcher_script(19002, "nt")
+    assert launcher_name.endswith(".cmd")
+    assert launcher.endswith("\r\n")
+    assert "\n" not in launcher.replace("\r\n", "")
+    assert "gateway.env" in launcher
+    assert "set \"NMESH_HOME=%~dp0\"" in launcher
+    assert "-m nmesh.gateway.server --port 19002" in launcher
 
     filename, text, command = service_unit(19002, "nt")
     assert filename.endswith(".cmd")
     assert "schtasks" in text
-    assert "19002" in command
+    assert "nmesh-gateway-launcher.cmd" in text
+
+
+def test_autostart_install_writes_launcher_and_preserves_environment(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(service_unit_module, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setenv("NMESH_API_KEY", "do-not-print")
+
+    assert cli.main(["autostart", "--install", "--json"]) == 0
+    output = capsys.readouterr().out
+    data = json.loads(output)
+    launcher_path = Path(data["launcher_path"])
+    env_path = Path(data["env_path"])
+    assert data["installed"] is True
+    assert data["limitations"]
+    assert "/sc onlogon" in data["limitations"][0]
+    assert "self-crash" in data["limitations"][0]
+    assert launcher_path.exists()
+    assert env_path.read_text(encoding="utf-8") == (
+        "NMESH_API_KEY=do-not-print\n"
+        "# NMESH_HOME is set by the launcher to its own directory.\n"
+    )
+    assert "do-not-print" not in output
+
+    env_path.write_text("NMESH_API_KEY=existing\n", encoding="utf-8")
+    assert cli.main(["autostart", "--install", "--json"]) == 0
+    capsys.readouterr()
+    assert env_path.read_text(encoding="utf-8") == "NMESH_API_KEY=existing\n"
+
+    assert cli.main(["autostart"]) == 0
+    output = capsys.readouterr().out
+    assert "/sc onlogon" in output
+    assert "self-crash" in output

@@ -33,9 +33,28 @@ def test_translation_tables_have_equal_keys() -> None:
     assert set(MESSAGES["en"]) == set(MESSAGES["ja"])
 
 
+def test_japanese_messages_survived_their_encoding() -> None:
+    replacement_runs = {
+        key: value for key, value in MESSAGES["ja"].items()
+        if "??" in value or "\ufffd" in value
+    }
+    assert replacement_runs == {}
+
+
 def test_translation_is_failure_tolerant() -> None:
     assert t("missing.key") == "missing.key"
     assert t("warn.language_coverage", "ja") != ""
+
+
+def test_context_probe_messages_exist_in_both_languages() -> None:
+    for key in (
+        "warn.context_depth_lost",
+        "warn.context_depth_broken",
+        "note.context_probe_uncontrolled",
+        "label.eval_context_control",
+    ):
+        assert t(key, "en")
+        assert t(key, "ja")
 
 
 def test_language_resolution_precedence_and_fallback(monkeypatch) -> None:
@@ -100,5 +119,5 @@ def test_language_preference_does_not_filter_uncovered_role() -> None:
     plan = build_plan(profile(32), [model], Policy(roles=["embed"], languages=("ja",)))
     assert plan.runnable
     assert plan.services[0].model_id == "english-embed"
-    assert "english-embed" in plan.warnings[0]
-    assert "publisher/vendor" in plan.warnings[0]
+    assert any("english-embed" in warning for warning in plan.warnings)
+    assert any("publisher/vendor" in warning for warning in plan.warnings)

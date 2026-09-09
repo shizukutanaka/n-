@@ -15,6 +15,7 @@ from nmesh import cli, telemetry
 from nmesh.catalog import ModelSpec
 from nmesh.gateway import create_app, route
 from nmesh.planner import Policy, build_plan
+from nmesh.runtime.logs import log_path
 
 from .test_planner import profile
 
@@ -184,6 +185,8 @@ def test_completion_slot_limiter_matches_chat(monkeypatch) -> None:
             second = client.post("/v1/completions", json={"prompt": "second"})
             assert second.status_code == 503
             assert second.headers["Retry-After"] == "1"
+            assert second.json()["error"]["type"] == "server_error"
+            assert second.json()["error"]["code"] == 503
             _CompletionHandler.release.set()
             first.join(timeout=5)
             assert result[0].status_code == 200
@@ -201,7 +204,8 @@ def test_completion_404_names_backend() -> None:
         with TestClient(create_app(plan)) as client:
             response = client.post("/v1/completions", json={"prompt": "hello"})
         assert response.status_code == 502
-        assert "llamacpp" in response.json()["detail"]
+        assert response.json()["error"]["type"] == "server_error"
+        assert "llamacpp" in response.json()["error"]["message"]
     finally:
         _CompletionHandler.status = 200
         upstream.shutdown()
@@ -226,8 +230,197 @@ def test_api_key_authentication(monkeypatch) -> None:
         assert wrong.status_code == 401
         assert right.status_code == 200
         assert missing.headers["WWW-Authenticate"] == "Bearer"
+        assert missing.json() == {
+            "error": {
+                "message": "Invalid or missing API key",
+                "type": "invalid_request_error",
+                "code": 401,
+            }
+        }
         assert secret not in missing.text
         assert secret not in wrong.text
+
+
+def test_logs_endpoint_reads_tail_and_reports_missing(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("NMESH_API_KEY", raising=False)
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    path = log_path("chat")
+    path.parent.mkdir(parents=True)
+    path.write_text("first\nsecond\n", encoding="utf-8")
+    plan = _completion_plan(1)
+
+    with TestClient(create_app(plan)) as client:
+        response = client.get("/logs/chat?lines=1")
+        missing = client.get("/logs/missing")
+        traversal = client.get("/logs/..%2F..%2Fplan")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "service": "chat",
+        "path": str(path),
+        "lines": ["second"],
+    }
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == 404
+    assert traversal.status_code == 404
+    assert traversal.json()["error"]["code"] == 404
+
+
+def test_logs_endpoint_requires_api_key(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setenv("NMESH_API_KEY", "test-secret")
+    plan = _completion_plan(1)
+
+    with TestClient(create_app(plan)) as client:
+        response = client.get("/logs/chat")
+
+    assert response.status_code == 401
+
+
+def test_gateway_admin_unload_and_running(monkeypatch) -> None:
+    plan = _completion_plan(1)
+    monkeypatch.setattr(
+        gateway_module,
+        "runtime_status",
+        lambda: SimpleNamespace(services=[{
+            "service": plan.services[0].name,
+            "running": True,
+        }]),
+    )
+    monkeypatch.setattr(gateway_module, "idle_services", lambda: set())
+    unloaded: list[str] = []
+
+    def fake_unload(name: str) -> bool:
+        unloaded.append(name)
+        return True
+
+    monkeypatch.setattr(gateway_module, "unload", fake_unload)
+    with TestClient(create_app(plan)) as client:
+        response = client.post("/admin/unload/chat")
+        assert response.status_code == 200
+        assert response.json() == {
+            "unloaded": ["chat"],
+            "results": [{"service": "chat", "unloaded": True, "reason": "ok"}],
+        }
+        unknown = client.post("/admin/unload/missing")
+        assert unknown.status_code == 404
+        assert unknown.json()["error"]["code"] == 404
+        running = client.get("/admin/running")
+    assert unloaded == ["chat"]
+    assert running.status_code == 200
+    assert running.json()["services"][0]["in_flight"] == 0
+
+
+def test_gateway_admin_unload_reports_not_running(monkeypatch) -> None:
+    plan = _completion_plan(1)
+    monkeypatch.setattr(
+        gateway_module,
+        "runtime_status",
+        lambda: SimpleNamespace(services=[{
+            "service": plan.services[0].name,
+            "running": False,
+        }]),
+    )
+    monkeypatch.setattr(gateway_module, "idle_services", lambda: set())
+    monkeypatch.setattr(gateway_module, "unload", lambda _name: False)
+
+    with TestClient(create_app(plan)) as client:
+        response = client.post("/admin/unload/chat")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "unloaded": [],
+        "results": [{"service": "chat", "unloaded": False, "reason": "not_running"}],
+    }
+
+
+def test_gateway_admin_unload_reports_not_owned(monkeypatch) -> None:
+    plan = _completion_plan(1)
+    monkeypatch.setattr(
+        gateway_module,
+        "runtime_status",
+        lambda: SimpleNamespace(services=[{
+            "service": plan.services[0].name,
+            "running": True,
+            "shared": False,
+            "external": False,
+        }]),
+    )
+    monkeypatch.setattr(gateway_module, "idle_services", lambda: set())
+    monkeypatch.setattr(gateway_module, "unload", lambda _name: False)
+
+    with TestClient(create_app(plan)) as client:
+        response = client.post("/admin/unload/chat")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "unloaded": [],
+        "results": [{"service": "chat", "unloaded": False, "reason": "not_owned"}],
+    }
+
+
+def test_gateway_admin_requires_api_key(monkeypatch) -> None:
+    monkeypatch.setenv("NMESH_API_KEY", "test-secret")
+    plan = _completion_plan(1)
+    with TestClient(create_app(plan)) as client:
+        response = client.post("/admin/unload")
+    assert response.status_code == 401
+
+
+def test_gateway_reaper_skips_in_flight(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_module, "KEEP_ALIVE", 5.0)
+    clock = [100.0]
+    monkeypatch.setattr(gateway_module.time, "monotonic", lambda: clock[0])
+    plan = _completion_plan(1)
+    monkeypatch.setattr(
+        gateway_module,
+        "runtime_status",
+        lambda: SimpleNamespace(services=[{
+            "service": "chat",
+            "running": True,
+        }]),
+    )
+    unloaded: list[str] = []
+    monkeypatch.setattr(gateway_module, "unload", lambda name: unloaded.append(name) or True)
+    app = create_app(plan)
+    ticket = app.state.in_flight.enter("chat")
+    clock[0] = 110.0
+    asyncio.run(app.state.reap())
+    assert unloaded == []
+    app.state.in_flight.leave("chat", ticket)
+    asyncio.run(app.state.reap())
+    assert unloaded == ["chat"]
+
+
+def test_openai_model_listing_and_detail() -> None:
+    plan = _completion_plan(1)
+    with TestClient(create_app(plan)) as client:
+        listing = client.get("/v1/models")
+        assert listing.status_code == 200
+        models = listing.json()["data"]
+        assert models
+        assert all(isinstance(item["created"], int) for item in models)
+        advertised = models[0]["id"]
+        detail = client.get(f"/v1/models/{advertised}")
+        assert detail.status_code == 200
+        assert detail.json() == next(item for item in models if item["id"] == advertised)
+        missing = client.get("/v1/models/not-advertised")
+        assert missing.status_code == 404
+        assert missing.json()["error"]["type"] == "invalid_request_error"
+        assert missing.json()["error"]["code"] == 404
+
+
+def test_reserved_tokens_uses_larger_completion_limit() -> None:
+    assert gateway_module._reserved_tokens({"max_completion_tokens": 8}) == 8
+    assert gateway_module._reserved_tokens({
+        "max_tokens": 4, "max_completion_tokens": 8,
+    }) == 8
+    assert gateway_module._reserved_tokens({
+        "max_tokens": 8, "max_completion_tokens": 4,
+    }) == 8
+    assert gateway_module._reserved_tokens({
+        "max_tokens": None, "max_completion_tokens": "bad",
+    }) == 0
 
 
 def test_non_ascii_api_key_authentication(monkeypatch) -> None:

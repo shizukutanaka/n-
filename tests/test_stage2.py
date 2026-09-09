@@ -8,6 +8,7 @@ from dataclasses import replace
 import psutil
 import pytest
 
+from nmesh import i18n
 from nmesh.bench import benchmark, benchmark_key, load_cache, save_cache
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.gateway import estimate_tokens, route
@@ -83,6 +84,15 @@ def test_bench_cache_round_trip(tmp_path) -> None:
     assert load_cache(path)[key] == 3.0
 
 
+def test_benchmark_key_preserves_f16_and_separates_q8() -> None:
+    old_key = "model|q4_k_m|llamacpp|cpu|0"
+    f16_key = benchmark_key("model", "q4_k_m", "llamacpp", "cpu", 0, "f16")
+    q8_key = benchmark_key("model", "q4_k_m", "llamacpp", "cpu", 0, "q8_0")
+    assert f16_key == old_key
+    assert q8_key == f"{old_key}|kvq8_0"
+    assert q8_key != f16_key
+
+
 def test_supervisor_fallback_with_fake_launcher(tmp_path, catalog: list[object]) -> None:
     plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
     service = replace(plan.services[0], launch=replace(plan.services[0].launch, health_url=None))
@@ -115,6 +125,52 @@ def test_supervisor_fallback_with_fake_launcher(tmp_path, catalog: list[object])
     assert result.running
     assert len(calls) == 2
     supervisor.down()
+
+
+def test_supervisor_fallback_skips_unknown_artifact_quant(tmp_path, catalog) -> None:
+    plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        quant="iq3_m",
+        launch=replace(plan.services[0].launch, health_url=None),
+    )
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+
+    skipped = supervisor._fallback(replace(plan, services=[service]), 1)
+
+    assert skipped.services[0].quant == "iq3_m"
+    warning = i18n.t(
+        "warn.quant_fallback_skipped",
+        "en",
+        service=service.name,
+        quant="iq3_m",
+    )
+    assert skipped.warnings.count(warning) == 1
+
+    ordinary = supervisor._fallback(
+        replace(plan, services=[replace(service, quant="q4_k_m")]), 1
+    )
+    assert ordinary.services[0].quant == "q4_0"
+
+
+def test_supervisor_unload_adopts_live_state_process(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    planner_save_plan(plan)
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+    (tmp_path / "state.json").write_text(
+        json.dumps({"services": [{"service": "chat", "pid": 1234}]}),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(supervisor, "_entry_alive", lambda _entry: True)
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+    monkeypatch.setattr(supervisor, "_terminator", terminated.append)
+
+    assert supervisor.unload("chat")
+    assert terminated == [1234]
 
 
 def test_supervisor_dry_run_contains_argv(tmp_path, catalog: list[object]) -> None:
@@ -156,6 +212,50 @@ def test_supervisor_rewrites_acquired_model_and_records_note(
     assert payload["services"][0]["quant"] == "q2_k"
     assert payload["services"][0]["note"] == f"{service.quant} -> q2_k"
     supervisor.down()
+
+
+def test_supervisor_rechecks_acquired_artifact_bytes(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    hardware = profile(32, (24,))
+    plan = build_plan(hardware, catalog, Policy(roles=["chat"]))
+    service = plan.services[0]
+    supervisor = Supervisor(
+        state_path=tmp_path / "artifact-state.json",
+        probe=lambda: hardware,
+        catalog=lambda: catalog,
+    )
+    updated, actualized, changed, replanned = supervisor._apply_acquired(
+        plan,
+        service,
+        Acquired(None, None, False, artifact_bytes=int(service.memory.weight_bytes * 2)),
+    )
+    assert changed
+    assert actualized.memory.weight_bytes == pytest.approx(
+        service.memory.weight_bytes * 2
+    )
+    assert any("real artifact bytes exceeded" in warning for warning in updated.warnings)
+    assert replanned
+
+    unchanged, _, changed, replanned = supervisor._apply_acquired(
+        plan,
+        service,
+        Acquired(None, None, False, artifact_bytes=int(service.memory.weight_bytes)),
+    )
+    assert not changed
+    assert not any("real artifact bytes exceeded" in warning
+                   for warning in unchanged.warnings)
+    assert not replanned
+
+    near, _, changed, replanned = supervisor._apply_acquired(
+        plan,
+        service,
+        Acquired(None, None, False, artifact_bytes=int(service.memory.weight_bytes * 1.05)),
+    )
+    assert changed
+    assert not any("real artifact bytes exceeded" in warning
+                   for warning in near.warnings)
+    assert not replanned
 
 
 def test_supervisor_applies_ollama_derived_model_ref(
@@ -353,6 +453,46 @@ def test_supervisor_heartbeat_skips_unloaded_swap_member(
     supervisor.down()
 
 
+def test_supervisor_idle_unload_does_not_restart_and_revives(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    plan = _recovery_plan(catalog)
+    processes: list[_RecoverProcess] = []
+    supervisor = Supervisor(
+        lambda _service: processes.append(_RecoverProcess()) or processes[-1],
+        tmp_path / "idle.json",
+        health_timeout=0.01,
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    supervisor.up(plan, no_download=True, admit=False)
+    supervisor.restarts["chat"] = [1.0]
+
+    assert supervisor.unload("missing") is False
+    supervisor.shared_services.add("chat")
+    assert supervisor.unload("chat") is False
+    supervisor.shared_services.clear()
+    supervisor.external_shared.add("chat")
+    assert supervisor.unload("chat") is False
+    supervisor.external_shared.clear()
+
+    assert supervisor.unload("chat") is True
+    assert processes[0].poll() == 0
+    assert supervisor.idle_services() == {"chat"}
+    assert supervisor.restarts == {}
+    idle = next(item for item in supervisor.status().services if item["service"] == "chat")
+    assert idle["idle"] is True
+    assert idle["running"] is False
+    assert "failed" not in idle
+    assert supervisor.status().running is False
+    supervisor.heartbeat()
+    assert len(processes) == 1
+
+    supervisor.ensure_running("chat", plan)
+    assert len(processes) == 2
+    assert supervisor.idle_services() == set()
+    supervisor.down()
+
+
 def test_supervisor_ensure_running_revives_dead_process(
     tmp_path, catalog: list[ModelSpec]
 ) -> None:
@@ -394,8 +534,140 @@ def test_supervisor_adopts_healthy_external_service(
     assert supervisor.external_shared == {"chat"}
     result = supervisor.status()
     assert result.services[0]["external"] is True
+    assert supervisor.unload("chat") is False
     supervisor.down()
     assert process.poll() is None
+
+
+def test_supervisor_adopts_recorded_pid_and_unloads_it(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    plan = replace(plan, services=[service])
+    state_path = tmp_path / "adopted.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "services": [{
+                "service": "chat",
+                "pid": os.getpid(),
+                "create_time": psutil.Process(os.getpid()).create_time(),
+                "port": 18010,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("recorded process should be adopted"),
+        state_path,
+        terminator=terminated.append,
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+
+    supervisor.ensure_running("chat", plan)
+
+    assert supervisor.adopted["chat"]["pid"] == os.getpid()
+    adopted_status = next(
+        item for item in supervisor.status().services if item["service"] == "chat"
+    )
+    assert adopted_status["pid"] == os.getpid()
+    assert adopted_status["running"] is True
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert payload["services"][0]["pid"] == os.getpid()
+    assert payload["services"][0]["adopted"] is True
+    assert supervisor.unload("chat") is True
+    assert terminated == [os.getpid()]
+    assert supervisor.idle_services() == {"chat"}
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert payload["services"] == []
+
+
+def test_supervisor_heartbeat_relaunches_dead_adopted_service(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    plan = replace(plan, services=[service])
+    state_path = tmp_path / "dead-adopted.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "services": [{
+                "service": "chat",
+                "pid": 1234,
+                "create_time": 1.0,
+                "port": 18010,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    alive = True
+    launched: list[str] = []
+
+    def pid_alive(pid: int, create_time: float | None = None) -> bool:
+        return pid == 1234 and alive
+
+    supervisor = Supervisor(
+        lambda item: launched.append(item.name) or _RecoverProcess(),
+        state_path,
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(supervisor_module, "_pid_alive", pid_alive)
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+    supervisor.ensure_running("chat", plan)
+    alive = False
+
+    supervisor.heartbeat()
+
+    assert launched == ["chat"]
+    assert supervisor.adopted == {}
+    assert supervisor.processes["chat"].poll() is None
+    supervisor.down()
+
+
+def test_supervisor_down_stops_adopted_service(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    plan = replace(plan, services=[service])
+    state_path = tmp_path / "down-adopted.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "services": [{
+                "service": "chat",
+                "pid": os.getpid(),
+                "create_time": psutil.Process(os.getpid()).create_time(),
+                "port": 18010,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("recorded process should be adopted"),
+        state_path,
+        terminator=terminated.append,
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+
+    supervisor.ensure_running("chat", plan)
+    supervisor.down()
+
+    assert terminated == [os.getpid()]
+    assert not state_path.exists()
 
 
 def test_supervisor_status_state_fallback_is_running(tmp_path) -> None:
@@ -553,6 +825,91 @@ def test_supervisor_heartbeat_adopts_healthy_service_past_restart_budget(
     supervisor.heartbeat()
     assert service.name in supervisor.external_shared
     assert supervisor.failed == {}
+
+
+def test_supervisor_boot_heartbeat_recovers_resident_and_persisted_services(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    base = _recovery_plan(catalog).services[0]
+    resident = replace(base, name="resident", resident=True)
+    persisted = replace(base, name="persisted", resident=False)
+    lazy = replace(base, name="lazy", resident=False)
+    plan = replace(_recovery_plan(catalog), services=[resident, persisted, lazy])
+    planner_save_plan(plan, tmp_path / "plan.json")
+    (tmp_path / "state.json").write_text(
+        json.dumps({"version": 2, "services": [{"service": "persisted"}]}),
+        encoding="utf-8",
+    )
+    launched: list[str] = []
+
+    class Process:
+        pid = 1234
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def kill(self):
+            return None
+
+        def wait(self, timeout=None):
+            return None
+
+    supervisor = Supervisor(
+        lambda service: launched.append(service.name) or Process(),
+        tmp_path / "state.json",
+        health_timeout=0.01,
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+
+    supervisor.heartbeat()
+
+    assert launched == ["resident", "persisted"]
+    assert supervisor.active_plan is not None
+    assert "lazy" not in supervisor.processes
+    supervisor.ensure_running("resident")
+    supervisor.heartbeat()
+    assert launched == ["resident", "persisted"]
+    supervisor.down()
+
+
+def test_supervisor_boot_heartbeat_adopts_listening_service(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        resident=False,
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    planner_save_plan(replace(plan, services=[service]), tmp_path / "plan.json")
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("listening service should be adopted"),
+        tmp_path / "state.json",
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+
+    supervisor.heartbeat()
+
+    assert supervisor.external_shared == {service.name}
+    supervisor.down()
+
+
+def test_supervisor_boot_heartbeat_without_plan_returns_status(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+
+    result = supervisor.heartbeat()
+
+    assert supervisor.active_plan is None
+    assert result.running is False
 
 
 def test_supervisor_admission_replans_against_free_memory(

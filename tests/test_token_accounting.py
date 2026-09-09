@@ -7,6 +7,7 @@ from dataclasses import replace
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from nmesh import gateway
@@ -16,9 +17,11 @@ from nmesh.gateway.tokens import (
     Sums,
     all_sums,
     calibration_for,
+    calibration_key,
     estimate_tokens,
     exact_tokens,
     fit,
+    load_sums,
     record,
     split_chars,
 )
@@ -38,16 +41,43 @@ def test_split_and_default_estimate_preserve_heuristic() -> None:
 
 def test_fit_recovers_known_coefficients() -> None:
     rows = [(1, 3), (2, 1), (4, 2), (3, 5)] * 5
+    overhead = 7.0
     sums = Sums(
         n=len(rows),
         s_cc=sum(c * c for c, _ in rows),
         s_co=sum(c * o for c, o in rows),
         s_oo=sum(o * o for _, o in rows),
-        s_ct=sum(c * (1.25 * c + 0.5 * o) for c, o in rows),
-        s_ot=sum(o * (1.25 * c + 0.5 * o) for c, o in rows),
+        s_ct=sum(c * (1.25 * c + 0.5 * o + overhead) for c, o in rows),
+        s_ot=sum(o * (1.25 * c + 0.5 * o + overhead) for c, o in rows),
+        s_c=sum(c for c, _ in rows),
+        s_o=sum(o for _, o in rows),
+        s_t=sum(1.25 * c + 0.5 * o + overhead for c, o in rows),
     )
     result = fit(sums)
-    assert result == Calibration(1.25, 0.5, 20, True)
+    assert result.cjk_per_char == pytest.approx(1.25)
+    assert result.other_per_char == pytest.approx(0.5)
+    assert result.overhead == pytest.approx(overhead)
+    assert result.samples == 20
+    assert result.measured is True
+
+
+def test_fit_uses_intercept_for_short_prompt_overhead() -> None:
+    rows = [(0, 7), (0, 8), (1, 6), (2, 6), (0, 9)] * 4
+    sums = Sums(
+        n=len(rows),
+        s_cc=sum(c * c for c, _ in rows),
+        s_co=sum(c * o for c, o in rows),
+        s_oo=sum(o * o for _, o in rows),
+        s_ct=sum(c * (c + 0.25 * o + 26) for c, o in rows),
+        s_ot=sum(o * (c + 0.25 * o + 26) for c, o in rows),
+        s_c=sum(c for c, _ in rows),
+        s_o=sum(o for _, o in rows),
+        s_t=sum(c + 0.25 * o + 26 for c, o in rows),
+    )
+    result = fit(sums)
+    assert result.other_per_char == pytest.approx(0.25)
+    assert result.overhead == pytest.approx(26)
+    assert result.other_per_char < 2.0
 
 
 def test_fit_defaults_for_under_sampled_singular_and_clamped() -> None:
@@ -58,16 +88,76 @@ def test_fit_defaults_for_under_sampled_singular_and_clamped() -> None:
     assert fit(clamped) == Calibration(1.0, 0.25, 20, False)
 
 
-def test_record_persists_sums_keyed_by_model(monkeypatch, tmp_path: Path) -> None:
+def test_record_persists_independent_chat_and_text_sums(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
-    for cjk, other, tokens in ((1, 3, 2.75), (2, 1, 3.0)) * 10:
-        text = "日" * cjk + "a" * other
-        record("routing-model", text, int(tokens))
+    chat_rows = [(1, 6, 32), (1, 7, 33), (2, 6, 33), (2, 7, 34)] * 5
+    text_rows = [(2, 15, 5), (1, 15, 4), (2, 20, 6), (1, 20, 5)] * 5
+    for cjk, other, tokens in chat_rows:
+        record(
+            calibration_key("routing-model", True),
+            "日" * cjk + "a" * other,
+            tokens,
+        )
+    for cjk, other, tokens in text_rows:
+        record(
+            calibration_key("routing-model", False),
+            "日" * cjk + "a" * other,
+            tokens,
+        )
     payload = json.loads((tmp_path / "tokens.json").read_text(encoding="utf-8"))
-    assert payload["models"]["routing-model"]["n"] == 20
-    assert calibration_for("routing-model").samples == 20
-    assert calibration_for("other-model").samples == 0
-    assert all_sums()["routing-model"].n == 20
+    assert payload["models"]["routing-model|chat"]["n"] == 20
+    assert payload["models"]["routing-model|text"]["n"] == 20
+    chat = calibration_for(calibration_key("routing-model", True))
+    text = calibration_for(calibration_key("routing-model", False))
+    assert chat.samples == 20
+    assert text.samples == 20
+    assert chat.overhead > 10
+    assert text.overhead < 5
+    assert calibration_for("routing-model").samples == 0
+    assert all_sums()["routing-model|chat"].n == 20
+
+
+def _sums_for_rows(rows: list[tuple[int, int, int]]) -> Sums:
+    return Sums(
+        n=len(rows),
+        s_cc=sum(c * c for c, _, _ in rows),
+        s_co=sum(c * o for c, o, _ in rows),
+        s_oo=sum(o * o for _, o, _ in rows),
+        s_ct=sum(c * t for c, _, t in rows),
+        s_ot=sum(o * t for _, o, t in rows),
+        s_c=sum(c for c, _, _ in rows),
+        s_o=sum(o for _, o, _ in rows),
+        s_t=sum(t for _, _, t in rows),
+    )
+
+
+def test_endpoint_scoped_fit_matches_chat_and_text_prompt_overhead() -> None:
+    chat_rows = [(1, 6, 32), (1, 7, 33), (2, 6, 33), (2, 7, 34)] * 5
+    text_rows = [(2, 15, 5), (1, 15, 4), (2, 20, 6), (1, 20, 5)] * 5
+    chat = fit(_sums_for_rows(chat_rows))
+    text = fit(_sums_for_rows(text_rows))
+    assert chat.overhead > 10
+    assert text.overhead < 5
+
+
+def test_old_sums_are_discarded_when_loaded(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    (tmp_path / "tokens.json").write_text(json.dumps({
+        "models": {
+            "old-model": {
+                "n": 20,
+                "s_cc": 1,
+                "s_co": 2,
+                "s_oo": 3,
+                "s_ct": 4,
+                "s_ot": 5,
+            },
+        },
+    }), encoding="utf-8")
+    assert load_sums("old-model") == Sums()
+    assert all_sums()["old-model"] == Sums()
 
 
 def test_exact_tokens_timeout_falls_back_without_raising() -> None:
@@ -126,16 +216,17 @@ def test_metrics_expose_default_token_calibration() -> None:
     plan = _routing_plan()
     with TestClient(gateway.create_app(plan)) as client:
         metrics = client.get("/metrics").json()
-        calibration = metrics["token_calibration"]["small"]
+        calibration = metrics["token_calibration"]["small|chat"]
         assert calibration == {
             "model": "routing-model",
+            "kind": "chat",
             "cjk_per_char": 1.0,
             "other_per_char": 0.25,
             "samples": 0,
             "measured": False,
         }
         text = client.get("/metrics/prometheus").text
-    labels = 'measured="false", model="routing-model", service="small"'
+    labels = 'kind="chat", measured="false", model="routing-model", service="small"'
     assert "nmesh_token_calibration_cjk_per_char{" + labels + "}" in text
     assert "nmesh_token_calibration_samples{" + labels + "} 0" in text
 
@@ -159,3 +250,62 @@ def test_missing_prompt_usage_does_not_update_calibration(monkeypatch, tmp_path)
         _TelemetryHandler.stream = True
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_content_normalizes_none_and_multimodal_messages() -> None:
+    assert gateway._content({
+        "messages": [{"role": "assistant", "content": None}],
+    }) == ""
+    assert gateway._content({
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hello"},
+                {"type": "image_url", "image_url": {"url": "secret"}},
+                {"type": "text", "text": "world"},
+            ],
+        }],
+    }) == "hello world"
+    assert gateway._content({
+        "messages": [{"role": "user", "content": "plain"}],
+    }) == "plain"
+
+
+def test_tool_requests_skip_token_calibration_recording(monkeypatch) -> None:
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        gateway,
+        "record_token_calibration",
+        lambda *args: calls.append(args),
+    )
+    service = _routing_plan().services[0]
+    for key in ("tools", "functions"):
+        asyncio.run(gateway._record_prompt_calibration(
+            service,
+            {"messages": [{"content": "hello"}], key: [{"type": "function"}]},
+            {"prompt_tokens": 5},
+        ))
+    asyncio.run(gateway._record_prompt_calibration(
+        service,
+        {"messages": [{"content": "hello"}]},
+        {"prompt_tokens": 5},
+    ))
+    assert len(calls) == 1
+    assert calls[0][1:] == ("hello", 5)
+    assert calls[0][0] == calibration_key(service.model_id, True)
+
+
+def test_prompt_calibration_uses_text_key_for_prompt_requests(monkeypatch) -> None:
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        gateway,
+        "record_token_calibration",
+        lambda *args: calls.append(args),
+    )
+    service = _routing_plan().services[0]
+    asyncio.run(gateway._record_prompt_calibration(
+        service,
+        {"prompt": "hello"},
+        {"prompt_tokens": 5},
+    ))
+    assert calls == [(calibration_key(service.model_id, False), "hello", 5)]

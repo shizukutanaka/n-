@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import threading
 import time
@@ -7,13 +8,19 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
+import pytest
 from fastapi.testclient import TestClient
 
+import nmesh.bench.runner as bench_runner
 from nmesh import telemetry
 from nmesh.catalog import ModelSpec
 from nmesh.gateway import create_app
 from nmesh.planner import Policy, build_plan
-from nmesh.telemetry import Sample, Telemetry
+from nmesh.telemetry import (
+    COMPARABLE_PROMPT_TOKENS,
+    Sample,
+    Telemetry,
+)
 
 from .test_planner import profile
 
@@ -26,8 +33,12 @@ def sample(
     total_s: float = 1.0,
     at: float = 1.0,
     approximate: bool = True,
+    prefill_tps: float | None = None,
+    in_flight: int | None = 1,
+    prompt_tokens: int | None = 512,
 ) -> Sample:
-    return Sample(service, key, decode_tps, ttft_s, total_s, 20, at, approximate)
+    return Sample(service, key, decode_tps, ttft_s, total_s, 20, at, approximate,
+                  prefill_tps, in_flight, prompt_tokens)
 
 
 def test_record_round_trip_and_trim(tmp_path) -> None:
@@ -52,6 +63,13 @@ def test_summary_medians_and_p95(tmp_path) -> None:
     assert result["ttft_s_median"] == 0.3
     assert result["ttft_s_p95"] == 0.5
     assert result["total_s_median"] == 4.5
+
+
+def test_summary_includes_prefill_median(tmp_path) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    store.record(sample(prefill_tps=400.0))
+    store.record(sample(prefill_tps=420.0))
+    assert store.summary()["chat"]["prefill_tps_median"] == 410.0
 
 
 def test_bench_overlay_min_samples_and_ignores_missing_decode(tmp_path) -> None:
@@ -82,7 +100,12 @@ def test_old_telemetry_samples_default_to_approximate(tmp_path) -> None:
         "completion_tokens": 20,
         "at": 1,
     }]}), encoding="utf-8")
-    assert Telemetry(path).samples()[0].approximate is True
+    loaded = Telemetry(path).samples()[0]
+    assert loaded.approximate is True
+    assert loaded.prefill_tps is None
+    assert loaded.in_flight is None
+    assert loaded.prompt_tokens is None
+    assert Telemetry(path).bench_overlay() == {}
 
 
 def test_bench_overlay_prefers_exact_samples(tmp_path) -> None:
@@ -104,6 +127,70 @@ def test_bench_overlay_prefers_exact_samples(tmp_path) -> None:
     }
 
 
+def test_bench_overlay_uses_single_stream_samples_and_reports_skips(tmp_path) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    for value in (10.0, 12.0, 14.0):
+        store.record(sample(key="single", decode_tps=value, in_flight=1))
+    for value in (30.0, 32.0, 34.0):
+        store.record(sample(key="busy", decode_tps=value, in_flight=4))
+    assert store.bench_overlay(min_samples=3) == {"single": 12.0}
+    report = store.overlay_report(min_samples=3)
+    assert report.values == {"single": 12.0}
+    assert report.under_load == 3
+
+
+@pytest.mark.parametrize("prompt_tokens", [1025, 2005, 8192])
+def test_overlay_excludes_deep_samples_and_counts_them(tmp_path, prompt_tokens) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    # 2005 real prompt tokens measured 0.883 of the reference decode rate.
+    for value in (34.20, 35.0, 33.5):
+        store.record(sample(key="deep", decode_tps=value, prompt_tokens=prompt_tokens))
+    report = store.overlay_report(min_samples=3)
+    assert report.values == {}
+    assert report.off_reference == 3
+
+
+@pytest.mark.parametrize("prompt_tokens", [256, 1024])
+def test_overlay_accepts_comparable_prompt_depths(tmp_path, prompt_tokens) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    store.record(sample(key="eligible", decode_tps=45.77, prompt_tokens=prompt_tokens))
+    report = store.overlay_report(min_samples=1)
+    assert report.values == {"eligible": 45.77}
+    assert report.off_reference == 0
+
+
+def test_overlay_mixed_depth_fixture_uses_shallow_measured_median(tmp_path) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    for _ in range(3):
+        store.record(sample(key="mixed-depth", decode_tps=45.77, prompt_tokens=256))
+    for _ in range(3):
+        store.record(sample(key="mixed-depth", decode_tps=34.20, prompt_tokens=8192))
+    report = store.overlay_report(min_samples=3)
+    # Measured 256-token requests were 45.77 tok/s; 8192-token requests were 34.20.
+    assert report.values == {"mixed-depth": 45.77}
+    assert report.off_reference == 3
+
+
+def test_overlay_excludes_unknown_prompt_depth_and_counts_it(tmp_path) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    store.record(sample(key="unknown", decode_tps=20.0, prompt_tokens=None))
+    report = store.overlay_report(min_samples=1)
+    assert report.values == {}
+    assert report.unknown_depth == 1
+
+
+def test_prompt_depth_round_trip(tmp_path) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    store.record(sample(prompt_tokens=123))
+    assert store.samples()[0].prompt_tokens == 123
+
+
+def test_comparable_depth_exceeds_bench_nominal_default() -> None:
+    default = inspect.signature(bench_runner.measure).parameters["prefill_tokens"].default
+    # The nominal 512 is below 1024, and its roughly 336 real tokens are lower still.
+    assert default < COMPARABLE_PROMPT_TOKENS
+
+
 class _TelemetryHandler(BaseHTTPRequestHandler):
     request_body: ClassVar[dict[str, object]] = {}
     stream: ClassVar[bool] = True
@@ -111,6 +198,7 @@ class _TelemetryHandler(BaseHTTPRequestHandler):
     usage_on_every_chunk: ClassVar[bool] = False
     chunks: ClassVar[int] = 20
     completion_tokens: ClassVar[int] = 17
+    timings: ClassVar[dict[str, object] | None] = None
 
     def do_POST(self) -> None:
         length = int(self.headers["Content-Length"])
@@ -122,6 +210,14 @@ class _TelemetryHandler(BaseHTTPRequestHandler):
                 "choices": [{"message": {"role": "assistant", "content": "ok"}}],
                 "usage": {"completion_tokens": 7},
             }).encode()
+            if self.__class__.timings is not None:
+                payload = json.dumps({
+                    "id": "completion", "object": "chat.completion",
+                    "model": self.request_body["model"],
+                    "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                    "usage": {"completion_tokens": 7},
+                    "timings": self.__class__.timings,
+                }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -144,17 +240,45 @@ class _TelemetryHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"data: " + payload + b"\n\n")
             self.wfile.flush()
             time.sleep(0.002)
-        if self.__class__.include_usage:
-            payload = json.dumps({
+        if self.__class__.include_usage or self.__class__.timings is not None:
+            final: dict[str, object] = {
                 "choices": [],
                 "usage": {
                     "completion_tokens": self.__class__.completion_tokens,
                     "prompt_tokens": 23,
                 },
-            }).encode()
+            }
+            if self.__class__.timings is not None:
+                final["timings"] = self.__class__.timings
+            payload = json.dumps(final).encode()
             self.wfile.write(b"data: " + payload + b"\n\n")
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+class _ConcurrentHandler(BaseHTTPRequestHandler):
+    wait_for_pair: ClassVar[bool] = False
+    barrier: ClassVar[threading.Barrier | None] = None
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.rfile.read(length)
+        if self.__class__.wait_for_pair and self.__class__.barrier is not None:
+            self.__class__.barrier.wait(timeout=5)
+        body = json.dumps({
+            "model": "telemetry-model",
+            "choices": [],
+            "usage": {"completion_tokens": 1},
+            "timings": {"predicted_n": 1, "predicted_ms": 100.0},
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -198,6 +322,185 @@ def test_gateway_records_stream_and_nonstream_telemetry(tmp_path, monkeypatch) -
         assert client.get("/metrics").json()["services"]["chat"]["samples"] == 2
         assert not (tmp_path / "bench.json").exists()
     finally:
+        _TelemetryHandler.timings = None
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_records_peak_in_flight_for_overlapping_nonstream_requests(
+    tmp_path, monkeypatch
+) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    monkeypatch.setattr(telemetry, "_default", store)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _ConcurrentHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _ConcurrentHandler.wait_for_pair = False
+        client = TestClient(create_app(_gateway_plan(upstream.server_address[1])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "stream": False,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert store.samples()[-1].in_flight == 1
+
+        _ConcurrentHandler.barrier = threading.Barrier(2)
+        _ConcurrentHandler.wait_for_pair = True
+        responses: list[object] = []
+
+        def request() -> None:
+            responses.append(client.post("/v1/chat/completions", json={
+                "model": "nmesh-auto",
+                "stream": False,
+                "messages": [{"role": "user", "content": "hello"}],
+            }))
+
+        workers = [threading.Thread(target=request) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=10)
+        assert len(responses) == 2
+        assert all(response.status_code == 200 for response in responses)
+        assert [sample.in_flight for sample in store.samples()[-2:]] == [2, 2]
+    finally:
+        _ConcurrentHandler.wait_for_pair = False
+        _ConcurrentHandler.barrier = None
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_records_upstream_stream_timings(tmp_path, monkeypatch) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    monkeypatch.setattr(telemetry, "_default", store)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _TelemetryHandler.stream = True
+        _TelemetryHandler.include_usage = True
+        _TelemetryHandler.timings = {
+            "cache_n": 0,
+            "prompt_n": 330,
+            "prompt_ms": 816.236,
+            "predicted_n": 16,
+            "predicted_ms": 381.695,
+        }
+        client = TestClient(create_app(_gateway_plan(upstream.server_address[1])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        sample = store.samples()[-1]
+        assert sample.decode_tps == pytest.approx(41.92, rel=1e-3)
+        assert sample.prefill_tps == pytest.approx(404.29, rel=1e-3)
+        assert sample.approximate is False
+        assert "nmesh_telemetry_prefill_tokens_per_second_median" in (
+            client.get("/metrics/prometheus").text
+        )
+    finally:
+        _TelemetryHandler.timings = None
+        _TelemetryHandler.include_usage = False
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_keeps_partially_cached_prefill_timing(tmp_path, monkeypatch) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    monkeypatch.setattr(telemetry, "_default", store)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _TelemetryHandler.stream = True
+        _TelemetryHandler.include_usage = True
+        _TelemetryHandler.timings = {
+            "cache_n": 24,
+            "prompt_n": 314,
+            "prompt_ms": 816.236,
+            "predicted_n": 16,
+            "predicted_ms": 381.695,
+        }
+        client = TestClient(create_app(_gateway_plan(upstream.server_address[1])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert store.samples()[-1].prefill_tps == pytest.approx(384.9, rel=1e-3)
+    finally:
+        _TelemetryHandler.timings = None
+        _TelemetryHandler.include_usage = False
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_omits_cached_prefill_timing(tmp_path, monkeypatch) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    monkeypatch.setattr(telemetry, "_default", store)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _TelemetryHandler.stream = True
+        _TelemetryHandler.include_usage = True
+        _TelemetryHandler.timings = {
+            "cache_n": 329,
+            "prompt_n": 1,
+            "prompt_ms": 3.0,
+            "predicted_n": 16,
+            "predicted_ms": 381.695,
+        }
+        client = TestClient(create_app(_gateway_plan(upstream.server_address[1])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert store.samples()[-1].prefill_tps is None
+    finally:
+        _TelemetryHandler.timings = None
+        _TelemetryHandler.include_usage = False
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_records_upstream_nonstream_timings(tmp_path, monkeypatch) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    monkeypatch.setattr(telemetry, "_default", store)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _TelemetryHandler.stream = False
+        _TelemetryHandler.timings = {
+            "cache_n": 0,
+            "prompt_n": 330,
+            "prompt_ms": 816.236,
+            "predicted_n": 16,
+            "predicted_ms": 381.695,
+        }
+        client = TestClient(create_app(_gateway_plan(upstream.server_address[1])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "stream": False,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        sample = store.samples()[-1]
+        assert sample.decode_tps == pytest.approx(41.92, rel=1e-3)
+        assert sample.prefill_tps == pytest.approx(404.29, rel=1e-3)
+        assert sample.ttft_s is None
+    finally:
+        _TelemetryHandler.stream = True
+        _TelemetryHandler.timings = None
         upstream.shutdown()
         upstream.server_close()
 

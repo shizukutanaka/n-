@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import psutil
+
+from nmesh.paths import nmesh_home
 
 from .caps import llamacpp_caps
 from .generic_gpu import detect_generic
@@ -194,6 +197,62 @@ def _detect_rocm(
     return gpus
 
 
+def _resolve_backend_binary(
+    backend: str,
+    command: str,
+    warnings: list[str],
+    warning_params: list[dict[str, str]] | None = None,
+) -> Path | None:
+    env_name = f"NMESH_{backend.upper()}_BIN"
+    override = os.environ.get(env_name)
+    if override:
+        candidate = Path(override)
+        if candidate.is_file():
+            return candidate.resolve()
+        located = shutil.which(override)
+        if located:
+            return Path(located).resolve()
+        _append_warning(
+            warnings,
+            warning_params,
+            "warn.backend_binary_missing",
+            backend=backend,
+            path=override,
+        )
+        return None
+    located = shutil.which(command)
+    if located:
+        return Path(located).resolve()
+    if backend == "llamacpp":
+        from nmesh.runtime.engine import active as active_engine
+
+        managed = active_engine()
+        if managed is not None and managed.exe.is_file():
+            return managed.exe.resolve()
+    names = [command]
+    if os.name == "nt":
+        names = [f"{command}.exe", command]
+    for name in names:
+        candidate = nmesh_home() / "bin" / name
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def _version_line(output: str | None, error: str | None) -> str | None:
+    lines = [
+        line.strip()
+        for text in (output, error)
+        if text
+        for line in text.splitlines()
+        if line.strip()
+    ]
+    return (
+        next((line for line in lines if re.search(r"version", line, re.IGNORECASE)), None)
+        or (lines[0] if lines else None)
+    )
+
+
 def _detect_backends(
     warnings: list[str],
     warning_params: list[dict[str, str]] | None = None,
@@ -218,14 +277,23 @@ def _detect_backends(
         "vllm": ["vllm", "--version"],
     }
     for name, command in commands.items():
-        if shutil.which(command[0]) is None:
+        executable = _resolve_backend_binary(
+            name, command[0], warnings, warning_params,
+        )
+        if executable is None:
             continue
-        executable = Path(shutil.which(command[0]) or command[0]).resolve()
         paths[name] = str(executable)
-        output, error = _run(command)
-        version_text = (output or error or "").strip()
-        if version_text:
-            backends[name] = version_text.splitlines()[0]
+        output, error = _run([str(executable), *command[1:]])
+        version = _version_line(output, error)
+        if name == "llamacpp":
+            from nmesh.runtime.engine import active as active_engine
+
+            managed = active_engine()
+            if managed is not None and executable == managed.exe:
+                suffix = f" [{managed.tag}/{managed.variant}]"
+                version = f"{version}{suffix}" if version else suffix.strip()
+        if version:
+            backends[name] = version
         if name == "llamacpp":
             caps = llamacpp_caps(str(executable))
             if caps is not None:
