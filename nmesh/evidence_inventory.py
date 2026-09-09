@@ -13,6 +13,7 @@ from nmesh.eval import SUITES, needle_tasks, suite_digest
 from nmesh.eval.cache import EvalRecord, load_eval_cache
 from nmesh.eval.context import ContextRecord, load_context_cache
 from nmesh.eval.select import (
+    DepthEvidence,
     context_depth_evidence,
     effective_context_records,
     planner_eval_records,
@@ -100,7 +101,7 @@ def _depth_value(
     record: ContextRecord,
     *,
     effective: bool,
-    evidence: Mapping[tuple[str, str, str], object],
+    evidence: Mapping[tuple[str, str, str], DepthEvidence],
 ) -> str:
     served = record.served_depth or record.requested_depth
     families = " ".join(
