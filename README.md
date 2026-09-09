@@ -10,20 +10,18 @@ selects a runnable model when no candidate claims every requested language.
 Catalog language lists are publisher/vendor claims, not measured benchmarks.
 # nmesh
 
+## Quickstart（3 コマンド）
+
+```text
+pip install "nmesh[gateway]"
+nmesh doctor            # ハードウェアと使えるバックエンドを表示
+nmesh up --detach       # 機械に合うモデルを選んで起動（llama.cpp が無ければ自分で取得）
+# → http://127.0.0.1:18000/v1 が OpenAI 互換で使えます
+```
+
 nmesh は、ローカル LLM のためのハードウェア自動検出、モデル選択、メモリ見積もり、
 実行管理ツールです。ノート PC から複数 GPU のワークステーションまで構成を自動で計画し、
 OpenAI 互換 API を提供します。
-
-## クイックスタート
-
-```text
-pip install -e .
-nmesh doctor
-nmesh plan
-nmesh up
-```
-
-Gateway は `http://127.0.0.1:18000/v1` の OpenAI 互換エンドポイントで待ち受けます。
 
 ## ハードウェア tier
 
@@ -220,6 +218,7 @@ regression testing. To use a real machine's description:
 nmesh doctor --json > mine.json
 nmesh plan --profile mine.json
 ```
+
 
 ## GPU detection and honest VRAM reporting
 
@@ -1029,45 +1028,3 @@ plan, unavailable gateway/backend, failed benchmark, missing plan, or non-zero
 foreground server exit returns `1`. `status` and `down` remain idempotent:
 querying status or stopping an already-stopped runtime is a successful
 operation.
-
-## GPU detection and honest VRAM reporting
-
-nmesh first tries the specialized NVIDIA and ROCm detectors: NVML or
-`nvidia-smi` for NVIDIA, and `rocm-smi` for AMD. The generic detector runs only
-when all of those specialized paths return no GPUs. On Windows it reads
-`Win32_VideoController` and the display-adapter registry; on Linux it reads
-DRM device vendor IDs and AMD's `mem_info_vram_total`. Apple Silicon keeps its
-existing unified-memory path rather than going through generic discrete-GPU
-detection.
-
-`nmesh doctor` shows each detected adapter and includes the `vram_source`
-provenance beside its VRAM amount (`nvml`, `smi`, `registry`, `sysfs`, or
-`unknown`). An Intel integrated GPU can therefore be visible in `doctor` while
-the plan remains `T0_CPU`: shared system memory is not counted as dedicated
-VRAM, and the tier threshold is intentionally not inflated. Such an adapter
-gets a warning explaining that its dedicated VRAM is below the placement
-threshold.
-
-Registry- and sysfs-derived adapters do not provide measured free VRAM.
-nmesh conservatively reports `free = total` for those adapters; consequently,
-`--budget free` is an upper bound rather than a measurement for them (the
-normal display reserve is still subtracted). NVML and SMI values are the
-sources that provide runtime free-memory measurements.
-
-## Backend GPU capability checks
-
-GPU-layer flags in a backend's help output are not proof that the backend can
-execute on a GPU. In particular, the CPU-only llama.cpp build b10734 advertises
-`-ngl` in `--help` but reports:
-
-```text
-Available devices:
-  (none)
-```
-
-nmesh therefore asks llama.cpp to enumerate its devices. A successful empty
-result, `()`, forces CPU placement and honest RAM accounting instead of
-emitting GPU-layer arguments. An unknown result, `None` (for example when the
-probe fails), preserves the previous behavior rather than making an
-unsupported CPU fallback assumption. To use a detected GPU with llama.cpp,
-install or build a backend with a Vulkan, CUDA, HIP, or SYCL GPU backend.

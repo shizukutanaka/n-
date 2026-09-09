@@ -2,6 +2,10 @@
 
 ## 未リリース
 
+- bench harness を `bench-v2` に更新しました。デコード速度が n/(n-1) 倍に膨らんでいたため、`bench-v1` の記録は比較に使いません。再測定が必要です。
+- 深度プローブの採点規則変更により既存の深度証拠は無効です。`nmesh eval --depth` の再実行が必要です。
+- GPU 実機・vLLM・MLX は未検証です。
+- CI は未稼働です（ワークフロー未設置）。
 - Add pooled retrieval evidence and opt-in gateway auto-chunking.
 - `nmesh bench --retrieval` records single-vector retrieval usability; the planner warns rather than clamps when recall degrades and recommends chunking long inputs.
 - Retrieval evidence now confirms whether chunking at the measured usable length restores rank-1 retrieval before recommending it.
