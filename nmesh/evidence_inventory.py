@@ -116,19 +116,34 @@ def _depth_value(
     )
     if families:
         value += f" {families}"
-    if effective:
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
-        depth_evidence = evidence.get(key)
-        if depth_evidence is not None:
-            if depth_evidence.lost >= served:
-                value += " lost"
-            elif depth_evidence.verified >= served:
-                value += " verified"
+    verdict = _depth_verdict(record, effective=effective, evidence=evidence)
+    if verdict:
+        value += f" {verdict}"
     return value
+
+
+def _depth_verdict(
+    record: ContextRecord,
+    *,
+    effective: bool,
+    evidence: Mapping[tuple[str, str, str], DepthEvidence],
+) -> str:
+    if not effective:
+        return ""
+    served = record.served_depth or record.requested_depth
+    key = (
+        record.model_id.casefold(),
+        record.quant.casefold(),
+        record.backend.casefold(),
+    )
+    depth_evidence = evidence.get(key)
+    if depth_evidence is None:
+        return ""
+    if depth_evidence.lost >= served:
+        return "lost"
+    if depth_evidence.verified >= served:
+        return "verified"
+    return ""
 
 
 def _depth_rows(records: Mapping[str, ContextRecord]) -> list[dict[str, object]]:
@@ -151,6 +166,7 @@ def _depth_rows(records: Mapping[str, ContextRecord]) -> list[dict[str, object]]
         if not effective and not reasons:
             reasons.append("superseded")
         usable = effective and not reasons
+        verdict = _depth_verdict(record, effective=effective, evidence=evidence)
         rows.append({
             "kind": "depth",
             "key": key,
@@ -164,6 +180,7 @@ def _depth_rows(records: Mapping[str, ContextRecord]) -> list[dict[str, object]]
                 effective=effective,
                 evidence=evidence,
             ),
+            "verdict": verdict,
             "usable": usable,
             "reasons": reasons,
             "remeasure": (

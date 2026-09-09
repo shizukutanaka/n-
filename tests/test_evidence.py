@@ -167,6 +167,11 @@ def test_evidence_table_folds_reasons_and_remeasure_at_narrow_width(
             (FamilyResult("literal", 8, 8, 8, 8),), 1.0,
         ),
     })
+    depth_row = next(
+        row for row in collect_evidence()["records"] if row["kind"] == "depth"
+    )
+    assert depth_row["verdict"] == "verified"
+    assert depth_row["value"] == "served=8 literal 8/8 control 8/8 verified"
     console = Console(width=80, record=True, color_system=None)
     monkeypatch.setattr(cli, "_console", lambda: console)
 

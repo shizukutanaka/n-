@@ -3206,42 +3206,34 @@ def _evidence(args: argparse.Namespace) -> int:
         ("eval", "evidence.eval_title"),
         ("depth", "evidence.depth_title"),
     ):
-        table = Table(title=i18n.t(title_key, language), padding=(0, 0))
-        max_widths = {
-            "model": 10,
-            "quant": 5,
-            "backend": 8,
-            "scope": 8,
-            "value": 10,
-            "usable": 6,
-            "reasons": 16,
-            "remeasure": 11,
+        # Bound value and key-text columns so evidence strings fit at 80 columns.
+        width_options = {
+            "value": {"max_width": 10},
+            "reasons": {"max_width": 16},
+            "remeasure": {"max_width": 11},
         }
         fold_columns = {"model", "reasons", "remeasure"}
         if kind == "depth":
-            max_widths.update({
-                "model": 8,
-                "backend": 7,
-                "scope": 21,
-                "value": 8,
-                "reasons": 8,
-                "remeasure": 7,
+            # Keep the numeric depth scope and verdict intact at 80 columns.
+            width_options.update({
+                "scope": {"max_width": 21},
+                "value": {"max_width": 8},
             })
             fold_columns.update({"scope", "value"})
+        table = Table(title=i18n.t(title_key, language), padding=(0, 0))
         for column in (
             "model", "quant", "backend", "scope", "value", "usable",
             "reasons", "remeasure",
         ):
             options = (
                 {
-                    "max_width": max_widths[column],
+                    **width_options.get(column, {}),
                     "overflow": "fold",
                     "no_wrap": False,
                 }
-                if column in fold_columns else {}
+                if column in fold_columns
+                else width_options.get(column, {})
             )
-            if column not in fold_columns:
-                options = {"max_width": max_widths[column]}
             table.add_column(
                 i18n.t(f"evidence.column.{column}", language),
                 **options,
@@ -3265,12 +3257,7 @@ def _evidence(args: argparse.Namespace) -> int:
             if kind == "bench":
                 value = f"{float(row['value']):.1f} tok/s"
             elif kind == "depth":
-                if value.endswith(" verified"):
-                    value = "verified"
-                elif value.endswith(" lost"):
-                    value = "lost"
-                else:
-                    value = "—"
+                value = str(row["verdict"]) or "—"
             table.add_row(
                 str(row["model_id"]),
                 str(row["quant"]),
