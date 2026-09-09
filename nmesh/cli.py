@@ -3190,7 +3190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         version=(
             f"nmesh {__version__} "
             f"(bench={BENCH_HARNESS_VERSION}, "
-            f"probe={suite_digest(needle_tasks(0, 'core'))})"
+            f"probe_rules={suite_digest(needle_tasks(0, 'core'))})"
         ),
     )
     parser.add_argument("--dry-run", action="store_true", dest="global_dry_run")

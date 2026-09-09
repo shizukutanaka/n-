@@ -12,7 +12,7 @@ from nmesh.paths import nmesh_home
 
 BenchCache = dict[str, float]
 CACHE_PATH = nmesh_home() / "bench.json"
-BENCH_HARNESS_VERSION = "bench-v2"
+BENCH_HARNESS_VERSION = "bench-v1"
 MIN_CONTROL_RATIO = 0.90
 
 
