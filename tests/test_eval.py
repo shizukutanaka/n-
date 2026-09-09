@@ -1719,19 +1719,42 @@ def test_eval_rates_are_keyed_by_configuration(monkeypatch) -> None:
     core_digest = suite_digest(TASKS)
     records = {
         "old": EvalRecord("model", "f16", "llamacpp", 16, 8, 0.5, {}, 1.0,
-                          {}, "", "core", core_digest, 0, 0, 0, False),
+                          {}, "", "core", core_digest),
         "new": EvalRecord("model", "f16", "llamacpp", 16, 12, 0.75, {}, 2.0,
-                          {}, "", "core", core_digest, 0, 504, 0, False),
+                          {}, "", "core", core_digest),
         "other": EvalRecord("model", "q4_k_m", "ollama", 16, 13, 0.8125, {}, 1.5,
-                            {}, "", "core", core_digest, 0, 0, 0, True),
+                            {}, "", "core", core_digest),
     }
     monkeypatch.setattr(cli, "load_eval_cache", lambda: records)
     assert cli._eval_rates() == {
         ("model", "f16", "llamacpp"): EvalSummary(
-            0.75, 12, 16, {}, "core", core_digest, 504, False,
+            0.75, 12, 16, {}, "core", core_digest,
         ),
         ("model", "q4_k_m", "ollama"): EvalSummary(
-            0.8125, 13, 16, {}, "core", core_digest, 0, True,
+            0.8125, 13, 16, {}, "core", core_digest,
+        ),
+    }
+
+
+def test_eval_rates_propagate_evidence_identity() -> None:
+    core_digest = suite_digest(TASKS)
+    extended_digest = suite_digest(EXTENDED_TASKS)
+    records = {
+        "cache-on": EvalRecord(
+            "model", "f16", "llamacpp", 16, 12, 0.75, {}, 1.0,
+            {}, "", "extended", extended_digest, 0, 504, 0, True,
+        ),
+        "cache-off": EvalRecord(
+            "other", "q4_k_m", "ollama", 16, 13, 0.8125, {}, 2.0,
+            {}, "", "core", core_digest, 0, 0, 0, False,
+        ),
+    }
+    assert cli._eval_rates(records) == {
+        ("model", "f16", "llamacpp"): EvalSummary(
+            0.75, 12, 16, {}, "extended", extended_digest, 504, True,
+        ),
+        ("other", "q4_k_m", "ollama"): EvalSummary(
+            0.8125, 13, 16, {}, "core", core_digest, 0, False,
         ),
     }
 
