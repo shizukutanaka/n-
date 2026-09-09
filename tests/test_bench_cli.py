@@ -124,6 +124,42 @@ def test_bench_unmeasurable_decode_is_not_stored(monkeypatch, capsys) -> None:
     assert "no decode measurement was recorded" in output
     assert "median decode" not in output
 
+    old_records = {
+        "old": BenchRecord(
+            tps=20.0,
+            decode_tps_min=19.0,
+            decode_tps_max=21.0,
+            runs=3,
+            passes=2,
+            control_ratio=1.0,
+            stable=True,
+            measured_at="old",
+            harness="bench-v2",
+            sessions=(20.0,),
+            reference_tps=20.0,
+            reference_id="ref",
+            epoch="healthy",
+        ),
+    }
+    saved.clear()
+    monkeypatch.setattr(cli, "load_records", lambda: old_records)
+    monkeypatch.setattr(
+        cli, "_reference_context",
+        lambda _service: (Path("server"), Path("model"), "ref", 1),
+    )
+    monkeypatch.setattr(cli, "load_history", dict)
+    monkeypatch.setattr(cli, "save_history", lambda _history: None)
+    monkeypatch.setattr(cli, "measure_reference", lambda *_args: 30.0)
+    monkeypatch.setattr(cli, "load_spec_cache", dict)
+    monkeypatch.setattr(cli, "load_delegation_cache", dict)
+
+    assert cli.main(["bench", "--json", "--tokens", "1"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["demoted"] == ["old"]
+    assert old_records["old"].stable is False
+    assert saved
+    assert saved[-1]["old"].stable is False
+
 
 def test_bench_short_decode_warns_but_stores(monkeypatch, capsys) -> None:
     plan = _plan()

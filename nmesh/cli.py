@@ -1589,6 +1589,37 @@ def _bench(args: argparse.Namespace) -> int:
     stored = controlled.stable and epoch != "degraded"
     language = i18n.lang()
     warnings: list[str] = []
+    records = load_records()
+    if (
+        reference_tps is not None
+        and reference_key
+        and epoch in {"healthy", "unknown"}
+    ):
+        demoted = demote_stale(records, reference_key, reference_tps)
+        spec_records = load_spec_cache()
+        spec_demoted = demote_spec_stale(
+            spec_records, reference_key, reference_tps,
+        )
+        if spec_demoted:
+            try:
+                save_all_spec(spec_records)
+            except OSError as error:
+                print(
+                    i18n.t("err.bench_save", language, error=error),
+                    file=sys.stderr,
+                )
+        delegation_records = load_delegation_cache()
+        delegation_demoted = demote_delegation_stale(
+            delegation_records, reference_key, reference_tps,
+        )
+        if delegation_demoted:
+            try:
+                save_all_delegation(delegation_records)
+            except OSError as error:
+                print(
+                    i18n.t("err.bench_save", language, error=error),
+                    file=sys.stderr,
+                )
     if measurement.decode_tokens_served < MIN_DECODE_TOKENS:
         warnings.append(i18n.t(
             "warn.bench_decode_unmeasurable",
@@ -1600,6 +1631,16 @@ def _bench(args: argparse.Namespace) -> int:
         stored = False
         record = None
         decode_spread = None
+        if (
+            reference_tps is not None
+            and reference_key
+            and epoch in {"healthy", "unknown"}
+        ):
+            try:
+                save_records(records)
+            except OSError as error:
+                print(i18n.t("err.bench_save", language, error=error), file=sys.stderr)
+                return 1
     else:
         if measurement.decode_tokens_served < args.tokens:
             warnings.append(i18n.t(
@@ -1608,37 +1649,6 @@ def _bench(args: argparse.Namespace) -> int:
                 requested=args.tokens,
                 served=measurement.decode_tokens_served,
             ))
-        records = load_records()
-        if (
-            reference_tps is not None
-            and reference_key
-            and epoch in {"healthy", "unknown"}
-        ):
-            demoted = demote_stale(records, reference_key, reference_tps)
-            spec_records = load_spec_cache()
-            spec_demoted = demote_spec_stale(
-                spec_records, reference_key, reference_tps,
-            )
-            if spec_demoted:
-                try:
-                    save_all_spec(spec_records)
-                except OSError as error:
-                    print(
-                        i18n.t("err.bench_save", language, error=error),
-                        file=sys.stderr,
-                    )
-            delegation_records = load_delegation_cache()
-            delegation_demoted = demote_delegation_stale(
-                delegation_records, reference_key, reference_tps,
-            )
-            if delegation_demoted:
-                try:
-                    save_all_delegation(delegation_records)
-                except OSError as error:
-                    print(
-                        i18n.t("err.bench_save", language, error=error),
-                        file=sys.stderr,
-                    )
         record = merge_measurement(
             records,
             key,
@@ -1742,7 +1752,7 @@ def _bench(args: argparse.Namespace) -> int:
                 language,
                 ratio=controlled.control_ratio or 0.0,
                 kept=i18n.t(
-                     "label.bench_kept" if record is not None and record.stable
+                    "label.bench_kept" if record is not None and record.stable
                     else "label.bench_nothing_stored",
                     language,
                 ),
@@ -1756,7 +1766,7 @@ def _bench(args: argparse.Namespace) -> int:
                     if reference_tps is not None and reference_baseline else 0.0
                 ),
                 kept=i18n.t(
-                     "label.bench_kept" if record is not None and record.stable
+                    "label.bench_kept" if record is not None and record.stable
                     else "label.bench_nothing_stored",
                     language,
                 ),
