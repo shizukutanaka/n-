@@ -18,6 +18,14 @@ and 2/4 deeply; order tasks scored 2/8 natively and 1/4, 1/4, 2/4, and 1/4
 deeply. Aggregate and order therefore fail at about 140 tokens on this
 artifact, so a family whose shallow control fails cannot be read as a depth
 result.
+
+The update family scored 8/8 natively and 4/4 at about 1,245, 6,271, and
+15,020 served tokens. Two-hop retrieval scored 7/8 natively, with opening and
+closing controls of 4/4 and 2/4, then 1/4, 2/4, and 3/4 deeply at about
+1,250, 6,250, and 15,045 tokens. Count scored 2/8 natively and failed at
+about 200 tokens. Two-hop is not shipped because its shallow control is not
+stable across repeats, and count is not shipped because it fails at shallow
+depth.
 """
 
 from __future__ import annotations
@@ -212,8 +220,52 @@ def _multi_task(target: int, seed: str, index: int) -> Task:
     )
 
 
+def _update_task(target: int, seed: str, index: int) -> Task:
+    case = uuid.uuid5(uuid.NAMESPACE_URL, f"{seed}|update|{index}")
+    case_id = case.hex[:8]
+    old = case.hex[8:14]
+    new = case.hex[14:20]
+    if new == old:
+        replacement = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"{seed}|update|{index}|new",
+        )
+        new = replacement.hex[8:14]
+    needles = (
+        f"The access code for case {case_id} is {old}.",
+        f"Correction: the access code for case {case_id} was changed to {new}.",
+    )
+    question = (
+        f"After all corrections, what is the current access code for case {case_id}? "
+        "Answer with the code only."
+    )
+
+    def check(text: str) -> bool:
+        match = _HEX_RE.search(text.casefold())
+        return match is not None and match.group() == new
+
+    prompt = (
+        _scattered_prompt(
+            question,
+            needles,
+            target,
+            f"{seed}|update|{index}",
+        )
+        if target > 0
+        else "\n".join(needles) + f"\n\n{question}"
+    )
+    return Task(
+        f"context.update.{index}",
+        "context.update",
+        prompt,
+        32,
+        check,
+        grades="value",
+    )
+
+
 def needle_tasks(target: int, seed: str) -> tuple[Task, ...]:
-    """Return paired literal, latent, and scattered multi-code probes."""
+    """Return paired literal, latent, multi-code, and update probes."""
     positions = (0.1, 0.9)
     tasks = tuple(
         task
@@ -224,7 +276,11 @@ def needle_tasks(target: int, seed: str) -> tuple[Task, ...]:
             _latent_task(target, seed, index, position),
         )
     )
-    return tasks + tuple(_multi_task(target, seed, index) for index in range(4))
+    return (
+        tasks
+        + tuple(_multi_task(target, seed, index) for index in range(4))
+        + tuple(_update_task(target, seed, index) for index in range(4))
+    )
 
 
 __all__ = ["needle_tasks", "padded_prompt"]

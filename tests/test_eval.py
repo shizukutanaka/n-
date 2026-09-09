@@ -264,11 +264,15 @@ def test_bench_nominal_reference_is_below_real_depth_ceiling() -> None:
 
 def test_needle_tasks_have_both_positions_and_validated_checkers() -> None:
     tasks = needle_tasks(4096, "core")
-    assert len(tasks) == 20
+    assert len(tasks) == 24
     assert {task.category for task in tasks} == {
-        "context.literal", "context.latent", "context.multi",
+        "context.literal", "context.latent", "context.multi", "context.update",
     }
-    assert {task.id.split(".")[2] for task in tasks if task.category != "context.multi"} == {
+    assert {
+        task.id.split(".")[2]
+        for task in tasks
+        if task.category not in {"context.multi", "context.update"}
+    } == {
         "p10", "p90",
     }
     for task in tasks:
@@ -302,12 +306,21 @@ def test_needle_tasks_have_both_positions_and_validated_checkers() -> None:
             assert task.check(", ".join(codes))
             assert not task.check(",".join(reversed(codes)))
             assert not task.check(",".join(codes[:3]))
+        elif task.category == "context.update":
+            codes = re.findall(r"(?:is|to) ([0-9a-f]{6})\.", task.prompt)
+            assert len(codes) == 2
+            assert task.check(codes[1])
+            assert not task.check(codes[0])
         assert not task.check("")
 
 
 def test_needle_tasks_have_paired_control_content() -> None:
     control = needle_tasks(0, "core")
     deep = needle_tasks(8192, "core")
+    repeat = needle_tasks(0, "core")
+    assert [(task.id, task.prompt) for task in control] == [
+        (task.id, task.prompt) for task in repeat
+    ]
     assert [task.id for task in control] == [task.id for task in deep]
     for control_task, deep_task in zip(control, deep):
         assert control_task.category == deep_task.category
@@ -321,11 +334,20 @@ def test_needle_tasks_have_paired_control_content() -> None:
             assert re.search(pattern, control_task.prompt).group(1) == re.search(
                 pattern, deep_task.prompt,
             ).group(1)
-        else:
+        elif control_task.category == "context.latent":
             pattern = r"([A-Z][a-z]+) spent the whole quarter"
             assert re.search(pattern, control_task.prompt).group(1) == re.search(
                 pattern, deep_task.prompt,
             ).group(1)
+        else:
+            pattern = r"(?:is|to) ([0-9a-f]{6})\."
+            control_codes = re.findall(pattern, control_task.prompt)
+            deep_codes = re.findall(pattern, deep_task.prompt)
+            assert control_codes == deep_codes
+            assert "Reference material:" not in control_task.prompt
+            assert deep_task.prompt.index(control_codes[0]) < deep_task.prompt.index(
+                "Correction:",
+            )
 
 
 def test_runner_explicit_timeout_is_used_for_every_request(monkeypatch) -> None:
@@ -1084,6 +1106,22 @@ def test_context_evidence_filters_stale_controls_and_keeps_latest() -> None:
     }
 
 
+def test_context_evidence_requires_all_pooled_controls() -> None:
+    digest = suite_digest(needle_tasks(4, "core"))
+    uncontrolled = ContextRecord(
+        "model", "f16", "llamacpp", "core", 4, 4, digest,
+        (FamilyResult("context.update", 0, 4, 4, 8),), 1.0,
+    )
+    lost = ContextRecord(
+        "model", "f16", "llamacpp", "core", 4, 4, digest,
+        (FamilyResult("context.update", 0, 4, 8, 8),), 2.0,
+    )
+    assert cli._context_evidence({"uncontrolled": uncontrolled}) == {}
+    assert cli._context_evidence({"lost": lost}) == {
+        ("model", "f16", "llamacpp"): cli.DepthEvidence(0, 4),
+    }
+
+
 def _quality_models() -> list[ModelSpec]:
     return [
         ModelSpec("prior-high", "test", 500_000_000, 24, 16, 2, 64, 1024,
@@ -1732,20 +1770,24 @@ def test_eval_cli_depth_runs_suite_and_context_probe_separately(
 
     def evaluate(tasks, base_url, model_ref, **kwargs):
         calls.append((tuple(tasks), kwargs))
-        if kwargs["depth"] == 4096 and len(calls) == 2:
+        if kwargs["depth"] == 4096 and any(
+            task.category.startswith("context.") for task in tasks
+        ):
             return EvalRun(
-                "prior-high", "f16", "llamacpp", 20, 11, 0.55, {}, outcomes({
+                "prior-high", "f16", "llamacpp", 24, 13, 13 / 24, {}, outcomes({
                     "context.literal": [True] * 8,
                     "context.latent": [False] * 8,
                     "context.multi": [True, True, True, False],
+                    "context.update": [True] * 4,
                 }), 3.0, prompt_tokens_max=8192,
             )
-        if len(calls) == 3:
+        if len(calls) == 4:
             return EvalRun(
-                "prior-high", "f16", "llamacpp", 20, 12, 0.6, {}, outcomes({
-                    "context.literal": [True] * 8,
-                    "context.latent": [False] * 8,
-                    "context.multi": [True] * 4,
+                "prior-high", "f16", "llamacpp", 24, 16, 2 / 3, {}, outcomes({
+                    "context.literal": [True] * 16,
+                    "context.latent": [False] * 16,
+                    "context.multi": [True] * 8,
+                    "context.update": [True] * 8,
                 }), 3.0,
             )
         return result
@@ -1755,30 +1797,35 @@ def test_eval_cli_depth_runs_suite_and_context_probe_separately(
     monkeypatch.setattr(cli, "save_context", lambda value: "context.json")
     assert cli.main(["eval", "--json", "--depth", "4096"]) == 0
     output = json.loads(capsys.readouterr().out)
-    assert len(calls) == 3
-    assert [call[1]["depth"] for call in calls] == [4096, 4096, 0]
+    assert len(calls) == 4
+    assert [call[1]["depth"] for call in calls] == [4096, 0, 4096, 0]
     assert not any(task.category.startswith("context.") for task in calls[0][0])
     assert all(task.category.startswith("context.") for task in calls[1][0])
     assert all(task.category.startswith("context.") for task in calls[2][0])
+    assert all(task.category.startswith("context.") for task in calls[3][0])
     assert output["requested_depth"] == 4096
     assert output["served_depth"] is None
     assert output["served_depth_known"] is False
     assert output["context_probe"]["families"] == {
         "literal": {
-            "passed": 8, "of": 8, "control_passed": 8, "control_of": 8,
+            "passed": 8, "of": 8, "control_passed": 16, "control_of": 16,
             "attributable": True,
         },
         "latent": {
-            "passed": 0, "of": 8, "control_passed": 0, "control_of": 8,
+            "passed": 0, "of": 8, "control_passed": 0, "control_of": 16,
             "attributable": False,
         },
         "multi": {
-            "passed": 3, "of": 4, "control_passed": 4, "control_of": 4,
+            "passed": 3, "of": 4, "control_passed": 8, "control_of": 8,
+            "attributable": True,
+        },
+        "update": {
+            "passed": 4, "of": 4, "control_passed": 8, "control_of": 8,
             "attributable": True,
         },
     }
-    assert output["context_probe"]["control_passed"] == 12
-    assert output["context_probe"]["control_of"] == 20
+    assert output["context_probe"]["control_passed"] == 32
+    assert output["context_probe"]["control_of"] == 48
     assert output["context_probe"]["attributable"] is False
     assert len(output["context_probe"]["depth_warnings"]) == 1
     assert "multi" in output["context_probe"]["depth_warnings"][0]
