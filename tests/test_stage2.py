@@ -9,7 +9,8 @@ import psutil
 import pytest
 
 from nmesh import i18n
-from nmesh.bench import benchmark, benchmark_key, load_cache, save_cache
+from nmesh.bench import benchmark, benchmark_key, load_cache
+from nmesh.bench.cache import merge_measurement, save_records
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.gateway import estimate_tokens, route
 from nmesh.planner import Policy, build_plan, free_budgets
@@ -80,7 +81,19 @@ def test_route_uses_script_aware_context_and_reserved_output(catalog) -> None:
 def test_bench_cache_round_trip(tmp_path) -> None:
     key = benchmark_key("model", "q4_k_m", "llamacpp", "cpu", 0)
     path = tmp_path / "bench.json"
-    save_cache({key: benchmark(lambda _prefill, _decode: 3.0)}, path)
+    records = {}
+    tps = benchmark(lambda _prefill, _decode: 3.0)
+    merge_measurement(
+        records,
+        key,
+        tps=tps,
+        decode_tps_min=tps,
+        decode_tps_max=tps,
+        runs=3,
+        passes=2,
+        control_ratio=1.0,
+    )
+    save_records(records, path)
     assert load_cache(path)[key] == 3.0
 
 

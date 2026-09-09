@@ -6,6 +6,7 @@ from typing import ClassVar
 import nmesh.planner.core as planner_core
 from nmesh.bench import benchmark_key, runner
 from nmesh.bench.cache import (
+    BENCH_HARNESS_VERSION,
     BenchRecord,
     load_cache,
     load_records,
@@ -49,14 +50,14 @@ def test_bench_records_round_trip_and_legacy(tmp_path) -> None:
     assert loaded["legacy"].harness == "legacy"
     assert loaded["legacy"].epoch == "unknown"
     assert loaded["legacy"].confirmations == 1
-    assert load_cache(path) == {"legacy": 48.54}
+    assert load_cache(path) == {}
 
 
 def test_unstable_records_are_hidden_but_prior_evidence_survives(tmp_path) -> None:
     path = tmp_path / "bench.json"
     records = {
         "key": BenchRecord(
-            48.0, 47.0, 49.0, 3, 2, 0.99, True, "now", "bench-v1",
+            48.0, 47.0, 49.0, 3, 2, 0.99, True, "now", BENCH_HARNESS_VERSION,
             (48.0, 48.2),
         )
     }
@@ -69,7 +70,7 @@ def test_unstable_records_are_hidden_but_prior_evidence_survives(tmp_path) -> No
         runs=3,
         passes=2,
         control_ratio=0.2,
-        harness="bench-v1",
+        harness=BENCH_HARNESS_VERSION,
     )
     save_records(records, path)
     loaded = load_records(path)["key"]
@@ -84,7 +85,7 @@ def test_degraded_epoch_preserves_prior_record_and_is_hidden_without_session(
 ) -> None:
     records = {
         "key": BenchRecord(
-            48.0, 47.0, 49.0, 3, 2, 0.99, True, "old", "bench-v1",
+            48.0, 47.0, 49.0, 3, 2, 0.99, True, "old", BENCH_HARNESS_VERSION,
             (48.0, 48.2), reference_tps=61.0, reference_id="ref", epoch="healthy",
         )
     }
@@ -100,7 +101,7 @@ def test_degraded_epoch_preserves_prior_record_and_is_hidden_without_session(
         reference_tps=24.0,
         reference_id="ref",
         epoch="degraded",
-        harness="bench-v1",
+        harness=BENCH_HARNESS_VERSION,
     )
     record = records["key"]
     assert record.tps == 48.0
@@ -118,11 +119,11 @@ def test_epoch_fields_round_trip_and_degraded_cache_filter(tmp_path) -> None:
     path = tmp_path / "bench.json"
     records = {
         "healthy": BenchRecord(
-            40.0, 39.0, 41.0, 3, 2, 0.99, True, "now", "bench-v1",
+            40.0, 39.0, 41.0, 3, 2, 0.99, True, "now", BENCH_HARNESS_VERSION,
             (40.0,), reference_tps=60.0, reference_id="ref", epoch="healthy",
         ),
         "degraded": BenchRecord(
-            20.0, 19.0, 21.0, 3, 2, 0.99, True, "now", "bench-v1",
+            20.0, 19.0, 21.0, 3, 2, 0.99, True, "now", BENCH_HARNESS_VERSION,
             (20.0,), reference_tps=24.0, reference_id="ref", epoch="degraded",
         ),
     }
@@ -319,7 +320,7 @@ def test_planner_requires_two_agreeing_sessions_to_exclude() -> None:
     key = benchmark_key(model.id, "q4_k_m", "llamacpp", "cpu", 0)
     cache = {key: 5.05}
     unconfirmed = BenchRecord(
-        5.05, 5.0, 5.1, 3, 2, 0.95, True, "now", "bench-v1", (5.05,),
+        5.05, 5.0, 5.1, 3, 2, 0.95, True, "now", BENCH_HARNESS_VERSION, (5.05,),
     )
     candidates = planner_core._candidate_for(
         model, profile(64), policy, cache, bench_records={key: unconfirmed},
@@ -327,7 +328,7 @@ def test_planner_requires_two_agreeing_sessions_to_exclude() -> None:
     assert any(item.quant == "q4_k_m" for item in candidates)
 
     confirmed = BenchRecord(
-        5.05, 5.0, 5.1, 3, 2, 0.95, True, "now", "bench-v1",
+        5.05, 5.0, 5.1, 3, 2, 0.95, True, "now", BENCH_HARNESS_VERSION,
         (5.05, 5.1),
     )
     candidates = planner_core._candidate_for(
@@ -341,10 +342,10 @@ def test_unstable_record_isolated_and_stable_measurement_restores_evidence(
 ) -> None:
     records = {
         "unstable": BenchRecord(
-            5.0, 4.9, 5.1, 3, 2, 0.1, False, "old", "bench-v1", (5.0,),
+            5.0, 4.9, 5.1, 3, 2, 0.1, False, "old", BENCH_HARNESS_VERSION, (5.0,),
         ),
         "other": BenchRecord(
-            20.0, 19.0, 21.0, 3, 2, 0.99, True, "old", "bench-v1",
+            20.0, 19.0, 21.0, 3, 2, 0.99, True, "old", BENCH_HARNESS_VERSION,
             (20.0, 20.2),
         ),
     }

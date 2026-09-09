@@ -10,7 +10,6 @@ from .cache import (
     load_cache,
     load_records,
     merge_measurement,
-    save_cache,
     save_records,
 )
 from .epoch import (
@@ -67,7 +66,6 @@ __all__ = [
     "prune_degraded",
     "reference_id",
     "refutes",
-    "save_cache",
     "save_history",
     "save_records",
 ]

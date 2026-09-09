@@ -853,6 +853,9 @@ length or prompt depth: the corrected rate is length-independent, and bench
 prompt depth is fixed rather than user-selected. `--tokens` is an upper bound;
 bench records the served decode length and warns when EOS stops before the
 requested length, while a one-token response is not measurable.
+Saved measurements from an older benchmark harness are not used as planner
+evidence; run `nmesh bench` again. On the measured machine, a legacy 0.5B
+record at 102.5 tok/s had incorrectly appeared as `"estimated": false`.
 
 #### GGUF artifact identity
 

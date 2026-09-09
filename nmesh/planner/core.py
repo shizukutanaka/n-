@@ -11,7 +11,7 @@ from pathlib import Path
 from nmesh import __version__
 from nmesh.artifact import service_fingerprint
 from nmesh.artifacts import artifact_key
-from nmesh.bench.cache import BenchRecord, benchmark_key
+from nmesh.bench.cache import BENCH_HARNESS_VERSION, BenchRecord, benchmark_key
 from nmesh.catalog import ModelSpec
 from nmesh.eval.cache import EvalSummary
 from nmesh.eval.generated import EXTENDED_TASKS
@@ -675,10 +675,8 @@ def _candidate_for(
                 bench_records is None
                 or (
                     bench_record is not None
-                    and (
-                        bench_record.harness == "legacy"
-                        or bench_record.confirmations >= 2
-                    )
+                    and bench_record.harness == BENCH_HARNESS_VERSION
+                    and bench_record.confirmations >= 2
                 )
             )
             memory = MemoryEstimate(**{**asdict(base), "cpu_bytes": cpu_bytes,
@@ -1673,6 +1671,16 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         for index, warning in enumerate(profile.warnings)
     ]
     warnings.append(t("warn.quality_prior", selected.lang))
+    stale_bench_records = sum(
+        record.harness != BENCH_HARNESS_VERSION
+        for record in (bench_records or {}).values()
+    )
+    if stale_bench_records:
+        warnings.append(t(
+            "warn.bench_harness_mismatch",
+            selected.lang,
+            count=stale_bench_records,
+        ))
     known_model_ids = {model.id.casefold() for model in catalog}
     for model_id in selected.model_ids:
         if model_id.casefold() not in known_model_ids:

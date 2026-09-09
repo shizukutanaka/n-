@@ -71,7 +71,11 @@ def load_cache(path: Path | None = None) -> BenchCache:
     return {
         key: record.tps
         for key, record in load_records(path).items()
-        if record.stable and record.epoch != "degraded"
+        if (
+            record.stable
+            and record.epoch != "degraded"
+            and record.harness == BENCH_HARNESS_VERSION
+        )
     }
 
 
@@ -184,13 +188,6 @@ def load_records(path: Path | None = None) -> dict[str, BenchRecord]:
         if record is not None:
             records[str(key)] = record
     return records
-
-
-def save_cache(cache: BenchCache, path: Path | None = None) -> Path:
-    target = path or CACHE_PATH
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(cache, indent=2), encoding="utf-8")
-    return target
 
 
 def save_records(records: dict[str, BenchRecord], path: Path | None = None) -> Path:
