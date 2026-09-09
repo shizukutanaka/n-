@@ -18,6 +18,10 @@ class EvalSummary:
     passed: int
     n_tasks: int
     task_results: Mapping[str, bool]
+    suite: str = ""
+    digest: str = ""
+    reasoning_allowance: int = 0
+    cache_prompt: bool | None = None
 
 
 @dataclass(frozen=True)
