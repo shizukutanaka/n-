@@ -427,12 +427,15 @@ padded suite run cannot license a context length. The planner warns when
 advertised context exceeds quality evidence but does not exclude the candidate.
 The timeout budget includes the requested depth; this matters because the
 bench's `512` is a nominal prefill parameter that tokenises to roughly 336 real
-prompt tokens, not a real-token depth. Context probes run a paired native-depth
-control with identical needles; an attributable failure is reported as a
-measured-broken context warning, without clamping or excluding the candidate.
-Measured multi-needle ordered retrieval held to about 15k tokens, while
-aggregation and ordering tasks failed at about 140 tokens on this artifact, so
-those families are not shipped as probes.
+prompt tokens, not a real-token depth. The shipped probe families are literal,
+latent, multi, and update. Context probes run identical-needle native-depth
+controls before and after the deep run; a family is attributable only when
+both controls are perfect, and an attributable failure is reported as a
+measured-broken context warning without clamping or excluding the candidate.
+Multi-needle ordered retrieval held to about 15k tokens; two-hop retrieval had
+4/4 then 2/4 shallow controls and is not shipped, while count failed at about
+200 tokens and is also not shipped. Adding a probe family changes the probe
+digest, so older `context.json` records become stale and must be re-measured.
 
 Further controlled checks scoped those eliminations to `arithmetic.subtract`:
 with the same fully expanded 48-token raw ChatML prompt, `top_k=1`,

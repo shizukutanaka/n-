@@ -164,6 +164,13 @@ from nmesh.watch.sources import SourceItem, SourceStatus
 from nmesh.watch.state import WatchState, load_state, now_iso, save_state
 from nmesh.watch.verify import Finding, caps_available, verify
 
+_CONTEXT_CATEGORIES = (
+    "context.literal",
+    "context.latent",
+    "context.multi",
+    "context.update",
+)
+
 
 def _console() -> Console:
     return Console(legacy_windows=False)
@@ -1806,6 +1813,19 @@ def _eval(args: argparse.Namespace) -> int:
     if depth > 0:
         probes = needle_tasks(depth, seed=args.suite)
         try:
+            control_before = eval_run(
+                needle_tasks(0, seed=args.suite),
+                base_url,
+                service.model_ref,
+                timeout=timeout,
+                reasoning_allowance=allowance,
+                cache_prompt=False if service.backend == "llamacpp" else None,
+                depth=0,
+            )
+        except RuntimeError as error:
+            print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
+            return 1
+        try:
             probe_result = eval_run(
                 probes,
                 base_url,
@@ -1819,7 +1839,7 @@ def _eval(args: argparse.Namespace) -> int:
             print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
             return 1
         try:
-            control_result = eval_run(
+            control_after = eval_run(
                 needle_tasks(0, seed=args.suite),
                 base_url,
                 service.model_ref,
@@ -1831,13 +1851,17 @@ def _eval(args: argparse.Namespace) -> int:
         except RuntimeError as error:
             print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
             return 1
+        controls = (control_before, control_after)
         families: dict[str, dict[str, int | bool]] = {}
-        for category in ("context.literal", "context.latent", "context.multi"):
+        for category in _CONTEXT_CATEGORIES:
             category_outcomes = [
                 item for item in probe_result.outcomes if item.category == category
             ]
             control_outcomes = [
-                item for item in control_result.outcomes if item.category == category
+                item
+                for control in controls
+                for item in control.outcomes
+                if item.category == category
             ]
             passed = sum(item.passed for item in category_outcomes)
             total = len(category_outcomes)
@@ -1892,11 +1916,7 @@ def _eval(args: argparse.Namespace) -> int:
                     int(families[category.rsplit(".", 1)[-1]]["control_passed"]),
                     int(families[category.rsplit(".", 1)[-1]]["control_of"]),
                 )
-                for category in (
-                    "context.literal",
-                    "context.latent",
-                    "context.multi",
-                )
+                for category in _CONTEXT_CATEGORIES
             ),
             probe_result.at,
             result.artifact,
