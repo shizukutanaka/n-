@@ -1447,6 +1447,16 @@ def _bench(args: argparse.Namespace) -> int:
     if plan is None or not plan.services:
         return 1
     service = next((item for item in plan.services if item.name == args.service), plan.services[0])
+    if "embed" in service.roles:
+        print(
+            i18n.t(
+                "err.bench_embedding",
+                i18n.lang(),
+                service=service.name,
+            ),
+            file=sys.stderr,
+        )
+        return 2
     running = runtime_status()
     if not _service_running(service, running):
         print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
@@ -1475,6 +1485,20 @@ def _bench(args: argparse.Namespace) -> int:
             passes=args.passes,
             cache_prompt=False if service.backend == "llamacpp" else None,
         )
+    except httpx.HTTPError as error:
+        response = getattr(error, "response", None)
+        status = getattr(response, "status_code", "unknown")
+        print(
+            i18n.t(
+                "err.bench_http",
+                i18n.lang(),
+                service=service.name,
+                url=f"{base_url}/v1/chat/completions",
+                status=status,
+            ),
+            file=sys.stderr,
+        )
+        return 1
     except (OSError, RuntimeError) as error:
         print(i18n.t("err.bench_measure", i18n.lang(), error=error), file=sys.stderr)
         return 1

@@ -145,6 +145,8 @@ MESSAGES = {
         "err.gateway_not_ready": "gateway did not become ready; see {path}",
         "err.bench_up": "Service is not running; run nmesh up first.",
         "err.bench_measure": "Benchmark failed: {error}",
+        "err.bench_embedding": "Benchmark measures decode speed, but {service} is an embedding service with no decode path; choose a decode service such as --service chat.",
+        "err.bench_http": "Benchmark request for {service} failed at {url} with HTTP status {status}.",
         "err.spec_draft_required": "--draft is required when --kind draft is used.",
         "err.spec_repeats": "--repeats must be at least 3.",
         "err.spec_no_generative_service": "No generative service (chat, code, or worker) is available for speculation measurement.",
@@ -709,6 +711,12 @@ def _primary(value: object) -> str | None:
         return None
     match = _PRIMARY_SUBTAG.match(value.strip())
     return match.group(0).lower() if match else None
+
+
+MESSAGES["ja"].update({
+    "err.bench_embedding": "\u30d9\u30f3\u30c1\u30de\u30fc\u30af\u306f\u30c7\u30b3\u30fc\u30c9\u901f\u5ea6\u3092\u6e2c\u5b9a\u3057\u307e\u3059\u304c\u3001{service}\u306f\u57cb\u3081\u8fbc\u307f\u30b5\u30fc\u30d3\u30b9\u3067\u30c7\u30b3\u30fc\u30c9\u7d4c\u8def\u304c\u3042\u308a\u307e\u305b\u3093\u3002--service chat\u306a\u3069\u30c7\u30b3\u30fc\u30c9\u53ef\u80fd\u306a\u30b5\u30fc\u30d3\u30b9\u3092\u6307\u5b9a\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
+    "err.bench_http": "{service}\u306e\u30d9\u30f3\u30c1\u30de\u30fc\u30af\u8981\u6c42\u304c{url}\u3067HTTP\u30b9\u30c6\u30fc\u30bf\u30b9{status}\u306b\u5931\u6557\u3057\u307e\u3057\u305f\u3002",
+})
 
 
 def lang() -> str:
