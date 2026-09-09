@@ -2,6 +2,8 @@
 
 ## 未リリース
 
+- 既定の役割で候補がない役割は警告付きで計画から除外し、残りの起動可能なサービスで起動します。
+- `--roles` を明示した場合は、要求した役割を満たせない計画を従来どおり失敗として扱います。
 - Add pooled retrieval evidence and opt-in gateway auto-chunking.
 - `nmesh bench --retrieval` records single-vector retrieval usability; the planner warns rather than clamps when recall degrades and recommends chunking long inputs.
 - Retrieval evidence now confirms whether chunking at the measured usable length restores rank-1 retrieval before recommending it.
