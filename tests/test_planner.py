@@ -106,6 +106,48 @@ def test_worker_role_warns_with_planned_lead_but_no_worker(
     assert any("strictly smaller" in warning for warning in result.warnings)
 
 
+def test_default_roles_degrade_when_model_cannot_cover_embed(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(
+        item for item in catalog if item.id == "qwen2.5-1.5b-instruct"
+    )
+
+    result = build_plan(
+        profile(8),
+        [model],
+        Policy(model_ids=(model.id,), min_decode_tps=0),
+    )
+
+    assert result.runnable
+    assert any("chat" in service.roles for service in result.services)
+    assert not any("embed" in service.roles for service in result.services)
+    assert any("role embed" in warning for warning in result.warnings)
+
+
+def test_explicit_roles_remain_strict_when_embed_is_missing(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(
+        item for item in catalog if item.id == "qwen2.5-1.5b-instruct"
+    )
+
+    result = build_plan(
+        profile(8),
+        [model],
+        Policy(
+            roles=["chat", "embed"],
+            roles_explicit=True,
+            model_ids=(model.id,),
+            min_decode_tps=0,
+        ),
+    )
+
+    assert result.services
+    assert not result.runnable
+    assert any("role embed" in warning for warning in result.warnings)
+
+
 def test_launch_uses_resolved_backend_binary_when_present(
     catalog: list[ModelSpec],
 ) -> None:
