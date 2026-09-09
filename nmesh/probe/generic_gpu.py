@@ -7,20 +7,26 @@ import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
-from .models import GPUInfo
+from .models import GPUInfo, Vendor, VramSource
 
 _SATURATED_ADAPTER_RAM = 4095 * 1024**2
 _DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
 
-def _vendor(value: object) -> str | None:
+def _vendor(value: object) -> Vendor | None:
     text = str(value).strip().lower()
-    return {"0x8086": "intel", "8086": "intel", "0x1002": "amd", "1002": "amd"}.get(text)
+    if text in {"0x8086", "8086"}:
+        return "intel"
+    if text in {"0x1002", "1002"}:
+        return "amd"
+    return None
 
 
 def _number(value: object) -> int:
     try:
-        return int(value)
+        if isinstance(value, (str, bytes, bytearray, int, float)):
+            return int(value)
+        return 0
     except (TypeError, ValueError):
         return 0
 
@@ -76,7 +82,7 @@ def parse_windows_adapters(
         registry_ram = _registry_size(pnp, name, registry_sizes)
         if registry_ram > 0:
             total = registry_ram
-            source = "registry"
+            source: VramSource = "registry"
         elif 0 < adapter_ram < _SATURATED_ADAPTER_RAM:
             total = adapter_ram
             source = "unknown"
@@ -113,7 +119,7 @@ def _read_sysfs_card(card: Path, index: int) -> GPUInfo | None:
     except OSError:
         product = f"{vendor.title()} GPU {index}"
     total = 0
-    source = "unknown"
+    source: VramSource = "unknown"
     try:
         total = _number(
             card.joinpath("device", "mem_info_vram_total").read_text(encoding="ascii").strip()

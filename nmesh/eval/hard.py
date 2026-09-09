@@ -51,7 +51,7 @@ def _digits(expected: tuple[int, ...]) -> Callable[[str], bool]:
     return check
 
 
-def _english_only(required: tuple[str, ...]) -> Callable[[str], bool]:
+def _english_only(required: tuple[tuple[str, ...], ...]) -> Callable[[str], bool]:
     def check(text: str) -> bool:
         value = normalize(text)
         if _CJK.search(value):

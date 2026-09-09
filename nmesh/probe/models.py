@@ -15,6 +15,7 @@ class Tier(str, Enum):
 
 Vendor = Literal["nvidia", "amd", "intel", "apple", "unknown"]
 OperatingSystem = Literal["windows", "linux", "macos"]
+VramSource = Literal["nvml", "smi", "registry", "sysfs", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,7 @@ class GPUInfo:
     free_vram_bytes: int
     compute_capability: tuple[int, int] | None
     driving_display: bool
-    vram_source: Literal["nvml", "smi", "registry", "sysfs", "unknown"] = "unknown"
+    vram_source: VramSource = "unknown"
 
 
 @dataclass(frozen=True)
