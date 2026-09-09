@@ -8,6 +8,10 @@
 - Add character-bound gateway auto-chunking for non-whitespace text.
 ||||||| parent of a60c896 (リリース向けの型検査とCLI体裁を整備)
 - bench harness を `bench-v2` に更新しました。デコード速度が n/(n-1) 倍に膨らんでいたため、`bench-v1` の記録は比較に使いません。再測定が必要です。
+||||||| parent of 6e20ede (リリース履歴の証拠版記述を修正)
+- bench harness を `bench-v2` に更新しました。デコード速度が n/(n-1) 倍に膨らんでいたため、`bench-v1` の記録は比較に使いません。再測定が必要です。
+- `nmesh --version` が bench harness と深度プローブ規則の識別子を出力するようになりました。`bench-v2` への更新（デコード速度が n/(n-1) 倍に膨らんでいた件の修正）は別のブランチで入り、その時点で `bench-v1` の記録は比較に使わなくなります。
+>>>>>>> 6e20ede (リリース履歴の証拠版記述を修正)
 - 深度プローブの採点規則変更により既存の深度証拠は無効です。`nmesh eval --depth` の再実行が必要です。
 - GPU 実機・vLLM・MLX は未検証です。
 - CI は未稼働です（ワークフロー未設置）。
