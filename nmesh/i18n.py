@@ -439,6 +439,8 @@ MESSAGES = {
         "err.gateway_unavailable": "ゲートウェイを利用できません: {error}",
         "err.bench_up": "サービスが起動していません。先にnmesh upを実行してください。",
         "err.bench_measure": "ベンチマークに失敗しました: {error}",
+        "err.bench_embedding": "ベンチマークはデコード速度を測定しますが、{service}は埋め込みサービスでデコード経路がありません。--service chatなどデコード可能なサービスを指定してください。",
+        "err.bench_http": "{service}のベンチマーク要求が{url}でHTTPステータス{status}に失敗しました。",
         "err.spec_draft_required": "--kind draft では --draft が必要です。",
         "err.spec_repeats": "--repeats は 3 以上で指定してください。",
         "err.spec_no_generative_service": "投機的デコードの測定に使える生成サービス（chat、code、worker）がありません。",
@@ -711,12 +713,6 @@ def _primary(value: object) -> str | None:
         return None
     match = _PRIMARY_SUBTAG.match(value.strip())
     return match.group(0).lower() if match else None
-
-
-MESSAGES["ja"].update({
-    "err.bench_embedding": "\u30d9\u30f3\u30c1\u30de\u30fc\u30af\u306f\u30c7\u30b3\u30fc\u30c9\u901f\u5ea6\u3092\u6e2c\u5b9a\u3057\u307e\u3059\u304c\u3001{service}\u306f\u57cb\u3081\u8fbc\u307f\u30b5\u30fc\u30d3\u30b9\u3067\u30c7\u30b3\u30fc\u30c9\u7d4c\u8def\u304c\u3042\u308a\u307e\u305b\u3093\u3002--service chat\u306a\u3069\u30c7\u30b3\u30fc\u30c9\u53ef\u80fd\u306a\u30b5\u30fc\u30d3\u30b9\u3092\u6307\u5b9a\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
-    "err.bench_http": "{service}\u306e\u30d9\u30f3\u30c1\u30de\u30fc\u30af\u8981\u6c42\u304c{url}\u3067HTTP\u30b9\u30c6\u30fc\u30bf\u30b9{status}\u306b\u5931\u6557\u3057\u307e\u3057\u305f\u3002",
-})
 
 
 def lang() -> str:
