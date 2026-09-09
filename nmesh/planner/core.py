@@ -143,6 +143,31 @@ def _evidence_p_value(
     )
 
 
+def _comparable_evidence(left: EvalSummary, right: EvalSummary) -> bool:
+    return (
+        left.suite, left.digest, left.reasoning_allowance, left.cache_prompt,
+    ) == (
+        right.suite, right.digest, right.reasoning_allowance, right.cache_prompt,
+    )
+
+
+def _evidence_label(
+    quant: str, backend: str, summary: EvalSummary,
+) -> str:
+    cache = (
+        "on"
+        if summary.cache_prompt
+        else "off"
+        if summary.cache_prompt is False
+        else "unknown"
+    )
+    return (
+        f"{quant}/{backend} (suite={summary.suite or '?'}, "
+        f"digest={summary.digest or '?'}, "
+        f"allowance={summary.reasoning_allowance}, cache={cache})"
+    )
+
+
 @dataclass(frozen=True)
 class LaunchSpec:
     argv: list[str]
@@ -1726,6 +1751,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     bench_excluded: list[dict[str, str]] = []
     bench_unconfirmed: list[dict[str, str]] = []
     total_download = 0
+    incomparable_pairs: set[tuple[str, str]] = set()
     for group in [item for item in groups if item]:
         reserved_vram, reserved_ram = _reserved_memory(services, swap_group)
         pools = {role: sorted(
@@ -1820,6 +1846,41 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     )
                 )
                 if not isinstance(alternative_evidence, EvalSummary):
+                    continue
+                if not _comparable_evidence(
+                    alternative_evidence, selected_evidence,
+                ):
+                    left = _evidence_label(
+                        alternative.quant,
+                        alternative.backend,
+                        alternative_evidence,
+                    )
+                    right = _evidence_label(
+                        current.quant,
+                        current.backend,
+                        selected_evidence,
+                    )
+                    pair = tuple(sorted((
+                        (
+                            f"{alternative.model.id.casefold()}|"
+                            f"{alternative.quant.casefold()}|"
+                            f"{alternative.backend.casefold()}"
+                        ),
+                        (
+                            f"{current.model.id.casefold()}|"
+                            f"{current.quant.casefold()}|"
+                            f"{current.backend.casefold()}"
+                        ),
+                    )))
+                    if pair not in incomparable_pairs:
+                        incomparable_pairs.add(pair)
+                        warnings.append(t(
+                            "warn.eval_incomparable_conditions",
+                            selected.lang,
+                            model=current.model.id,
+                            left=left,
+                            right=right,
+                        ))
                     continue
                 if alternative_evidence.pass_rate <= selected_evidence.pass_rate:
                     continue
@@ -2176,6 +2237,41 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         if not isinstance(selected_evidence, EvalSummary) or not isinstance(
                             other_evidence, EvalSummary
                         ):
+                            continue
+                        if not _comparable_evidence(
+                            other_evidence, selected_evidence,
+                        ):
+                            left = _evidence_label(
+                                other_candidate.quant,
+                                other_candidate.backend,
+                                other_evidence,
+                            )
+                            right = _evidence_label(
+                                service.quant,
+                                service.backend,
+                                selected_evidence,
+                            )
+                            pair = tuple(sorted((
+                                (
+                                    f"{other.id.casefold()}|"
+                                    f"{other_candidate.quant.casefold()}|"
+                                    f"{other_candidate.backend.casefold()}"
+                                ),
+                                (
+                                    f"{service.model_id.casefold()}|"
+                                    f"{service.quant.casefold()}|"
+                                    f"{service.backend.casefold()}"
+                                ),
+                            )))
+                            if pair not in incomparable_pairs:
+                                incomparable_pairs.add(pair)
+                                warnings.append(t(
+                                    "warn.eval_incomparable_conditions",
+                                    selected.lang,
+                                    model=service.model_id,
+                                    left=left,
+                                    right=right,
+                                ))
                             continue
                         other_rate = other_evidence.pass_rate
                         other_prior = _effective_prior(

@@ -915,7 +915,9 @@ def test_eval_rates_drop_runs_with_transport_errors() -> None:
         ),
     }
     assert cli._eval_rates(records) == {
-        ("other", "f16", "llamacpp"): EvalSummary(90 / 104, 90, 104, {}),
+        ("other", "f16", "llamacpp"): EvalSummary(
+            90 / 104, 90, 104, {}, "core", digest,
+        ),
     }
 
 
@@ -1311,6 +1313,68 @@ def test_planner_notes_indistinguishable_same_model_quants() -> None:
     assert "5.0 points (0.0 vs 5.0)" in notes[0]
 
 
+def test_planner_skips_incomparable_eval_conditions() -> None:
+    selected = {f"task-{index}": index >= 6 for index in range(16)}
+    plan = build_plan(
+        profile(8), [_quant_model()], Policy(roles=["chat"]),
+        eval_cache={
+            ("quant-model", "f16", "llamacpp"): EvalSummary(
+                10 / 16, 10, 16, selected,
+                "core", "core-digest", 0, False,
+            ),
+            ("quant-model", "q4_0", "llamacpp"): EvalSummary(
+                14 / 16, 14, 16, selected,
+                "hard", "shared-digest", 0, False,
+            ),
+        },
+    )
+    assert plan.services[0].quant == "f16"
+    assert not any("this suite cannot distinguish them" in warning
+                   for warning in plan.warnings)
+    assert not any("pass rate ranks" in warning for warning in plan.warnings)
+    incomparable = [
+        warning for warning in plan.warnings
+        if "different conditions" in warning
+    ]
+    assert len(incomparable) == 1
+
+
+def test_planner_requires_matching_cache_condition_for_override() -> None:
+    selected = {f"task-{index}": index >= 6 for index in range(16)}
+    better = {f"task-{index}": True for index in range(16)}
+    incomparable = _quant_eval_cache(selected, better)
+    incomparable[("quant-model", "f16", "llamacpp")] = replace(
+        incomparable[("quant-model", "f16", "llamacpp")],
+        cache_prompt=True,
+    )
+    incomparable[("quant-model", "q4_0", "llamacpp")] = replace(
+        incomparable[("quant-model", "q4_0", "llamacpp")],
+        cache_prompt=False,
+    )
+    plan = build_plan(
+        profile(8), [_quant_model()], Policy(roles=["chat"]),
+        eval_cache=incomparable,
+    )
+    assert plan.services[0].quant == "f16"
+    assert any("different conditions" in warning for warning in plan.warnings)
+    assert not any("measurement outranks" in warning for warning in plan.warnings)
+
+    comparable = _quant_eval_cache(selected, better)
+    comparable[("quant-model", "f16", "llamacpp")] = replace(
+        comparable[("quant-model", "f16", "llamacpp")],
+        cache_prompt=False,
+    )
+    comparable[("quant-model", "q4_0", "llamacpp")] = replace(
+        comparable[("quant-model", "q4_0", "llamacpp")],
+        cache_prompt=False,
+    )
+    plan = build_plan(
+        profile(8), [_quant_model()], Policy(roles=["chat"]),
+        eval_cache=comparable,
+    )
+    assert plan.services[0].quant == "q4_0"
+
+
 def test_planner_does_not_note_more_expensive_quant() -> None:
     blocker = ModelSpec(
         "blocker", "test", 1_000_000_000, 24, 16, 2, 64, 512, 512,
@@ -1655,16 +1719,20 @@ def test_eval_rates_are_keyed_by_configuration(monkeypatch) -> None:
     core_digest = suite_digest(TASKS)
     records = {
         "old": EvalRecord("model", "f16", "llamacpp", 16, 8, 0.5, {}, 1.0,
-                          {}, "", "core", core_digest),
+                          {}, "", "core", core_digest, 0, 0, 0, False),
         "new": EvalRecord("model", "f16", "llamacpp", 16, 12, 0.75, {}, 2.0,
-                          {}, "", "core", core_digest),
+                          {}, "", "core", core_digest, 0, 504, 0, False),
         "other": EvalRecord("model", "q4_k_m", "ollama", 16, 13, 0.8125, {}, 1.5,
-                            {}, "", "core", core_digest),
+                            {}, "", "core", core_digest, 0, 0, 0, True),
     }
     monkeypatch.setattr(cli, "load_eval_cache", lambda: records)
     assert cli._eval_rates() == {
-        ("model", "f16", "llamacpp"): EvalSummary(0.75, 12, 16, {}),
-        ("model", "q4_k_m", "ollama"): EvalSummary(0.8125, 13, 16, {}),
+        ("model", "f16", "llamacpp"): EvalSummary(
+            0.75, 12, 16, {}, "core", core_digest, 504, False,
+        ),
+        ("model", "q4_k_m", "ollama"): EvalSummary(
+            0.8125, 13, 16, {}, "core", core_digest, 0, True,
+        ),
     }
 
 
@@ -1747,7 +1815,9 @@ def test_eval_rates_casefolded_quant_keeps_newest_record() -> None:
         ),
     }
     assert cli._eval_rates(records) == {
-        ("model", "q4_k_m", "llamacpp"): EvalSummary(14 / 16, 14, 16, {}),
+        ("model", "q4_k_m", "llamacpp"): EvalSummary(
+            14 / 16, 14, 16, {}, "core", digest,
+        ),
     }
 
 

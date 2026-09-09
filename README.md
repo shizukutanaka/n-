@@ -739,6 +739,10 @@ records remain superseded. Every rung was measured twice with prompt-cache
 reuse disabled; both repeats agreed on every one of the 130 task outcomes, with
 no unscorable answers and no transport failures:
 
+Pass rates are compared only when the suite, grader digest, reasoning allowance,
+and prompt-cache condition match; the measured q4_k_m/q4_0 pair moved from
+exact `p=0.0352` with cache reuse to `p=0.1796` without it.
+
 | quant | `QUANT_PENALTY` | file GiB | passed/130 | passed/130 with reuse (superseded graders) |
 | --- | ---: | ---: | ---: | ---: |
 | f16 | 0.0 | 3.32 | 100 | 100 |

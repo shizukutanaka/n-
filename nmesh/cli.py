@@ -469,6 +469,10 @@ def _eval_rates(
             record.passed,
             record.n_tasks,
             record.task_results,
+            record.suite,
+            record.digest,
+            record.reasoning_allowance,
+            record.cache_prompt,
         )
         for key, record in latest.items()
     }
