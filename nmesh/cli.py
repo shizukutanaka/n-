@@ -648,7 +648,7 @@ def _render_plan(result: Plan) -> None:
                       str(service.context), str(service.memory.parallel_slots),
                       "-" if service.n_gpu_layers is None else str(service.n_gpu_layers),
                       ",".join(service.languages),
-                      f"{service.decode_tps:.1f}")
+                      "—" if service.decode_tps is None else f"{service.decode_tps:.1f}")
     _console().print(table)
 
 
@@ -3504,6 +3504,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         if plan is None or not plan.services:
             return 1
         service = plan.services[0]
+        if service.roles == ["embed"]:
+            print(
+                i18n.t(
+                    "err.bench_embedding",
+                    i18n.lang(),
+                    service=service.name,
+                ),
+                file=sys.stderr,
+            )
+            return 2
         context_values = sorted({max(service.context // 2, 128), service.context})
         layer_values = sorted({service.n_gpu_layers or 0, max((service.n_gpu_layers or 0) // 2, 0)})
         running = runtime_status()

@@ -320,6 +320,8 @@ roughly 336 real prompt tokens. Served samples deeper than 1024 real prompt
 tokens remain recorded but are not used as planning evidence.
 `nmesh bench` measures decode speed only; embedding services have no decode
 path and must not be selected as the benchmark service.
+Embedding-only services have no decode throughput, so the planner neither gates
+nor ranks them on decode speed; `nmesh plan` displays `—` instead of an estimate.
 HTTP response bodies remain English because `/v1/*` errors and authentication
 details are machine-facing API contracts for clients.
 
