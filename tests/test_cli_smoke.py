@@ -53,4 +53,5 @@ def test_version_reports_package_and_evidence_versions(
     assert error.value.code == 0
     output = capsys.readouterr().out
     assert "nmesh 0.1.0" in output
-    assert "bench=bench-v2" in output
+    assert f"bench={cli.BENCH_HARNESS_VERSION}" in output
+    assert "probe_rules=" in output
