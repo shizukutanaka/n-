@@ -219,7 +219,6 @@ nmesh doctor --json > mine.json
 nmesh plan --profile mine.json
 ```
 
-
 ## GPU detection and honest VRAM reporting
 
 nmesh first tries the specialized NVIDIA and ROCm detectors: NVML or
@@ -489,6 +488,9 @@ digest. Planner depth evidence comes only from these controlled probes: the
 hard suite is answerable from the question without reading the context, so a
 padded suite run cannot license a context length. The planner warns when
 advertised context exceeds quality evidence but does not exclude the candidate.
+The `probe_rules` value in `nmesh --version` is a fixed depth-0, `core`-seed
+probe-rule identity marker; it is not expected to match the per-depth
+`probe_digest` values stored in `context.json`.
 The timeout budget includes the requested depth; this matters because the
 bench's `512` is a nominal prefill parameter that tokenises to roughly 336 real
 prompt tokens, not a real-token depth. The shipped probe families are literal,

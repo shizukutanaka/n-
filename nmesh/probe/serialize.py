@@ -11,9 +11,6 @@ from .models import (
     VramSource,
 )
 
-_OS = {"windows", "linux", "macos"}
-_VENDORS = {"nvidia", "amd", "intel", "apple", "unknown"}
-
 
 def _operating_system(value: str) -> OperatingSystem:
     if value == "windows":
