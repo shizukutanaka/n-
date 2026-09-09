@@ -449,7 +449,11 @@ remeasure it. Benchmark reasons include `harness_mismatch`, `unstable`,
 `epoch_degraded`, and `unconfirmed`; evaluation reasons include `suite_unknown`,
 `grader_digest_mismatch`, `unscorable`, `transport_errors`, and `depth_scoped`;
 depth reasons include `probe_digest_mismatch`, `control_failed`, and
-`depth_lost`. Rows that need new evidence point to `nmesh bench`,
+`depth_lost`; `superseded` marks an older valid record replaced by a newer
+record for the same configuration. Depth values show served depth and each
+probe family's passed/total and control counts; `verified` or `lost` is shown
+only when the existing depth-evidence selection establishes that status. Rows
+that need new evidence point to `nmesh bench`,
 `nmesh eval --suite <suite>`, or `nmesh eval --depth <requested_depth>`.
 
 Further controlled checks scoped those eliminations to `arithmetic.subtract`:

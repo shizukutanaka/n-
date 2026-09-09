@@ -11,10 +11,10 @@ from nmesh.bench.cache import (
     load_cache,
     save_records,
 )
-from nmesh.eval import SUITES, suite_digest
+from nmesh.eval import SUITES, needle_tasks, suite_digest
 from nmesh.eval.cache import EvalRecord
 from nmesh.eval.context import ContextRecord, FamilyResult
-from nmesh.evidence import collect_evidence
+from nmesh.evidence_inventory import collect_evidence
 
 
 def _bench(
@@ -36,6 +36,7 @@ def _eval(
     digest: str | None = None,
     transport_errors: int = 0,
     depth: int = 0,
+    at: float | None = None,
 ) -> EvalRecord:
     return EvalRecord(
         model_id="model",
@@ -45,7 +46,10 @@ def _eval(
         passed=12,
         pass_rate=0.75,
         by_category={},
-        at=float(depth + transport_errors + 1),
+        at=(
+            float(depth + transport_errors + 1)
+            if at is None else at
+        ),
         suite=suite,
         digest=(
             suite_digest(SUITES["core"])
@@ -124,6 +128,7 @@ def test_eval_reasons_and_depth_probe_mismatch(tmp_path, monkeypatch) -> None:
     assert "suite_unknown" in eval_rows["unknown"]["reasons"]
     depth_row = _rows("depth")[0]
     assert "probe_digest_mismatch" in depth_row["reasons"]
+    assert "lost" not in depth_row["value"]
     assert depth_row["remeasure"] == "nmesh eval --depth 8"
 
 
@@ -141,3 +146,42 @@ def test_evidence_json_and_empty_home_are_successful(tmp_path, monkeypatch, caps
     payload = json.loads(capsys.readouterr().out)
     assert {"records", "counts"} <= set(payload)
     assert payload["counts"]["bench"] == 1
+
+
+def test_superseded_records_are_explained_and_all_unusable_rows_have_reasons(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    save_records({
+        benchmark_key("model", "f16", "llamacpp", "cpu", 0): _bench(),
+    })
+    _write_records(tmp_path, "eval.json", {
+        "old": _eval(at=1.0),
+        "new": _eval(at=2.0),
+    })
+    probe_digest = suite_digest(needle_tasks(8, "core"))
+    _write_records(tmp_path, "context.json", {
+        "old": ContextRecord(
+            "model", "f16", "llamacpp", "core", 8, 8, probe_digest,
+            (FamilyResult("literal", 8, 8, 8, 8),), 1.0,
+        ),
+        "new": ContextRecord(
+            "model", "f16", "llamacpp", "core", 8, 8, probe_digest,
+            (FamilyResult("literal", 8, 8, 8, 8),), 2.0,
+        ),
+    })
+
+    payload = collect_evidence()
+    rows = payload["records"]
+    superseded = {
+        row["key"]: row for row in rows if row["key"] == "old"
+    }
+    assert superseded["old"]["reasons"] == ["superseded"]
+    assert superseded["old"]["usable"] is False
+    assert superseded["old"]["remeasure"] == ""
+    assert "lost" not in superseded["old"]["value"]
+    assert all(
+        row["usable"] or row["reasons"]
+        for row in rows
+    )
