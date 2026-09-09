@@ -1447,6 +1447,16 @@ def _bench(args: argparse.Namespace) -> int:
     if plan is None or not plan.services:
         return 1
     service = next((item for item in plan.services if item.name == args.service), plan.services[0])
+    if "embed" in service.roles:
+        print(
+            i18n.t(
+                "err.bench_embedding",
+                i18n.lang(),
+                service=service.name,
+            ),
+            file=sys.stderr,
+        )
+        return 2
     running = runtime_status()
     if not _service_running(service, running):
         print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
@@ -1475,6 +1485,20 @@ def _bench(args: argparse.Namespace) -> int:
             passes=args.passes,
             cache_prompt=False if service.backend == "llamacpp" else None,
         )
+    except httpx.HTTPError as error:
+        response = getattr(error, "response", None)
+        status = getattr(response, "status_code", "unknown")
+        print(
+            i18n.t(
+                "err.bench_http",
+                i18n.lang(),
+                service=service.name,
+                url=f"{base_url}/v1/chat/completions",
+                status=status,
+            ),
+            file=sys.stderr,
+        )
+        return 1
     except (OSError, RuntimeError) as error:
         print(i18n.t("err.bench_measure", i18n.lang(), error=error), file=sys.stderr)
         return 1
@@ -3182,12 +3206,38 @@ def _evidence(args: argparse.Namespace) -> int:
         ("eval", "evidence.eval_title"),
         ("depth", "evidence.depth_title"),
     ):
-        table = Table(title=i18n.t(title_key, language))
+        # Bound value and key-text columns so evidence strings fit at 80 columns.
+        width_options = {
+            "value": {"max_width": 10},
+            "reasons": {"max_width": 16},
+            "remeasure": {"max_width": 11},
+        }
+        fold_columns = {"model", "reasons", "remeasure"}
+        if kind == "depth":
+            # Keep the numeric depth scope and verdict intact at 80 columns.
+            width_options.update({
+                "scope": {"max_width": 21},
+                "value": {"max_width": 8},
+            })
+            fold_columns.update({"scope", "value"})
+        table = Table(title=i18n.t(title_key, language), padding=(0, 0))
         for column in (
-            "kind", "model", "quant", "backend", "scope", "value",
-            "usable", "reasons", "remeasure",
+            "model", "quant", "backend", "scope", "value", "usable",
+            "reasons", "remeasure",
         ):
-            table.add_column(i18n.t(f"evidence.column.{column}", language))
+            options = (
+                {
+                    **width_options.get(column, {}),
+                    "overflow": "fold",
+                    "no_wrap": False,
+                }
+                if column in fold_columns
+                else width_options.get(column, {})
+            )
+            table.add_column(
+                i18n.t(f"evidence.column.{column}", language),
+                **options,
+            )
         seen_reasons: set[str] = set()
         for row in records:
             if row["kind"] != kind:
@@ -3196,8 +3246,7 @@ def _evidence(args: argparse.Namespace) -> int:
                 row.get("suite", "")
                 if kind == "eval"
                 else (
-                    f"requested={row['requested_depth']} "
-                    f"served={row['served_depth']}"
+                    f"req {row['requested_depth']} / served {row['served_depth']}"
                     if kind == "depth" else ""
                 )
             )
@@ -3206,16 +3255,17 @@ def _evidence(args: argparse.Namespace) -> int:
             seen_reasons.update(str(reason) for reason in reasons)
             value = str(row["value"])
             if kind == "bench":
-                value = f"{value} tok/s"
+                value = f"{float(row['value']):.1f} tok/s"
+            elif kind == "depth":
+                value = str(row["verdict"]) or "—"
             table.add_row(
-                str(row["kind"]),
                 str(row["model_id"]),
                 str(row["quant"]),
                 str(row["backend"]),
                 str(scope),
                 value,
                 str(row["usable"]),
-                ", ".join(str(reason) for reason in reasons),
+                "\n".join(str(reason) for reason in reasons),
                 str(row["remeasure"]),
             )
         _console().print(table)
@@ -3223,6 +3273,8 @@ def _evidence(args: argparse.Namespace) -> int:
             _console().print(
                 f"{reason}: {i18n.t(f'evidence.reason.{reason}', language)}"
             )
+        if kind == "depth":
+            _console().print(i18n.t("evidence.depth_json_hint", language))
     if not records:
         _console().print(i18n.t("evidence.empty", language))
     return 0

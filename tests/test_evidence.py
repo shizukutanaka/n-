@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 
+from rich.console import Console
+
 from nmesh import cli
 from nmesh.bench.cache import (
     BENCH_HARNESS_VERSION,
@@ -146,6 +148,42 @@ def test_evidence_json_and_empty_home_are_successful(tmp_path, monkeypatch, caps
     payload = json.loads(capsys.readouterr().out)
     assert {"records", "counts"} <= set(payload)
     assert payload["counts"]["bench"] == 1
+
+
+def test_evidence_table_folds_reasons_and_remeasure_at_narrow_width(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    save_records({
+        benchmark_key("legacy-model", "f16", "llamacpp", "cpu", 0): _bench(
+            "bench-v1",
+        ),
+    })
+    probe_digest = suite_digest(needle_tasks(8, "core"))
+    _write_records(tmp_path, "context.json", {
+        "depth": ContextRecord(
+            "depth-model", "f16", "llamacpp", "core", 8, 8, probe_digest,
+            (FamilyResult("literal", 8, 8, 8, 8),), 1.0,
+        ),
+    })
+    depth_row = next(
+        row for row in collect_evidence()["records"] if row["kind"] == "depth"
+    )
+    assert depth_row["verdict"] == "verified"
+    assert depth_row["value"] == "served=8 literal 8/8 control 8/8 verified"
+    console = Console(width=80, record=True, color_system=None)
+    monkeypatch.setattr(cli, "_console", lambda: console)
+
+    assert cli.main(["evidence"]) == 0
+
+    output = console.export_text()
+    assert "Kind" not in output
+    assert "harness_mismatch" in output
+    assert "nmesh bench" in output
+    assert "20.0 tok/s" in output
+    assert "req 8 / served 8" in output
+    assert "verified" in output
 
 
 def test_superseded_records_are_explained_and_all_unusable_rows_have_reasons(

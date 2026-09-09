@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import httpx
 import pytest
 
 from nmesh import cli
@@ -39,6 +40,49 @@ def _controlled(measurement: BenchResult) -> ControlledBenchResult:
 def test_bench_runs_rejects_zero() -> None:
     with pytest.raises(SystemExit):
         cli.main(["bench", "--runs", "0"])
+
+
+def test_bench_rejects_embedding_service_without_http(monkeypatch, capsys) -> None:
+    plan = _plan()
+    service = replace(plan.services[0], name="embed", roles=["embed"])
+    monkeypatch.setattr(cli, "load_plan", lambda: replace(plan, services=[service]))
+    monkeypatch.setattr(
+        cli.httpx,
+        "Client",
+        lambda *_args, **_kwargs: pytest.fail("embedding bench must not create an HTTP client"),
+    )
+
+    assert cli.main(["bench", "--service", "embed"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "embedding service" in captured.err
+    assert "--service chat" in captured.err
+
+
+def test_bench_http_failure_returns_error_without_saving(monkeypatch, capsys) -> None:
+    plan = _plan()
+    saved = []
+    request = httpx.Request("POST", "http://127.0.0.1:18010/v1/chat/completions")
+    response = httpx.Response(500, request=request)
+    error = httpx.HTTPStatusError("server error", request=request, response=response)
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
+    monkeypatch.setattr(
+        cli,
+        "measure_controlled",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+    monkeypatch.setattr(cli, "save_records", saved.append)
+
+    assert cli.main(["bench", "--no-reference"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "chat" in captured.err
+    assert "http://127.0.0.1:18010/v1/chat/completions" in captured.err
+    assert "500" in captured.err
+    assert "Traceback" not in captured.err
+    assert saved == []
 
 
 def test_bench_json_reports_spread_and_warns(monkeypatch, capsys) -> None:
