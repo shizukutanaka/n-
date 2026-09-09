@@ -584,8 +584,9 @@ verifier changes pass/fail without changing the digest, while bumping
 the evidence override depends on. Tasks now carry a `rule` string that is
 hashed when set, so a repaired verifier invalidates only the suites containing
 it; the repaired task rules in this PR change the affected suite digests, so
-the earlier `extended` and `hard` records are superseded and must be
-re-measured.
+the earlier `extended` and `hard` records are superseded. The repaired
+digests are `extended` `v2:86e41db848586057` and `hard`
+`v2:22237baff8c47e35`.
 
 The remaining floored tasks are also not one thing. On
 `instruction.initials.quick_amber_fox` the 1.5B answered `Q A F` — the right
@@ -612,15 +613,17 @@ difference" from `n`, because on paired outcomes that number is meaningless:
 states the discordant counts and that exact McNemar cannot reach `p<0.05` below
 `6` disagreeing tasks at any suite size.
 
-The eight-rung outputs show why this distinction matters. On the measurable
-`q4_k_m` → `q4_0` step, the 12 lost tasks split into 10 wrong answers and 2
-correct answers in the wrong output form. On `q3_k_m` → `q2_k`, the 37 lost
-tasks split into 27 wrong answers and 10 correct answers in the wrong output
-form. Previously only 14 of the 130 hard-suite tasks carried a value check;
-every failure is now classifiable as a wrong answer or a form failure through
-its declared grading scope. This split is one model on one machine with one
-binary and one suite; it does not generalize to other quantization ladders or
-hardware.
+The eight-rung outputs show why this distinction matters. Under the repaired
+graders, the `q4_k_m` → `q4_0` step has 10 lost tasks: 9 wrong answers and 1
+correct value in the wrong output form. The `q3_k_m` → `q2_k` step has 36 lost
+tasks: 28 wrong answers and 8 correct values in the wrong output form. On the
+same rungs, the superseded value rules reported q2_k as 50 wrong / 15 form and
+q3_k_m as 29 wrong / 6 form. The repair moved three q2_k tasks
+(`multilingual.katakana.model`, `multilingual.kanji_number.17`, and
+`.30`) and one q3_k_m task (`multilingual.kanji_number.17`) out of
+“value-correct, form-wrong” and into wrong answers. This split is one model on
+one machine with one binary and one suite; it does not generalize to other
+quantization ladders or hardware.
 
 #### Suite grader audit
 
@@ -722,17 +725,21 @@ keeping the contradiction warning.
 Pass rates are keyed by `(model, quant, backend, suite, digest, allowance,
 cache_prompt)`, so measurements distinguish quantizations of the same model and
 never mix the two prompt-cache conditions described below. The completed
-eight-rung measurement for `qwen2.5-1.5b-instruct` used the hard suite and the
-same llama.cpp configuration throughout. The q3_k_m count included one task
-that passed on a wrong answer: `extraction.email` answered
-`ops@nmesh-ops@example.com`, which was accepted because the expected address
-was merely a substring. The repaired graders change the suite digest, so this
-table is superseded pending re-measurement. Every
-rung was measured twice with prompt-cache reuse disabled; both repeats agreed on
-every one of the 130 task outcomes, with no unscorable answers and no transport
-failures:
+eight-rung measurement for `qwen2.5-1.5b-instruct` used the repaired hard suite
+and the same llama.cpp configuration throughout. The pre-repair q3_k_m count
+included one task that passed on a wrong answer: the shipped
+`extraction.email` prompt elicited `ops@nmesh-ops@example.com`, which the old
+grader accepted because the expected address was merely a substring. With the
+repaired prompt, the same model answered `The email address to contact is:
+ops at nmesh-ops@example.com`, where the address is a standalone run and the
+task passes legitimately. The rung total remains 95, so the false positive was
+masked inside the total. The repaired suite digests are `extended`
+`v2:86e41db848586057` and `hard` `v2:22237baff8c47e35`; stored pre-repair
+records remain superseded. Every rung was measured twice with prompt-cache
+reuse disabled; both repeats agreed on every one of the 130 task outcomes, with
+no unscorable answers and no transport failures:
 
-| quant | `QUANT_PENALTY` | file GiB | passed/130 | passed/130 with reuse |
+| quant | `QUANT_PENALTY` | file GiB | passed/130 | passed/130 with reuse (superseded graders) |
 | --- | ---: | ---: | ---: | ---: |
 | f16 | 0.0 | 3.32 | 100 | 100 |
 | q8_0 | 0.5 | 1.76 | 99 | 99 |
@@ -743,11 +750,17 @@ failures:
 | q3_k_m | 9.0 | 0.86 | 95 | 93 |
 | q2_k | 16.0 | 0.70 | 65 | 63 |
 
-Adjacent exact McNemar p-values in penalty order are: f16/q8_0 `1.0`,
-q8_0/q6_k `1.0`, q6_k/q5_k_m `1.0`, q5_k_m/q4_k_m `0.453125`,
-q4_k_m/q4_0 `0.179565`, q4_0/q3_k_m `0.647606`, and
-q3_k_m/q2_k `0.0000028`. The only measurable step is q3_k_m → q2_k; every
-other adjacent step is indistinguishable under this suite.
+Adjacent exact McNemar results in penalty order (high-only / low-only / p) are:
+f16→q8_0 `1/0`, `p=1.0`; q8_0→q6_k `0/1`, `p=1.0`;
+q6_k→q5_k_m `3/4`, `p=1.0`; q5_k_m→q4_k_m `5/2`, `p=0.4531`;
+q4_k_m→q4_0 `10/4`, `p=0.1796`; q4_0→q3_k_m `8/11`,
+`p=0.6476`; and q3_k_m→q2_k `36/6`, `p=2.83e-06`. Only
+q3_k_m → q2_k is significant; every other adjacent step is indistinguishable
+under this suite.
+
+Under the repaired graders, the per-rung failure kinds (wrong answer /
+correct value in the wrong form) are: f16 `25/5`, q8_0 `26/5`, q6_k `26/4`,
+q5_k_m `23/6`, q4_k_m `25/7`, q4_0 `32/6`, q3_k_m `30/5`, and q2_k `53/12`.
 
 On this model, machine, binary, and suite, the ladder collapses into two
 indistinguishable bands: `{f16, q8_0, q6_k, q5_k_m, q4_k_m, q4_0, q3_k_m}` at
