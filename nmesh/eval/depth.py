@@ -23,9 +23,21 @@ The update family scored 8/8 natively and 4/4 at about 1,245, 6,271, and
 15,020 served tokens. Two-hop retrieval scored 7/8 natively, with opening and
 closing controls of 4/4 and 2/4, then 1/4, 2/4, and 3/4 deeply at about
 1,250, 6,250, and 15,045 tokens. Count scored 2/8 natively and failed at
-about 200 tokens. Two-hop is not shipped because its shallow control is not
-stable across repeats, and count is not shipped because it fails at shallow
-depth.
+about 200 tokens. Two-hop and count are not shipped: two-hop has high
+instance-to-instance variance, while count fails at shallow depth.
+
+The probe grader originally matched the first six hexadecimal characters in
+the reply, so an echoed eight-character case id was mistaken for the answer:
+literal scored 7/8 shallow and 0/8 at about 4.67k served tokens even though
+the replies contained the correct codes, and update.1 produced a false lost
+result. Matching only standalone six-character codes regraded both depths as
+8/8 for literal and 4/4 for update. The same rule preserves multi at 4/4.
+Latent replies are graded by the requested name's content rather than its
+position, while still rejecting other names. Twelve repetitions of the
+product control and probe arms produced 288 unchanged grades; the earlier
+two-hop 4/4 to 2/4 difference came from a scratch harness using separate
+instances. The paired controls remain as a cheap safeguard, not a new
+measurement source.
 """
 
 from __future__ import annotations
@@ -58,7 +70,7 @@ _CITIES = (
     ("Split", "Croatia"),
 )
 _NAMES = ("Marta", "Devrim", "Ines", "Kwame", "Lena", "Tomas", "Sanne", "Rafal")
-_HEX_RE = re.compile(r"[0-9a-f]{6}")
+_HEX_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{6}(?![0-9a-f])")
 
 
 def _sentence(rng: random.Random) -> str:
@@ -152,6 +164,7 @@ def _literal_task(target: int, seed: str, index: int, position: float) -> Task:
         ) if target > 0 else f"{needle}\n\n{question}",
         32,
         check,
+        rule="code6/v2",
         grades="value",
     )
 
@@ -163,9 +176,9 @@ def _latent_task(target: int, seed: str, index: int, position: float) -> Task:
     question = f"Which person spent the quarter in {country}? Answer with the name only."
 
     def check(text: str) -> bool:
-        if not text.split():
-            return False
-        return text.split()[0].strip("`\"' .!,。") == name
+        words = set(re.findall(r"[a-z]+", text.casefold()))
+        others = {item.casefold() for item in _NAMES if item != name}
+        return name.casefold() in words and not words & others
 
     return Task(
         f"context.latent.p{round(position * 100)}.{index}",
@@ -175,6 +188,7 @@ def _latent_task(target: int, seed: str, index: int, position: float) -> Task:
         ) if target > 0 else f"{needle}\n\n{question}",
         32,
         check,
+        rule="name/v2",
         grades="value",
     )
 
@@ -216,6 +230,7 @@ def _multi_task(target: int, seed: str, index: int) -> Task:
         prompt,
         64,
         check,
+        rule="code6/v2",
         grades="value",
     )
 
@@ -260,6 +275,7 @@ def _update_task(target: int, seed: str, index: int) -> Task:
         prompt,
         32,
         check,
+        rule="code6/v2",
         grades="value",
     )
 

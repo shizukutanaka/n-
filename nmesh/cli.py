@@ -1852,10 +1852,18 @@ def _eval(args: argparse.Namespace) -> int:
             print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
             return 1
         controls = (control_before, control_after)
+        control_pass: dict[str, bool] = {}
+        for control in controls:
+            for item in control.outcomes:
+                control_pass[item.id] = control_pass.get(item.id, True) and item.passed
         families: dict[str, dict[str, int | bool]] = {}
         for category in _CONTEXT_CATEGORIES:
             category_outcomes = [
                 item for item in probe_result.outcomes if item.category == category
+            ]
+            paired = [
+                item for item in category_outcomes
+                if control_pass.get(item.id) is True
             ]
             control_outcomes = [
                 item
@@ -1863,11 +1871,11 @@ def _eval(args: argparse.Namespace) -> int:
                 for item in control.outcomes
                 if item.category == category
             ]
-            passed = sum(item.passed for item in category_outcomes)
-            total = len(category_outcomes)
+            passed = sum(item.passed for item in paired)
+            total = len(paired)
             control_passed = sum(item.passed for item in control_outcomes)
             control_total = len(control_outcomes)
-            attributable = control_total > 0 and control_passed == control_total
+            attributable = total > 0
             family = category.rsplit(".", 1)[-1]
             families[family] = {
                 "passed": passed,
