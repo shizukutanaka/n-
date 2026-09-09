@@ -145,7 +145,7 @@ def _detect_nvidia(
     warnings: list[str], warning_params: list[dict[str, str]] | None = None
 ) -> list[GPUInfo]:
     try:
-        import pynvml  # type: ignore[import-not-found]
+        import pynvml
 
         pynvml.nvmlInit()
         try:
