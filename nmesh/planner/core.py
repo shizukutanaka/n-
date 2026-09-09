@@ -1662,6 +1662,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                *,
                eval_depth_coverage: Mapping[tuple[str, str, str], int] | None = None,
                eval_depth_lost: Mapping[tuple[str, str, str], int] | None = None,
+               embed_input_caps: Mapping[tuple[str, str, str], int] | None = None,
                ) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
@@ -2123,6 +2124,37 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     backend=service.backend,
                     context=service.context,
                     depth=measured_depth,
+                ))
+    if embed_input_caps is not None:
+        for index, service in enumerate(services):
+            if not _is_embed_only(service):
+                continue
+            key = (
+                service.model_id.casefold(),
+                service.quant.casefold(),
+                service.backend.casefold(),
+            )
+            cap = embed_input_caps.get(key)
+            if cap is None:
+                warnings.append(t(
+                    "warn.embed_context_unverified",
+                    selected.lang,
+                    model=service.model_id,
+                    quant=service.quant,
+                    backend=service.backend,
+                    command=f"nmesh bench --service {service.name}",
+                ))
+            elif cap < service.context:
+                planned_context = service.context
+                services[index] = replace(service, context=cap)
+                warnings.append(t(
+                    "warn.embed_context_capped",
+                    selected.lang,
+                    model=service.model_id,
+                    quant=service.quant,
+                    backend=service.backend,
+                    context=planned_context,
+                    cap=cap,
                 ))
     for model_id in sorted(selected_unmeasured):
         warnings.append(

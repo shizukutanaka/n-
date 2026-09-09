@@ -322,6 +322,11 @@ tokens remain recorded but are not used as planning evidence.
 path and must not be selected as the benchmark service.
 Embedding-only services have no decode throughput, so the planner neither gates
 nor ranks them on decode speed; `nmesh plan` displays `—` instead of an estimate.
+On this host, Ollama 0.33.2 silently caps bge-m3 embedding input at 2048 tokens
+regardless of `num_ctx`, while llama.cpp served the full planned window. nmesh
+now measures the served cap, clamps the planned embedding context to it, and
+warns when the backend silently truncates longer inputs; these observations are
+specific to this host, artifact, and Ollama version.
 HTTP response bodies remain English because `/v1/*` errors and authentication
 details are machine-facing API contracts for clients.
 

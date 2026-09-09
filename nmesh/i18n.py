@@ -147,6 +147,12 @@ MESSAGES = {
         "err.bench_measure": "Benchmark failed: {error}",
         "err.bench_embedding": "Benchmark measures decode speed, but {service} is an embedding service with no decode path; choose a decode service such as --service chat.",
         "err.bench_http": "Benchmark request for {service} failed at {url} with HTTP status {status}.",
+        "label.embed_measurement": (
+            "Embedding served cap: {cap} tokens; encode throughput: {tps:.1f} tok/s."
+        ),
+        "warn.embed_truncated": (
+            "Inputs longer than {cap} tokens are silently truncated by the backend."
+        ),
         "err.spec_draft_required": "--draft is required when --kind draft is used.",
         "err.spec_repeats": "--repeats must be at least 3.",
         "err.spec_no_generative_service": "No generative service (chat, code, or worker) is available for speculation measurement.",
@@ -242,6 +248,14 @@ MESSAGES = {
             "control but only {passed}/{of} at {depth} real prompt tokens — this "
             "is a measured depth failure, not task difficulty."
         ),
+        "warn.embed_context_capped": (
+            "{model} at {quant} on {backend}: embedding served context is capped "
+            "at {cap} tokens, so planned context {context} is reduced."
+        ),
+        "warn.embed_context_unverified": (
+            "{model} at {quant} on {backend}: embedding served context is "
+            "unverified; run {command}."
+        ),
         "warn.context_depth_broken": (
             "{model} at {quant} on {backend}: context probes that passed the "
             "shallow control failed at {depth} real prompt tokens, so the planned "
@@ -260,6 +274,7 @@ MESSAGES = {
         "evidence.bench_title": "Saved benchmark evidence",
         "evidence.eval_title": "Saved evaluation evidence",
         "evidence.depth_title": "Saved depth evidence",
+        "evidence.embed_title": "Saved embedding evidence",
         "evidence.depth_json_hint": "Depth family details are available in nmesh evidence --json.",
         "evidence.empty": "No saved evidence.",
         "evidence.column.kind": "Kind",
@@ -272,6 +287,7 @@ MESSAGES = {
         "evidence.column.reasons": "Reasons",
         "evidence.column.remeasure": "Remeasure",
         "evidence.reason.harness_mismatch": "stored under an older benchmark harness",
+        "evidence.reason.cap_unproven": "two different probe sizes did not prove a served cap",
         "evidence.reason.unstable": "the controlled benchmark was unstable",
         "evidence.reason.epoch_degraded": "the benchmark was measured on a degraded host epoch",
         "evidence.reason.unconfirmed": "fewer than two confirming benchmark sessions exist",
@@ -442,6 +458,8 @@ MESSAGES = {
         "err.bench_measure": "ベンチマークに失敗しました: {error}",
         "err.bench_embedding": "ベンチマークはデコード速度を測定しますが、{service}は埋め込みサービスでデコード経路がありません。--service chatなどデコード可能なサービスを指定してください。",
         "err.bench_http": "{service}のベンチマーク要求が{url}でHTTPステータス{status}に失敗しました。",
+        "label.embed_measurement": "埋め込みの実測上限: {cap} トークン、エンコード速度: {tps:.1f} tok/s。",
+        "warn.embed_truncated": "{cap} トークンを超える入力はバックエンドで静かに切り詰められます。",
         "err.spec_draft_required": "--kind draft では --draft が必要です。",
         "err.spec_repeats": "--repeats は 3 以上で指定してください。",
         "err.spec_no_generative_service": "投機的デコードの測定に使える生成サービス（chat、code、worker）がありません。",
@@ -511,6 +529,10 @@ MESSAGES = {
         "err.autotune_winning": "最適設定の復元に失敗しました: {error}",
         "label.vram_source": "VRAM の情報源",
         "label.gateway_log": "ゲートウェイログ: {path}",
+        "warn.embed_context_capped": "{model} の {quant} / {backend} で、埋め込みの実測文脈は {cap} トークンが上限のため、計画文脈 {context} を短縮します。",
+        "warn.embed_context_unverified": "{model} の {quant} / {backend} で、埋め込みの実測文脈は未確認です。{command}を実行してください。",
+        "evidence.embed_title": "埋め込み証拠",
+        "evidence.reason.cap_unproven": "異なる2つのプローブサイズで実際の上限を確認できませんでした",
     },
 }
 

@@ -12,6 +12,17 @@ from .cache import (
     merge_measurement,
     save_records,
 )
+from .embed import (
+    EMBED_HARNESS_VERSION,
+    EmbedMeasurement,
+    EmbedRecord,
+    embed_key,
+    load_embed_cache,
+    load_embed_records,
+    measure_embedding,
+    save_embed,
+    save_embed_record,
+)
 from .epoch import (
     EPOCH_HISTORY,
     EPOCH_MIN_RATIO,
@@ -38,6 +49,7 @@ from .runner import (
 
 __all__ = [
     "BENCH_HARNESS_VERSION",
+    "EMBED_HARNESS_VERSION",
     "EPOCH_HISTORY",
     "EPOCH_MIN_RATIO",
     "EPOCH_PATH",
@@ -47,6 +59,8 @@ __all__ = [
     "BenchRecord",
     "BenchResult",
     "ControlledBenchResult",
+    "EmbedMeasurement",
+    "EmbedRecord",
     "EpochSample",
     "autotune",
     "baseline",
@@ -55,17 +69,23 @@ __all__ = [
     "choose_reference_model",
     "classify",
     "demote_stale",
+    "embed_key",
     "find_reference_binary",
     "load_cache",
+    "load_embed_cache",
+    "load_embed_records",
     "load_history",
     "load_records",
     "measure",
     "measure_controlled",
+    "measure_embedding",
     "measure_reference",
     "merge_measurement",
     "prune_degraded",
     "reference_id",
     "refutes",
+    "save_embed",
+    "save_embed_record",
     "save_history",
     "save_records",
 ]

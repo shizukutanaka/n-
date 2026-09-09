@@ -43,21 +43,35 @@ def test_bench_runs_rejects_zero() -> None:
         cli.main(["bench", "--runs", "0"])
 
 
-def test_bench_rejects_embedding_service_without_http(monkeypatch, capsys) -> None:
+def test_bench_measures_embedding_service(monkeypatch, capsys) -> None:
     plan = _plan()
     service = replace(plan.services[0], name="embed", roles=["embed"])
     monkeypatch.setattr(cli, "load_plan", lambda: replace(plan, services=[service]))
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
+    saved = []
+    monkeypatch.setattr(cli, "save_embed", saved.append)
+    values = iter((100, 2048, 2048, 100, 100))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"usage": {"prompt_tokens": next(values)}},
+            request=request,
+        )
+
+    client_factory = cli.httpx.Client
+    transport = httpx.MockTransport(handler)
     monkeypatch.setattr(
         cli.httpx,
         "Client",
-        lambda *_args, **_kwargs: pytest.fail("embedding bench must not create an HTTP client"),
+        lambda *_args, **_kwargs: client_factory(transport=transport),
     )
 
-    assert cli.main(["bench", "--service", "embed"]) == 2
+    assert cli.main(["bench", "--service", "embed", "--runs", "2"]) == 0
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "embedding service" in captured.err
-    assert "--service chat" in captured.err
+    assert "Embedding served cap: 2048 tokens" in captured.out
+    assert saved[0].cap == 2048
 
 
 def test_plan_table_renders_not_applicable_decode_as_dash(monkeypatch) -> None:
