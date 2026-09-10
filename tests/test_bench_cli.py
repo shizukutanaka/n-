@@ -74,6 +74,38 @@ def test_bench_measures_embedding_service(monkeypatch, capsys) -> None:
     assert saved[0].cap == 2048
 
 
+def test_bench_without_retrieval_does_not_measure_retrieval(monkeypatch, capsys) -> None:
+    plan = _plan()
+    service = replace(plan.services[0], name="embed", roles=["embed"])
+    monkeypatch.setattr(cli, "load_plan", lambda: replace(plan, services=[service]))
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
+    monkeypatch.setattr(cli, "save_embed", lambda _record: None)
+    monkeypatch.setattr(
+        cli,
+        "measure_retrieval",
+        lambda *_args, **_kwargs: pytest.fail("retrieval must be opt-in"),
+    )
+    values = iter((100, 2048, 2048, 100, 100))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"usage": {"prompt_tokens": next(values)}},
+            request=request,
+        )
+
+    client_factory = cli.httpx.Client
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        cli.httpx,
+        "Client",
+        lambda *_args, **_kwargs: client_factory(transport=transport),
+    )
+    assert cli.main(["bench", "--service", "embed", "--runs", "2"]) == 0
+    assert "Embedding served cap" in capsys.readouterr().out
+
+
 def test_plan_table_renders_not_applicable_decode_as_dash(monkeypatch) -> None:
     console = Console(record=True, color_system=None, width=120)
     monkeypatch.setattr(cli, "_console", lambda: console)

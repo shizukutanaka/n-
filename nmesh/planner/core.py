@@ -545,6 +545,7 @@ class _Candidate:
     decode_applicable: bool = True
     context_before_embed_cap: int | None = None
     embed_context_cap: int | None = None
+    embed_retrieval_degraded: int | None = None
 
 
 def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: str,
@@ -578,6 +579,7 @@ def _candidate_for(
     bench_records: Mapping[str, BenchRecord] | None = None,
     unconfirmed: list[dict[str, str]] | None = None,
     embed_input_caps: Mapping[tuple[str, str, str], int] | None = None,
+    embed_retrieval_limits: Mapping[tuple[str, str, str], int] | None = None,
 ) -> list[_Candidate]:
     """Build candidates using the intentionally unchanged score.
 
@@ -648,6 +650,7 @@ def _candidate_for(
             backend, installed = _backend(profile, model, layers)
             context_before_embed_cap = None
             embed_context_cap = None
+            embed_retrieval_degraded = None
             if _is_embed_only(model) and embed_input_caps is not None:
                 embed_context_cap = embed_input_caps.get((
                     model.id.casefold(),
@@ -667,7 +670,12 @@ def _candidate_for(
                     gpu_bytes, cpu_bytes = _split_memory(
                         base, model.n_layers, layers,
                     )
-                    backend, installed = _backend(profile, model, layers)
+            if _is_embed_only(model) and embed_retrieval_limits is not None:
+                embed_retrieval_degraded = embed_retrieval_limits.get((
+                    model.id.casefold(),
+                    quant.casefold(),
+                    backend.casefold(),
+                ))
             if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
                 continue
             backend_flags = profile.backend_flags.get(backend)
@@ -776,6 +784,7 @@ def _candidate_for(
                 bench is None, decode_applicable=decode_applicable,
                 context_before_embed_cap=context_before_embed_cap,
                 embed_context_cap=embed_context_cap,
+                embed_retrieval_degraded=embed_retrieval_degraded,
             ))
             break
     return sorted(candidates, key=lambda item: item.score, reverse=True)
@@ -1068,6 +1077,21 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
                 backend=candidate.backend,
                 context=candidate.context_before_embed_cap,
                 cap=candidate.embed_context_cap,
+            )
+        )
+    if (
+        candidate.embed_retrieval_degraded is not None
+        and candidate.context > candidate.embed_retrieval_degraded
+    ):
+        warnings.append(
+            t(
+                "warn.embed_retrieval_degraded",
+                language,
+                model=candidate.model.id,
+                quant=candidate.quant,
+                backend=candidate.backend,
+                degraded=candidate.embed_retrieval_degraded,
+                context=candidate.context,
             )
         )
     launch = _launch(
@@ -1708,6 +1732,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                eval_depth_coverage: Mapping[tuple[str, str, str], int] | None = None,
                eval_depth_lost: Mapping[tuple[str, str, str], int] | None = None,
                embed_input_caps: Mapping[tuple[str, str, str], int] | None = None,
+               embed_retrieval_limits: Mapping[tuple[str, str, str], int] | None = None,
                ) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
@@ -1820,6 +1845,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                  bench_records=bench_records,
                  unconfirmed=bench_unconfirmed,
                  embed_input_caps=embed_input_caps,
+                 embed_retrieval_limits=embed_retrieval_limits,
              )),
             key=lambda item: item.score, reverse=True,
         ) for role in group}
@@ -1838,6 +1864,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                      bench_records=bench_records,
                      unconfirmed=bench_unconfirmed,
                      embed_input_caps=embed_input_caps,
+                     embed_retrieval_limits=embed_retrieval_limits,
                  )),
                 key=lambda item: item.score, reverse=True,
             ) for role in group}
@@ -2244,6 +2271,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         bench_records=bench_records,
                         unconfirmed=bench_unconfirmed,
                         embed_input_caps=embed_input_caps,
+                        embed_retrieval_limits=embed_retrieval_limits,
                     )
                     if same_model:
                         candidates = [
