@@ -8,10 +8,13 @@ import httpx
 from nmesh import cli
 from nmesh.bench.retrieval import (
     RETRIEVAL_HARNESS_VERSION,
+    RetrievalChunkArm,
+    RetrievalLimit,
     RetrievalRecord,
     RetrievalRung,
     load_retrieval_cache,
     measure_retrieval,
+    measure_retrieval_chunk_arm,
     retrieval_digest,
     save_retrieval,
 )
@@ -113,6 +116,80 @@ def test_indeterminate_band_does_not_establish_degradation() -> None:
     assert record.degraded_tokens is None
 
 
+def test_chunk_arm_round_trip_and_recovery_status(tmp_path) -> None:
+    record = replace(
+        _record(_ladder((8, 8, 8, 8, 7, 5, 2))),
+        chunk=RetrievalChunkArm(2400, 800, 1177, 8, 8),
+    )
+    path = tmp_path / "retrieval.json"
+    save_retrieval(record, path)
+    assert next(iter(load_retrieval_cache(path).values())) == record
+    assert record.chunk_recovers is True
+    assert replace(record, chunk=replace(record.chunk, hits=6)).chunk_recovers is False
+    assert replace(record, chunk=None).chunk_recovers is None
+    assert _record(_ladder((8, 8, 8))).chunk_recovers is None
+
+
+def test_malformed_chunk_records_are_dropped(tmp_path) -> None:
+    record = replace(
+        _record(_ladder((8, 8, 8))),
+        chunk=RetrievalChunkArm(2400, 800, 1177, 8, 8),
+    )
+    path = tmp_path / "retrieval.json"
+    save_retrieval(record, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    valid = next(iter(payload["results"].values()))
+    payload["results"].update({
+        "missing": {**valid, "chunk": {"doc_words": 2400}},
+        "boolean": {
+            **valid,
+            "chunk": {**valid["chunk"], "chunk_words": True},
+        },
+        "bad_hits": {
+            **valid,
+            "chunk": {**valid["chunk"], "hits": 9},
+        },
+    })
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert len(load_retrieval_cache(path)) == 1
+
+
+def test_chunk_arm_uses_batch_inputs_and_max_chunk_similarity() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.read())
+        requests.append(payload)
+        input_value = payload["input"]
+        if isinstance(input_value, list):
+            vectors = [
+                {"embedding": [1.0, 0.0] if "Meridian" in value else [0.0, 1.0]}
+                for value in input_value
+            ]
+        else:
+            vectors = [{"embedding": [1.0, 0.0]}]
+        return httpx.Response(
+            200,
+            json={
+                "data": vectors,
+                "usage": {"prompt_tokens": 10},
+            },
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        arm = measure_retrieval_chunk_arm(
+            client, "http://test", "embed",
+            doc_words=10, chunk_words=4, seeds=(11, 23),
+        )
+    finally:
+        client.close()
+    assert arm == RetrievalChunkArm(10, 4, 0, 2, 2)
+    assert len(requests) == 2 * (8 + 1)
+    assert all(isinstance(request["input"], list) for request in requests[:8])
+
+
 def test_retrieval_cache_round_trip_and_malformed_records(tmp_path) -> None:
     record = _record(_ladder((8, 8, 8)))
     path = tmp_path / "retrieval.json"
@@ -159,6 +236,20 @@ def test_nondefault_retrieval_digest_is_ignored_by_planner(tmp_path, monkeypatch
     assert cli._embed_retrieval_limits() == {}
 
 
+def test_old_retrieval_harness_is_ignored_but_inventory_reports_it(
+    tmp_path, monkeypatch,
+) -> None:
+    record = replace(_record(_ladder((8, 8, 8, 2))), harness="retrieval-v1")
+    save_retrieval(record, tmp_path / "retrieval.json")
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    assert cli._embed_retrieval_limits() == {}
+    row = next(
+        row for row in collect_evidence()["records"] if row["kind"] == "retrieval"
+    )
+    assert row["usable"] is False
+    assert "harness_mismatch" in row["reasons"]
+
+
 def test_planner_warns_without_changing_candidate() -> None:
     model = ModelSpec(
         "embed", "test", 500_000_000, 24, 16, 2, 64, 1024,
@@ -182,3 +273,38 @@ def test_planner_warns_without_changing_candidate() -> None:
     assert warned.services[0].decode_tps == ordinary.services[0].decode_tps
     assert warned.services[0].model_id == ordinary.services[0].model_id
     assert any("single-vector" in warning for warning in warned.warnings)
+
+
+def test_planner_selects_chunk_retrieval_warning_messages() -> None:
+    model = ModelSpec(
+        "embed", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["embed"], 80.0, "apache", {"hf_gguf": "org/embed"},
+    )
+    policy = Policy(roles=["embed"])
+    ordinary = build_plan(profile(64), [model], policy)
+    key = (
+        ordinary.services[0].model_id.casefold(),
+        ordinary.services[0].quant.casefold(),
+        ordinary.services[0].backend.casefold(),
+    )
+    recovered = build_plan(
+        profile(64), [model], policy,
+        embed_retrieval_limits={
+            key: RetrievalLimit(ordinary.services[0].context // 2, 512, True, 8, 8),
+        },
+    )
+    failed = build_plan(
+        profile(64), [model], policy,
+        embed_retrieval_limits={
+            key: RetrievalLimit(ordinary.services[0].context // 2, 512, False),
+        },
+    )
+    unmeasured = build_plan(
+        profile(64), [model], policy,
+        embed_retrieval_limits={
+            key: RetrievalLimit(ordinary.services[0].context // 2, None, None),
+        },
+    )
+    assert any("recovers 8/8" in warning for warning in recovered.warnings)
+    assert any("not a verified remedy" in warning for warning in failed.warnings)
+    assert any("Chunk long inputs" in warning for warning in unmeasured.warnings)

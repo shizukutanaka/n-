@@ -246,6 +246,14 @@ def _retrieval_rows() -> list[dict[str, object]]:
             and record.digest == digest
             and record.control_passed
         )
+        chunk = record.chunk
+        chunk_status = (
+            "unmeasured"
+            if chunk is None or record.chunk_recovers is None
+            else "recovered"
+            if record.chunk_recovers
+            else "not_recovered"
+        )
         rows.append({
             "kind": "retrieval",
             "key": key,
@@ -262,6 +270,14 @@ def _retrieval_rows() -> list[dict[str, object]]:
             "degraded_tokens": record.degraded_tokens,
             "control_passed": record.control_passed,
             "rungs": [asdict(rung) for rung in record.rungs],
+            "chunk": asdict(chunk) if chunk is not None else None,
+            "chunk_doc_words": chunk.doc_words if chunk is not None else None,
+            "chunk_words": chunk.chunk_words if chunk is not None else None,
+            "chunk_tokens": chunk.chunk_tokens if chunk is not None else None,
+            "chunk_hits": chunk.hits if chunk is not None else None,
+            "chunk_trials": chunk.trials if chunk is not None else None,
+            "chunk_recovers": record.chunk_recovers,
+            "chunk_status": chunk_status,
             "usable": usable,
             "reasons": reasons,
             "remeasure": "nmesh bench --service embed --retrieval",

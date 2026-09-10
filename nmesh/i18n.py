@@ -155,7 +155,8 @@ MESSAGES = {
         ),
         "label.retrieval_measurement": (
             "Retrieval usability: usable through {usable} tokens; "
-            "degraded beyond {degraded} tokens.\n{rungs}"
+            "degraded beyond {degraded} tokens.\n{rungs}\n"
+            "Chunk recovery: {chunk}"
         ),
         "warn.retrieval_control": (
             "The retrieval control rung failed, so this run proves nothing "
@@ -172,6 +173,17 @@ MESSAGES = {
             "context {context}, but single-vector rank-1 retrieval was "
             "measured at <=50% beyond {degraded} tokens on this host. "
             "Chunk long inputs instead of raising context."
+        ),
+        "warn.embed_retrieval_recovered": (
+            "{model} at {quant} on {backend}: single-vector retrieval degraded "
+            "beyond {degraded} tokens, but measured chunking recovers {hits}/{trials} "
+            "at about {chunk} tokens on this host; split long inputs accordingly."
+        ),
+        "warn.embed_retrieval_unrecovered": (
+            "{model} at {quant} on {backend}: single-vector retrieval degraded "
+            "beyond {degraded} tokens, and chunking to the measured usable length "
+            "did not restore retrieval here. Chunking is not a verified remedy "
+            "on this host."
         ),
         "err.spec_draft_required": "--draft is required when --kind draft is used.",
         "err.spec_repeats": "--repeats must be at least 3.",
@@ -553,6 +565,7 @@ MESSAGES = {
         "warn.embed_context_unverified": "{model} の {quant} / {backend} で、埋め込みの実測文脈は未確認です。{command}を実行してください。",
         "label.retrieval_measurement": (
             "検索の有用性: {usable} トークンまで有用、{degraded} トークンを超えると劣化。\n{rungs}"
+            "\nチャンク回復: {chunk}"
         ),
         "warn.retrieval_control": (
             "検索の制御ランが失敗したため、この実行から長さについては何も証明できません。"
@@ -561,6 +574,14 @@ MESSAGES = {
             "単一ベクトル検索は {degraded} トークンを超えると劣化しましたが、サービスは"
             "コンテキスト {context} を計画しています。これは単一ホスト・単一アーティファクトの測定です。"
             "コンテキストを増やさず、長い入力を分割してください。"
+        ),
+        "warn.embed_retrieval_recovered": (
+            "{model} の {quant} / {backend}: {degraded} トークンを超えると検索は劣化しますが、"
+            "このホストでは約 {chunk} トークンへの分割で {hits}/{trials} の回復を実測しました。"
+        ),
+        "warn.embed_retrieval_unrecovered": (
+            "{model} の {quant} / {backend}: {degraded} トークンを超えると検索は劣化し、"
+            "測定した有用長への分割でも回復しませんでした。このホストでは分割を対策として検証できません。"
         ),
         "warn.embed_retrieval_degraded": (
             "{model} の {quant} / {backend}: バックエンドは計画コンテキスト {context} トークンを提供しますが、"

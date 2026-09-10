@@ -12,6 +12,7 @@ from nmesh import __version__
 from nmesh.artifact import service_fingerprint
 from nmesh.artifacts import artifact_key
 from nmesh.bench.cache import BENCH_HARNESS_VERSION, BenchRecord, benchmark_key
+from nmesh.bench.retrieval import RetrievalLimit
 from nmesh.catalog import ModelSpec
 from nmesh.eval.cache import EvalSummary
 from nmesh.eval.generated import EXTENDED_TASKS
@@ -545,7 +546,7 @@ class _Candidate:
     decode_applicable: bool = True
     context_before_embed_cap: int | None = None
     embed_context_cap: int | None = None
-    embed_retrieval_degraded: int | None = None
+    embed_retrieval_limit: RetrievalLimit | None = None
 
 
 def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: str,
@@ -579,7 +580,9 @@ def _candidate_for(
     bench_records: Mapping[str, BenchRecord] | None = None,
     unconfirmed: list[dict[str, str]] | None = None,
     embed_input_caps: Mapping[tuple[str, str, str], int] | None = None,
-    embed_retrieval_limits: Mapping[tuple[str, str, str], int] | None = None,
+    embed_retrieval_limits: Mapping[
+        tuple[str, str, str], RetrievalLimit | int
+    ] | None = None,
 ) -> list[_Candidate]:
     """Build candidates using the intentionally unchanged score.
 
@@ -650,7 +653,7 @@ def _candidate_for(
             backend, installed = _backend(profile, model, layers)
             context_before_embed_cap = None
             embed_context_cap = None
-            embed_retrieval_degraded = None
+            embed_retrieval_limit = None
             if _is_embed_only(model) and embed_input_caps is not None:
                 embed_context_cap = embed_input_caps.get((
                     model.id.casefold(),
@@ -672,11 +675,17 @@ def _candidate_for(
                     )
                     backend, installed = _backend(profile, model, layers)
             if _is_embed_only(model) and embed_retrieval_limits is not None:
-                embed_retrieval_degraded = embed_retrieval_limits.get((
+                retrieval_limit = embed_retrieval_limits.get((
                     model.id.casefold(),
                     quant.casefold(),
                     backend.casefold(),
                 ))
+                if isinstance(retrieval_limit, int):
+                    embed_retrieval_limit = RetrievalLimit(
+                        retrieval_limit, None, None
+                    )
+                else:
+                    embed_retrieval_limit = retrieval_limit
             if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
                 continue
             backend_flags = profile.backend_flags.get(backend)
@@ -785,7 +794,7 @@ def _candidate_for(
                 bench is None, decode_applicable=decode_applicable,
                 context_before_embed_cap=context_before_embed_cap,
                 embed_context_cap=embed_context_cap,
-                embed_retrieval_degraded=embed_retrieval_degraded,
+                embed_retrieval_limit=embed_retrieval_limit,
             ))
             break
     return sorted(candidates, key=lambda item: item.score, reverse=True)
@@ -1081,18 +1090,35 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
             )
         )
     if (
-        candidate.embed_retrieval_degraded is not None
-        and candidate.context > candidate.embed_retrieval_degraded
+        candidate.embed_retrieval_limit is not None
+        and candidate.context > candidate.embed_retrieval_limit.degraded_tokens
     ):
+        limit = candidate.embed_retrieval_limit
+        if limit.chunk_recovers is True:
+            warning_key = "warn.embed_retrieval_recovered"
+            warning_args = {
+                "degraded": limit.degraded_tokens,
+                "chunk": limit.chunk_tokens,
+                "hits": limit.chunk_hits,
+                "trials": limit.chunk_trials,
+            }
+        elif limit.chunk_recovers is False:
+            warning_key = "warn.embed_retrieval_unrecovered"
+            warning_args = {"degraded": limit.degraded_tokens}
+        else:
+            warning_key = "warn.embed_retrieval_degraded"
+            warning_args = {
+                "degraded": limit.degraded_tokens,
+                "context": candidate.context,
+            }
         warnings.append(
             t(
-                "warn.embed_retrieval_degraded",
+                warning_key,
                 language,
                 model=candidate.model.id,
                 quant=candidate.quant,
                 backend=candidate.backend,
-                degraded=candidate.embed_retrieval_degraded,
-                context=candidate.context,
+                **warning_args,
             )
         )
     launch = _launch(
@@ -1733,7 +1759,9 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                eval_depth_coverage: Mapping[tuple[str, str, str], int] | None = None,
                eval_depth_lost: Mapping[tuple[str, str, str], int] | None = None,
                embed_input_caps: Mapping[tuple[str, str, str], int] | None = None,
-               embed_retrieval_limits: Mapping[tuple[str, str, str], int] | None = None,
+               embed_retrieval_limits: Mapping[
+                   tuple[str, str, str], RetrievalLimit | int
+               ] | None = None,
                ) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
