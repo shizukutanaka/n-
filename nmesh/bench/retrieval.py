@@ -15,7 +15,7 @@ import httpx
 
 from nmesh.paths import nmesh_home
 
-RETRIEVAL_HARNESS_VERSION = "retrieval-v1"
+RETRIEVAL_HARNESS_VERSION = "retrieval-v2"
 RETRIEVAL_DOCS = 8
 RETRIEVAL_SEEDS = (11, 23, 37, 51, 67, 79, 83, 97)
 RETRIEVAL_RUNG_WORDS = (100, 400, 800, 1600, 2400, 3000)
@@ -43,6 +43,24 @@ class RetrievalRung:
 
 
 @dataclass(frozen=True)
+class RetrievalChunkArm:
+    doc_words: int
+    chunk_words: int
+    chunk_tokens: int
+    hits: int
+    trials: int
+
+
+@dataclass(frozen=True)
+class RetrievalLimit:
+    degraded_tokens: int
+    chunk_tokens: int | None
+    chunk_recovers: bool | None
+    chunk_hits: int | None = None
+    chunk_trials: int | None = None
+
+
+@dataclass(frozen=True)
 class RetrievalRecord:
     model_id: str
     quant: str
@@ -53,6 +71,7 @@ class RetrievalRecord:
     digest: str
     harness: str
     at: float
+    chunk: RetrievalChunkArm | None = None
 
     @property
     def control_passed(self) -> bool:
@@ -87,6 +106,12 @@ class RetrievalRecord:
             ):
                 return rung.served_tokens
         return None
+
+    @property
+    def chunk_recovers(self) -> bool | None:
+        if self.chunk is None or self.degraded_tokens is None:
+            return None
+        return self.chunk.hits / self.chunk.trials >= RETRIEVAL_PASS_RATIO
 
 
 def retrieval_key(
@@ -149,6 +174,41 @@ def _rung(data: object) -> RetrievalRung | None:
         return None
 
 
+def _chunk(data: object) -> RetrievalChunkArm | None:
+    if not isinstance(data, dict):
+        return None
+    try:
+        doc_words = data["doc_words"]
+        chunk_words = data["chunk_words"]
+        chunk_tokens = data["chunk_tokens"]
+        hits = data["hits"]
+        trials = data["trials"]
+        if (
+            isinstance(doc_words, bool)
+            or not isinstance(doc_words, int)
+            or doc_words < 0
+            or isinstance(chunk_words, bool)
+            or not isinstance(chunk_words, int)
+            or chunk_words < 0
+            or isinstance(chunk_tokens, bool)
+            or not isinstance(chunk_tokens, int)
+            or chunk_tokens < 0
+            or isinstance(hits, bool)
+            or not isinstance(hits, int)
+            or hits < 0
+            or isinstance(trials, bool)
+            or not isinstance(trials, int)
+            or trials < 1
+            or hits > trials
+        ):
+            return None
+        return RetrievalChunkArm(
+            doc_words, chunk_words, chunk_tokens, hits, trials
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _record(data: object) -> RetrievalRecord | None:
     if not isinstance(data, dict):
         return None
@@ -162,6 +222,8 @@ def _record(data: object) -> RetrievalRecord | None:
         digest = data["digest"]
         harness = data["harness"]
         at = data["at"]
+        has_chunk = "chunk" in data
+        chunk_data = data.get("chunk")
         if (
             not isinstance(model_id, str)
             or not isinstance(quant, str)
@@ -179,6 +241,10 @@ def _record(data: object) -> RetrievalRecord | None:
             or not isinstance(at, (int, float))
             or not math.isfinite(at)
             or at < 0
+            or (
+                harness == RETRIEVAL_HARNESS_VERSION
+                and not has_chunk
+            )
         ):
             return None
         rungs = tuple(_rung(value) for value in rungs_data)
@@ -190,6 +256,11 @@ def _record(data: object) -> RetrievalRecord | None:
             for previous, current in pairwise(rung_values)
         ):
             return None
+        chunk = None
+        if chunk_data is not None:
+            chunk = _chunk(chunk_data)
+            if chunk is None:
+                return None
         return RetrievalRecord(
             model_id,
             quant,
@@ -200,6 +271,7 @@ def _record(data: object) -> RetrievalRecord | None:
             digest,
             harness,
             float(at),
+            chunk,
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -315,11 +387,83 @@ def _embed(
     return vectors[0], tokens
 
 
+def _embed_inputs(
+    client: httpx.Client,
+    url: str,
+    model_ref: str,
+    inputs: list[str],
+) -> list[list[float]]:
+    vectors, _ = _embedding_payload(
+        client.post(url, json={"model": model_ref, "input": inputs})
+    )
+    if len(vectors) != len(inputs):
+        raise RuntimeError("retrieval response returned an unexpected vector count")
+    return vectors
+
+
 def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     dot = sum(a * b for a, b in zip(left, right))
     left_norm = math.sqrt(sum(value * value for value in left))
     right_norm = math.sqrt(sum(value * value for value in right))
     return dot / (left_norm * right_norm) if left_norm and right_norm else 0.0
+
+
+def measure_retrieval_chunk_arm(
+    client: httpx.Client,
+    base_url: str,
+    model_ref: str,
+    *,
+    doc_words: int,
+    chunk_words: int,
+    chunk_tokens: int,
+    seeds: Sequence[int] = RETRIEVAL_SEEDS,
+) -> RetrievalChunkArm:
+    if (
+        isinstance(doc_words, bool)
+        or not isinstance(doc_words, int)
+        or doc_words < 1
+        or isinstance(chunk_words, bool)
+        or not isinstance(chunk_words, int)
+        or chunk_words < 1
+        or isinstance(chunk_tokens, bool)
+        or not isinstance(chunk_tokens, int)
+        or chunk_tokens < 1
+    ):
+        raise RuntimeError(
+            "retrieval document, chunk, and token counts must be positive"
+        )
+    if not seeds:
+        raise RuntimeError("retrieval seeds must not be empty")
+    url = f"{base_url}/v1/embeddings"
+    hits = 0
+    for seed in seeds:
+        rng = random.Random(seed)
+        code = f"{rng.randrange(16**6):06X}"
+        documents, target = _documents(rng, doc_words, code)
+        document_vectors: list[list[list[float]]] = []
+        for document in documents:
+            words = document.split()
+            chunks = [
+                " ".join(words[index:index + chunk_words])
+                for index in range(0, len(words), chunk_words)
+            ]
+            document_vectors.append(
+                _embed_inputs(client, url, model_ref, chunks)
+            )
+        query, _ = _embed(client, url, model_ref, _QUESTION)
+        scores = [
+            max(_cosine(query, vector) for vector in vectors)
+            for vectors in document_vectors
+        ]
+        if max(range(RETRIEVAL_DOCS), key=scores.__getitem__) == target:
+            hits += 1
+    return RetrievalChunkArm(
+        doc_words=doc_words,
+        chunk_words=chunk_words,
+        chunk_tokens=chunk_tokens,
+        hits=hits,
+        trials=len(seeds),
+    )
 
 
 def measure_retrieval(

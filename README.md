@@ -350,11 +350,26 @@ measured:
 ```
 
 This is one host, one artifact, and one backend/build measurement, not a
-general law about bge-m3. The planner warns when measured single-vector
-retrieval degrades instead of clamping the served context; long inputs should
-be chunked. `nmesh bench --service <embed-service> --retrieval` is opt-in
-because it takes approximately 430 requests and roughly 10 minutes on the
-measured host.
+general law about bge-m3. The chunk-remedy confirmation measured:
+
+```text
+whole document        rank1 1/8   ranks=[4,4,2,4,5,6,7,1]
+200-word chunks       rank1 8/8
+200-word, 20% overlap rank1 8/8
+400-word chunks       rank1 8/8
+400-word, 20% overlap rank1 8/8
+800-word chunks       rank1 8/8
+```
+
+Overlap made no difference at these measured sizes. The recommended chunk
+size is the ladder's usable rung (800 words, approximately 1177 served
+tokens in this measurement). The planner warns rather than clamps when
+single-vector retrieval degrades, and recommends chunking only when the
+confirmation arm recovers retrieval for the current evidence identity. If
+the arm does not recover it, chunking is not presented as a verified remedy.
+`nmesh bench --service <embed-service> --retrieval` is opt-in because it takes
+approximately 430 ladder requests plus approximately 64 chunk requests and
+roughly 10 minutes on the measured host.
 HTTP response bodies remain English because `/v1/*` errors and authentication
 details are machine-facing API contracts for clients.
 

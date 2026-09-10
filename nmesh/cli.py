@@ -33,6 +33,7 @@ from nmesh.bench import (
     RETRIEVAL_HARNESS_VERSION,
     EmbedRecord,
     EpochSample,
+    RetrievalLimit,
     RetrievalRecord,
     baseline,
     benchmark_key,
@@ -50,6 +51,7 @@ from nmesh.bench import (
     measure_embedding,
     measure_reference,
     measure_retrieval,
+    measure_retrieval_chunk_arm,
     merge_measurement,
     prune_degraded,
     reference_id,
@@ -508,7 +510,7 @@ def _embed_context_caps() -> dict[tuple[str, str, str], int]:
     }
 
 
-def _embed_retrieval_limits() -> dict[tuple[str, str, str], int]:
+def _embed_retrieval_limits() -> dict[tuple[str, str, str], RetrievalLimit]:
     latest: dict[tuple[str, str, str], RetrievalRecord] = {}
     digest = retrieval_digest()
     for record in load_retrieval_cache().values():
@@ -527,7 +529,18 @@ def _embed_retrieval_limits() -> dict[tuple[str, str, str], int]:
         if previous is None or record.at > previous.at:
             latest[key] = record
     return {
-        key: record.degraded_tokens
+        key: RetrievalLimit(
+            degraded_tokens=record.degraded_tokens,
+            chunk_tokens=(
+                record.chunk.chunk_tokens
+                if record.chunk is not None else None
+            ),
+            chunk_recovers=record.chunk_recovers,
+            chunk_hits=record.chunk.hits if record.chunk is not None else None,
+            chunk_trials=(
+                record.chunk.trials if record.chunk is not None else None
+            ),
+        )
         for key, record in latest.items()
         if record.degraded_tokens is not None
     }
@@ -1614,6 +1627,56 @@ def _bench(args: argparse.Namespace) -> int:
                 harness=RETRIEVAL_HARNESS_VERSION,
                 at=time.time(),
             )
+            if (
+                retrieval_record.usable_tokens is not None
+                and retrieval_record.degraded_tokens is not None
+            ):
+                usable_rung = next(
+                    (
+                        rung for rung in retrieval_record.rungs
+                        if rung.served_tokens == retrieval_record.usable_tokens
+                    ),
+                    None,
+                )
+                degraded_rung = next(
+                    (
+                        rung for rung in retrieval_record.rungs
+                        if rung.served_tokens == retrieval_record.degraded_tokens
+                    ),
+                    None,
+                )
+                if usable_rung is not None and degraded_rung is not None:
+                    try:
+                        with httpx.Client(timeout=300.0) as client:
+                            chunk_arm = measure_retrieval_chunk_arm(
+                                client,
+                                base_url,
+                                service.model_ref,
+                                doc_words=degraded_rung.words,
+                                chunk_words=usable_rung.words,
+                                chunk_tokens=usable_rung.served_tokens,
+                            )
+                    except httpx.HTTPError as error:
+                        response = getattr(error, "response", None)
+                        status = getattr(response, "status_code", "unknown")
+                        print(
+                            i18n.t(
+                                "err.bench_http",
+                                i18n.lang(),
+                                service=service.name,
+                                url=f"{base_url}/v1/embeddings",
+                                status=status,
+                            ),
+                            file=sys.stderr,
+                        )
+                        return 1
+                    except (OSError, RuntimeError) as error:
+                        print(
+                            i18n.t("err.bench_measure", i18n.lang(), error=error),
+                            file=sys.stderr,
+                        )
+                        return 1
+                    retrieval_record = replace(retrieval_record, chunk=chunk_arm)
             try:
                 save_retrieval(retrieval_record)
             except OSError as error:
@@ -1630,6 +1693,7 @@ def _bench(args: argparse.Namespace) -> int:
                     "control_passed": retrieval_record.control_passed,
                     "usable_tokens": retrieval_record.usable_tokens,
                     "degraded_tokens": retrieval_record.degraded_tokens,
+                    "chunk_recovers": retrieval_record.chunk_recovers,
                 }
             _print_json(output)
         else:
@@ -1667,6 +1731,18 @@ def _bench(args: argparse.Namespace) -> int:
                     f"rank1={rung.hits}/{rung.trials}"
                     for rung in retrieval_record.rungs
                 )
+                chunk = "unmeasured"
+                if retrieval_record.chunk is not None:
+                    outcome = (
+                        "recovered"
+                        if retrieval_record.chunk_recovers
+                        else "not recovered"
+                    )
+                    chunk = (
+                        f"{outcome} {retrieval_record.chunk.hits}/"
+                        f"{retrieval_record.chunk.trials} at ~"
+                        f"{retrieval_record.chunk.chunk_tokens} tokens"
+                    )
                 _console().print(
                     i18n.t(
                         "label.retrieval_measurement",
@@ -1674,6 +1750,7 @@ def _bench(args: argparse.Namespace) -> int:
                         usable=usable,
                         degraded=degraded,
                         rungs=rung_lines,
+                        chunk=chunk,
                     )
                 )
                 if not retrieval_record.control_passed:
@@ -3577,7 +3654,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     bench_parser.add_argument(
         "--retrieval",
         action="store_true",
-        help="measure retrieval usability (about 430 requests, roughly 10 minutes)",
+        help="measure retrieval usability (about 430 requests plus about 64 "
+        "chunk requests, roughly 10 minutes)",
     )
     eval_parser = sub.add_parser("eval")
     eval_parser.add_argument("--service", default="chat")
