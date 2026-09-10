@@ -17,8 +17,8 @@ from nmesh.bench import benchmark_key
 from nmesh.bench.embed import EMBED_HARNESS_VERSION, load_embed_cache
 from nmesh.bench.retrieval import (
     RETRIEVAL_HARNESS_VERSION,
-    _pool,
     load_retrieval_cache,
+    pool_embeddings,
     retrieval_digest,
 )
 from nmesh.orchestrate import (
@@ -1283,6 +1283,8 @@ def create_app(
             )
             autochunk_data: dict[str, object] | None = None
             autochunk_used = False
+            autochunk_piece_count: int | None = None
+            autochunk_chunk_words: int | None = None
             input_value = request.get("input")
             input_values: list[str] | None = None
             if isinstance(input_value, str):
@@ -1355,7 +1357,7 @@ def create_app(
                             outputs.append(
                                 vectors[0]
                                 if len(pieces) == 1
-                                else _pool(vectors)
+                                else pool_embeddings(vectors)
                             )
                             total_tokens += prompt_tokens
                             total_pieces += len(pieces)
@@ -1374,8 +1376,8 @@ def create_app(
                             "prompt_tokens": total_tokens,
                             "total_tokens": total_tokens,
                         }
-                        autochunk_data["_nmesh_chunked"] = total_pieces
-                        autochunk_data["_nmesh_chunk_words"] = chunk_plan.chunk_words
+                        autochunk_piece_count = total_pieces
+                        autochunk_chunk_words = chunk_plan.chunk_words
                         autochunk_used = True
             if autochunk_data is not None:
                 data = autochunk_data
@@ -1405,15 +1407,16 @@ def create_app(
             data["model"] = request.get("model", service.model_id)
         embedding_headers: dict[str, str] = {}
         embedding_chunk_headers: dict[str, str] = {}
-        if autochunk_used and isinstance(data, dict):
-            pieces = data.pop("_nmesh_chunked", None)
-            words = data.pop("_nmesh_chunk_words", None)
-            if isinstance(pieces, int) and isinstance(words, int):
-                embedding_chunk_headers = {
-                    "X-Nmesh-Embedding-Chunked": str(pieces),
-                    "X-Nmesh-Embedding-Chunk-Words": str(words),
-                }
-        skip_embedding_guard = autochunk_used and isinstance(request.get("input"), str)
+        if (
+            autochunk_used
+            and autochunk_piece_count is not None
+            and autochunk_chunk_words is not None
+        ):
+            embedding_chunk_headers = {
+                "X-Nmesh-Embedding-Chunked": str(autochunk_piece_count),
+                "X-Nmesh-Embedding-Chunk-Words": str(autochunk_chunk_words),
+            }
+        skip_embedding_guard = autochunk_used
         if embedding_cap is not None and isinstance(data, dict) and not skip_embedding_guard:
             usage = data.get("usage")
             prompt_tokens = (

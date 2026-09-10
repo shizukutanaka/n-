@@ -128,6 +128,7 @@ class _AutoChunkHandler(BaseHTTPRequestHandler):
     request_bodies: ClassVar[list[dict[str, object]]] = []
     dimensions: ClassVar[int] = 2
     varying_dimensions: ClassVar[bool] = False
+    prompt_tokens_override: ClassVar[int | None] = None
 
     def do_POST(self) -> None:
         length = int(self.headers["Content-Length"])
@@ -147,6 +148,8 @@ class _AutoChunkHandler(BaseHTTPRequestHandler):
                 "object": "embedding",
             })
         tokens = sum(len(str(value).split()) for value in values)
+        if self.__class__.prompt_tokens_override is not None:
+            tokens = self.__class__.prompt_tokens_override
         payload = {
             "data": data,
             "model": body["model"],
@@ -168,6 +171,7 @@ def _start_autochunk_upstream() -> ThreadingHTTPServer:
     _AutoChunkHandler.request_bodies = []
     _AutoChunkHandler.dimensions = 2
     _AutoChunkHandler.varying_dimensions = False
+    _AutoChunkHandler.prompt_tokens_override = None
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), _AutoChunkHandler)
     threading.Thread(target=upstream.serve_forever, daemon=True).start()
     return upstream
@@ -317,6 +321,26 @@ def test_embedding_autochunk_dimension_failure_falls_back(monkeypatch) -> None:
         assert "X-Nmesh-Embedding-Chunked" not in response.headers
         assert len(_AutoChunkHandler.request_bodies) == 2
         assert _AutoChunkHandler.request_bodies[-1]["input"] == value
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_embedding_autochunk_mixed_inputs_skip_cap_guard(monkeypatch) -> None:
+    upstream = _start_autochunk_upstream()
+    try:
+        _AutoChunkHandler.prompt_tokens_override = 3000
+        with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
+            response = client.post(
+                "/v1/embeddings",
+                json={"model": "nmesh-auto", "input": [
+                    " ".join(["word"] * 7) + " needle", "short",
+                ]},
+            )
+        assert response.status_code == 200
+        assert "X-Nmesh-Embedding-Truncation" not in response.headers
+        assert response.headers["X-Nmesh-Embedding-Chunked"] == "3"
+        assert response.headers["X-Nmesh-Embedding-Chunk-Words"] == "4"
     finally:
         upstream.shutdown()
         upstream.server_close()

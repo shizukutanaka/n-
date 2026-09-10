@@ -427,7 +427,7 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     return dot / (left_norm * right_norm) if left_norm and right_norm else 0.0
 
 
-def _pool(vectors: Sequence[Sequence[float]]) -> list[float]:
+def pool_embeddings(vectors: Sequence[Sequence[float]]) -> list[float]:
     if not vectors:
         raise ValueError("cannot pool an empty vector list")
     dimensions = len(vectors[0])
@@ -496,7 +496,7 @@ def measure_retrieval_chunk_arm(
         if max(range(RETRIEVAL_DOCS), key=scores.__getitem__) == target:
             hits += 1
         pooled_scores = [
-            _cosine(query, _pool(vectors))
+            _cosine(query, pool_embeddings(vectors))
             for vectors in document_vectors
         ]
         if max(range(RETRIEVAL_DOCS), key=pooled_scores.__getitem__) == target:
