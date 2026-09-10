@@ -359,14 +359,27 @@ whole document        rank1 1/8   ranks=[4,4,2,4,5,6,7,1]
 400-word chunks       rank1 8/8
 400-word, 20% overlap rank1 8/8
 800-word chunks       rank1 8/8
+800-word chunks, normalized mean rank1 8/8
+400-word chunks, normalized mean rank1 8/8
+200-word chunks, normalized mean rank1 8/8
+400-word chunks, raw mean         rank1 8/8
 ```
 
 Overlap made no difference at these measured sizes. The recommended chunk
 size is the ladder's usable rung (800 words, approximately 1177 served
-tokens in this measurement). The planner warns rather than clamps when
-single-vector retrieval degrades, and recommends chunking only when the
-confirmation arm recovers retrieval for the current evidence identity. If
-the arm does not recover it, chunking is not presented as a verified remedy.
+tokens in this measurement). The pooled confirmation on the same vectors
+measured 800-, 400-, and 200-word normalized means at rank1 8/8, and a
+400-word raw mean also at 8/8 because this backend returns unit vectors.
+Pooled cosine scores were lower than max-over-chunks scores due to dilution;
+that dilution was not shown to be harmless in general. The planner warns
+rather than clamps when single-vector retrieval degrades, and the gateway
+autochunk remedy is opt-in with `NMESH_EMBED_AUTOCHUNK=1`. It applies only
+where pooled recovery is proven for the matching model, quantization,
+backend, and evidence identity, and uses the measured chunk size. Such
+responses include `X-Nmesh-Embedding-Chunked` and
+`X-Nmesh-Embedding-Chunk-Words`. If the arm does not recover it, chunking is
+not presented as a verified remedy. This evidence remains scoped to one host,
+one artifact, and one backend build.
 `nmesh bench --service <embed-service> --retrieval` is opt-in because it takes
 approximately 430 ladder requests plus approximately 64 chunk requests and
 roughly 10 minutes on the measured host.

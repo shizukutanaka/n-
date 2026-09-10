@@ -8,13 +8,19 @@ import secrets
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
 from nmesh import i18n
 from nmesh.artifact import service_fingerprint
 from nmesh.bench import benchmark_key
 from nmesh.bench.embed import EMBED_HARNESS_VERSION, load_embed_cache
+from nmesh.bench.retrieval import (
+    RETRIEVAL_HARNESS_VERSION,
+    load_retrieval_cache,
+    pool_embeddings,
+    retrieval_digest,
+)
 from nmesh.orchestrate import (
     PROTOCOL_VERSION,
     DelegationRecord,
@@ -324,6 +330,64 @@ def _embed_input_caps(plan: Plan) -> dict[tuple[str, str, str], int]:
         if newest is not None and newest.cap is not None:
             caps[key] = newest.cap
     return caps
+
+
+@dataclass(frozen=True)
+class EmbedChunkPlan:
+    chunk_words: int
+    chunk_tokens: int
+
+
+def _embed_chunk_plans(
+    plan: Plan,
+) -> dict[tuple[str, str, str], EmbedChunkPlan]:
+    services = [service for service in plan.services if service.roles == ["embed"]]
+    if not services:
+        return {}
+    records = load_retrieval_cache()
+    plans: dict[tuple[str, str, str], EmbedChunkPlan] = {}
+    for service in services:
+        key = (
+            service.model_id.casefold(),
+            service.quant.casefold(),
+            service.backend.casefold(),
+        )
+        newest = max(
+            (
+                record
+                for record in records.values()
+                if record.harness == RETRIEVAL_HARNESS_VERSION
+                and record.digest == retrieval_digest()
+                and record.model_id.casefold() == key[0]
+                and record.quant.casefold() == key[1]
+                and record.backend.casefold() == key[2]
+                and record.control_passed
+                and record.pool_recovers is True
+                and record.chunk is not None
+            ),
+            key=lambda record: record.at,
+            default=None,
+        )
+        if newest is not None and newest.chunk is not None:
+            plans[key] = EmbedChunkPlan(
+                newest.chunk.chunk_words,
+                newest.chunk.chunk_tokens,
+            )
+    return plans
+
+
+def _embedding_autochunk_enabled() -> bool:
+    return os.environ.get("NMESH_EMBED_AUTOCHUNK", "").casefold() in {
+        "1", "true", "yes",
+    }
+
+
+def _embedding_chunks(value: str, chunk_words: int) -> list[str]:
+    words = value.split()
+    return [
+        " ".join(words[index:index + chunk_words])
+        for index in range(0, len(words), chunk_words)
+    ]
 
 
 def _base_url(service: PlannedService) -> str:
@@ -767,6 +831,7 @@ class _PlanState:
         self.mtime: float | None = None
         self._mtime_ns: int | None = None
         self.embed_input_caps: dict[tuple[str, str, str], int] = {}
+        self.embed_chunk_plans: dict[tuple[str, str, str], EmbedChunkPlan] = {}
         self._explicit = explicit
         self._gate = gate
         self._limiter = limiter
@@ -783,6 +848,7 @@ class _PlanState:
         gpu = plan.profile.gpus[0].name if plan.profile.gpus else "cpu"
         self.plan = plan
         self.embed_input_caps = _embed_input_caps(plan)
+        self.embed_chunk_plans = _embed_chunk_plans(plan)
         self.telemetry_keys = {
             service.name: benchmark_key(
                 service.model_id, service.quant, service.backend, gpu,
@@ -1191,22 +1257,142 @@ def create_app(
                     await _record_prompt_calibration(service, request, usage)
             return StreamingResponse(stream(), media_type="text/event-stream")
         try:
-            try:
-                response = await client.post(url, json=body)
-            except httpx.ConnectError:
+            async def post_upstream(payload: Mapping[str, object]) -> httpx.Response:
                 try:
-                    await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
-                except Exception as error:
-                    raise HTTPException(status_code=502, detail=str(error)) from error
-                response = await client.post(f"{_base_url(service)}{path}", json=body)
-            content = response.content
-            if response.status_code >= 400:
-                error = _completion_not_supported(path, response.status_code, service.backend)
-                if error is not None:
-                    raise error
-                return Response(content=content, status_code=response.status_code,
-                                media_type=response.headers.get("content-type"))
-            data = json.loads(content)
+                    return await client.post(url, json=payload)
+                except httpx.ConnectError:
+                    try:
+                        await asyncio.to_thread(
+                            ensure_running, service.name, plan_snapshot
+                        )
+                    except Exception as error:
+                        raise HTTPException(status_code=502, detail=str(error)) from error
+                    return await client.post(
+                        f"{_base_url(service)}{path}", json=payload
+                    )
+
+            chunk_plan = (
+                plan_state.embed_chunk_plans.get((
+                    service.model_id.casefold(),
+                    service.quant.casefold(),
+                    service.backend.casefold(),
+                ))
+                if path == "/v1/embeddings" and service.roles == ["embed"]
+                and _embedding_autochunk_enabled()
+                else None
+            )
+            autochunk_data: dict[str, object] | None = None
+            autochunk_used = False
+            autochunk_piece_count: int | None = None
+            autochunk_chunk_words: int | None = None
+            input_value = request.get("input")
+            input_values: list[str] | None = None
+            if isinstance(input_value, str):
+                input_values = [input_value]
+            elif (
+                isinstance(input_value, list)
+                and all(isinstance(item, str) for item in input_value)
+            ):
+                input_values = list(input_value)
+            if chunk_plan is not None and input_values:
+                piece_groups = [
+                    (
+                        _embedding_chunks(item, chunk_plan.chunk_words)
+                        if len(item.split()) > chunk_plan.chunk_words
+                        else [item]
+                    )
+                    for item in input_values
+                ]
+                if any(len(group) > 1 for group in piece_groups):
+                    outputs: list[list[float]] = []
+                    total_tokens = 0
+                    total_pieces = 0
+                    autochunk_data = {
+                        "object": "list",
+                        "model": request.get("model", service.model_id),
+                        "data": [],
+                        "usage": {},
+                    }
+                    try:
+                        for pieces in piece_groups:
+                            piece_body = dict(body)
+                            piece_body["input"] = pieces[0] if len(pieces) == 1 else pieces
+                            piece_response = await post_upstream(piece_body)
+                            if piece_response.status_code >= 400:
+                                autochunk_data = None
+                                break
+                            piece_payload = piece_response.json()
+                            if not isinstance(piece_payload, Mapping):
+                                autochunk_data = None
+                                break
+                            piece_data = piece_payload.get("data")
+                            usage = piece_payload.get("usage")
+                            prompt_tokens = (
+                                _upstream_int(usage.get("prompt_tokens"))
+                                if isinstance(usage, Mapping) else None
+                            )
+                            if (
+                                not isinstance(piece_data, list)
+                                or len(piece_data) != len(pieces)
+                                or prompt_tokens is None
+                                or prompt_tokens < 0
+                            ):
+                                autochunk_data = None
+                                break
+                            if not all(isinstance(item, Mapping) for item in piece_data):
+                                autochunk_data = None
+                                break
+                            vectors = [item.get("embedding") for item in piece_data]
+                            if not all(
+                                isinstance(vector, list)
+                                and all(
+                                    isinstance(value, (int, float))
+                                    and not isinstance(value, bool)
+                                    for value in vector
+                                )
+                                for vector in vectors
+                            ):
+                                autochunk_data = None
+                                break
+                            outputs.append(
+                                vectors[0]
+                                if len(pieces) == 1
+                                else pool_embeddings(vectors)
+                            )
+                            total_tokens += prompt_tokens
+                            total_pieces += len(pieces)
+                    except (httpx.HTTPError, TypeError, ValueError, KeyError):
+                        autochunk_data = None
+                    if autochunk_data is not None:
+                        autochunk_data["data"] = [
+                            {
+                                "object": "embedding",
+                                "index": index,
+                                "embedding": vector,
+                            }
+                            for index, vector in enumerate(outputs)
+                        ]
+                        autochunk_data["usage"] = {
+                            "prompt_tokens": total_tokens,
+                            "total_tokens": total_tokens,
+                        }
+                        autochunk_piece_count = total_pieces
+                        autochunk_chunk_words = chunk_plan.chunk_words
+                        autochunk_used = True
+            if autochunk_data is not None:
+                data = autochunk_data
+            else:
+                response = await post_upstream(body)
+                content = response.content
+                if response.status_code >= 400:
+                    error = _completion_not_supported(
+                        path, response.status_code, service.backend
+                    )
+                    if error is not None:
+                        raise error
+                    return Response(content=content, status_code=response.status_code,
+                                    media_type=response.headers.get("content-type"))
+                data = json.loads(content)
         except (httpx.HTTPError, json.JSONDecodeError) as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
         finally:
@@ -1220,7 +1406,18 @@ def create_app(
         if isinstance(data, dict) and "model" in data:
             data["model"] = request.get("model", service.model_id)
         embedding_headers: dict[str, str] = {}
-        if embedding_cap is not None and isinstance(data, dict):
+        embedding_chunk_headers: dict[str, str] = {}
+        if (
+            autochunk_used
+            and autochunk_piece_count is not None
+            and autochunk_chunk_words is not None
+        ):
+            embedding_chunk_headers = {
+                "X-Nmesh-Embedding-Chunked": str(autochunk_piece_count),
+                "X-Nmesh-Embedding-Chunk-Words": str(autochunk_chunk_words),
+            }
+        skip_embedding_guard = autochunk_used
+        if embedding_cap is not None and isinstance(data, dict) and not skip_embedding_guard:
             usage = data.get("usage")
             prompt_tokens = (
                 _upstream_int(usage.get("prompt_tokens"))
@@ -1272,6 +1469,7 @@ def create_app(
             request,
             data.get("usage") if isinstance(data, dict) else None,
         )
+        embedding_headers.update(embedding_chunk_headers)
         if embedding_headers:
             return Response(
                 content=json.dumps(data),

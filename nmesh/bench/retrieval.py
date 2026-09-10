@@ -15,7 +15,7 @@ import httpx
 
 from nmesh.paths import nmesh_home
 
-RETRIEVAL_HARNESS_VERSION = "retrieval-v2"
+RETRIEVAL_HARNESS_VERSION = "retrieval-v3"
 RETRIEVAL_DOCS = 8
 RETRIEVAL_SEEDS = (11, 23, 37, 51, 67, 79, 83, 97)
 RETRIEVAL_RUNG_WORDS = (100, 400, 800, 1600, 2400, 3000)
@@ -49,6 +49,8 @@ class RetrievalChunkArm:
     chunk_tokens: int
     hits: int
     trials: int
+    pool_hits: int
+    pool_trials: int
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,9 @@ class RetrievalLimit:
     chunk_recovers: bool | None
     chunk_hits: int | None = None
     chunk_trials: int | None = None
+    pool_recovers: bool | None = None
+    pool_hits: int | None = None
+    pool_trials: int | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +117,15 @@ class RetrievalRecord:
         if self.chunk is None or self.degraded_tokens is None:
             return None
         return self.chunk.hits / self.chunk.trials >= RETRIEVAL_PASS_RATIO
+
+    @property
+    def pool_recovers(self) -> bool | None:
+        if self.chunk is None or self.degraded_tokens is None:
+            return None
+        return (
+            self.chunk.pool_hits / self.chunk.pool_trials
+            >= RETRIEVAL_PASS_RATIO
+        )
 
 
 def retrieval_key(
@@ -183,16 +197,18 @@ def _chunk(data: object) -> RetrievalChunkArm | None:
         chunk_tokens = data["chunk_tokens"]
         hits = data["hits"]
         trials = data["trials"]
+        pool_hits = data["pool_hits"]
+        pool_trials = data["pool_trials"]
         if (
             isinstance(doc_words, bool)
             or not isinstance(doc_words, int)
-            or doc_words < 0
+            or doc_words < 1
             or isinstance(chunk_words, bool)
             or not isinstance(chunk_words, int)
-            or chunk_words < 0
+            or chunk_words < 1
             or isinstance(chunk_tokens, bool)
             or not isinstance(chunk_tokens, int)
-            or chunk_tokens < 0
+            or chunk_tokens < 1
             or isinstance(hits, bool)
             or not isinstance(hits, int)
             or hits < 0
@@ -200,10 +216,18 @@ def _chunk(data: object) -> RetrievalChunkArm | None:
             or not isinstance(trials, int)
             or trials < 1
             or hits > trials
+            or isinstance(pool_hits, bool)
+            or not isinstance(pool_hits, int)
+            or pool_hits < 0
+            or isinstance(pool_trials, bool)
+            or not isinstance(pool_trials, int)
+            or pool_trials < 1
+            or pool_hits > pool_trials
         ):
             return None
         return RetrievalChunkArm(
-            doc_words, chunk_words, chunk_tokens, hits, trials
+            doc_words, chunk_words, chunk_tokens, hits, trials,
+            pool_hits, pool_trials,
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -222,7 +246,6 @@ def _record(data: object) -> RetrievalRecord | None:
         digest = data["digest"]
         harness = data["harness"]
         at = data["at"]
-        has_chunk = "chunk" in data
         chunk_data = data.get("chunk")
         if (
             not isinstance(model_id, str)
@@ -241,10 +264,6 @@ def _record(data: object) -> RetrievalRecord | None:
             or not isinstance(at, (int, float))
             or not math.isfinite(at)
             or at < 0
-            or (
-                harness == RETRIEVAL_HARNESS_VERSION
-                and not has_chunk
-            )
         ):
             return None
         rungs = tuple(_rung(value) for value in rungs_data)
@@ -408,6 +427,24 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     return dot / (left_norm * right_norm) if left_norm and right_norm else 0.0
 
 
+def pool_embeddings(vectors: Sequence[Sequence[float]]) -> list[float]:
+    if not vectors:
+        raise ValueError("cannot pool an empty vector list")
+    dimensions = len(vectors[0])
+    if not dimensions or any(len(vector) != dimensions for vector in vectors):
+        raise ValueError("cannot pool vectors with different dimensions")
+    normalized: list[list[float]] = []
+    for vector in vectors:
+        norm = math.sqrt(sum(value * value for value in vector))
+        normalized.append(
+            [value / norm for value in vector] if norm else list(vector)
+        )
+    return [
+        sum(vector[index] for vector in normalized) / len(normalized)
+        for index in range(dimensions)
+    ]
+
+
 def measure_retrieval_chunk_arm(
     client: httpx.Client,
     base_url: str,
@@ -436,6 +473,7 @@ def measure_retrieval_chunk_arm(
         raise RuntimeError("retrieval seeds must not be empty")
     url = f"{base_url}/v1/embeddings"
     hits = 0
+    pool_hits = 0
     for seed in seeds:
         rng = random.Random(seed)
         code = f"{rng.randrange(16**6):06X}"
@@ -457,12 +495,20 @@ def measure_retrieval_chunk_arm(
         ]
         if max(range(RETRIEVAL_DOCS), key=scores.__getitem__) == target:
             hits += 1
+        pooled_scores = [
+            _cosine(query, pool_embeddings(vectors))
+            for vectors in document_vectors
+        ]
+        if max(range(RETRIEVAL_DOCS), key=pooled_scores.__getitem__) == target:
+            pool_hits += 1
     return RetrievalChunkArm(
         doc_words=doc_words,
         chunk_words=chunk_words,
         chunk_tokens=chunk_tokens,
         hits=hits,
         trials=len(seeds),
+        pool_hits=pool_hits,
+        pool_trials=len(seeds),
     )
 
 

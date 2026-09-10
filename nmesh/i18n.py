@@ -156,7 +156,8 @@ MESSAGES = {
         "label.retrieval_measurement": (
             "Retrieval usability: usable through {usable} tokens; "
             "degraded beyond {degraded} tokens.\n{rungs}\n"
-            "Chunk recovery: {chunk}"
+            "Chunk recovery: {chunk}\n"
+            "Pooled single vector: {pool}"
         ),
         "warn.retrieval_control": (
             "The retrieval control rung failed, so this run proves nothing "
@@ -178,6 +179,20 @@ MESSAGES = {
             "{model} at {quant} on {backend}: single-vector retrieval degraded "
             "beyond {degraded} tokens, but measured chunking recovers {hits}/{trials} "
             "at about {chunk} tokens on this host; split long inputs accordingly."
+        ),
+        "warn.embed_retrieval_pooled": (
+            "{model} at {quant} on {backend}: single-vector retrieval degraded "
+            "beyond {degraded} tokens, but measured chunking recovers {hits}/{trials} "
+            "at about {chunk} tokens; the gateway can fold the pieces into one "
+            "vector with measured pooled recovery {pool_hits}/{pool_trials} on "
+            "this host. Set NMESH_EMBED_AUTOCHUNK=1 to opt in."
+        ),
+        "warn.embed_retrieval_client": (
+            "{model} at {quant} on {backend}: client-side chunking recovers "
+            "{hits}/{trials} at about {chunk} tokens, but folding the pieces into "
+            "one vector did not recover retrieval here. Chunking is not a "
+            "verified remedy through the gateway; it will not autochunk, so "
+            "chunk inputs in the client."
         ),
         "warn.embed_retrieval_unrecovered": (
             "{model} at {quant} on {backend}: single-vector retrieval degraded "
@@ -566,6 +581,7 @@ MESSAGES = {
         "label.retrieval_measurement": (
             "検索の有用性: {usable} トークンまで有用、{degraded} トークンを超えると劣化。\n{rungs}"
             "\nチャンク回復: {chunk}"
+            "\nプール済み単一ベクトル: {pool}"
         ),
         "warn.retrieval_control": (
             "検索の制御ランが失敗したため、この実行から長さについては何も証明できません。"
@@ -578,6 +594,17 @@ MESSAGES = {
         "warn.embed_retrieval_recovered": (
             "{model} の {quant} / {backend}: {degraded} トークンを超えると検索は劣化しますが、"
             "このホストでは約 {chunk} トークンへの分割で {hits}/{trials} の回復を実測しました。"
+        ),
+        "warn.embed_retrieval_pooled": (
+            "{model} の {quant} / {backend}: {degraded} トークンを超えると検索は劣化しますが、"
+            "約 {chunk} トークンへの分割で {hits}/{trials} を回復しました。ゲートウェイはこのホストで"
+            "プール済み回復 {pool_hits}/{pool_trials} の単一ベクトルにまとめられます。"
+            "NMESH_EMBED_AUTOCHUNK=1 で有効化できます。"
+        ),
+        "warn.embed_retrieval_client": (
+            "{model} の {quant} / {backend}: クライアント側の分割では約 {chunk} トークンで"
+            "{hits}/{trials} を回復しましたが、単一ベクトルへの統合では回復しませんでした。"
+            "ゲートウェイは自動分割せず、クライアント側で入力を分割してください。"
         ),
         "warn.embed_retrieval_unrecovered": (
             "{model} の {quant} / {backend}: {degraded} トークンを超えると検索は劣化し、"

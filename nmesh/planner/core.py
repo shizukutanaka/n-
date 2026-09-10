@@ -1089,12 +1089,20 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
     ):
         limit = candidate.embed_retrieval_limit
         if limit.chunk_recovers is True:
-            warning_key = "warn.embed_retrieval_recovered"
+            warning_key = (
+                "warn.embed_retrieval_pooled"
+                if limit.pool_recovers is True
+                else "warn.embed_retrieval_client"
+                if limit.pool_recovers is False
+                else "warn.embed_retrieval_recovered"
+            )
             warning_args = {
                 "degraded": limit.degraded_tokens,
                 "chunk": limit.chunk_tokens,
                 "hits": limit.chunk_hits,
                 "trials": limit.chunk_trials,
+                "pool_hits": limit.pool_hits,
+                "pool_trials": limit.pool_trials,
             }
         elif limit.chunk_recovers is False:
             warning_key = "warn.embed_retrieval_unrecovered"
