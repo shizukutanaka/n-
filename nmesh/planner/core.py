@@ -670,6 +670,7 @@ def _candidate_for(
                     gpu_bytes, cpu_bytes = _split_memory(
                         base, model.n_layers, layers,
                     )
+                    backend, installed = _backend(profile, model, layers)
             if _is_embed_only(model) and embed_retrieval_limits is not None:
                 embed_retrieval_degraded = embed_retrieval_limits.get((
                     model.id.casefold(),

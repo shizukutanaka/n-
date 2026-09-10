@@ -772,6 +772,39 @@ def test_embedding_has_activation_memory_not_kv(catalog: list[ModelSpec]) -> Non
     assert service.memory.compute_overhead > 0.06 * service.memory.weight_bytes + 320 * 1024**2
 
 
+def test_embedding_cap_rechecks_backend_after_layer_change(monkeypatch) -> None:
+    model = ModelSpec(
+        "embed-recheck", "test", 500_000_000, 8, 16, 2, 64, 1024,
+        4096, ["embed"], 80.0, "apache",
+        {"hf_gguf": "org/embed-recheck", "ollama": "org/embed-recheck"},
+    )
+    machine = profile(32, (24,))
+    solve_calls: list[int] = []
+
+    def solve(memory, n_layers):
+        solve_calls.append(n_layers if len(solve_calls) == 0 else 0)
+        return n_layers if len(solve_calls) == 1 else 0
+
+    monkeypatch.setattr(planner_core, "solve_gpu_layers", solve)
+    monkeypatch.setattr(
+        planner_core,
+        "_backend",
+        lambda _profile, _model, layers: (
+            ("llamacpp", True) if layers else ("ollama", True)
+        ),
+    )
+    caps = {
+        ("embed-recheck", quant, "llamacpp"): 2048
+        for quant in BPW
+    }
+    candidates = planner_core._candidate_for(
+        model, machine, Policy(roles=["embed"]), None,
+        embed_input_caps=caps,
+    )
+    assert solve_calls[:2] == [model.n_layers, 0]
+    assert candidates[0].backend == "ollama"
+
+
 def test_cpu_quality_preference_avoids_tiny_model(catalog: list[ModelSpec]) -> None:
     result = build_plan(profile(32), catalog, Policy(roles=["chat"]))
     assert result.services[0].model_id != "qwen2.5-0.5b-instruct"

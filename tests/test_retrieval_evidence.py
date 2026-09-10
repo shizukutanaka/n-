@@ -147,6 +147,18 @@ def test_stale_retrieval_digest_is_ignored_by_planner_and_inventory(
     assert "stale_digest" in row["reasons"]
 
 
+def test_nondefault_retrieval_digest_is_ignored_by_planner(tmp_path, monkeypatch) -> None:
+    record = replace(
+        _record(_ladder((8, 8, 8, 2))),
+        digest=retrieval_digest(seeds=(1, 2), rung_words=(10, 20, 30, 40)),
+    )
+    assert record.digest != retrieval_digest()
+    path = tmp_path / "retrieval.json"
+    save_retrieval(record, path)
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    assert cli._embed_retrieval_limits() == {}
+
+
 def test_planner_warns_without_changing_candidate() -> None:
     model = ModelSpec(
         "embed", "test", 500_000_000, 24, 16, 2, 64, 1024,

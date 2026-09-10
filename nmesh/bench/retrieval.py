@@ -99,15 +99,18 @@ def retrieval_key(
     return f"{model_id}|{quant}|{backend}|{gpu_name}|{n_gpu_layers}"
 
 
-def retrieval_digest() -> str:
+def retrieval_digest(
+    seeds: Sequence[int] = RETRIEVAL_SEEDS,
+    rung_words: Sequence[int] = RETRIEVAL_RUNG_WORDS,
+) -> str:
     definition = {
         "topic": _TOPIC,
         "needle": _NEEDLE,
         "question": _QUESTION,
         "docs": RETRIEVAL_DOCS,
         "position": RETRIEVAL_NEEDLE_POSITION,
-        "rung_words": RETRIEVAL_RUNG_WORDS,
-        "seeds": RETRIEVAL_SEEDS,
+        "rung_words": tuple(rung_words),
+        "seeds": tuple(seeds),
     }
     encoded = json.dumps(
         definition, ensure_ascii=True, separators=(",", ":"), sort_keys=True
