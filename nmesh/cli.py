@@ -30,8 +30,10 @@ from nmesh.bench import (
     EMBED_HARNESS_VERSION,
     EPOCH_HISTORY,
     MIN_DECODE_TOKENS,
+    RETRIEVAL_HARNESS_VERSION,
     EmbedRecord,
     EpochSample,
+    RetrievalRecord,
     baseline,
     benchmark_key,
     choose_reference_model,
@@ -42,16 +44,20 @@ from nmesh.bench import (
     load_embed_cache,
     load_history,
     load_records,
+    load_retrieval_cache,
     measure,
     measure_controlled,
     measure_embedding,
     measure_reference,
+    measure_retrieval,
     merge_measurement,
     prune_degraded,
     reference_id,
+    retrieval_digest,
     save_embed,
     save_history,
     save_records,
+    save_retrieval,
 )
 from nmesh.catalog import load_catalog
 from nmesh.eval import (
@@ -418,6 +424,7 @@ def _make_plan(args: argparse.Namespace) -> object:
     }
     eval_depth_coverage, eval_depth_lost = _context_depth_maps()
     embed_input_caps = _embed_context_caps()
+    embed_retrieval_limits = _embed_retrieval_limits()
     return build_plan(
         profile,
         load_catalog(),
@@ -429,6 +436,7 @@ def _make_plan(args: argparse.Namespace) -> object:
         eval_depth_coverage=eval_depth_coverage,
         eval_depth_lost=eval_depth_lost,
         embed_input_caps=embed_input_caps,
+        embed_retrieval_limits=embed_retrieval_limits,
     )
 
 
@@ -497,6 +505,31 @@ def _embed_context_caps() -> dict[tuple[str, str, str], int]:
         key: record.cap
         for key, record in latest.items()
         if record.cap is not None
+    }
+
+
+def _embed_retrieval_limits() -> dict[tuple[str, str, str], int]:
+    latest: dict[tuple[str, str, str], RetrievalRecord] = {}
+    digest = retrieval_digest()
+    for record in load_retrieval_cache().values():
+        if (
+            record.harness != RETRIEVAL_HARNESS_VERSION
+            or record.digest != digest
+            or record.degraded_tokens is None
+        ):
+            continue
+        key = (
+            record.model_id.casefold(),
+            record.quant.casefold(),
+            record.backend.casefold(),
+        )
+        previous = latest.get(key)
+        if previous is None or record.at > previous.at:
+            latest[key] = record
+    return {
+        key: record.degraded_tokens
+        for key, record in latest.items()
+        if record.degraded_tokens is not None
     }
 
 
@@ -810,6 +843,7 @@ def _runtime(args: argparse.Namespace) -> int:
             eval_records = load_eval_cache()
             eval_depth_coverage, eval_depth_lost = _context_depth_maps()
             embed_input_caps = _embed_context_caps()
+            embed_retrieval_limits = _embed_retrieval_limits()
             plan = build_plan(
                 detect_hardware(), load_catalog(),
                 replace(plan.policy, **updates),
@@ -820,6 +854,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 eval_depth_coverage=eval_depth_coverage,
                 eval_depth_lost=eval_depth_lost,
                 embed_input_caps=embed_input_caps,
+                embed_retrieval_limits=embed_retrieval_limits,
             )
             save_plan(plan)
         cache = {**load_cache(), **bench_overlay()}
@@ -1538,8 +1573,65 @@ def _bench(args: argparse.Namespace) -> int:
         except OSError as error:
             print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
             return 1
+        retrieval_record: RetrievalRecord | None = None
+        if getattr(args, "retrieval", False):
+            try:
+                with httpx.Client(timeout=300.0) as client:
+                    rungs = measure_retrieval(
+                        client,
+                        base_url,
+                        service.model_ref,
+                        cap=record.cap,
+                    )
+            except httpx.HTTPError as error:
+                response = getattr(error, "response", None)
+                status = getattr(response, "status_code", "unknown")
+                print(
+                    i18n.t(
+                        "err.bench_http",
+                        i18n.lang(),
+                        service=service.name,
+                        url=f"{base_url}/v1/embeddings",
+                        status=status,
+                    ),
+                    file=sys.stderr,
+                )
+                return 1
+            except (OSError, RuntimeError) as error:
+                print(
+                    i18n.t("err.bench_measure", i18n.lang(), error=error),
+                    file=sys.stderr,
+                )
+                return 1
+            retrieval_record = RetrievalRecord(
+                model_id=service.model_id,
+                quant=service.quant,
+                backend=service.backend,
+                gpu_name=gpu_name,
+                n_gpu_layers=service.n_gpu_layers or 0,
+                rungs=rungs,
+                digest=retrieval_digest(),
+                harness=RETRIEVAL_HARNESS_VERSION,
+                at=time.time(),
+            )
+            try:
+                save_retrieval(retrieval_record)
+            except OSError as error:
+                print(
+                    i18n.t("err.bench_save", i18n.lang(), error=error),
+                    file=sys.stderr,
+                )
+                return 1
         if args.json:
-            _print_json({**asdict(record), "cap": record.cap})
+            output: dict[str, object] = {**asdict(record), "cap": record.cap}
+            if retrieval_record is not None:
+                output["retrieval"] = {
+                    **asdict(retrieval_record),
+                    "control_passed": retrieval_record.control_passed,
+                    "usable_tokens": retrieval_record.usable_tokens,
+                    "degraded_tokens": retrieval_record.degraded_tokens,
+                }
+            _print_json(output)
         else:
             language = i18n.lang()
             cap = record.cap if record.cap is not None else "unproven"
@@ -1559,6 +1651,47 @@ def _bench(args: argparse.Namespace) -> int:
                         cap=record.cap,
                     )
                 )
+            if retrieval_record is not None:
+                usable = (
+                    retrieval_record.usable_tokens
+                    if retrieval_record.usable_tokens is not None
+                    else "unproven"
+                )
+                degraded = (
+                    retrieval_record.degraded_tokens
+                    if retrieval_record.degraded_tokens is not None
+                    else "unproven"
+                )
+                rung_lines = "\n".join(
+                    f"{rung.words} words: served={rung.served_tokens} "
+                    f"rank1={rung.hits}/{rung.trials}"
+                    for rung in retrieval_record.rungs
+                )
+                _console().print(
+                    i18n.t(
+                        "label.retrieval_measurement",
+                        language,
+                        usable=usable,
+                        degraded=degraded,
+                        rungs=rung_lines,
+                    )
+                )
+                if not retrieval_record.control_passed:
+                    _console().print(
+                        i18n.t("warn.retrieval_control", language)
+                    )
+                if (
+                    retrieval_record.degraded_tokens is not None
+                    and service.context > retrieval_record.degraded_tokens
+                ):
+                    _console().print(
+                        i18n.t(
+                            "warn.retrieval_degraded",
+                            language,
+                            degraded=retrieval_record.degraded_tokens,
+                            context=service.context,
+                        )
+                    )
         return 0
     context = None if args.no_reference else _reference_context(service)
     history = load_history()
@@ -3441,6 +3574,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     bench_parser.add_argument("--passes", type=_positive_int, default=2)
     bench_parser.add_argument("--no-reference", action="store_true")
     bench_parser.add_argument("--json", action="store_true")
+    bench_parser.add_argument(
+        "--retrieval",
+        action="store_true",
+        help="measure retrieval usability (about 430 requests, roughly 10 minutes)",
+    )
     eval_parser = sub.add_parser("eval")
     eval_parser.add_argument("--service", default="chat")
     eval_parser.add_argument("--json", action="store_true")

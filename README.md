@@ -333,6 +333,28 @@ error when the backend would silently truncate it. Multi-element input lists
 remain a known gap because aggregate usage cannot identify which element was
 truncated; saturated requests receive
 `X-Nmesh-Embedding-Truncation: unverified` instead.
+Served length is not the same as usable retrieval length. On the measured
+llama.cpp b10831 `--embeddings --pooling cls -c 8192 -b 8192 -ub 8192`
+environment with the bge-m3 Q8_0 artifact, the opt-in `--retrieval` ladder
+measured:
+
+```text
+~166 tokens   rank1 4/4
+~320 tokens   rank1 4/4
+~603 tokens   rank1 4/4
+~1177 tokens  rank1 4/4
+~2346 tokens  rank1 7/8
+~2921 tokens  rank1 5/8
+~3512 tokens  rank1 2/8
+~4370 tokens  rank1 1/8
+```
+
+This is one host, one artifact, and one backend/build measurement, not a
+general law about bge-m3. The planner warns when measured single-vector
+retrieval degrades instead of clamping the served context; long inputs should
+be chunked. `nmesh bench --service <embed-service> --retrieval` is opt-in
+because it takes approximately 430 requests and roughly 10 minutes on the
+measured host.
 HTTP response bodies remain English because `/v1/*` errors and authentication
 details are machine-facing API contracts for clients.
 

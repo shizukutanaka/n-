@@ -153,6 +153,26 @@ MESSAGES = {
         "warn.embed_truncated": (
             "Inputs longer than {cap} tokens are silently truncated by the backend."
         ),
+        "label.retrieval_measurement": (
+            "Retrieval usability: usable through {usable} tokens; "
+            "degraded beyond {degraded} tokens.\n{rungs}"
+        ),
+        "warn.retrieval_control": (
+            "The retrieval control rung failed, so this run proves nothing "
+            "about usable length."
+        ),
+        "warn.retrieval_degraded": (
+            "Single-vector retrieval degraded beyond {degraded} tokens while "
+            "the service plans context {context}. This is a single-host, "
+            "single-artifact measurement; chunk long inputs instead of "
+            "raising context."
+        ),
+        "warn.embed_retrieval_degraded": (
+            "{model} at {quant} on {backend}: the backend serves planned "
+            "context {context}, but single-vector rank-1 retrieval was "
+            "measured at <=50% beyond {degraded} tokens on this host. "
+            "Chunk long inputs instead of raising context."
+        ),
         "err.spec_draft_required": "--draft is required when --kind draft is used.",
         "err.spec_repeats": "--repeats must be at least 3.",
         "err.spec_no_generative_service": "No generative service (chat, code, or worker) is available for speculation measurement.",
@@ -531,6 +551,22 @@ MESSAGES = {
         "label.gateway_log": "ゲートウェイログ: {path}",
         "warn.embed_context_capped": "{model} の {quant} / {backend} で、埋め込みの実測文脈は {cap} トークンが上限のため、計画文脈 {context} を短縮します。",
         "warn.embed_context_unverified": "{model} の {quant} / {backend} で、埋め込みの実測文脈は未確認です。{command}を実行してください。",
+        "label.retrieval_measurement": (
+            "検索の有用性: {usable} トークンまで有用、{degraded} トークンを超えると劣化。\n{rungs}"
+        ),
+        "warn.retrieval_control": (
+            "検索の制御ランが失敗したため、この実行から長さについては何も証明できません。"
+        ),
+        "warn.retrieval_degraded": (
+            "単一ベクトル検索は {degraded} トークンを超えると劣化しましたが、サービスは"
+            "コンテキスト {context} を計画しています。これは単一ホスト・単一アーティファクトの測定です。"
+            "コンテキストを増やさず、長い入力を分割してください。"
+        ),
+        "warn.embed_retrieval_degraded": (
+            "{model} の {quant} / {backend}: バックエンドは計画コンテキスト {context} トークンを提供しますが、"
+            "このホストで単一ベクトルの rank-1 検索は {degraded} トークンを超えると 50% 以下になりました。"
+            "コンテキストを増やさず、長い入力を分割してください。"
+        ),
         "evidence.embed_title": "埋め込み証拠",
         "evidence.reason.cap_unproven": "異なる2つのプローブサイズで実際の上限を確認できませんでした",
     },
