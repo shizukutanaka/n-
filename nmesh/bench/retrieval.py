@@ -415,10 +415,23 @@ def measure_retrieval_chunk_arm(
     *,
     doc_words: int,
     chunk_words: int,
+    chunk_tokens: int,
     seeds: Sequence[int] = RETRIEVAL_SEEDS,
 ) -> RetrievalChunkArm:
-    if doc_words < 1 or chunk_words < 1:
-        raise RuntimeError("retrieval document and chunk words must be positive")
+    if (
+        isinstance(doc_words, bool)
+        or not isinstance(doc_words, int)
+        or doc_words < 1
+        or isinstance(chunk_words, bool)
+        or not isinstance(chunk_words, int)
+        or chunk_words < 1
+        or isinstance(chunk_tokens, bool)
+        or not isinstance(chunk_tokens, int)
+        or chunk_tokens < 1
+    ):
+        raise RuntimeError(
+            "retrieval document, chunk, and token counts must be positive"
+        )
     if not seeds:
         raise RuntimeError("retrieval seeds must not be empty")
     url = f"{base_url}/v1/embeddings"
@@ -447,7 +460,7 @@ def measure_retrieval_chunk_arm(
     return RetrievalChunkArm(
         doc_words=doc_words,
         chunk_words=chunk_words,
-        chunk_tokens=0,
+        chunk_tokens=chunk_tokens,
         hits=hits,
         trials=len(seeds),
     )

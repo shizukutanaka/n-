@@ -1654,6 +1654,7 @@ def _bench(args: argparse.Namespace) -> int:
                                 service.model_ref,
                                 doc_words=degraded_rung.words,
                                 chunk_words=usable_rung.words,
+                                chunk_tokens=usable_rung.served_tokens,
                             )
                     except httpx.HTTPError as error:
                         response = getattr(error, "response", None)
@@ -1675,13 +1676,7 @@ def _bench(args: argparse.Namespace) -> int:
                             file=sys.stderr,
                         )
                         return 1
-                    retrieval_record = replace(
-                        retrieval_record,
-                        chunk=replace(
-                            chunk_arm,
-                            chunk_tokens=usable_rung.served_tokens,
-                        ),
-                    )
+                    retrieval_record = replace(retrieval_record, chunk=chunk_arm)
             try:
                 save_retrieval(retrieval_record)
             except OSError as error:

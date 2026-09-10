@@ -181,11 +181,11 @@ def test_chunk_arm_uses_batch_inputs_and_max_chunk_similarity() -> None:
     try:
         arm = measure_retrieval_chunk_arm(
             client, "http://test", "embed",
-            doc_words=10, chunk_words=4, seeds=(11, 23),
+            doc_words=10, chunk_words=4, chunk_tokens=12, seeds=(11, 23),
         )
     finally:
         client.close()
-    assert arm == RetrievalChunkArm(10, 4, 0, 2, 2)
+    assert arm == RetrievalChunkArm(10, 4, 12, 2, 2)
     assert len(requests) == 2 * (8 + 1)
     assert all(isinstance(request["input"], list) for request in requests[:8])
 
@@ -262,17 +262,26 @@ def test_planner_warns_without_changing_candidate() -> None:
         ordinary.services[0].quant.casefold(),
         ordinary.services[0].backend.casefold(),
     )
-    warned = build_plan(
-        profile(64),
-        [model],
-        policy,
-        embed_retrieval_limits={key: ordinary.services[0].context // 2},
+    limits = (
+        RetrievalLimit(ordinary.services[0].context // 2, 512, True, 8, 8),
+        RetrievalLimit(ordinary.services[0].context // 2, 512, False),
+        RetrievalLimit(ordinary.services[0].context // 2, None, None),
     )
-    assert warned.services[0].context == ordinary.services[0].context
-    assert warned.services[0].memory == ordinary.services[0].memory
-    assert warned.services[0].decode_tps == ordinary.services[0].decode_tps
-    assert warned.services[0].model_id == ordinary.services[0].model_id
-    assert any("single-vector" in warning for warning in warned.warnings)
+    for limit in limits:
+        warned = build_plan(
+            profile(64),
+            [model],
+            policy,
+            embed_retrieval_limits={key: limit},
+        )
+        assert len(warned.services) == len(ordinary.services)
+        assert warned.services[0].context == ordinary.services[0].context
+        assert warned.services[0].memory == ordinary.services[0].memory
+        assert warned.services[0].decode_tps == ordinary.services[0].decode_tps
+        assert warned.services[0].model_id == ordinary.services[0].model_id
+        assert warned.services[0].backend == ordinary.services[0].backend
+        assert warned.services[0].quant == ordinary.services[0].quant
+        assert any("single-vector" in warning for warning in warned.warnings)
 
 
 def test_planner_selects_chunk_retrieval_warning_messages() -> None:

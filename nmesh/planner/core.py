@@ -581,7 +581,7 @@ def _candidate_for(
     unconfirmed: list[dict[str, str]] | None = None,
     embed_input_caps: Mapping[tuple[str, str, str], int] | None = None,
     embed_retrieval_limits: Mapping[
-        tuple[str, str, str], RetrievalLimit | int
+        tuple[str, str, str], RetrievalLimit
     ] | None = None,
 ) -> list[_Candidate]:
     """Build candidates using the intentionally unchanged score.
@@ -675,17 +675,11 @@ def _candidate_for(
                     )
                     backend, installed = _backend(profile, model, layers)
             if _is_embed_only(model) and embed_retrieval_limits is not None:
-                retrieval_limit = embed_retrieval_limits.get((
+                embed_retrieval_limit = embed_retrieval_limits.get((
                     model.id.casefold(),
                     quant.casefold(),
                     backend.casefold(),
                 ))
-                if isinstance(retrieval_limit, int):
-                    embed_retrieval_limit = RetrievalLimit(
-                        retrieval_limit, None, None
-                    )
-                else:
-                    embed_retrieval_limit = retrieval_limit
             if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
                 continue
             backend_flags = profile.backend_flags.get(backend)
@@ -1760,7 +1754,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                eval_depth_lost: Mapping[tuple[str, str, str], int] | None = None,
                embed_input_caps: Mapping[tuple[str, str, str], int] | None = None,
                embed_retrieval_limits: Mapping[
-                   tuple[str, str, str], RetrievalLimit | int
+                   tuple[str, str, str], RetrievalLimit
                ] | None = None,
                ) -> Plan:
     selected = policy or Policy()
