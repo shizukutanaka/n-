@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from nmesh import i18n
 from nmesh.artifact import service_fingerprint
 from nmesh.bench import benchmark_key
+from nmesh.bench.embed import EMBED_HARNESS_VERSION, load_embed_cache
 from nmesh.orchestrate import (
     PROTOCOL_VERSION,
     DelegationRecord,
@@ -295,6 +296,36 @@ def _service(plan: Plan, name: str) -> PlannedService:
     return service
 
 
+def _embed_input_caps(plan: Plan) -> dict[tuple[str, str, str], int]:
+    services = [service for service in plan.services if service.roles == ["embed"]]
+    if not services:
+        return {}
+    records = load_embed_cache()
+    caps: dict[tuple[str, str, str], int] = {}
+    for service in services:
+        key = (
+            service.model_id.casefold(),
+            service.quant.casefold(),
+            service.backend.casefold(),
+        )
+        newest = max(
+            (
+                record
+                for record in records.values()
+                if record.harness == EMBED_HARNESS_VERSION
+                and record.model_id.casefold() == key[0]
+                and record.quant.casefold() == key[1]
+                and record.backend.casefold() == key[2]
+                and record.cap is not None
+            ),
+            key=lambda record: record.at,
+            default=None,
+        )
+        if newest is not None and newest.cap is not None:
+            caps[key] = newest.cap
+    return caps
+
+
 def _base_url(service: PlannedService) -> str:
     return "http://127.0.0.1:11434" if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
@@ -508,6 +539,82 @@ def _completion_not_supported(
     )
 
 
+def _embedding_input(request: Mapping[str, object]) -> tuple[str | None, bool]:
+    value = request.get("input")
+    if isinstance(value, str):
+        return value, False
+    if not isinstance(value, list):
+        return None, False
+    if len(value) > 1:
+        return None, True
+    if len(value) == 1 and isinstance(value[0], str):
+        return value[0], False
+    return None, False
+
+
+def _split_embedding_input(value: str) -> tuple[str, str] | None:
+    words = value.split()
+    if len(words) < 2:
+        return None
+    midpoint = len(words) // 2
+    head = " ".join(words[:midpoint])
+    tail = " ".join(words[midpoint:])
+    return head, tail
+
+
+async def _confirm_embedding_truncation(
+    body: Mapping[str, object],
+    url: str,
+    input_text: str,
+    cap: int,
+) -> int | None:
+    split = _split_embedding_input(input_text)
+    if split is None:
+        return None
+    probe = {
+        "model": body.get("model"),
+        "input": list(split),
+    }
+    assert httpx is not None
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0, connect=10.0)
+        ) as client:
+            response = await client.post(url, json=probe)
+    except httpx.HTTPError:
+        return None
+    if response.status_code >= 400:
+        return None
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        return None
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    tokens = (
+        _upstream_int(usage.get("prompt_tokens"))
+        if isinstance(usage, dict) else None
+    )
+    return tokens if tokens is not None and tokens > cap + 2 else None
+
+
+def _embedding_truncation_error(cap: int, lower_bound: int) -> Response:
+    payload = {
+        "error": {
+            "message": (
+                f"Embedding input exceeds the measured served cap of {cap} "
+                f"tokens; confirmation measured at least {lower_bound} tokens."
+            ),
+            "type": "invalid_request_error",
+            "code": "context_length_exceeded",
+        }
+    }
+    return Response(
+        content=json.dumps(payload),
+        status_code=400,
+        media_type="application/json",
+    )
+
+
 def _prometheus_escape(value: object) -> str:
     return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
@@ -659,6 +766,7 @@ class _PlanState:
         self.telemetry_keys: dict[str, str] = {}
         self.mtime: float | None = None
         self._mtime_ns: int | None = None
+        self.embed_input_caps: dict[tuple[str, str, str], int] = {}
         self._explicit = explicit
         self._gate = gate
         self._limiter = limiter
@@ -674,6 +782,7 @@ class _PlanState:
     def reload(self, plan: Plan) -> None:
         gpu = plan.profile.gpus[0].name if plan.profile.gpus else "cpu"
         self.plan = plan
+        self.embed_input_caps = _embed_input_caps(plan)
         self.telemetry_keys = {
             service.name: benchmark_key(
                 service.model_id, service.quant, service.backend, gpu,
@@ -882,6 +991,15 @@ def create_app(
                     await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
         body = _upstream_body(request, service)
         url = f"{_base_url(service)}{path}"
+        embedding_cap = (
+            plan_state.embed_input_caps.get((
+                service.model_id.casefold(),
+                service.quant.casefold(),
+                service.backend.casefold(),
+            ))
+            if path == "/v1/embeddings" and service.roles == ["embed"]
+            else None
+        )
         assert httpx is not None
         client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0))
         ticket = in_flight.enter(service.name)
@@ -1101,6 +1219,25 @@ def create_app(
                 limiter.release(slot_token)
         if isinstance(data, dict) and "model" in data:
             data["model"] = request.get("model", service.model_id)
+        embedding_headers: dict[str, str] = {}
+        if embedding_cap is not None and isinstance(data, dict):
+            usage = data.get("usage")
+            prompt_tokens = (
+                _upstream_int(usage.get("prompt_tokens"))
+                if isinstance(usage, dict) else None
+            )
+            if prompt_tokens is not None and prompt_tokens >= embedding_cap:
+                input_text, multi_input = _embedding_input(request)
+                if multi_input:
+                    embedding_headers["X-Nmesh-Embedding-Truncation"] = "unverified"
+                elif input_text is not None:
+                    lower_bound = await _confirm_embedding_truncation(
+                        body, url, input_text, embedding_cap
+                    )
+                    if lower_bound is not None:
+                        return _embedding_truncation_error(
+                            embedding_cap, lower_bound
+                        )
         if instrument:
             usage = data.get("usage") if isinstance(data, dict) else None
             timings = data.get("timings") if isinstance(data, dict) else None
@@ -1135,6 +1272,12 @@ def create_app(
             request,
             data.get("usage") if isinstance(data, dict) else None,
         )
+        if embedding_headers:
+            return Response(
+                content=json.dumps(data),
+                media_type="application/json",
+                headers=embedding_headers,
+            )
         return data
 
     async def _delegated_completion(

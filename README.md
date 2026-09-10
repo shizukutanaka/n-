@@ -327,6 +327,12 @@ regardless of `num_ctx`, while llama.cpp served the full planned window. nmesh
 now measures the served cap, clamps the planned embedding context to it, and
 warns when the backend silently truncates longer inputs; these observations are
 specific to this host, artifact, and Ollama version.
+For a proven cap, the gateway confirms saturation for a single string (or a
+one-element input list) and returns an OpenAI-shaped `context_length_exceeded`
+error when the backend would silently truncate it. Multi-element input lists
+remain a known gap because aggregate usage cannot identify which element was
+truncated; saturated requests receive
+`X-Nmesh-Embedding-Truncation: unverified` instead.
 HTTP response bodies remain English because `/v1/*` errors and authentication
 details are machine-facing API contracts for clients.
 
