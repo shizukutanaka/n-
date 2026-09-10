@@ -95,6 +95,8 @@ def test_measure_embedding_uses_usage_tokens_and_unique_inputs() -> None:
     finally:
         client.close()
     assert result.served_small == result.served_large == 2048
+    assert result.probe_tokens_small == 6144
+    assert result.probe_tokens_large == 12288
     assert result.encode_input_tokens == 110
     assert len(inputs) == len({item.split(" ")[0] for item in inputs})
 
@@ -116,7 +118,9 @@ def test_planner_clamps_embed_context_and_warns() -> None:
         ): 2048},
     )
     assert capped.services[0].context == 2048
-    assert capped.services[0].memory == baseline.services[0].memory
+    assert capped.services[0].memory.total_bytes < baseline.services[0].memory.total_bytes
+    argv = capped.services[0].launch.argv
+    assert argv[argv.index("-c") + 1] == "2048"
     assert any("2048" in warning for warning in capped.warnings)
 
 

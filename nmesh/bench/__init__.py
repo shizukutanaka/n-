@@ -18,10 +18,8 @@ from .embed import (
     EmbedRecord,
     embed_key,
     load_embed_cache,
-    load_embed_records,
     measure_embedding,
     save_embed,
-    save_embed_record,
 )
 from .epoch import (
     EPOCH_HISTORY,
@@ -73,7 +71,6 @@ __all__ = [
     "find_reference_binary",
     "load_cache",
     "load_embed_cache",
-    "load_embed_records",
     "load_history",
     "load_records",
     "measure",
@@ -85,7 +82,6 @@ __all__ = [
     "reference_id",
     "refutes",
     "save_embed",
-    "save_embed_record",
     "save_history",
     "save_records",
 ]

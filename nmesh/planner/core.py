@@ -543,6 +543,8 @@ class _Candidate:
     score: float
     estimated: bool
     decode_applicable: bool = True
+    context_before_embed_cap: int | None = None
+    embed_context_cap: int | None = None
 
 
 def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: str,
@@ -575,6 +577,7 @@ def _candidate_for(
     allow_unmeasured: bool = False,
     bench_records: Mapping[str, BenchRecord] | None = None,
     unconfirmed: list[dict[str, str]] | None = None,
+    embed_input_caps: Mapping[tuple[str, str, str], int] | None = None,
 ) -> list[_Candidate]:
     """Build candidates using the intentionally unchanged score.
 
@@ -598,7 +601,10 @@ def _candidate_for(
     for quant, bpw in BPW.items():
         for context in contexts:
             def estimate_candidate(
-                kv_quant: str, *, _quant: str = quant, _context: int = context,
+                kv_quant: str,
+                context_value: int,
+                *,
+                _quant: str = quant,
             ) -> MemoryEstimate:
                 measured_bytes = None
                 if artifact_cache is not None:
@@ -607,7 +613,7 @@ def _candidate_for(
                         artifact_key(repo_id, _quant)
                     )
                 estimate = estimate_memory(
-                    model, _quant, _context, profile=profile, kv_quant=kv_quant,
+                    model, _quant, context_value, profile=profile, kv_quant=kv_quant,
                     budget_source=policy.budget_source,
                     weight_bytes=(
                         float(measured_bytes)
@@ -616,7 +622,7 @@ def _candidate_for(
                 )
                 if model.roles == ["embed"]:
                     activation = min(
-                        0.02 * estimate.weight_bytes * math.ceil(_context / 512),
+                        0.02 * estimate.weight_bytes * math.ceil(context_value / 512),
                         512 * 1024**2,
                     )
                     overhead = estimate.compute_overhead + activation
@@ -634,21 +640,43 @@ def _candidate_for(
                 )
 
             accounted_kv_quant = policy.kv_quant
-            base = estimate_candidate(accounted_kv_quant)
+            base = estimate_candidate(accounted_kv_quant, context)
             layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
             if profile.tier == Tier.T0_CPU:
                 layers = 0
             gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
+            backend, installed = _backend(profile, model, layers)
+            context_before_embed_cap = None
+            embed_context_cap = None
+            if _is_embed_only(model) and embed_input_caps is not None:
+                embed_context_cap = embed_input_caps.get((
+                    model.id.casefold(),
+                    quant.casefold(),
+                    backend.casefold(),
+                ))
+                if embed_context_cap is not None and embed_context_cap < context:
+                    context_before_embed_cap = context
+                    context = embed_context_cap
+                    base = estimate_candidate(accounted_kv_quant, context)
+                    layers = (
+                        solve_gpu_layers(base, model.n_layers)
+                        if profile.gpus else 0
+                    )
+                    if profile.tier == Tier.T0_CPU:
+                        layers = 0
+                    gpu_bytes, cpu_bytes = _split_memory(
+                        base, model.n_layers, layers,
+                    )
+                    backend, installed = _backend(profile, model, layers)
             if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
                 continue
-            backend, installed = _backend(profile, model, layers)
             backend_flags = profile.backend_flags.get(backend)
             if (
                 policy.kv_quant != "f16"
                 and not _honors_kv_quant(backend, backend_flags)
             ):
                 accounted_kv_quant = "f16"
-                base = estimate_candidate(accounted_kv_quant)
+                base = estimate_candidate(accounted_kv_quant, context)
                 layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
                 if profile.tier == Tier.T0_CPU:
                     layers = 0
@@ -746,6 +774,8 @@ def _candidate_for(
                 tps if decode_applicable else 0.0,
                 backend, installed, accounted_kv_quant, policy.kv_quant, score,
                 bench is None, decode_applicable=decode_applicable,
+                context_before_embed_cap=context_before_embed_cap,
+                embed_context_cap=embed_context_cap,
             ))
             break
     return sorted(candidates, key=lambda item: item.score, reverse=True)
@@ -1024,6 +1054,21 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         gpu_bytes, cpu_bytes = _split_memory(memory, model_layers, layers)
         memory = replace(
             memory, n_gpu_layers=layers, gpu_bytes=gpu_bytes, cpu_bytes=cpu_bytes
+        )
+    if (
+        candidate.context_before_embed_cap is not None
+        and candidate.embed_context_cap is not None
+    ):
+        warnings.append(
+            t(
+                "warn.embed_context_capped",
+                language,
+                model=candidate.model.id,
+                quant=candidate.quant,
+                backend=candidate.backend,
+                context=candidate.context_before_embed_cap,
+                cap=candidate.embed_context_cap,
+            )
         )
     launch = _launch(
         candidate.backend, candidate.model, candidate.quant, candidate.context,
@@ -1774,6 +1819,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                  allow_unmeasured=model.id.casefold() in requested_model_ids,
                  bench_records=bench_records,
                  unconfirmed=bench_unconfirmed,
+                 embed_input_caps=embed_input_caps,
              )),
             key=lambda item: item.score, reverse=True,
         ) for role in group}
@@ -1791,6 +1837,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                      allow_unmeasured=model.id.casefold() in requested_model_ids,
                      bench_records=bench_records,
                      unconfirmed=bench_unconfirmed,
+                     embed_input_caps=embed_input_caps,
                  )),
                 key=lambda item: item.score, reverse=True,
             ) for role in group}
@@ -2144,18 +2191,6 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     backend=service.backend,
                     command=f"nmesh bench --service {service.name}",
                 ))
-            elif cap < service.context:
-                planned_context = service.context
-                services[index] = replace(service, context=cap)
-                warnings.append(t(
-                    "warn.embed_context_capped",
-                    selected.lang,
-                    model=service.model_id,
-                    quant=service.quant,
-                    backend=service.backend,
-                    context=planned_context,
-                    cap=cap,
-                ))
     for model_id in sorted(selected_unmeasured):
         warnings.append(
             t("warn.quality_unmeasured_selected", selected.lang, model=model_id)
@@ -2208,6 +2243,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         other, profile, selected, bench_cache, artifact_cache,
                         bench_records=bench_records,
                         unconfirmed=bench_unconfirmed,
+                        embed_input_caps=embed_input_caps,
                     )
                     if same_model:
                         candidates = [
