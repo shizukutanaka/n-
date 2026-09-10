@@ -2173,7 +2173,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     depth=measured_depth,
                 ))
     if embed_input_caps is not None:
-        for index, service in enumerate(services):
+        for service in services:
             if not _is_embed_only(service):
                 continue
             key = (

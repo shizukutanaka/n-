@@ -50,7 +50,24 @@ def test_embed_record_round_trip_and_cap_agreement(tmp_path) -> None:
     loaded = load_embed_cache(path)
     assert loaded[next(iter(loaded))] == record
     assert record.cap == 2048
-    assert _record(served_large=1024).cap is None
+    assert _record(
+        probe_tokens_small=12288,
+        served_small=2048,
+        probe_tokens_large=24576,
+        served_large=2047,
+    ).cap == 2047
+    assert _record(
+        probe_tokens_small=12288,
+        served_small=12288,
+        probe_tokens_large=24576,
+        served_large=24576,
+    ).cap is None
+    assert _record(
+        probe_tokens_small=12288,
+        served_small=2047,
+        probe_tokens_large=24576,
+        served_large=3000,
+    ).cap is None
 
 
 def test_embed_cache_rejects_malformed_records(tmp_path) -> None:

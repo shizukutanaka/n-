@@ -14,6 +14,9 @@ import httpx
 from nmesh.paths import nmesh_home
 
 EMBED_HARNESS_VERSION = "embed-v1"
+EMBED_CAP_TRUNCATION_RATIO = 0.9
+EMBED_CAP_AGREEMENT_TOKENS = 2
+EMBED_CAP_AGREEMENT_RATIO = 0.01
 
 
 @dataclass(frozen=True)
@@ -38,9 +41,30 @@ class EmbedRecord:
 
     @property
     def cap(self) -> int | None:
-        if self.served_small == self.served_large:
-            return self.served_small
-        return None
+        """Return a conservative cap only when both probes were truncated.
+
+        The served counts may differ by a token or two because tokenization is
+        not perfectly stable across probe sizes. Requiring both probes to be
+        substantially shorter than requested, then taking the smaller served
+        count within a small agreement tolerance, prevents a silently
+        truncated input from exceeding the proven ceiling.
+        """
+        if not (
+            self.served_small
+            < self.probe_tokens_small * EMBED_CAP_TRUNCATION_RATIO
+            and self.served_large
+            < self.probe_tokens_large * EMBED_CAP_TRUNCATION_RATIO
+        ):
+            return None
+        difference = abs(self.served_small - self.served_large)
+        tolerance = max(
+            EMBED_CAP_AGREEMENT_TOKENS,
+            EMBED_CAP_AGREEMENT_RATIO
+            * min(self.served_small, self.served_large),
+        )
+        if difference > tolerance:
+            return None
+        return min(self.served_small, self.served_large)
 
 
 @dataclass(frozen=True)
