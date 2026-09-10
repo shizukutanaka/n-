@@ -9,6 +9,7 @@ from nmesh.bench.cache import (
     load_cache,
     load_records,
 )
+from nmesh.bench.embed import EMBED_HARNESS_VERSION, load_embed_cache
 from nmesh.eval import SUITES, needle_tasks, suite_digest
 from nmesh.eval.cache import EvalRecord, load_eval_cache
 from nmesh.eval.context import ContextRecord, load_context_cache
@@ -191,11 +192,42 @@ def _depth_rows(records: Mapping[str, ContextRecord]) -> list[dict[str, object]]
     return rows
 
 
+def _embed_rows() -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for key, record in load_embed_cache().items():
+        reasons: list[str] = []
+        if record.harness != EMBED_HARNESS_VERSION:
+            reasons.append("harness_mismatch")
+        if record.cap is None:
+            reasons.append("cap_unproven")
+            value = (
+                f"no cap below {record.probe_tokens_large}; "
+                f"encode={record.encode_tps:.1f} tok/s"
+            )
+        else:
+            value = f"cap={record.cap} tokens; encode={record.encode_tps:.1f} tok/s"
+        rows.append({
+            "kind": "embed",
+            "key": key,
+            "model_id": record.model_id,
+            "quant": record.quant,
+            "backend": record.backend,
+            "value": value,
+            "served_cap": record.cap,
+            "encode_tps": record.encode_tps,
+            "usable": record.harness == EMBED_HARNESS_VERSION and record.cap is not None,
+            "reasons": reasons,
+            "remeasure": "nmesh bench --service embed",
+        })
+    return rows
+
+
 def collect_evidence() -> dict[str, object]:
     records = (
         _bench_rows()
         + _eval_rows(load_eval_cache())
         + _depth_rows(load_context_cache())
+        + _embed_rows()
     )
     counts = {
         "total": len(records),
@@ -203,5 +235,6 @@ def collect_evidence() -> dict[str, object]:
         "bench": sum(row["kind"] == "bench" for row in records),
         "eval": sum(row["kind"] == "eval" for row in records),
         "depth": sum(row["kind"] == "depth" for row in records),
+        "embed": sum(row["kind"] == "embed" for row in records),
     }
     return {"records": records, "counts": counts}

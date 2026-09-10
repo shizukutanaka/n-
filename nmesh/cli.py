@@ -27,8 +27,10 @@ from nmesh import i18n
 from nmesh.artifact import gguf_info, service_fingerprint
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.bench import (
+    EMBED_HARNESS_VERSION,
     EPOCH_HISTORY,
     MIN_DECODE_TOKENS,
+    EmbedRecord,
     EpochSample,
     baseline,
     benchmark_key,
@@ -37,14 +39,17 @@ from nmesh.bench import (
     demote_stale,
     find_reference_binary,
     load_cache,
+    load_embed_cache,
     load_history,
     load_records,
     measure,
     measure_controlled,
+    measure_embedding,
     measure_reference,
     merge_measurement,
     prune_degraded,
     reference_id,
+    save_embed,
     save_history,
     save_records,
 )
@@ -412,6 +417,7 @@ def _make_plan(args: argparse.Namespace) -> object:
         if key not in live
     }
     eval_depth_coverage, eval_depth_lost = _context_depth_maps()
+    embed_input_caps = _embed_context_caps()
     return build_plan(
         profile,
         load_catalog(),
@@ -422,6 +428,7 @@ def _make_plan(args: argparse.Namespace) -> object:
         records,
         eval_depth_coverage=eval_depth_coverage,
         eval_depth_lost=eval_depth_lost,
+        embed_input_caps=embed_input_caps,
     )
 
 
@@ -471,6 +478,26 @@ def _context_depth_maps() -> tuple[
             if value.lost > 0
         },
     )
+
+
+def _embed_context_caps() -> dict[tuple[str, str, str], int]:
+    latest: dict[tuple[str, str, str], EmbedRecord] = {}
+    for record in load_embed_cache().values():
+        if record.harness != EMBED_HARNESS_VERSION or record.cap is None:
+            continue
+        key = (
+            record.model_id.casefold(),
+            record.quant.casefold(),
+            record.backend.casefold(),
+        )
+        previous = latest.get(key)
+        if previous is None or record.at > previous.at:
+            latest[key] = record
+    return {
+        key: record.cap
+        for key, record in latest.items()
+        if record.cap is not None
+    }
 
 
 def _stale_grader_notes(records: Mapping[str, EvalRecord]) -> list[str]:
@@ -782,6 +809,7 @@ def _runtime(args: argparse.Namespace) -> int:
             }
             eval_records = load_eval_cache()
             eval_depth_coverage, eval_depth_lost = _context_depth_maps()
+            embed_input_caps = _embed_context_caps()
             plan = build_plan(
                 detect_hardware(), load_catalog(),
                 replace(plan.policy, **updates),
@@ -791,6 +819,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 records,
                 eval_depth_coverage=eval_depth_coverage,
                 eval_depth_lost=eval_depth_lost,
+                embed_input_caps=embed_input_caps,
             )
             save_plan(plan)
         cache = {**load_cache(), **bench_overlay()}
@@ -1447,16 +1476,6 @@ def _bench(args: argparse.Namespace) -> int:
     if plan is None or not plan.services:
         return 1
     service = next((item for item in plan.services if item.name == args.service), plan.services[0])
-    if "embed" in service.roles:
-        print(
-            i18n.t(
-                "err.bench_embedding",
-                i18n.lang(),
-                service=service.name,
-            ),
-            file=sys.stderr,
-        )
-        return 2
     running = runtime_status()
     if not _service_running(service, running):
         print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
@@ -1464,6 +1483,83 @@ def _bench(args: argparse.Namespace) -> int:
     base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
     )
+    if service.roles == ["embed"]:
+        try:
+            with httpx.Client(timeout=300.0) as client:
+                measurement = measure_embedding(
+                    client,
+                    base_url,
+                    service.model_ref,
+                    requested_context=service.context,
+                    runs=args.runs,
+                )
+        except httpx.HTTPError as error:
+            response = getattr(error, "response", None)
+            status = getattr(response, "status_code", "unknown")
+            print(
+                i18n.t(
+                    "err.bench_http",
+                    i18n.lang(),
+                    service=service.name,
+                    url=f"{base_url}/v1/embeddings",
+                    status=status,
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        except (OSError, RuntimeError) as error:
+            print(
+                i18n.t("err.bench_measure", i18n.lang(), error=error),
+                file=sys.stderr,
+            )
+            return 1
+        gpu_name = plan.profile.gpus[0].name if plan.profile.gpus else "cpu"
+        record = EmbedRecord(
+            model_id=service.model_id,
+            quant=service.quant,
+            backend=service.backend,
+            gpu_name=gpu_name,
+            n_gpu_layers=service.n_gpu_layers or 0,
+            requested_context=service.context,
+            probe_tokens_small=measurement.probe_tokens_small,
+            served_small=measurement.served_small,
+            probe_tokens_large=measurement.probe_tokens_large,
+            served_large=measurement.served_large,
+            encode_tps=measurement.encode_tps,
+            encode_tps_min=measurement.encode_tps_min,
+            encode_tps_max=measurement.encode_tps_max,
+            encode_input_tokens=measurement.encode_input_tokens,
+            runs=measurement.runs,
+            harness=EMBED_HARNESS_VERSION,
+            at=time.time(),
+        )
+        try:
+            save_embed(record)
+        except OSError as error:
+            print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
+            return 1
+        if args.json:
+            _print_json({**asdict(record), "cap": record.cap})
+        else:
+            language = i18n.lang()
+            cap = record.cap if record.cap is not None else "unproven"
+            _console().print(
+                i18n.t(
+                    "label.embed_measurement",
+                    language,
+                    cap=cap,
+                    tps=record.encode_tps,
+                )
+            )
+            if record.cap is not None and record.cap < service.context:
+                _console().print(
+                    i18n.t(
+                        "warn.embed_truncated",
+                        language,
+                        cap=record.cap,
+                    )
+                )
+        return 0
     context = None if args.no_reference else _reference_context(service)
     history = load_history()
     reference_baseline = (
@@ -3205,6 +3301,7 @@ def _evidence(args: argparse.Namespace) -> int:
         ("bench", "evidence.bench_title"),
         ("eval", "evidence.eval_title"),
         ("depth", "evidence.depth_title"),
+        ("embed", "evidence.embed_title"),
     ):
         # Bound value and key-text columns so evidence strings fit at 80 columns.
         width_options = {
@@ -3257,7 +3354,7 @@ def _evidence(args: argparse.Namespace) -> int:
             if kind == "bench":
                 value = f"{float(row['value']):.1f} tok/s"
             elif kind == "depth":
-                value = str(row["verdict"]) or "—"
+                value = str(row["verdict"]) or "-"
             table.add_row(
                 str(row["model_id"]),
                 str(row["quant"]),
