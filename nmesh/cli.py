@@ -540,6 +540,13 @@ def _embed_retrieval_limits() -> dict[tuple[str, str, str], RetrievalLimit]:
             chunk_trials=(
                 record.chunk.trials if record.chunk is not None else None
             ),
+            pool_recovers=record.pool_recovers,
+            pool_hits=(
+                record.chunk.pool_hits if record.chunk is not None else None
+            ),
+            pool_trials=(
+                record.chunk.pool_trials if record.chunk is not None else None
+            ),
         )
         for key, record in latest.items()
         if record.degraded_tokens is not None
@@ -1694,6 +1701,15 @@ def _bench(args: argparse.Namespace) -> int:
                     "usable_tokens": retrieval_record.usable_tokens,
                     "degraded_tokens": retrieval_record.degraded_tokens,
                     "chunk_recovers": retrieval_record.chunk_recovers,
+                    "pool_recovers": retrieval_record.pool_recovers,
+                    "pool_hits": (
+                        retrieval_record.chunk.pool_hits
+                        if retrieval_record.chunk is not None else None
+                    ),
+                    "pool_trials": (
+                        retrieval_record.chunk.pool_trials
+                        if retrieval_record.chunk is not None else None
+                    ),
                 }
             _print_json(output)
         else:
@@ -1743,6 +1759,17 @@ def _bench(args: argparse.Namespace) -> int:
                         f"{retrieval_record.chunk.trials} at ~"
                         f"{retrieval_record.chunk.chunk_tokens} tokens"
                     )
+                pool = "unmeasured"
+                if retrieval_record.chunk is not None:
+                    pool_outcome = (
+                        "recovered"
+                        if retrieval_record.pool_recovers
+                        else "not recovered"
+                    )
+                    pool = (
+                        f"{pool_outcome} {retrieval_record.chunk.pool_hits}/"
+                        f"{retrieval_record.chunk.pool_trials}"
+                    )
                 _console().print(
                     i18n.t(
                         "label.retrieval_measurement",
@@ -1751,6 +1778,7 @@ def _bench(args: argparse.Namespace) -> int:
                         degraded=degraded,
                         rungs=rung_lines,
                         chunk=chunk,
+                        pool=pool,
                     )
                 )
                 if not retrieval_record.control_passed:

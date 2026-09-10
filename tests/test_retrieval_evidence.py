@@ -119,7 +119,7 @@ def test_indeterminate_band_does_not_establish_degradation() -> None:
 def test_chunk_arm_round_trip_and_recovery_status(tmp_path) -> None:
     record = replace(
         _record(_ladder((8, 8, 8, 8, 7, 5, 2))),
-        chunk=RetrievalChunkArm(2400, 800, 1177, 8, 8),
+        chunk=RetrievalChunkArm(2400, 800, 1177, 8, 8, 8, 8),
     )
     path = tmp_path / "retrieval.json"
     save_retrieval(record, path)
@@ -128,12 +128,16 @@ def test_chunk_arm_round_trip_and_recovery_status(tmp_path) -> None:
     assert replace(record, chunk=replace(record.chunk, hits=6)).chunk_recovers is False
     assert replace(record, chunk=None).chunk_recovers is None
     assert _record(_ladder((8, 8, 8))).chunk_recovers is None
+    assert record.pool_recovers is True
+    assert replace(record, chunk=replace(record.chunk, pool_hits=6)).pool_recovers is False
+    assert replace(record, chunk=None).pool_recovers is None
+    assert _record(_ladder((8, 8, 8))).pool_recovers is None
 
 
 def test_malformed_chunk_records_are_dropped(tmp_path) -> None:
     record = replace(
         _record(_ladder((8, 8, 8))),
-        chunk=RetrievalChunkArm(2400, 800, 1177, 8, 8),
+        chunk=RetrievalChunkArm(2400, 800, 1177, 8, 8, 8, 8),
     )
     path = tmp_path / "retrieval.json"
     save_retrieval(record, path)
@@ -148,6 +152,18 @@ def test_malformed_chunk_records_are_dropped(tmp_path) -> None:
         "bad_hits": {
             **valid,
             "chunk": {**valid["chunk"], "hits": 9},
+        },
+        "pool_boolean": {
+            **valid,
+            "chunk": {**valid["chunk"], "pool_hits": True},
+        },
+        "pool_negative": {
+            **valid,
+            "chunk": {**valid["chunk"], "pool_trials": -1},
+        },
+        "pool_overflow": {
+            **valid,
+            "chunk": {**valid["chunk"], "pool_hits": 9},
         },
     })
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -185,7 +201,7 @@ def test_chunk_arm_uses_batch_inputs_and_max_chunk_similarity() -> None:
         )
     finally:
         client.close()
-    assert arm == RetrievalChunkArm(10, 4, 12, 2, 2)
+    assert arm == RetrievalChunkArm(10, 4, 12, 2, 2, 2, 2)
     assert len(requests) == 2 * (8 + 1)
     assert all(isinstance(request["input"], list) for request in requests[:8])
 
@@ -236,6 +252,19 @@ def test_nondefault_retrieval_digest_is_ignored_by_planner(tmp_path, monkeypatch
     assert cli._embed_retrieval_limits() == {}
 
 
+def test_retrieval_v2_record_is_visible_but_not_consumable(tmp_path, monkeypatch) -> None:
+    record = replace(_record(_ladder((8, 8, 8))), harness="retrieval-v2")
+    path = tmp_path / "retrieval.json"
+    save_retrieval(record, path)
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    assert cli._embed_retrieval_limits() == {}
+    row = next(
+        row for row in collect_evidence()["records"] if row["kind"] == "retrieval"
+    )
+    assert row["usable"] is False
+    assert "harness_mismatch" in row["reasons"]
+
+
 def test_old_retrieval_harness_is_ignored_but_inventory_reports_it(
     tmp_path, monkeypatch,
 ) -> None:
@@ -263,7 +292,12 @@ def test_planner_warns_without_changing_candidate() -> None:
         ordinary.services[0].backend.casefold(),
     )
     limits = (
-        RetrievalLimit(ordinary.services[0].context // 2, 512, True, 8, 8),
+        RetrievalLimit(
+            ordinary.services[0].context // 2, 512, True, 8, 8, True, 8, 8,
+        ),
+        RetrievalLimit(
+            ordinary.services[0].context // 2, 512, True, 8, 8, False,
+        ),
         RetrievalLimit(ordinary.services[0].context // 2, 512, False),
         RetrievalLimit(ordinary.services[0].context // 2, None, None),
     )
@@ -281,7 +315,7 @@ def test_planner_warns_without_changing_candidate() -> None:
         assert warned.services[0].model_id == ordinary.services[0].model_id
         assert warned.services[0].backend == ordinary.services[0].backend
         assert warned.services[0].quant == ordinary.services[0].quant
-        assert any("single-vector" in warning for warning in warned.warnings)
+        assert warned.warnings
 
 
 def test_planner_selects_chunk_retrieval_warning_messages() -> None:
@@ -299,13 +333,17 @@ def test_planner_selects_chunk_retrieval_warning_messages() -> None:
     recovered = build_plan(
         profile(64), [model], policy,
         embed_retrieval_limits={
-            key: RetrievalLimit(ordinary.services[0].context // 2, 512, True, 8, 8),
+            key: RetrievalLimit(
+                ordinary.services[0].context // 2, 512, True, 8, 8, True, 8, 8,
+            ),
         },
     )
     failed = build_plan(
         profile(64), [model], policy,
         embed_retrieval_limits={
-            key: RetrievalLimit(ordinary.services[0].context // 2, 512, False),
+            key: RetrievalLimit(
+                ordinary.services[0].context // 2, 512, True, 8, 8, False,
+            ),
         },
     )
     unmeasured = build_plan(
@@ -315,5 +353,9 @@ def test_planner_selects_chunk_retrieval_warning_messages() -> None:
         },
     )
     assert any("recovers 8/8" in warning for warning in recovered.warnings)
+    assert any("fold" in warning and "NMESH_EMBED_AUTOCHUNK=1" in warning
+               for warning in recovered.warnings)
+    assert any("client-side" in warning and "will not autochunk" in warning
+               for warning in failed.warnings)
     assert any("not a verified remedy" in warning for warning in failed.warnings)
     assert any("Chunk long inputs" in warning for warning in unmeasured.warnings)

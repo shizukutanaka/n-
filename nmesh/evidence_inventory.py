@@ -278,6 +278,16 @@ def _retrieval_rows() -> list[dict[str, object]]:
             "chunk_trials": chunk.trials if chunk is not None else None,
             "chunk_recovers": record.chunk_recovers,
             "chunk_status": chunk_status,
+            "pool_hits": chunk.pool_hits if chunk is not None else None,
+            "pool_trials": chunk.pool_trials if chunk is not None else None,
+            "pool_recovers": record.pool_recovers,
+            "pool_status": (
+                "unmeasured"
+                if chunk is None or record.pool_recovers is None
+                else "recovered"
+                if record.pool_recovers
+                else "not_recovered"
+            ),
             "usable": usable,
             "reasons": reasons,
             "remeasure": "nmesh bench --service embed --retrieval",
