@@ -128,6 +128,7 @@ class _AutoChunkHandler(BaseHTTPRequestHandler):
     request_bodies: ClassVar[list[dict[str, object]]] = []
     dimensions: ClassVar[int] = 2
     varying_dimensions: ClassVar[bool] = False
+    short_response: ClassVar[bool] = False
     prompt_tokens_override: ClassVar[int | None] = None
 
     def do_POST(self) -> None:
@@ -147,6 +148,8 @@ class _AutoChunkHandler(BaseHTTPRequestHandler):
                 "index": index,
                 "object": "embedding",
             })
+        if self.__class__.short_response:
+            data = data[:1]
         tokens = sum(len(str(value).split()) for value in values)
         if self.__class__.prompt_tokens_override is not None:
             tokens = self.__class__.prompt_tokens_override
@@ -171,6 +174,7 @@ def _start_autochunk_upstream() -> ThreadingHTTPServer:
     _AutoChunkHandler.request_bodies = []
     _AutoChunkHandler.dimensions = 2
     _AutoChunkHandler.varying_dimensions = False
+    _AutoChunkHandler.short_response = False
     _AutoChunkHandler.prompt_tokens_override = None
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), _AutoChunkHandler)
     threading.Thread(target=upstream.serve_forever, daemon=True).start()
@@ -245,9 +249,13 @@ def test_embedding_autochunk_pools_vectors_and_sets_headers(monkeypatch) -> None
         assert response.json()["data"][0]["embedding"] == [0.5, 0.5]
         assert response.headers["X-Nmesh-Embedding-Chunked"] == "2"
         assert response.headers["X-Nmesh-Embedding-Chunk-Words"] == "4"
+        assert response.headers["X-Nmesh-Embedding-Chunk-Chars"] == "8"
         assert response.json()["usage"]["prompt_tokens"] == 8
         assert len(_AutoChunkHandler.request_bodies) == 1
-        assert isinstance(_AutoChunkHandler.request_bodies[0]["input"], list)
+        assert _AutoChunkHandler.request_bodies[0]["input"] == [
+            "word word word word",
+            "word word word needle",
+        ]
     finally:
         upstream.shutdown()
         upstream.server_close()
@@ -280,6 +288,99 @@ def test_embedding_autochunk_short_input_is_untouched(monkeypatch) -> None:
         assert response.status_code == 200
         assert _AutoChunkHandler.request_bodies[0]["input"] == "short"
         assert "X-Nmesh-Embedding-Chunked" not in response.headers
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_embedding_autochunk_long_japanese_uses_character_chunks(monkeypatch) -> None:
+    upstream = _start_autochunk_upstream()
+    try:
+        value = "\u65e5\u672c\u8a9e\u306e\u691c\u7d22\u5bfe\u8c61\u3092\u9577\u304f\u3057\u305f\u30c6\u30b9\u30c8\u3067\u3059"
+        with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
+            response = client.post(
+                "/v1/embeddings",
+                json={"model": "nmesh-auto", "input": value},
+            )
+        assert len(value.split()) == 1
+        assert len(value) > 8
+        assert response.status_code == 200
+        assert len(response.json()["data"]) == 1
+        assert response.json()["data"][0]["embedding"] == [0.0, 1.0]
+        pieces = _AutoChunkHandler.request_bodies[0]["input"]
+        assert pieces == [value[index:index + 8] for index in range(0, len(value), 8)]
+        assert response.headers["X-Nmesh-Embedding-Chunked"] == str(len(pieces))
+        assert response.headers["X-Nmesh-Embedding-Chunk-Chars"] == "8"
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_embedding_autochunk_short_japanese_is_untouched(monkeypatch) -> None:
+    upstream = _start_autochunk_upstream()
+    try:
+        value = "\u65e5\u672c\u8a9e\u30c6\u30b9\u30c8"
+        with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
+            response = client.post(
+                "/v1/embeddings",
+                json={"model": "nmesh-auto", "input": value},
+            )
+        assert len(value) <= 8
+        assert response.status_code == 200
+        assert _AutoChunkHandler.request_bodies[0]["input"] == value
+        assert "X-Nmesh-Embedding-Chunked" not in response.headers
+        assert "X-Nmesh-Embedding-Chunk-Chars" not in response.headers
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_embedding_autochunk_mixed_english_japanese_inputs_sum_usage(
+    monkeypatch,
+) -> None:
+    upstream = _start_autochunk_upstream()
+    try:
+        japanese = "\u65e5\u672c\u8a9e\u306e\u691c\u7d22\u5bfe\u8c61\u3092\u9577\u304f\u3057\u305f\u30c6\u30b9\u30c8\u3067\u3059"
+        english = "word word word word needle"
+        with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
+            response = client.post(
+                "/v1/embeddings",
+                json={"model": "nmesh-auto", "input": ["short", japanese, english]},
+            )
+        assert response.status_code == 200
+        assert [item["index"] for item in response.json()["data"]] == [0, 1, 2]
+        assert response.json()["data"][0]["embedding"] == [0.0, 1.0]
+        assert response.json()["data"][1]["embedding"] == [0.0, 1.0]
+        assert response.json()["data"][2]["embedding"] == [0.5, 0.5]
+        assert response.json()["usage"]["prompt_tokens"] == 9
+        assert response.headers["X-Nmesh-Embedding-Chunked"] == "6"
+        assert response.headers["X-Nmesh-Embedding-Chunk-Chars"] == "8"
+        assert [body["input"] for body in _AutoChunkHandler.request_bodies] == [
+            "short",
+            [japanese[:8], japanese[8:16], japanese[16:]],
+            ["word word word word", "needle"],
+        ]
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_embedding_autochunk_character_response_failure_falls_back(monkeypatch) -> None:
+    upstream = _start_autochunk_upstream()
+    try:
+        _AutoChunkHandler.short_response = True
+        value = "\u65e5\u672c\u8a9e\u306e\u691c\u7d22\u5bfe\u8c61\u3092\u9577\u304f\u3057\u305f\u30c6\u30b9\u30c8\u3067\u3059"
+        with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
+            response = client.post(
+                "/v1/embeddings",
+                json={"model": "nmesh-auto", "input": value},
+            )
+        assert response.status_code == 200
+        assert response.json()["data"][0]["embedding"] == [0.0, 1.0]
+        assert "X-Nmesh-Embedding-Chunked" not in response.headers
+        assert "X-Nmesh-Embedding-Chunk-Chars" not in response.headers
+        assert len(_AutoChunkHandler.request_bodies) == 2
+        assert _AutoChunkHandler.request_bodies[-1]["input"] == value
     finally:
         upstream.shutdown()
         upstream.server_close()
@@ -341,6 +442,7 @@ def test_embedding_autochunk_mixed_inputs_skip_cap_guard(monkeypatch) -> None:
         assert "X-Nmesh-Embedding-Truncation" not in response.headers
         assert response.headers["X-Nmesh-Embedding-Chunked"] == "3"
         assert response.headers["X-Nmesh-Embedding-Chunk-Words"] == "4"
+        assert response.headers["X-Nmesh-Embedding-Chunk-Chars"] == "8"
     finally:
         upstream.shutdown()
         upstream.server_close()
