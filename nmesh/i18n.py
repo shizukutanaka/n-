@@ -179,21 +179,23 @@ MESSAGES = {
         "warn.embed_retrieval_recovered": (
             "{model} at {quant} on {backend}: single-vector retrieval degraded "
             "beyond {degraded} tokens, but measured chunking recovers {hits}/{trials} "
-            "at about {chunk} tokens on this host; split long inputs accordingly."
+            "at about {chunk} tokens ({chunk_chars} chars) on this host; split "
+            "long inputs accordingly."
         ),
         "warn.embed_retrieval_pooled": (
             "{model} at {quant} on {backend}: single-vector retrieval degraded "
             "beyond {degraded} tokens, but measured chunking recovers {hits}/{trials} "
-            "at about {chunk} tokens; the gateway can fold the pieces into one "
-            "vector with measured pooled recovery {pool_hits}/{pool_trials} on "
-            "this host. Set NMESH_EMBED_AUTOCHUNK=1 to opt in."
+            "at about {chunk} tokens ({chunk_chars} chars); the gateway can fold "
+            "the pieces into one vector with measured pooled recovery "
+            "{pool_hits}/{pool_trials} on this host. Set NMESH_EMBED_AUTOCHUNK=1 "
+            "to opt in."
         ),
         "warn.embed_retrieval_client": (
             "{model} at {quant} on {backend}: client-side chunking recovers "
-            "{hits}/{trials} at about {chunk} tokens, but folding the pieces into "
-            "one vector did not recover retrieval here. Chunking is not a "
-            "verified remedy through the gateway; it will not autochunk, so "
-            "chunk inputs in the client."
+            "{hits}/{trials} at about {chunk} tokens ({chunk_chars} chars), but "
+            "folding the pieces into one vector did not recover retrieval here. "
+            "Chunking is not a verified remedy through the gateway; it will not "
+            "autochunk, so chunk inputs in the client."
         ),
         "warn.embed_retrieval_unrecovered": (
             "{model} at {quant} on {backend}: single-vector retrieval degraded "
@@ -594,16 +596,19 @@ MESSAGES = {
         ),
         "warn.embed_retrieval_recovered": (
             "{model} の {quant} / {backend}: {degraded} トークンを超えると検索は劣化しますが、"
-            "このホストでは約 {chunk} トークンへの分割で {hits}/{trials} の回復を実測しました。"
+            "このホストでは約 {chunk} トークン（{chunk_chars} 文字）への分割で "
+            "{hits}/{trials} の回復を実測しました。"
         ),
         "warn.embed_retrieval_pooled": (
             "{model} の {quant} / {backend}: {degraded} トークンを超えると検索は劣化しますが、"
-            "約 {chunk} トークンへの分割で {hits}/{trials} を回復しました。ゲートウェイはこのホストで"
+            "約 {chunk} トークン（{chunk_chars} 文字）への分割で {hits}/{trials} を回復しました。"
+            "ゲートウェイはこのホストで"
             "プール済み回復 {pool_hits}/{pool_trials} の単一ベクトルにまとめられます。"
             "NMESH_EMBED_AUTOCHUNK=1 で有効化できます。"
         ),
         "warn.embed_retrieval_client": (
-            "{model} の {quant} / {backend}: クライアント側の分割では約 {chunk} トークンで"
+            "{model} の {quant} / {backend}: クライアント側の分割では約 {chunk} トークン"
+            "（{chunk_chars} 文字）で"
             "{hits}/{trials} を回復しましたが、単一ベクトルへの統合では回復しませんでした。"
             "ゲートウェイは自動分割せず、クライアント側で入力を分割してください。"
         ),
