@@ -396,7 +396,7 @@ def _embedding_chunks(
     return [
         value[index:index + chunk_tokens]
         for index in range(0, len(value), chunk_tokens)
-    ] or [value]
+    ]
 
 
 def _base_url(service: PlannedService) -> str:
