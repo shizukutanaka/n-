@@ -12,6 +12,7 @@ from nmesh import __version__
 from nmesh.artifact import service_fingerprint
 from nmesh.artifacts import artifact_key
 from nmesh.bench.cache import BENCH_HARNESS_VERSION, BenchRecord, benchmark_key
+from nmesh.bench.retrieval import RetrievalLimit
 from nmesh.catalog import ModelSpec
 from nmesh.eval.cache import EvalSummary
 from nmesh.eval.generated import EXTENDED_TASKS
@@ -222,13 +223,17 @@ class PlannedService:
     n_gpu_layers: int | None
     resident: bool
     memory: MemoryEstimate
-    decode_tps: float
+    decode_tps: float | None
     estimated: bool
     launch: LaunchSpec
     languages: tuple[str, ...] = ("en",)
     kv_quant: str = "f16"
     spec: str = "none"
     spec_draft: str = ""
+
+
+def _is_embed_only(value: ModelSpec | PlannedService) -> bool:
+    return value.roles == ["embed"]
 
 
 @dataclass(frozen=True)
@@ -594,6 +599,10 @@ class _Candidate:
     requested_kv_quant: str
     score: float
     estimated: bool
+    decode_applicable: bool = True
+    context_before_embed_cap: int | None = None
+    embed_context_cap: int | None = None
+    embed_retrieval_limit: RetrievalLimit | None = None
 
 
 def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: str,
@@ -626,6 +635,10 @@ def _candidate_for(
     allow_unmeasured: bool = False,
     bench_records: Mapping[str, BenchRecord] | None = None,
     unconfirmed: list[dict[str, str]] | None = None,
+    embed_input_caps: Mapping[tuple[str, str, str], int] | None = None,
+    embed_retrieval_limits: Mapping[
+        tuple[str, str, str], RetrievalLimit
+    ] | None = None,
 ) -> list[_Candidate]:
     """Build candidates using the intentionally unchanged score.
 
@@ -649,7 +662,10 @@ def _candidate_for(
     for quant, bpw in BPW.items():
         for context in contexts:
             def estimate_candidate(
-                kv_quant: str, *, _quant: str = quant, _context: int = context,
+                kv_quant: str,
+                context_value: int,
+                *,
+                _quant: str = quant,
             ) -> MemoryEstimate:
                 measured_bytes = None
                 if artifact_cache is not None:
@@ -658,7 +674,7 @@ def _candidate_for(
                         artifact_key(repo_id, _quant)
                     )
                 estimate = estimate_memory(
-                    model, _quant, _context, profile=profile, kv_quant=kv_quant,
+                    model, _quant, context_value, profile=profile, kv_quant=kv_quant,
                     budget_source=policy.budget_source,
                     weight_bytes=(
                         float(measured_bytes)
@@ -667,7 +683,7 @@ def _candidate_for(
                 )
                 if model.roles == ["embed"]:
                     activation = min(
-                        0.02 * estimate.weight_bytes * math.ceil(_context / 512),
+                        0.02 * estimate.weight_bytes * math.ceil(context_value / 512),
                         512 * 1024**2,
                     )
                     overhead = estimate.compute_overhead + activation
@@ -685,21 +701,50 @@ def _candidate_for(
                 )
 
             accounted_kv_quant = policy.kv_quant
-            base = estimate_candidate(accounted_kv_quant)
+            base = estimate_candidate(accounted_kv_quant, context)
             layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
             if profile.tier == Tier.T0_CPU:
                 layers = 0
             gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
+            backend, installed = _backend(profile, model, layers)
+            context_before_embed_cap = None
+            embed_context_cap = None
+            embed_retrieval_limit = None
+            if _is_embed_only(model) and embed_input_caps is not None:
+                embed_context_cap = embed_input_caps.get((
+                    model.id.casefold(),
+                    quant.casefold(),
+                    backend.casefold(),
+                ))
+                if embed_context_cap is not None and embed_context_cap < context:
+                    context_before_embed_cap = context
+                    context = embed_context_cap
+                    base = estimate_candidate(accounted_kv_quant, context)
+                    layers = (
+                        solve_gpu_layers(base, model.n_layers)
+                        if profile.gpus else 0
+                    )
+                    if profile.tier == Tier.T0_CPU:
+                        layers = 0
+                    gpu_bytes, cpu_bytes = _split_memory(
+                        base, model.n_layers, layers,
+                    )
+                    backend, installed = _backend(profile, model, layers)
+            if _is_embed_only(model) and embed_retrieval_limits is not None:
+                embed_retrieval_limit = embed_retrieval_limits.get((
+                    model.id.casefold(),
+                    quant.casefold(),
+                    backend.casefold(),
+                ))
             if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
                 continue
-            backend, installed = _backend(profile, model, layers)
             backend_flags = profile.backend_flags.get(backend)
             if (
                 policy.kv_quant != "f16"
                 and not _honors_kv_quant(backend, backend_flags)
             ):
                 accounted_kv_quant = "f16"
-                base = estimate_candidate(accounted_kv_quant)
+                base = estimate_candidate(accounted_kv_quant, context)
                 layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
                 if profile.tier == Tier.T0_CPU:
                     layers = 0
@@ -714,9 +759,14 @@ def _candidate_for(
             if not _has_source(backend, model):
                 continue
             gpu_name = profile.gpus[0].name if profile.gpus else "cpu"
-            bench = _bench_value(
-                cache, model, quant, backend, gpu_name, layers, accounted_kv_quant,
-                policy.spec,
+            decode_applicable = not _is_embed_only(model)
+            bench = (
+                _bench_value(
+                    cache, model, quant, backend, gpu_name, layers, accounted_kv_quant,
+                    policy.spec,
+                )
+                if decode_applicable
+                else None
             )
             bench_record = (
                 bench_records.get(
@@ -725,10 +775,11 @@ def _candidate_for(
                         accounted_kv_quant, policy.spec,
                     )
                 )
-                if bench_records is not None else None
+                if decode_applicable and bench_records is not None else None
             )
             confirmed = (
-                bench_records is None
+                not decode_applicable
+                or bench_records is None
                 or (
                     bench_record is not None
                     and bench_record.harness == BENCH_HARNESS_VERSION
@@ -737,14 +788,16 @@ def _candidate_for(
             )
             memory = MemoryEstimate(**{**asdict(base), "cpu_bytes": cpu_bytes,
                                        "gpu_bytes": gpu_bytes, "n_gpu_layers": layers})
-            tps = bench if bench is not None else _throughput(
-                model,
-                memory,
-                layers,
-                profile,
-                model.params * bpw / 8,
-            )
-            if tps < policy.min_decode_tps and not confirmed:
+            tps = (
+                bench if bench is not None else _throughput(
+                    model,
+                    memory,
+                    layers,
+                    profile,
+                    model.params * bpw / 8,
+                )
+            ) if decode_applicable else 0.0
+            if decode_applicable and tps < policy.min_decode_tps and not confirmed:
                 if bench is not None and unconfirmed is not None:
                     unconfirmed.append({
                         "model": model.id,
@@ -752,7 +805,7 @@ def _candidate_for(
                         "tps": f"{bench:.2f}",
                         "threshold": f"{policy.min_decode_tps:.2f}",
                     })
-            elif tps < policy.min_decode_tps:
+            elif decode_applicable and tps < policy.min_decode_tps:
                 if bench is not None and excluded is not None:
                     estimate = _throughput(
                         model,
@@ -771,19 +824,27 @@ def _candidate_for(
                 continue
             wq, ws = {"quality": (1.0, 0.1), "speed": (0.5, 1.0),
                       "balanced": (1.0, 0.25)}.get(policy.prefer, (1.0, 0.25))
-            speed_score = min(tps, SPEED_REFERENCE_TPS) / SPEED_REFERENCE_TPS * 100 * ws
             prior = _effective_prior(model, quant)
-            score = (
-                speed_score
-                if prior is None
-                else prior * wq + speed_score
-            )
+            if not decode_applicable:
+                score = 0.0 if prior is None else prior * wq
+            else:
+                speed_score = min(tps, SPEED_REFERENCE_TPS) / SPEED_REFERENCE_TPS * 100 * ws
+                score = (
+                    speed_score
+                    if prior is None
+                    else prior * wq + speed_score
+                )
             if policy.languages:
                 covers = set(policy.languages).issubset(model.languages)
                 score *= 1.0 if covers else 0.7
             candidates.append(_Candidate(
-                model, quant, context, memory, layers, tps, backend, installed,
-                accounted_kv_quant, policy.kv_quant, score, bench is None,
+                model, quant, context, memory, layers,
+                tps if decode_applicable else 0.0,
+                backend, installed, accounted_kv_quant, policy.kv_quant, score,
+                bench is None, decode_applicable=decode_applicable,
+                context_before_embed_cap=context_before_embed_cap,
+                embed_context_cap=embed_context_cap,
+                embed_retrieval_limit=embed_retrieval_limit,
             ))
             break
     return sorted(candidates, key=lambda item: item.score, reverse=True)
@@ -856,11 +917,16 @@ def _speed_saturation_warning(
     pool: list[_Candidate],
     policy: Policy,
 ) -> str | None:
-    if policy.prefer != "speed" or chosen.decode_tps < SPEED_REFERENCE_TPS:
+    if (
+        not chosen.decode_applicable
+        or policy.prefer != "speed"
+        or chosen.decode_tps < SPEED_REFERENCE_TPS
+    ):
         return None
     faster = [
         candidate for candidate in pool
-        if candidate.decode_tps > chosen.decode_tps
+        if candidate.decode_applicable
+        and candidate.decode_tps > chosen.decode_tps
         and candidate.decode_tps >= SPEED_REFERENCE_TPS
     ]
     if not faster:
@@ -1058,6 +1124,61 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         memory = replace(
             memory, n_gpu_layers=layers, gpu_bytes=gpu_bytes, cpu_bytes=cpu_bytes
         )
+    if (
+        candidate.context_before_embed_cap is not None
+        and candidate.embed_context_cap is not None
+    ):
+        warnings.append(
+            t(
+                "warn.embed_context_capped",
+                language,
+                model=candidate.model.id,
+                quant=candidate.quant,
+                backend=candidate.backend,
+                context=candidate.context_before_embed_cap,
+                cap=candidate.embed_context_cap,
+            )
+        )
+    if (
+        candidate.embed_retrieval_limit is not None
+        and candidate.context > candidate.embed_retrieval_limit.degraded_tokens
+    ):
+        limit = candidate.embed_retrieval_limit
+        if limit.chunk_recovers is True:
+            warning_key = (
+                "warn.embed_retrieval_pooled"
+                if limit.pool_recovers is True
+                else "warn.embed_retrieval_client"
+                if limit.pool_recovers is False
+                else "warn.embed_retrieval_recovered"
+            )
+            warning_args = {
+                "degraded": limit.degraded_tokens,
+                "chunk": limit.chunk_tokens,
+                "hits": limit.chunk_hits,
+                "trials": limit.chunk_trials,
+                "pool_hits": limit.pool_hits,
+                "pool_trials": limit.pool_trials,
+            }
+        elif limit.chunk_recovers is False:
+            warning_key = "warn.embed_retrieval_unrecovered"
+            warning_args = {"degraded": limit.degraded_tokens}
+        else:
+            warning_key = "warn.embed_retrieval_degraded"
+            warning_args = {
+                "degraded": limit.degraded_tokens,
+                "context": candidate.context,
+            }
+        warnings.append(
+            t(
+                warning_key,
+                language,
+                model=candidate.model.id,
+                quant=candidate.quant,
+                backend=candidate.backend,
+                **warning_args,
+            )
+        )
     launch = _launch(
         candidate.backend, candidate.model, candidate.quant, candidate.context,
         port, layers or 0, tensor_parallel,
@@ -1085,7 +1206,10 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
             if resident_override is not None
             else profile.tier not in {Tier.T0_CPU, Tier.T1_LOW} or not services
         ),
-        memory, candidate.decode_tps, candidate.estimated, launch,
+        memory,
+        candidate.decode_tps if candidate.decode_applicable else None,
+        candidate.estimated,
+        launch,
         candidate.model.languages,
         kv_quant=candidate.kv_quant,
         spec=spec_kind,
@@ -1585,7 +1709,7 @@ def _assign_slots(
                 t("warn.slots_clamped", policy.lang, service=service.name,
                   requested=requested, slots=slots)
             )
-        if slots > 1 and warnings is not None:
+        if slots > 1 and warnings is not None and service.decode_tps is not None:
             warnings.append(
                 t("warn.slots_tradeoff", policy.lang, service=service.name,
                   slots=slots, tps=f"{service.decode_tps:.1f}")
@@ -1692,6 +1816,10 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                *,
                eval_depth_coverage: Mapping[tuple[str, str, str], int] | None = None,
                eval_depth_lost: Mapping[tuple[str, str, str], int] | None = None,
+               embed_input_caps: Mapping[tuple[str, str, str], int] | None = None,
+               embed_retrieval_limits: Mapping[
+                   tuple[str, str, str], RetrievalLimit
+               ] | None = None,
                ) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
@@ -1804,6 +1932,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                  allow_unmeasured=model.id.casefold() in requested_model_ids,
                  bench_records=bench_records,
                  unconfirmed=bench_unconfirmed,
+                 embed_input_caps=embed_input_caps,
+                 embed_retrieval_limits=embed_retrieval_limits,
              )),
             key=lambda item: item.score, reverse=True,
         ) for role in group}
@@ -1821,6 +1951,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                      allow_unmeasured=model.id.casefold() in requested_model_ids,
                      bench_records=bench_records,
                      unconfirmed=bench_unconfirmed,
+                     embed_input_caps=embed_input_caps,
+                     embed_retrieval_limits=embed_retrieval_limits,
                  )),
                 key=lambda item: item.score, reverse=True,
             ) for role in group}
@@ -2009,6 +2141,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     and item.model.id != lead.model_id
                     and item.model.params < lead_model.params
                     and item.memory.weight_bytes <= lead.memory.weight_bytes
+                    and item.decode_applicable
+                    and lead.decode_tps is not None
                     and item.decode_tps >= lead.decode_tps
                 ]
                 if lead is not None else []
@@ -2176,6 +2310,25 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     context=service.context,
                     depth=measured_depth,
                 ))
+    if embed_input_caps is not None:
+        for service in services:
+            if not _is_embed_only(service):
+                continue
+            key = (
+                service.model_id.casefold(),
+                service.quant.casefold(),
+                service.backend.casefold(),
+            )
+            cap = embed_input_caps.get(key)
+            if cap is None:
+                warnings.append(t(
+                    "warn.embed_context_unverified",
+                    selected.lang,
+                    model=service.model_id,
+                    quant=service.quant,
+                    backend=service.backend,
+                    command=f"nmesh bench --service {service.name}",
+                ))
     for model_id in sorted(selected_unmeasured):
         warnings.append(
             t("warn.quality_unmeasured_selected", selected.lang, model=model_id)
@@ -2228,6 +2381,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         other, profile, selected, bench_cache, artifact_cache,
                         bench_records=bench_records,
                         unconfirmed=bench_unconfirmed,
+                        embed_input_caps=embed_input_caps,
+                        embed_retrieval_limits=embed_retrieval_limits,
                     )
                     if same_model:
                         candidates = [
@@ -2532,7 +2687,10 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             str(sd["quant"]), str(sd["backend"]),
             int(sd["context"]), int(sd["port"]), [int(x) for x in sd["gpu_indices"]],
             int(sd["n_gpu_layers"]) if sd["n_gpu_layers"] is not None else None, bool(sd["resident"]),
-            memory, float(sd["decode_tps"]), bool(sd["estimated"]), launch,
+            memory,
+            float(sd["decode_tps"]) if sd["decode_tps"] is not None else None,
+            bool(sd["estimated"]),
+            launch,
             tuple(str(x) for x in sd.get("languages", ["en"])),
             kv_quant=str(sd.get("kv_quant", "f16")),
             spec=str(sd.get("spec", "none")),

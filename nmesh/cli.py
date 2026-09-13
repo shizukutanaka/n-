@@ -13,7 +13,7 @@ import time
 import urllib.request
 import zipfile
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError
@@ -27,9 +27,14 @@ from nmesh import i18n
 from nmesh.artifact import gguf_info, service_fingerprint
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.bench import (
+    EMBED_HARNESS_VERSION,
     EPOCH_HISTORY,
     MIN_DECODE_TOKENS,
+    RETRIEVAL_HARNESS_VERSION,
+    EmbedRecord,
     EpochSample,
+    RetrievalLimit,
+    RetrievalRecord,
     baseline,
     benchmark_key,
     choose_reference_model,
@@ -37,16 +42,24 @@ from nmesh.bench import (
     demote_stale,
     find_reference_binary,
     load_cache,
+    load_embed_cache,
     load_history,
     load_records,
+    load_retrieval_cache,
     measure,
     measure_controlled,
+    measure_embedding,
     measure_reference,
+    measure_retrieval,
+    measure_retrieval_chunk_arm,
     merge_measurement,
     prune_degraded,
     reference_id,
+    retrieval_digest,
+    save_embed,
     save_history,
     save_records,
+    save_retrieval,
 )
 from nmesh.catalog import load_catalog
 from nmesh.eval import (
@@ -61,6 +74,7 @@ from nmesh.eval import (
     suite_digest,
 )
 from nmesh.eval import run as eval_run
+from nmesh.eval import select as eval_select
 from nmesh.eval.cache import EvalRecord, eval_key
 from nmesh.eval.context import (
     ContextRecord,
@@ -68,11 +82,18 @@ from nmesh.eval.context import (
     load_context_cache,
     save_context,
 )
+from nmesh.eval.select import (
+    context_depth_evidence,
+    effective_context_records,
+    planner_eval_records,
+    valid_eval_records,
+)
 from nmesh.eval.stats import (
     min_discordant_for_significance,
     min_resolvable_difference,
     wilson_interval,
 )
+from nmesh.evidence_inventory import collect_evidence
 from nmesh.inventory import (
     FILE_TYPE_QUANT,
     default_stores,
@@ -404,6 +425,8 @@ def _make_plan(args: argparse.Namespace) -> object:
         if key not in live
     }
     eval_depth_coverage, eval_depth_lost = _context_depth_maps()
+    embed_input_caps = _embed_context_caps()
+    embed_retrieval_limits = _embed_retrieval_limits()
     return build_plan(
         profile,
         load_catalog(),
@@ -414,56 +437,21 @@ def _make_plan(args: argparse.Namespace) -> object:
         records,
         eval_depth_coverage=eval_depth_coverage,
         eval_depth_lost=eval_depth_lost,
+        embed_input_caps=embed_input_caps,
+        embed_retrieval_limits=embed_retrieval_limits,
     )
 
 
-def _eval_records(
-    records: Mapping[str, EvalRecord],
-) -> tuple[
-    dict[tuple[str, str, str, str, str, int, bool | None, int], EvalRecord],
-    list[EvalRecord],
-]:
-    valid: dict[
-        tuple[str, str, str, str, str, int, bool | None, int], EvalRecord
-    ] = {}
-    stale: list[EvalRecord] = []
-    for record in records.values():
-        tasks = SUITES.get(record.suite)
-        if tasks is None or record.digest != suite_digest(tasks):
-            stale.append(record)
-            continue
-        key = (
-            record.model_id,
-            record.quant,
-            record.backend,
-            record.suite,
-            record.digest,
-            record.reasoning_allowance,
-            record.cache_prompt,
-            record.depth,
-        )
-        previous = valid.get(key)
-        if previous is None or record.at > previous.at:
-            valid[key] = record
-    return valid, stale
+_eval_records = valid_eval_records
+_context_records = effective_context_records
+_context_evidence = context_depth_evidence
+DepthEvidence = eval_select.DepthEvidence
 
 
 def _eval_rates(
     records: Mapping[str, EvalRecord] | None = None,
 ) -> dict[tuple[str, str, str], EvalSummary]:
-    valid, _ = _eval_records(records if records is not None else load_eval_cache())
-    latest: dict[tuple[str, str, str], EvalRecord] = {}
-    for record in valid.values():
-        if record.unscorable or record.transport_errors or record.depth > 0:
-            continue
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
-        previous = latest.get(key)
-        if previous is None or record.at > previous.at:
-            latest[key] = record
+    latest = _eval_planner_records(records)
     return {
         key: EvalSummary(
             record.pass_rate,
@@ -479,47 +467,12 @@ def _eval_rates(
     }
 
 
-@dataclass(frozen=True)
-class DepthEvidence:
-    verified: int
-    lost: int
-
-
-def _context_evidence(
-    records: Mapping[str, ContextRecord],
-) -> dict[tuple[str, str, str], DepthEvidence]:
-    latest: dict[tuple[str, str, str, int], ContextRecord] = {}
-    for record in records.values():
-        if record.requested_depth <= 0:
-            continue
-        if record.probe_digest != suite_digest(
-            needle_tasks(record.requested_depth, record.seed)
-        ):
-            continue
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-            record.requested_depth,
-        )
-        previous = latest.get(key)
-        if previous is None or record.at > previous.at:
-            latest[key] = record
-    evidence: dict[tuple[str, str, str], DepthEvidence] = {}
-    for record in latest.values():
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
-        served = record.served_depth or record.requested_depth
-        current = evidence.get(key, DepthEvidence(0, 0))
-        if any(family.lost for family in record.families):
-            lost = served if current.lost == 0 else min(current.lost, served)
-            evidence[key] = DepthEvidence(current.verified, lost)
-        elif any(family.attributable for family in record.families):
-            evidence[key] = DepthEvidence(max(current.verified, served), current.lost)
-    return evidence
+def _eval_planner_records(
+    records: Mapping[str, EvalRecord] | None = None,
+) -> dict[tuple[str, str, str], EvalRecord]:
+    return planner_eval_records(
+        records if records is not None else load_eval_cache()
+    )
 
 
 def _context_depth_maps() -> tuple[
@@ -539,6 +492,69 @@ def _context_depth_maps() -> tuple[
             if value.lost > 0
         },
     )
+
+
+def _embed_context_caps() -> dict[tuple[str, str, str], int]:
+    latest: dict[tuple[str, str, str], EmbedRecord] = {}
+    for record in load_embed_cache().values():
+        if record.harness != EMBED_HARNESS_VERSION or record.cap is None:
+            continue
+        key = (
+            record.model_id.casefold(),
+            record.quant.casefold(),
+            record.backend.casefold(),
+        )
+        previous = latest.get(key)
+        if previous is None or record.at > previous.at:
+            latest[key] = record
+    return {
+        key: record.cap
+        for key, record in latest.items()
+        if record.cap is not None
+    }
+
+
+def _embed_retrieval_limits() -> dict[tuple[str, str, str], RetrievalLimit]:
+    latest: dict[tuple[str, str, str], RetrievalRecord] = {}
+    digest = retrieval_digest()
+    for record in load_retrieval_cache().values():
+        if (
+            record.harness != RETRIEVAL_HARNESS_VERSION
+            or record.digest != digest
+            or record.degraded_tokens is None
+        ):
+            continue
+        key = (
+            record.model_id.casefold(),
+            record.quant.casefold(),
+            record.backend.casefold(),
+        )
+        previous = latest.get(key)
+        if previous is None or record.at > previous.at:
+            latest[key] = record
+    return {
+        key: RetrievalLimit(
+            degraded_tokens=record.degraded_tokens,
+            chunk_tokens=(
+                record.chunk.chunk_tokens
+                if record.chunk is not None else None
+            ),
+            chunk_recovers=record.chunk_recovers,
+            chunk_hits=record.chunk.hits if record.chunk is not None else None,
+            chunk_trials=(
+                record.chunk.trials if record.chunk is not None else None
+            ),
+            pool_recovers=record.pool_recovers,
+            pool_hits=(
+                record.chunk.pool_hits if record.chunk is not None else None
+            ),
+            pool_trials=(
+                record.chunk.pool_trials if record.chunk is not None else None
+            ),
+        )
+        for key, record in latest.items()
+        if record.degraded_tokens is not None
+    }
 
 
 def _stale_grader_notes(records: Mapping[str, EvalRecord]) -> list[str]:
@@ -716,7 +732,7 @@ def _render_plan(result: Plan) -> None:
                       str(service.context), str(service.memory.parallel_slots),
                       "-" if service.n_gpu_layers is None else str(service.n_gpu_layers),
                       ",".join(service.languages),
-                      f"{service.decode_tps:.1f}")
+                      "—" if service.decode_tps is None else f"{service.decode_tps:.1f}")
     _console().print(table)
 
 
@@ -850,6 +866,8 @@ def _runtime(args: argparse.Namespace) -> int:
             }
             eval_records = load_eval_cache()
             eval_depth_coverage, eval_depth_lost = _context_depth_maps()
+            embed_input_caps = _embed_context_caps()
+            embed_retrieval_limits = _embed_retrieval_limits()
             plan = build_plan(
                 detect_hardware(), load_catalog(),
                 replace(plan.policy, **updates),
@@ -859,6 +877,8 @@ def _runtime(args: argparse.Namespace) -> int:
                 records,
                 eval_depth_coverage=eval_depth_coverage,
                 eval_depth_lost=eval_depth_lost,
+                embed_input_caps=embed_input_caps,
+                embed_retrieval_limits=embed_retrieval_limits,
             )
             save_plan(plan)
         cache = {**load_cache(), **bench_overlay()}
@@ -1522,6 +1542,266 @@ def _bench(args: argparse.Namespace) -> int:
     base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
     )
+    if service.roles == ["embed"]:
+        try:
+            with httpx.Client(timeout=300.0) as client:
+                measurement = measure_embedding(
+                    client,
+                    base_url,
+                    service.model_ref,
+                    requested_context=service.context,
+                    runs=args.runs,
+                )
+        except httpx.HTTPError as error:
+            response = getattr(error, "response", None)
+            status = getattr(response, "status_code", "unknown")
+            print(
+                i18n.t(
+                    "err.bench_http",
+                    i18n.lang(),
+                    service=service.name,
+                    url=f"{base_url}/v1/embeddings",
+                    status=status,
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        except (OSError, RuntimeError) as error:
+            print(
+                i18n.t("err.bench_measure", i18n.lang(), error=error),
+                file=sys.stderr,
+            )
+            return 1
+        gpu_name = plan.profile.gpus[0].name if plan.profile.gpus else "cpu"
+        record = EmbedRecord(
+            model_id=service.model_id,
+            quant=service.quant,
+            backend=service.backend,
+            gpu_name=gpu_name,
+            n_gpu_layers=service.n_gpu_layers or 0,
+            requested_context=service.context,
+            probe_tokens_small=measurement.probe_tokens_small,
+            served_small=measurement.served_small,
+            probe_tokens_large=measurement.probe_tokens_large,
+            served_large=measurement.served_large,
+            encode_tps=measurement.encode_tps,
+            encode_tps_min=measurement.encode_tps_min,
+            encode_tps_max=measurement.encode_tps_max,
+            encode_input_tokens=measurement.encode_input_tokens,
+            runs=measurement.runs,
+            harness=EMBED_HARNESS_VERSION,
+            at=time.time(),
+        )
+        try:
+            save_embed(record)
+        except OSError as error:
+            print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
+            return 1
+        retrieval_record: RetrievalRecord | None = None
+        if getattr(args, "retrieval", False):
+            try:
+                with httpx.Client(timeout=300.0) as client:
+                    rungs = measure_retrieval(
+                        client,
+                        base_url,
+                        service.model_ref,
+                        cap=record.cap,
+                    )
+            except httpx.HTTPError as error:
+                response = getattr(error, "response", None)
+                status = getattr(response, "status_code", "unknown")
+                print(
+                    i18n.t(
+                        "err.bench_http",
+                        i18n.lang(),
+                        service=service.name,
+                        url=f"{base_url}/v1/embeddings",
+                        status=status,
+                    ),
+                    file=sys.stderr,
+                )
+                return 1
+            except (OSError, RuntimeError) as error:
+                print(
+                    i18n.t("err.bench_measure", i18n.lang(), error=error),
+                    file=sys.stderr,
+                )
+                return 1
+            retrieval_record = RetrievalRecord(
+                model_id=service.model_id,
+                quant=service.quant,
+                backend=service.backend,
+                gpu_name=gpu_name,
+                n_gpu_layers=service.n_gpu_layers or 0,
+                rungs=rungs,
+                digest=retrieval_digest(),
+                harness=RETRIEVAL_HARNESS_VERSION,
+                at=time.time(),
+            )
+            if (
+                retrieval_record.usable_tokens is not None
+                and retrieval_record.degraded_tokens is not None
+            ):
+                usable_rung = next(
+                    (
+                        rung for rung in retrieval_record.rungs
+                        if rung.served_tokens == retrieval_record.usable_tokens
+                    ),
+                    None,
+                )
+                degraded_rung = next(
+                    (
+                        rung for rung in retrieval_record.rungs
+                        if rung.served_tokens == retrieval_record.degraded_tokens
+                    ),
+                    None,
+                )
+                if usable_rung is not None and degraded_rung is not None:
+                    try:
+                        with httpx.Client(timeout=300.0) as client:
+                            chunk_arm = measure_retrieval_chunk_arm(
+                                client,
+                                base_url,
+                                service.model_ref,
+                                doc_words=degraded_rung.words,
+                                chunk_words=usable_rung.words,
+                                chunk_tokens=usable_rung.served_tokens,
+                            )
+                    except httpx.HTTPError as error:
+                        response = getattr(error, "response", None)
+                        status = getattr(response, "status_code", "unknown")
+                        print(
+                            i18n.t(
+                                "err.bench_http",
+                                i18n.lang(),
+                                service=service.name,
+                                url=f"{base_url}/v1/embeddings",
+                                status=status,
+                            ),
+                            file=sys.stderr,
+                        )
+                        return 1
+                    except (OSError, RuntimeError) as error:
+                        print(
+                            i18n.t("err.bench_measure", i18n.lang(), error=error),
+                            file=sys.stderr,
+                        )
+                        return 1
+                    retrieval_record = replace(retrieval_record, chunk=chunk_arm)
+            try:
+                save_retrieval(retrieval_record)
+            except OSError as error:
+                print(
+                    i18n.t("err.bench_save", i18n.lang(), error=error),
+                    file=sys.stderr,
+                )
+                return 1
+        if args.json:
+            output: dict[str, object] = {**asdict(record), "cap": record.cap}
+            if retrieval_record is not None:
+                output["retrieval"] = {
+                    **asdict(retrieval_record),
+                    "control_passed": retrieval_record.control_passed,
+                    "usable_tokens": retrieval_record.usable_tokens,
+                    "degraded_tokens": retrieval_record.degraded_tokens,
+                    "chunk_recovers": retrieval_record.chunk_recovers,
+                    "pool_recovers": retrieval_record.pool_recovers,
+                    "pool_hits": (
+                        retrieval_record.chunk.pool_hits
+                        if retrieval_record.chunk is not None else None
+                    ),
+                    "pool_trials": (
+                        retrieval_record.chunk.pool_trials
+                        if retrieval_record.chunk is not None else None
+                    ),
+                }
+            _print_json(output)
+        else:
+            language = i18n.lang()
+            cap = record.cap if record.cap is not None else "unproven"
+            _console().print(
+                i18n.t(
+                    "label.embed_measurement",
+                    language,
+                    cap=cap,
+                    tps=record.encode_tps,
+                )
+            )
+            if record.cap is not None and record.cap < service.context:
+                _console().print(
+                    i18n.t(
+                        "warn.embed_truncated",
+                        language,
+                        cap=record.cap,
+                    )
+                )
+            if retrieval_record is not None:
+                usable = (
+                    retrieval_record.usable_tokens
+                    if retrieval_record.usable_tokens is not None
+                    else "unproven"
+                )
+                degraded = (
+                    retrieval_record.degraded_tokens
+                    if retrieval_record.degraded_tokens is not None
+                    else "unproven"
+                )
+                rung_lines = "\n".join(
+                    f"{rung.words} words: served={rung.served_tokens} "
+                    f"rank1={rung.hits}/{rung.trials}"
+                    for rung in retrieval_record.rungs
+                )
+                chunk = "unmeasured"
+                if retrieval_record.chunk is not None:
+                    outcome = (
+                        "recovered"
+                        if retrieval_record.chunk_recovers
+                        else "not recovered"
+                    )
+                    chunk = (
+                        f"{outcome} {retrieval_record.chunk.hits}/"
+                        f"{retrieval_record.chunk.trials} at ~"
+                        f"{retrieval_record.chunk.chunk_tokens} tokens"
+                    )
+                pool = "unmeasured"
+                if retrieval_record.chunk is not None:
+                    pool_outcome = (
+                        "recovered"
+                        if retrieval_record.pool_recovers
+                        else "not recovered"
+                    )
+                    pool = (
+                        f"{pool_outcome} {retrieval_record.chunk.pool_hits}/"
+                        f"{retrieval_record.chunk.pool_trials}"
+                    )
+                _console().print(
+                    i18n.t(
+                        "label.retrieval_measurement",
+                        language,
+                        usable=usable,
+                        degraded=degraded,
+                        rungs=rung_lines,
+                        chunk=chunk,
+                        pool=pool,
+                    )
+                )
+                if not retrieval_record.control_passed:
+                    _console().print(
+                        i18n.t("warn.retrieval_control", language)
+                    )
+                if (
+                    retrieval_record.degraded_tokens is not None
+                    and service.context > retrieval_record.degraded_tokens
+                ):
+                    _console().print(
+                        i18n.t(
+                            "warn.retrieval_degraded",
+                            language,
+                            degraded=retrieval_record.degraded_tokens,
+                            context=service.context,
+                        )
+                    )
+        return 0
     context = None if args.no_reference else _reference_context(service)
     history = load_history()
     reference_baseline = (
@@ -1543,6 +1823,20 @@ def _bench(args: argparse.Namespace) -> int:
             passes=args.passes,
             cache_prompt=False if service.backend == "llamacpp" else None,
         )
+    except httpx.HTTPError as error:
+        response = getattr(error, "response", None)
+        status = getattr(response, "status_code", "unknown")
+        print(
+            i18n.t(
+                "err.bench_http",
+                i18n.lang(),
+                service=service.name,
+                url=f"{base_url}/v1/chat/completions",
+                status=status,
+            ),
+            file=sys.stderr,
+        )
+        return 1
     except (OSError, RuntimeError) as error:
         print(i18n.t("err.bench_measure", i18n.lang(), error=error), file=sys.stderr)
         return 1
@@ -3237,6 +3531,94 @@ def _run_prompt(args: argparse.Namespace) -> int:
     return 1
 
 
+def _evidence(args: argparse.Namespace) -> int:
+    payload = collect_evidence()
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    language = i18n.lang()
+    records = payload["records"]
+    assert isinstance(records, list)
+    for kind, title_key in (
+        ("bench", "evidence.bench_title"),
+        ("eval", "evidence.eval_title"),
+        ("depth", "evidence.depth_title"),
+        ("embed", "evidence.embed_title"),
+    ):
+        # Bound value and key-text columns so evidence strings fit at 80 columns.
+        width_options = {
+            "value": {"max_width": 10},
+            "reasons": {"max_width": 16},
+            "remeasure": {"max_width": 11},
+        }
+        fold_columns = {"model", "reasons", "remeasure"}
+        if kind == "depth":
+            # Keep the numeric depth scope and verdict intact at 80 columns.
+            width_options.update({
+                "scope": {"max_width": 21},
+                "value": {"max_width": 8},
+            })
+            fold_columns.update({"scope", "value"})
+        table = Table(title=i18n.t(title_key, language), padding=(0, 0))
+        for column in (
+            "model", "quant", "backend", "scope", "value", "usable",
+            "reasons", "remeasure",
+        ):
+            options = (
+                {
+                    **width_options.get(column, {}),
+                    "overflow": "fold",
+                    "no_wrap": False,
+                }
+                if column in fold_columns
+                else width_options.get(column, {})
+            )
+            table.add_column(
+                i18n.t(f"evidence.column.{column}", language),
+                **options,
+            )
+        seen_reasons: set[str] = set()
+        for row in records:
+            if row["kind"] != kind:
+                continue
+            scope = (
+                row.get("suite", "")
+                if kind == "eval"
+                else (
+                    f"req {row['requested_depth']} / served {row['served_depth']}"
+                    if kind == "depth" else ""
+                )
+            )
+            reasons = row["reasons"]
+            assert isinstance(reasons, list)
+            seen_reasons.update(str(reason) for reason in reasons)
+            value = str(row["value"])
+            if kind == "bench":
+                value = f"{float(row['value']):.1f} tok/s"
+            elif kind == "depth":
+                value = str(row["verdict"]) or "-"
+            table.add_row(
+                str(row["model_id"]),
+                str(row["quant"]),
+                str(row["backend"]),
+                str(scope),
+                value,
+                str(row["usable"]),
+                "\n".join(str(reason) for reason in reasons),
+                str(row["remeasure"]),
+            )
+        _console().print(table)
+        for reason in sorted(seen_reasons):
+            _console().print(
+                f"{reason}: {i18n.t(f'evidence.reason.{reason}', language)}"
+            )
+        if kind == "depth":
+            _console().print(i18n.t("evidence.depth_json_hint", language))
+    if not records:
+        _console().print(i18n.t("evidence.empty", language))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_output()
     parser = argparse.ArgumentParser(prog="nmesh")
@@ -3301,6 +3683,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     bench_parser.add_argument("--passes", type=_positive_int, default=2)
     bench_parser.add_argument("--no-reference", action="store_true")
     bench_parser.add_argument("--json", action="store_true")
+    bench_parser.add_argument(
+        "--retrieval",
+        action="store_true",
+        help="measure retrieval usability (about 430 requests plus about 64 "
+        "chunk requests, roughly 10 minutes)",
+    )
     eval_parser = sub.add_parser("eval")
     eval_parser.add_argument("--service", default="chat")
     eval_parser.add_argument("--json", action="store_true")
@@ -3365,6 +3753,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="per-task request timeout in seconds; default is derived from "
         "the task token budget",
     )
+    evidence_parser = sub.add_parser("evidence")
+    evidence_parser.add_argument("--json", action="store_true")
     logs_parser = sub.add_parser("logs")
     logs_parser.add_argument("service", nargs="?")
     logs_parser.add_argument("--lines", type=_positive_int, default=50)
@@ -3442,6 +3832,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _logs(args)
     if args.command == "eval":
         return _eval(args)
+    if args.command == "evidence":
+        return _evidence(args)
     if args.command == "orchestrate":
         if args.orchestrate_command == "measure":
             return _orchestrate_measure_command(args)
@@ -3457,6 +3849,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         if plan is None or not plan.services:
             return 1
         service = plan.services[0]
+        if service.roles == ["embed"]:
+            print(
+                i18n.t(
+                    "err.bench_embedding",
+                    i18n.lang(),
+                    service=service.name,
+                ),
+                file=sys.stderr,
+            )
+            return 2
         context_values = sorted({max(service.context // 2, 128), service.context})
         layer_values = sorted({service.n_gpu_layers or 0, max((service.n_gpu_layers or 0) // 2, 0)})
         running = runtime_status()

@@ -46,6 +46,7 @@ import random
 import re
 import uuid
 from collections.abc import Sequence
+from functools import lru_cache
 
 from .suite import Task
 
@@ -88,10 +89,30 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _filler(rng: random.Random, minimum_tokens: int, prefix: str) -> list[str]:
+    if _estimate_tokens(prefix) >= minimum_tokens:
+        return []
+    probe_rng = random.Random()
+    probe_rng.setstate(rng.getstate())
     sentences: list[str] = []
-    while _estimate_tokens(f"{prefix}{' '.join(sentences)}") < minimum_tokens:
-        sentences.append(_sentence(rng))
-    return sentences
+    states = [probe_rng.getstate()]
+    lower = 0
+    upper = 256
+    while True:
+        while len(sentences) < upper:
+            sentences.append(_sentence(probe_rng))
+            states.append(probe_rng.getstate())
+        if _estimate_tokens(f"{prefix}{' '.join(sentences)}") >= minimum_tokens:
+            break
+        lower = upper
+        upper *= 2
+    while upper - lower > 1:
+        middle = (lower + upper) // 2
+        if _estimate_tokens(f"{prefix}{' '.join(sentences[:middle])}") >= minimum_tokens:
+            upper = middle
+        else:
+            lower = middle
+    rng.setstate(states[upper])
+    return sentences[:upper]
 
 
 def padded_prompt(prompt: str, target: int, seed: str) -> str:
@@ -280,6 +301,7 @@ def _update_task(target: int, seed: str, index: int) -> Task:
     )
 
 
+@lru_cache(maxsize=32)
 def needle_tasks(target: int, seed: str) -> tuple[Task, ...]:
     """Return paired literal, latent, multi-code, and update probes."""
     positions = (0.1, 0.9)

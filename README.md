@@ -318,6 +318,71 @@ generalize.
 The benchmark uses a nominal 512-token prefill parameter that tokenises to
 roughly 336 real prompt tokens. Served samples deeper than 1024 real prompt
 tokens remain recorded but are not used as planning evidence.
+`nmesh bench` measures decode speed only; embedding services have no decode
+path and must not be selected as the benchmark service.
+Embedding-only services have no decode throughput, so the planner neither gates
+nor ranks them on decode speed; `nmesh plan` displays `—` instead of an estimate.
+On this host, Ollama 0.33.2 silently caps bge-m3 embedding input at 2048 tokens
+regardless of `num_ctx`, while llama.cpp served the full planned window. nmesh
+now measures the served cap, clamps the planned embedding context to it, and
+warns when the backend silently truncates longer inputs; these observations are
+specific to this host, artifact, and Ollama version.
+For a proven cap, the gateway confirms saturation for a single string (or a
+one-element input list) and returns an OpenAI-shaped `context_length_exceeded`
+error when the backend would silently truncate it. Multi-element input lists
+remain a known gap because aggregate usage cannot identify which element was
+truncated; saturated requests receive
+`X-Nmesh-Embedding-Truncation: unverified` instead.
+Served length is not the same as usable retrieval length. On the measured
+llama.cpp b10831 `--embeddings --pooling cls -c 8192 -b 8192 -ub 8192`
+environment with the bge-m3 Q8_0 artifact, the opt-in `--retrieval` ladder
+measured:
+
+```text
+~166 tokens   rank1 4/4
+~320 tokens   rank1 4/4
+~603 tokens   rank1 4/4
+~1177 tokens  rank1 4/4
+~2346 tokens  rank1 7/8
+~2921 tokens  rank1 5/8
+~3512 tokens  rank1 2/8
+~4370 tokens  rank1 1/8
+```
+
+This is one host, one artifact, and one backend/build measurement, not a
+general law about bge-m3. The chunk-remedy confirmation measured:
+
+```text
+whole document        rank1 1/8   ranks=[4,4,2,4,5,6,7,1]
+200-word chunks       rank1 8/8
+200-word, 20% overlap rank1 8/8
+400-word chunks       rank1 8/8
+400-word, 20% overlap rank1 8/8
+800-word chunks       rank1 8/8
+800-word chunks, normalized mean rank1 8/8
+400-word chunks, normalized mean rank1 8/8
+200-word chunks, normalized mean rank1 8/8
+400-word chunks, raw mean         rank1 8/8
+```
+
+Overlap made no difference at these measured sizes. The recommended chunk
+size is the ladder's usable rung (800 words, approximately 1177 served
+tokens in this measurement). The pooled confirmation on the same vectors
+measured 800-, 400-, and 200-word normalized means at rank1 8/8, and a
+400-word raw mean also at 8/8 because this backend returns unit vectors.
+Pooled cosine scores were lower than max-over-chunks scores due to dilution;
+that dilution was not shown to be harmless in general. The planner warns
+rather than clamps when single-vector retrieval degrades, and the gateway
+autochunk remedy is opt-in with `NMESH_EMBED_AUTOCHUNK=1`. It applies only
+where pooled recovery is proven for the matching model, quantization,
+backend, and evidence identity, and uses the measured chunk size. Such
+responses include `X-Nmesh-Embedding-Chunked` and
+`X-Nmesh-Embedding-Chunk-Words`. If the arm does not recover it, chunking is
+not presented as a verified remedy. This evidence remains scoped to one host,
+one artifact, and one backend build.
+`nmesh bench --service <embed-service> --retrieval` is opt-in because it takes
+approximately 430 ladder requests plus approximately 64 chunk requests and
+roughly 10 minutes on the measured host.
 HTTP response bodies remain English because `/v1/*` errors and authentication
 details are machine-facing API contracts for clients.
 
@@ -442,6 +507,19 @@ whole family after one control miss. The controls are a cheap safeguard
 against host incidents, not a new measurement source: 12 product repetitions
 produced 288 unchanged grades. Changing a probe rule changes its digest, so
 older `context.json` records become stale and must be re-measured.
+
+`nmesh evidence` inventories saved benchmark, evaluation, and depth records,
+including the reason codes that make a record unusable and the command needed to
+remeasure it. Benchmark reasons include `harness_mismatch`, `unstable`,
+`epoch_degraded`, and `unconfirmed`; evaluation reasons include `suite_unknown`,
+`grader_digest_mismatch`, `unscorable`, `transport_errors`, and `depth_scoped`;
+depth reasons include `probe_digest_mismatch`, `control_failed`, and
+`depth_lost`; `superseded` marks an older valid record replaced by a newer
+record for the same configuration. Depth values show served depth and each
+probe family's passed/total and control counts; `verified` or `lost` is shown
+only when the existing depth-evidence selection establishes that status. Rows
+that need new evidence point to `nmesh bench`,
+`nmesh eval --suite <suite>`, or `nmesh eval --depth <requested_depth>`.
 
 Further controlled checks scoped those eliminations to `arithmetic.subtract`:
 with the same fully expanded 48-token raw ChatML prompt, `top_k=1`,
