@@ -377,9 +377,20 @@ autochunk remedy is opt-in with `NMESH_EMBED_AUTOCHUNK=1`. It applies only
 where pooled recovery is proven for the matching model, quantization,
 backend, and evidence identity, and uses the measured chunk size. Such
 responses include `X-Nmesh-Embedding-Chunked` and
-`X-Nmesh-Embedding-Chunk-Words`. If the arm does not recover it, chunking is
+`X-Nmesh-Embedding-Chunk-Words`, plus the configured character bound in
+`X-Nmesh-Embedding-Chunk-Chars`. If the arm does not recover it, chunking is
 not presented as a verified remedy. This evidence remains scoped to one host,
 one artifact, and one backend build.
+For non-whitespace-segmented input such as Japanese, Chinese, or Thai, the
+gateway also uses the measured character bound: when the input exceeds
+`chunk_tokens` characters, it splits by characters instead of words. On the
+measured host, `6000 chars ≈ 4540 tokens: 1/8 → 8/8` for Japanese was observed
+with character splitting. This is one host, one artifact, one backend build,
+and one synthetic corpus. English
+word splitting remains primary because it scored 8/8 versus 7/8 for hard
+character splitting; boundary-aware splitting was measured and rejected after
+scoring 6/8. The character path is deliberately language-neutral and does not
+add a tokenizer or probe request.
 `nmesh bench --service <embed-service> --retrieval` is opt-in because it takes
 approximately 430 ladder requests plus approximately 64 chunk requests and
 roughly 10 minutes on the measured host.

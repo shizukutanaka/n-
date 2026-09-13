@@ -382,12 +382,21 @@ def _embedding_autochunk_enabled() -> bool:
     }
 
 
-def _embedding_chunks(value: str, chunk_words: int) -> list[str]:
+def _embedding_chunks(
+    value: str,
+    chunk_words: int,
+    chunk_tokens: int,
+) -> list[str]:
     words = value.split()
+    if len(words) > chunk_words:
+        return [
+            " ".join(words[index:index + chunk_words])
+            for index in range(0, len(words), chunk_words)
+        ]
     return [
-        " ".join(words[index:index + chunk_words])
-        for index in range(0, len(words), chunk_words)
-    ]
+        value[index:index + chunk_tokens]
+        for index in range(0, len(value), chunk_tokens)
+    ] or [value]
 
 
 def _base_url(service: PlannedService) -> str:
@@ -1285,6 +1294,7 @@ def create_app(
             autochunk_used = False
             autochunk_piece_count: int | None = None
             autochunk_chunk_words: int | None = None
+            autochunk_chunk_tokens: int | None = None
             input_value = request.get("input")
             input_values: list[str] | None = None
             if isinstance(input_value, str):
@@ -1297,8 +1307,15 @@ def create_app(
             if chunk_plan is not None and input_values:
                 piece_groups = [
                     (
-                        _embedding_chunks(item, chunk_plan.chunk_words)
-                        if len(item.split()) > chunk_plan.chunk_words
+                        _embedding_chunks(
+                            item,
+                            chunk_plan.chunk_words,
+                            chunk_plan.chunk_tokens,
+                        )
+                        if (
+                            len(item.split()) > chunk_plan.chunk_words
+                            or len(item) > chunk_plan.chunk_tokens
+                        )
                         else [item]
                     )
                     for item in input_values
@@ -1378,6 +1395,7 @@ def create_app(
                         }
                         autochunk_piece_count = total_pieces
                         autochunk_chunk_words = chunk_plan.chunk_words
+                        autochunk_chunk_tokens = chunk_plan.chunk_tokens
                         autochunk_used = True
             if autochunk_data is not None:
                 data = autochunk_data
@@ -1411,10 +1429,12 @@ def create_app(
             autochunk_used
             and autochunk_piece_count is not None
             and autochunk_chunk_words is not None
+            and autochunk_chunk_tokens is not None
         ):
             embedding_chunk_headers = {
                 "X-Nmesh-Embedding-Chunked": str(autochunk_piece_count),
                 "X-Nmesh-Embedding-Chunk-Words": str(autochunk_chunk_words),
+                "X-Nmesh-Embedding-Chunk-Chars": str(autochunk_chunk_tokens),
             }
         skip_embedding_guard = autochunk_used
         if embedding_cap is not None and isinstance(data, dict) and not skip_embedding_guard:
