@@ -1155,6 +1155,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
             warning_args = {
                 "degraded": limit.degraded_tokens,
                 "chunk": limit.chunk_tokens,
+                "chunk_chars": limit.chunk_tokens,
                 "hits": limit.chunk_hits,
                 "trials": limit.chunk_trials,
                 "pool_hits": limit.pool_hits,

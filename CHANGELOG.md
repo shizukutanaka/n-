@@ -2,6 +2,7 @@
 
 ## 未リリース
 
+- Add character-bound gateway auto-chunking for non-whitespace text.
 - Add pooled retrieval evidence and opt-in gateway auto-chunking.
 - `nmesh bench --retrieval` records single-vector retrieval usability; the planner warns rather than clamps when recall degrades and recommends chunking long inputs.
 - Retrieval evidence now confirms whether chunking at the measured usable length restores rank-1 retrieval before recommending it.

@@ -353,9 +353,13 @@ def test_planner_selects_chunk_retrieval_warning_messages() -> None:
         },
     )
     assert any("recovers 8/8" in warning for warning in recovered.warnings)
+    assert any("512 characters as a conservative bound" in warning
+               for warning in recovered.warnings)
     assert any("fold" in warning and "NMESH_EMBED_AUTOCHUNK=1" in warning
                for warning in recovered.warnings)
     assert any("client-side" in warning and "will not autochunk" in warning
+               for warning in failed.warnings)
+    assert any("512 characters as a conservative bound" in warning
                for warning in failed.warnings)
     assert any("not a verified remedy" in warning for warning in failed.warnings)
     assert any("Chunk long inputs" in warning for warning in unmeasured.warnings)
