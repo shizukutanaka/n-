@@ -146,6 +146,61 @@ MESSAGES = {
         "err.gateway_not_ready": "gateway did not become ready; see {path}",
         "err.bench_up": "Service is not running; run nmesh up first.",
         "err.bench_measure": "Benchmark failed: {error}",
+        "err.bench_embedding": "Benchmark measures decode speed, but {service} is an embedding service with no decode path; choose a decode service such as --service chat.",
+        "err.bench_http": "Benchmark request for {service} failed at {url} with HTTP status {status}.",
+        "label.embed_measurement": (
+            "Embedding served cap: {cap} tokens; encode throughput: {tps:.1f} tok/s."
+        ),
+        "warn.embed_truncated": (
+            "Inputs longer than {cap} tokens are silently truncated by the backend."
+        ),
+        "label.retrieval_measurement": (
+            "Retrieval usability: usable through {usable} tokens; "
+            "degraded beyond {degraded} tokens.\n{rungs}\n"
+            "Chunk recovery: {chunk}\n"
+            "Pooled single vector: {pool}"
+        ),
+        "warn.retrieval_control": (
+            "The retrieval control rung failed, so this run proves nothing "
+            "about usable length."
+        ),
+        "warn.retrieval_degraded": (
+            "Single-vector retrieval degraded beyond {degraded} tokens while "
+            "the service plans context {context}. This is a single-host, "
+            "single-artifact measurement; chunk long inputs instead of "
+            "raising context."
+        ),
+        "warn.embed_retrieval_degraded": (
+            "{model} at {quant} on {backend}: the backend serves planned "
+            "context {context}, but single-vector rank-1 retrieval was "
+            "measured at <=50% beyond {degraded} tokens on this host. "
+            "Chunk long inputs instead of raising context."
+        ),
+        "warn.embed_retrieval_recovered": (
+            "{model} at {quant} on {backend}: single-vector retrieval degraded "
+            "beyond {degraded} tokens, but measured chunking recovers {hits}/{trials} "
+            "at about {chunk} tokens on this host; split long inputs accordingly."
+        ),
+        "warn.embed_retrieval_pooled": (
+            "{model} at {quant} on {backend}: single-vector retrieval degraded "
+            "beyond {degraded} tokens, but measured chunking recovers {hits}/{trials} "
+            "at about {chunk} tokens; the gateway can fold the pieces into one "
+            "vector with measured pooled recovery {pool_hits}/{pool_trials} on "
+            "this host. Set NMESH_EMBED_AUTOCHUNK=1 to opt in."
+        ),
+        "warn.embed_retrieval_client": (
+            "{model} at {quant} on {backend}: client-side chunking recovers "
+            "{hits}/{trials} at about {chunk} tokens, but folding the pieces into "
+            "one vector did not recover retrieval here. Chunking is not a "
+            "verified remedy through the gateway; it will not autochunk, so "
+            "chunk inputs in the client."
+        ),
+        "warn.embed_retrieval_unrecovered": (
+            "{model} at {quant} on {backend}: single-vector retrieval degraded "
+            "beyond {degraded} tokens, and chunking to the measured usable length "
+            "did not restore retrieval here. Chunking is not a verified remedy "
+            "on this host."
+        ),
         "err.spec_draft_required": "--draft is required when --kind draft is used.",
         "err.spec_repeats": "--repeats must be at least 3.",
         "err.spec_no_generative_service": "No generative service (chat, code, or worker) is available for speculation measurement.",
@@ -241,6 +296,14 @@ MESSAGES = {
             "control but only {passed}/{of} at {depth} real prompt tokens — this "
             "is a measured depth failure, not task difficulty."
         ),
+        "warn.embed_context_capped": (
+            "{model} at {quant} on {backend}: embedding served context is capped "
+            "at {cap} tokens, so planned context {context} is reduced."
+        ),
+        "warn.embed_context_unverified": (
+            "{model} at {quant} on {backend}: embedding served context is "
+            "unverified; run {command}."
+        ),
         "warn.context_depth_broken": (
             "{model} at {quant} on {backend}: context probes that passed the "
             "shallow control failed at {depth} real prompt tokens, so the planned "
@@ -256,6 +319,35 @@ MESSAGES = {
         "warn.eval_stale_grader": "{model} at {quant} on {backend}, suite {suite}: this record was graded by a different rule version and is not used for planning.",
         "warn.eval_unscorable": "{count} of {tasks} tasks returned no answer text before the output budget ran out (finish_reason=length with empty content), so this run measures the budget, not the model, and is not used as planning evidence. Measured here: gemma-4-26B-A4B returned empty content on all 104 tasks at the suite budget and answered correctly at 512 tokens. Current reasoning allowance: {allowance} tokens; raise it with `nmesh eval --reasoning-allowance N`.",
         "warn.eval_transport": "{count} tasks failed to answer at the transport level (timeout or HTTP error); those are host failures, not wrong answers, so this run is recorded but not used as quality evidence.",
+        "evidence.bench_title": "Saved benchmark evidence",
+        "evidence.eval_title": "Saved evaluation evidence",
+        "evidence.depth_title": "Saved depth evidence",
+        "evidence.embed_title": "Saved embedding evidence",
+        "evidence.depth_json_hint": "Depth family details are available in nmesh evidence --json.",
+        "evidence.empty": "No saved evidence.",
+        "evidence.column.kind": "Kind",
+        "evidence.column.model": "Model",
+        "evidence.column.quant": "Quant",
+        "evidence.column.backend": "Backend",
+        "evidence.column.scope": "Scope",
+        "evidence.column.value": "Value",
+        "evidence.column.usable": "Usable",
+        "evidence.column.reasons": "Reasons",
+        "evidence.column.remeasure": "Remeasure",
+        "evidence.reason.harness_mismatch": "stored under an older benchmark harness",
+        "evidence.reason.cap_unproven": "two different probe sizes did not prove a served cap",
+        "evidence.reason.unstable": "the controlled benchmark was unstable",
+        "evidence.reason.epoch_degraded": "the benchmark was measured on a degraded host epoch",
+        "evidence.reason.unconfirmed": "fewer than two confirming benchmark sessions exist",
+        "evidence.reason.suite_unknown": "the stored evaluation suite is not known",
+        "evidence.reason.grader_digest_mismatch": "the stored evaluation uses stale grading rules",
+        "evidence.reason.unscorable": "some evaluation tasks had no scorable answer",
+        "evidence.reason.transport_errors": "some evaluation tasks failed at transport level",
+        "evidence.reason.depth_scoped": "deep evaluation is not used for shallow planner comparison",
+        "evidence.reason.probe_digest_mismatch": "the stored depth probe rules are stale",
+        "evidence.reason.control_failed": "the shallow control did not establish attributable depth evidence",
+        "evidence.reason.depth_lost": "the deep probe lost an attributable task family",
+        "evidence.reason.superseded": "a newer valid record for the same configuration is used",
         "label.eval_category": "Category",
         "label.eval_passed": "Passed",
         "label.eval_total": "Total",
@@ -412,6 +504,10 @@ MESSAGES = {
         "err.gateway_unavailable": "ゲートウェイを利用できません: {error}",
         "err.bench_up": "サービスが起動していません。先にnmesh upを実行してください。",
         "err.bench_measure": "ベンチマークに失敗しました: {error}",
+        "err.bench_embedding": "ベンチマークはデコード速度を測定しますが、{service}は埋め込みサービスでデコード経路がありません。--service chatなどデコード可能なサービスを指定してください。",
+        "err.bench_http": "{service}のベンチマーク要求が{url}でHTTPステータス{status}に失敗しました。",
+        "label.embed_measurement": "埋め込みの実測上限: {cap} トークン、エンコード速度: {tps:.1f} tok/s。",
+        "warn.embed_truncated": "{cap} トークンを超える入力はバックエンドで静かに切り詰められます。",
         "err.spec_draft_required": "--kind draft では --draft が必要です。",
         "err.spec_repeats": "--repeats は 3 以上で指定してください。",
         "err.spec_no_generative_service": "投機的デコードの測定に使える生成サービス（chat、code、worker）がありません。",
@@ -481,6 +577,47 @@ MESSAGES = {
         "err.autotune_winning": "最適設定の復元に失敗しました: {error}",
         "label.vram_source": "VRAM の情報源",
         "label.gateway_log": "ゲートウェイログ: {path}",
+        "warn.embed_context_capped": "{model} の {quant} / {backend} で、埋め込みの実測文脈は {cap} トークンが上限のため、計画文脈 {context} を短縮します。",
+        "warn.embed_context_unverified": "{model} の {quant} / {backend} で、埋め込みの実測文脈は未確認です。{command}を実行してください。",
+        "label.retrieval_measurement": (
+            "検索の有用性: {usable} トークンまで有用、{degraded} トークンを超えると劣化。\n{rungs}"
+            "\nチャンク回復: {chunk}"
+            "\nプール済み単一ベクトル: {pool}"
+        ),
+        "warn.retrieval_control": (
+            "検索の制御ランが失敗したため、この実行から長さについては何も証明できません。"
+        ),
+        "warn.retrieval_degraded": (
+            "単一ベクトル検索は {degraded} トークンを超えると劣化しましたが、サービスは"
+            "コンテキスト {context} を計画しています。これは単一ホスト・単一アーティファクトの測定です。"
+            "コンテキストを増やさず、長い入力を分割してください。"
+        ),
+        "warn.embed_retrieval_recovered": (
+            "{model} の {quant} / {backend}: {degraded} トークンを超えると検索は劣化しますが、"
+            "このホストでは約 {chunk} トークンへの分割で {hits}/{trials} の回復を実測しました。"
+        ),
+        "warn.embed_retrieval_pooled": (
+            "{model} の {quant} / {backend}: {degraded} トークンを超えると検索は劣化しますが、"
+            "約 {chunk} トークンへの分割で {hits}/{trials} を回復しました。ゲートウェイはこのホストで"
+            "プール済み回復 {pool_hits}/{pool_trials} の単一ベクトルにまとめられます。"
+            "NMESH_EMBED_AUTOCHUNK=1 で有効化できます。"
+        ),
+        "warn.embed_retrieval_client": (
+            "{model} の {quant} / {backend}: クライアント側の分割では約 {chunk} トークンで"
+            "{hits}/{trials} を回復しましたが、単一ベクトルへの統合では回復しませんでした。"
+            "ゲートウェイは自動分割せず、クライアント側で入力を分割してください。"
+        ),
+        "warn.embed_retrieval_unrecovered": (
+            "{model} の {quant} / {backend}: {degraded} トークンを超えると検索は劣化し、"
+            "測定した有用長への分割でも回復しませんでした。このホストでは分割を対策として検証できません。"
+        ),
+        "warn.embed_retrieval_degraded": (
+            "{model} の {quant} / {backend}: バックエンドは計画コンテキスト {context} トークンを提供しますが、"
+            "このホストで単一ベクトルの rank-1 検索は {degraded} トークンを超えると 50% 以下になりました。"
+            "コンテキストを増やさず、長い入力を分割してください。"
+        ),
+        "evidence.embed_title": "埋め込み証拠",
+        "evidence.reason.cap_unproven": "異なる2つのプローブサイズで実際の上限を確認できませんでした",
     },
 }
 
@@ -568,6 +705,33 @@ MESSAGES["ja"].update({
     "note.eval_divergence": "{config}: \u305d\u306e\u69cb\u6210\u306e\u5408\u683c\u7387\u306f {other_rate}\u3001\u3053\u3061\u3089\u306f {rate} \u3067\u3059\u3002\u6bd4\u8f03\u3057\u305f {compared}\u554f\u306e\u3046\u3061 {count}\u554f\u3067\u5224\u5b9a\u304c\u98df\u3044\u9055\u3044\u307e\u3057\u305f\uff08{ids}\uff09\u3002\u5b9f\u6e2c\u3067\u306f Qwen2.5 0.5B \u306e\u540c\u3058 fp16 \u69cb\u6210\u304c\u4e21\u65b9\u3068\u3082 9/16 \u3067\u3042\u308a\u306a\u304c\u3089 2\u554f\u3067\u9006\u65b9\u5411\u306b\u98df\u3044\u9055\u3044\u3001\u5408\u683c\u7387\u304c\u540c\u3058\u3067\u3082\u6319\u52d5\u304c\u540c\u7b49\u3068\u306f\u9650\u308a\u307e\u305b\u3093\u3002",
     "warn.eval_unscorable": "{tasks}\u554f\u306e\u3046\u3061 {count}\u554f\u304c\u3001\u51fa\u529b\u4e88\u7b97\u3092\u4f7f\u3044\u5207\u308b\u307e\u3067\u306b\u56de\u7b54\u672c\u6587\u3092\u8fd4\u3057\u307e\u305b\u3093\u3067\u3057\u305f\uff08finish_reason=length \u3067 content \u304c\u7a7a\uff09\u3002\u3053\u306e\u5b9f\u884c\u306f\u30e2\u30c7\u30eb\u3067\u306a\u304f\u4e88\u7b97\u3092\u6e2c\u3063\u3066\u3044\u308b\u306e\u3067\u3001\u8a08\u753b\u306e\u6839\u62e0\u306b\u306f\u4f7f\u3044\u307e\u305b\u3093\u3002\u5b9f\u6e2c: gemma-4-26B-A4B \u306f\u30b9\u30a4\u30fc\u30c8\u4e88\u7b97\u3067 104\u554f\u5168\u3066\u304c\u7a7a\u3001512\u30c8\u30fc\u30af\u30f3\u3067\u306f\u6b63\u3057\u304f\u7b54\u3048\u307e\u3057\u305f\u3002\u73fe\u5728\u306e allowance: {allowance} \u30c8\u30fc\u30af\u30f3\u3002`nmesh eval --reasoning-allowance N` \u3067\u5897\u3084\u305b\u307e\u3059\u3002",
     "warn.eval_transport": "{count} \u4ef6\u306e\u30bf\u30b9\u30af\u304c\u8ee2\u9001\u30ec\u30d9\u30eb\uff08\u30bf\u30a4\u30e0\u30a2\u30a6\u30c8\u307e\u305f\u306fHTTP\u30a8\u30e9\u30fc\uff09\u3067\u5fdc\u7b54\u3057\u307e\u305b\u3093\u3067\u3057\u305f\u3002\u3053\u308c\u306f\u30e2\u30c7\u30eb\u306e\u8aa4\u7b54\u3067\u306f\u306a\u304f\u30db\u30b9\u30c8\u5074\u306e\u5931\u6557\u306a\u306e\u3067\u3001\u3053\u306e\u5b9f\u884c\u306f\u8a18\u9332\u3057\u307e\u3059\u304c\u54c1\u8cea\u306e\u8a3c\u62e0\u306b\u306f\u4f7f\u3044\u307e\u305b\u3093\u3002",
+    "evidence.bench_title": "保存済みベンチマーク証拠",
+    "evidence.eval_title": "保存済み評価証拠",
+    "evidence.depth_title": "保存済み深度証拠",
+    "evidence.depth_json_hint": "深度の系統内訳は nmesh evidence --json で確認できます。",
+    "evidence.empty": "保存済み証拠はありません。",
+    "evidence.column.kind": "種別",
+    "evidence.column.model": "モデル",
+    "evidence.column.quant": "量子化",
+    "evidence.column.backend": "バックエンド",
+    "evidence.column.scope": "範囲",
+    "evidence.column.value": "値",
+    "evidence.column.usable": "使用可",
+    "evidence.column.reasons": "理由",
+    "evidence.column.remeasure": "再測定",
+    "evidence.reason.harness_mismatch": "旧 benchmark harness で保存された記録です",
+    "evidence.reason.unstable": "統制ベンチマークが安定しませんでした",
+    "evidence.reason.epoch_degraded": "劣化したホストエポックで測定された記録です",
+    "evidence.reason.unconfirmed": "確認用のベンチマークセッションが2回未満です",
+    "evidence.reason.suite_unknown": "保存された評価 suite は不明です",
+    "evidence.reason.grader_digest_mismatch": "古い採点規則で保存された評価です",
+    "evidence.reason.unscorable": "採点可能な回答がない評価タスクがあります",
+    "evidence.reason.transport_errors": "転送レベルで失敗した評価タスクがあります",
+    "evidence.reason.depth_scoped": "深い評価は浅いプランナー比較には使いません",
+    "evidence.reason.probe_digest_mismatch": "古いプローブ規則で保存された深度記録です",
+    "evidence.reason.control_failed": "浅い制御が深度証拠の帰属を確立しませんでした",
+    "evidence.reason.depth_lost": "帰属可能なタスクファミリーが深度測定で失敗しました",
+    "evidence.reason.superseded": "同じ構成のより新しい有効な記録を使用しています",
     "warn.eval_artifact_changed": "{model} \u306e {quant} \u3092 {backend} \u3067\u5b9f\u884c\u3057\u305f\u7d50\u679c\u306e\u30ad\u30e3\u30c3\u30b7\u30e5\u6e08\u307f\u5408\u683c\u7387\u306f\u6210\u679c\u7269 {previous} \u3067\u6e2c\u5b9a\u3055\u308c\u307e\u3057\u305f\u304c\u3001\u73fe\u5728\u306e\u30b5\u30fc\u30d3\u30b9\u306f {current} \u3092\u8aad\u307f\u8fbc\u3093\u3067\u3044\u307e\u3059\u3002\u540c\u3058\u30e2\u30c7\u30eb\u3068\u91cf\u5b50\u5316\u30e9\u30d9\u30eb\u304c\u7570\u306a\u308b\u91cd\u307f\u30d5\u30a1\u30a4\u30eb\u3092\u6307\u3057\u5f97\u308b\u305f\u3081\u3001\u305d\u306e\u5408\u683c\u7387\u306f\u3053\u306e\u6210\u679c\u7269\u3092\u8aac\u660e\u3057\u307e\u305b\u3093\u3002",
     "warn.eval_stale_grader": "{model} \u306e {quant} \u3092 {backend} \u3067\u5b9f\u884c\u3057\u305f suite {suite} \u306e\u8a18\u9332\u306f\u3001\u7570\u306a\u308b\u8a55\u4fa1\u30eb\u30fc\u30eb\u30d0\u30fc\u30b8\u30e7\u30f3\u3067\u5224\u5b9a\u3055\u308c\u305f\u305f\u3081\u3001\u8a08\u753b\u306b\u306f\u4f7f\u7528\u3057\u307e\u305b\u3093\u3002",
     "note.watch_external_claim": "\u5916\u90e8\u6295\u7a3f\u306f\u8a3c\u62e0\u3067\u306f\u306a\u304f\u53c2\u7167\u5148\u3067\u3059\u3002\u767a\u898b\u306f\u691c\u7d22\u53ef\u80fd\u306a\u6839\u62e0\u3067\u78ba\u8a8d\u3057\u307e\u3059\u3002",

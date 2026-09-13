@@ -330,6 +330,53 @@ def test_unmeasured_models_require_explicit_selection() -> None:
     assert candidate.score == pytest.approx(expected)
 
 
+def test_embedding_candidates_ignore_decode_threshold_and_speed(monkeypatch) -> None:
+    model = ModelSpec(
+        "embed-only", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["embed"], 80.0, "apache", {"hf_gguf": "org/embed-only"},
+    )
+    monkeypatch.setattr(planner_core, "_throughput", lambda *_args: 0.1)
+    monkeypatch.setattr(
+        planner_core, "_bench_value",
+        lambda *_args, **_kwargs: pytest.fail("embed candidates must not read benchmarks"),
+    )
+    excluded: list[dict[str, str]] = []
+    unconfirmed: list[dict[str, str]] = []
+    candidates = planner_core._candidate_for(
+        model,
+        profile(64),
+        Policy(roles=["embed"], min_decode_tps=8.0, prefer="speed"),
+        {},
+        excluded=excluded,
+        unconfirmed=unconfirmed,
+    )
+    assert candidates
+    candidate = candidates[0]
+    assert candidate.decode_tps == 0.0
+    assert candidate.decode_applicable is False
+    assert candidate.score == pytest.approx(
+        (80.0 - planner_core.QUANT_PENALTY[candidate.quant]) * 0.5
+    )
+    assert excluded == []
+    assert unconfirmed == []
+
+
+def test_embedding_plan_decode_tps_round_trip(tmp_path) -> None:
+    model = ModelSpec(
+        "embed-only", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["embed"], 80.0, "apache", {"hf_gguf": "org/embed-only"},
+    )
+    plan = build_plan(profile(64), [model], Policy(roles=["embed"]))
+    assert plan.services[0].decode_tps is None
+    path = tmp_path / "embed-plan.json"
+    save_plan(plan, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["services"][0]["decode_tps"] is None
+    loaded = load_plan(path)
+    assert loaded is not None
+    assert loaded.services[0].decode_tps is None
+
+
 def test_explicit_models_restrict_roles_and_warn_for_unknown() -> None:
     selected = ModelSpec(
         "selected", "test", 500_000_000, 24, 16, 2, 64, 1024,
@@ -725,6 +772,39 @@ def test_embedding_has_activation_memory_not_kv(catalog: list[ModelSpec]) -> Non
     assert service.memory.compute_overhead > 0.06 * service.memory.weight_bytes + 320 * 1024**2
 
 
+def test_embedding_cap_rechecks_backend_after_layer_change(monkeypatch) -> None:
+    model = ModelSpec(
+        "embed-recheck", "test", 500_000_000, 8, 16, 2, 64, 1024,
+        4096, ["embed"], 80.0, "apache",
+        {"hf_gguf": "org/embed-recheck", "ollama": "org/embed-recheck"},
+    )
+    machine = profile(32, (24,))
+    solve_calls: list[int] = []
+
+    def solve(memory, n_layers):
+        solve_calls.append(n_layers if len(solve_calls) == 0 else 0)
+        return n_layers if len(solve_calls) == 1 else 0
+
+    monkeypatch.setattr(planner_core, "solve_gpu_layers", solve)
+    monkeypatch.setattr(
+        planner_core,
+        "_backend",
+        lambda _profile, _model, layers: (
+            ("llamacpp", True) if layers else ("ollama", True)
+        ),
+    )
+    caps = {
+        ("embed-recheck", quant, "llamacpp"): 2048
+        for quant in BPW
+    }
+    candidates = planner_core._candidate_for(
+        model, machine, Policy(roles=["embed"]), None,
+        embed_input_caps=caps,
+    )
+    assert solve_calls[:2] == [model.n_layers, 0]
+    assert candidates[0].backend == "ollama"
+
+
 def test_cpu_quality_preference_avoids_tiny_model(catalog: list[ModelSpec]) -> None:
     result = build_plan(profile(32), catalog, Policy(roles=["chat"]))
     assert result.services[0].model_id != "qwen2.5-0.5b-instruct"
@@ -746,7 +826,7 @@ def test_sequential_selection_reserves_prior_service_capacity(tmp_path) -> None:
         _gpu_budget(hardware.gpus[0]) - chat.memory.gpu_bytes, 0.0
     ) + 1
     assert embed.quant != "f16" or embed.n_gpu_layers == 0
-    assert any("capacity-forced tradeoff" in warning for warning in result.warnings)
+    assert not any("capacity-forced tradeoff" in warning for warning in result.warnings)
 
 
 def test_zero_selection_reservation_is_a_noop(catalog: list[ModelSpec]) -> None:
