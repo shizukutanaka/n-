@@ -20,8 +20,13 @@ from nmesh.runtime.supervisor import Supervisor
 from .test_planner import profile
 
 
-def test_gateway_state_is_terminated_and_removed(tmp_path: Path) -> None:
+def test_gateway_state_is_terminated_and_removed(
+    monkeypatch, tmp_path: Path,
+) -> None:
     terminated: list[int] = []
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.gateway_listener_pid", lambda _port: None,
+    )
     supervisor = Supervisor(
         state_path=tmp_path / "state.json",
         terminator=terminated.append,
@@ -31,6 +36,81 @@ def test_gateway_state_is_terminated_and_removed(tmp_path: Path) -> None:
     assert supervisor.down(foreign=True).running is False
     assert terminated == [os.getpid()]
     assert not (tmp_path / "state.json").exists()
+
+
+def test_foreign_down_kills_orphaned_gateway_by_port(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "owner_pid": os.getpid() + 1,
+                "gateway": {"pid": 999999, "port": 18000,
+                            "create_time": 1.0,
+                            "owner_pid": os.getpid() + 1},
+                "services": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.gateway_listener_pid", lambda _port: 4242,
+    )
+    supervisor = Supervisor(state_path=state_path, terminator=terminated.append)
+
+    supervisor.down(foreign=True)
+
+    assert terminated == [4242]
+    assert not state_path.exists()
+
+
+def test_foreign_down_sweeps_orphaned_gateway_without_state_entry(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({"version": 2, "owner_pid": os.getpid() + 1, "services": []}),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.gateway_listener_pid", lambda _port: 4242,
+    )
+    supervisor = Supervisor(state_path=state_path, terminator=terminated.append)
+
+    supervisor.down(foreign=True, gateway_port=18000)
+
+    assert terminated == [4242]
+
+
+def test_foreign_stop_gateway_kills_orphaned_gateway_by_port(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "owner_pid": os.getpid() + 1,
+                "gateway": {"pid": 999999, "port": 18000,
+                            "create_time": 1.0,
+                            "owner_pid": os.getpid() + 1},
+                "services": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.gateway_listener_pid", lambda _port: 4242,
+    )
+    supervisor = Supervisor(state_path=state_path, terminator=terminated.append)
+
+    assert supervisor.stop_gateway(foreign=True) is True
+    assert terminated == [4242]
 
 
 def test_runtime_log_rotation_and_tail(monkeypatch, tmp_path: Path) -> None:
@@ -167,7 +247,9 @@ def test_gateway_non_owner_is_retained(tmp_path: Path) -> None:
     assert "gateway" in json.loads(state_path.read_text(encoding="utf-8"))
 
 
-def test_gateway_creation_mismatch_is_pruned_without_termination(tmp_path: Path) -> None:
+def test_gateway_creation_mismatch_is_pruned_without_termination(
+    monkeypatch, tmp_path: Path,
+) -> None:
     state_path = tmp_path / "state.json"
     state_path.write_text(
         json.dumps(
@@ -186,6 +268,9 @@ def test_gateway_creation_mismatch_is_pruned_without_termination(tmp_path: Path)
         encoding="utf-8",
     )
     terminated: list[int] = []
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.gateway_listener_pid", lambda _port: None,
+    )
     supervisor = Supervisor(state_path=state_path, terminator=terminated.append)
 
     supervisor.down(foreign=True)
@@ -297,6 +382,49 @@ def test_launch_gateway_uses_posix_detachment(monkeypatch, tmp_path: Path) -> No
 
     assert calls[0]["start_new_session"] is True
     assert calls[0]["close_fds"] is True
+
+
+def test_launch_gateway_adopts_healthy_existing_gateway(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    recorded: list[tuple[int, int]] = []
+
+    def popen(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("Popen must not run when a gateway is already healthy")
+
+    monkeypatch.setattr(cli.subprocess, "Popen", popen)
+    monkeypatch.setattr(cli, "gateway_health", lambda _port: True)
+    monkeypatch.setattr(cli, "gateway_listener_pid", lambda _port: 4242)
+    monkeypatch.setattr(
+        cli, "record_gateway", lambda pid, port: recorded.append((pid, port)),
+    )
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+
+    process, log_path = cli._launch_gateway(19000, detach=True)
+
+    assert isinstance(process, cli._AdoptedGateway)
+    assert process.pid == 4242
+    assert log_path is None
+    assert recorded == [(4242, 19000)]
+
+
+def test_launch_gateway_refuses_unknown_port_owner(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    def popen(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("Popen must not run when the port is already served")
+
+    monkeypatch.setattr(cli.subprocess, "Popen", popen)
+    monkeypatch.setattr(cli, "gateway_health", lambda _port: True)
+    monkeypatch.setattr(cli, "gateway_listener_pid", lambda _port: None)
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+
+    try:
+        cli._launch_gateway(19000, detach=True)
+    except OSError as error:
+        assert "19000" in str(error)
+    else:
+        raise AssertionError("expected OSError for an unclaimed healthy port")
 
 
 def test_detached_gateway_timeout_only_stops_owned_runtime(monkeypatch, tmp_path: Path) -> None:

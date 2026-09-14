@@ -20,6 +20,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 
 import httpx
+import psutil
 from rich.console import Console
 from rich.table import Table
 
@@ -149,7 +150,14 @@ from nmesh.planner import (
     save_plan,
 )
 from nmesh.probe import HardwareProfile, detect_hardware, profile_from_dict
-from nmesh.runtime import RuntimeStatus, clear_gateway, disarm_atexit, record_gateway
+from nmesh.runtime import (
+    RuntimeStatus,
+    clear_gateway,
+    disarm_atexit,
+    gateway_health,
+    gateway_listener_pid,
+    record_gateway,
+)
 from nmesh.runtime import down as runtime_down
 from nmesh.runtime import engine as engine_runtime
 from nmesh.runtime import status as runtime_status
@@ -966,7 +974,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 finally:
                     clear_gateway(process.pid)
     elif args.command == "down":
-        result = runtime_down(foreign=True)
+        result = runtime_down(foreign=True, gateway_port=args.port)
     else:
         result = runtime_status()
         gateway = next(
@@ -974,7 +982,7 @@ def _runtime(args: argparse.Namespace) -> int:
             None,
         )
         try:
-            port = int(gateway.get("port", 18000)) if gateway else 18000
+            port = int(gateway.get("port", args.port)) if gateway else args.port
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2):
                 if gateway is None:
                     result.services.append({"service": "gateway", "port": port, "running": True})
@@ -986,7 +994,9 @@ def _runtime(args: argparse.Namespace) -> int:
                     gateway["running"] = True
         except OSError:
             if gateway is None:
-                result.services.append({"service": "gateway", "port": 18000, "running": False})
+                result.services.append(
+                    {"service": "gateway", "port": args.port, "running": False}
+                )
             elif gateway.get("running"):
                 gateway["note"] = "gateway PID is live but its health endpoint is unavailable"
             else:
@@ -1132,7 +1142,45 @@ def _unload(args: argparse.Namespace) -> int:
     return 0
 
 
-def _launch_gateway(port: int, detach: bool) -> tuple[subprocess.Popen[bytes], Path | None]:
+class _AdoptedGateway:
+    """Process-like handle for a gateway that was already serving the port."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+
+    def poll(self) -> int | None:
+        try:
+            return None if psutil.Process(self.pid).is_running() else 0
+        except psutil.Error:
+            return 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        try:
+            psutil.Process(self.pid).wait(timeout=timeout)
+        except psutil.TimeoutExpired:
+            raise subprocess.TimeoutExpired(self.pid, timeout) from None
+        except psutil.Error:
+            pass
+        return 0
+
+    def terminate(self) -> None:
+        try:
+            psutil.Process(self.pid).terminate()
+        except psutil.Error:
+            pass
+
+
+def _launch_gateway(
+    port: int, detach: bool,
+) -> tuple[subprocess.Popen[bytes] | _AdoptedGateway, Path | None]:
+    if gateway_health(port):
+        adopted = gateway_listener_pid(port)
+        if adopted is None:
+            raise OSError(
+                f"port {port} already answers /health but no nmesh gateway owns it"
+            )
+        record_gateway(adopted, port)
+        return _AdoptedGateway(adopted), None
     command = [sys.executable, "-m", "nmesh.gateway.server", "--port", str(port)]
     kwargs: dict[str, object] = {}
     log_path: Path | None = None
@@ -3756,6 +3804,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     for name in ("status", "down"):
         item = sub.add_parser(name)
         item.add_argument("--json", action="store_true")
+        item.add_argument("--port", type=int, default=18000)
     run_parser = sub.add_parser("run")
     run_parser.add_argument("prompt")
     run_parser.add_argument("--role", default="chat")

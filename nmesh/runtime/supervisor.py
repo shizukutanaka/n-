@@ -79,6 +79,34 @@ class ProcessLike(Protocol):
     def wait(self, timeout: float | None = None) -> int: ...
 
 
+def gateway_listener_pid(port: int) -> int | None:
+    """Return the pid of the nmesh gateway listening on *port*, if any."""
+    try:
+        connections = psutil.net_connections(kind="tcp")
+    except (psutil.Error, OSError):
+        return None
+    for connection in connections:
+        if (
+            connection.laddr
+            and connection.laddr.port == port
+            and connection.status == "LISTEN"
+            and connection.pid is not None
+        ):
+            try:
+                cmdline = psutil.Process(connection.pid).cmdline()
+            except (psutil.Error, OSError):
+                continue
+            if any("nmesh.gateway" in part for part in cmdline):
+                return connection.pid
+    return None
+
+
+def gateway_health(port: int) -> bool:
+    """Return True when an nmesh gateway answers /health on *port*."""
+    return Supervisor._health_url_alive(f"http://127.0.0.1:{port}/health")
+
+
+
 class Launcher(Protocol):
     def __call__(self, service: PlannedService) -> ProcessLike: ...
 
@@ -244,6 +272,16 @@ class Supervisor:
                 live = False
             if live:
                 self._terminator(int(pid))
+            elif foreign:
+                port = gateway.get("port")
+                orphan = (
+                    gateway_listener_pid(port)
+                    if isinstance(port, int) and not isinstance(port, bool)
+                    else None
+                )
+                if orphan is not None:
+                    self._terminator(orphan)
+                    live = True
             state.pop("gateway", None)
             if state.get("services"):
                 self._write_state(state)
@@ -856,8 +894,32 @@ class Supervisor:
                     current = self._fallback(current, attempt)
             raise RuntimeError(i18n.t("err.runtime_start", i18n.lang()))
 
-    def down(self, foreign: bool = False) -> RuntimeStatus:
+    def down(self, foreign: bool = False, gateway_port: int | None = None) -> RuntimeStatus:
+        swept: int | None = None
         with self._lock:
+            state = self._load_state()
+            if state is not None:
+                gateway = state.get("gateway")
+                if isinstance(gateway, dict):
+                    recorded_port = gateway.get("port")
+                    if (
+                        gateway_port is None
+                        and isinstance(recorded_port, int)
+                        and not isinstance(recorded_port, bool)
+                    ):
+                        gateway_port = recorded_port
+                    owner = gateway.get("owner_pid", state.get("owner_pid"))
+                    if (
+                        (owner == os.getpid() or foreign)
+                        and self._entry_alive(gateway)
+                        and gateway.get("pid") is not None
+                    ):
+                        self._terminator(int(gateway["pid"]))
+                        swept = int(gateway["pid"])
+            if foreign:
+                # A gateway owns the watchdog that respawns services — kill it
+                # (recorded or orphaned) before touching service processes.
+                self._sweep_gateway(gateway_port, swept)
             adopted_names = set(self.adopted)
             for record in self.adopted.values():
                 pid = record.get("pid")
@@ -883,8 +945,15 @@ class Supervisor:
                             process.kill()
                     else:
                         process.kill()
-            state = self._load_state()
             if state is not None:
+                gateway_retained = False
+                gateway = state.pop("gateway", None)
+                if isinstance(gateway, dict):
+                    owner = gateway.get("owner_pid", state.get("owner_pid"))
+                    if not (owner == os.getpid() or foreign):
+                        gateway_retained = bool(self._entry_alive(gateway))
+                        if gateway_retained:
+                            state["gateway"] = gateway
                 retained: list[dict[str, object]] = []
                 for entry in state.get("services", []):
                     if not isinstance(entry, dict):
@@ -900,23 +969,6 @@ class Supervisor:
                     if self._entry_alive(entry):
                         retained.append(entry)
                 state["services"] = retained
-                gateway = state.get("gateway")
-                gateway_retained = False
-                if isinstance(gateway, dict):
-                    owner = gateway.get("owner_pid", state.get("owner_pid"))
-                    live = self._entry_alive(gateway)
-                    if owner == os.getpid() or foreign:
-                        if live and gateway.get("pid") is not None:
-                            self._terminator(int(gateway["pid"]))
-                        gateway = None
-                    else:
-                        gateway_retained = live
-                    if gateway is None:
-                        state.pop("gateway", None)
-                    elif gateway_retained:
-                        state["gateway"] = gateway
-                    else:
-                        state.pop("gateway", None)
                 if retained or gateway_retained:
                     self._write_state(state)
                 else:
@@ -933,6 +985,14 @@ class Supervisor:
             self.failed.clear()
             self.active_plan = None
         return RuntimeStatus(False, [])
+
+    def _sweep_gateway(self, port: int | None, swept: int | None) -> None:
+        """Terminate an nmesh gateway still listening on *port* that state missed."""
+        if port is None:
+            return
+        orphan = gateway_listener_pid(port)
+        if orphan is not None and orphan != swept:
+            self._terminator(orphan)
 
     def ensure_running(self, service_name: str, plan: Plan | None = None) -> RuntimeStatus:
         with self._lock:
@@ -1285,8 +1345,8 @@ def up(plan: Plan | None = None, no_download: bool = False, dry_run: bool = Fals
     )
 
 
-def down(foreign: bool = False) -> RuntimeStatus:
-    return _default.down(foreign=foreign)
+def down(foreign: bool = False, gateway_port: int | None = None) -> RuntimeStatus:
+    return _default.down(foreign=foreign, gateway_port=gateway_port)
 
 
 def unload(service_name: str) -> bool:
