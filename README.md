@@ -13,7 +13,7 @@ Catalog language lists are publisher/vendor claims, not measured benchmarks.
 ## Quickstart（3 コマンド）
 
 ```text
-pip install "nmesh[gateway]"
+pip install -e ".[gateway]"
 nmesh doctor            # ハードウェアと使えるバックエンドを表示
 nmesh up --detach       # 機械に合うモデルを選んで起動（llama.cpp が無ければ自分で取得）
 # → http://127.0.0.1:18000/v1 が OpenAI 互換で使えます
