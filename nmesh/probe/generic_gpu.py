@@ -143,27 +143,29 @@ def detect_linux_sysfs(root: Path = Path("/sys/class/drm")) -> list[GPUInfo]:
 def _registry_sizes() -> dict[str, int]:
     try:
         import winreg
-        root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _DISPLAY_CLASS)
+        root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, _DISPLAY_CLASS)  # type: ignore[attr-defined]
     except OSError:
         return {}
     result: dict[str, int] = {}
     try:
-        for index in range(winreg.QueryInfoKey(root)[0]):
+        for index in range(winreg.QueryInfoKey(root)[0]):  # type: ignore[attr-defined]
             try:
-                subkey_name = winreg.EnumKey(root, index)
-                subkey = winreg.OpenKey(root, subkey_name)
-                value, _ = winreg.QueryValueEx(subkey, "HardwareInformation.qwMemorySize")
-                pnp, _ = winreg.QueryValueEx(subkey, "MatchingDeviceId")
+                subkey_name = winreg.EnumKey(root, index)  # type: ignore[attr-defined]
+                subkey = winreg.OpenKey(root, subkey_name)  # type: ignore[attr-defined]
+                value, _ = winreg.QueryValueEx(  # type: ignore[attr-defined]
+                    subkey, "HardwareInformation.qwMemorySize"
+                )
+                pnp, _ = winreg.QueryValueEx(subkey, "MatchingDeviceId")  # type: ignore[attr-defined]
                 result[str(pnp)] = _number(value)
                 try:
-                    name, _ = winreg.QueryValueEx(subkey, "DriverDesc")
+                    name, _ = winreg.QueryValueEx(subkey, "DriverDesc")  # type: ignore[attr-defined]
                     result[str(name)] = _number(value)
                 except OSError:
                     pass
             except OSError:
                 continue
     finally:
-        winreg.CloseKey(root)
+        winreg.CloseKey(root)  # type: ignore[attr-defined]
     return result
 
 
