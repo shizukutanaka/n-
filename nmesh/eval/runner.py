@@ -175,7 +175,7 @@ def run(
             )
     if outcomes and transport_errors == len(outcomes):
         raise RuntimeError("all evaluation tasks failed at transport level")
-    passed = sum(outcome.passed for outcome in outcomes)
+    passed_count: int = sum(outcome.passed for outcome in outcomes)
     by_category: dict[str, float] = {}
     for category in dict.fromkeys(outcome.category for outcome in outcomes):
         category_outcomes = [outcome for outcome in outcomes if outcome.category == category]
@@ -187,8 +187,8 @@ def run(
         "",
         "",
         len(outcomes),
-        passed,
-        passed / len(outcomes) if outcomes else 0.0,
+        passed_count,
+        passed_count / len(outcomes) if outcomes else 0.0,
         by_category,
         outcomes,
         time.time(),

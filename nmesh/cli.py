@@ -23,10 +23,11 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
-from nmesh import i18n
+from nmesh import __version__, i18n
 from nmesh.artifact import gguf_info, service_fingerprint
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.bench import (
+    BENCH_HARNESS_VERSION,
     EMBED_HARNESS_VERSION,
     EPOCH_HISTORY,
     MIN_DECODE_TOKENS,
@@ -3679,6 +3680,15 @@ def _evidence(args: argparse.Namespace) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_output()
     parser = argparse.ArgumentParser(prog="nmesh")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=(
+            f"nmesh {__version__} "
+            f"(bench={BENCH_HARNESS_VERSION}, "
+            f"probe_rules={suite_digest(needle_tasks(0, 'core'))})"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", dest="global_dry_run")
     parser.add_argument("--json", action="store_true", dest="global_json")
     sub = parser.add_subparsers(dest="command")

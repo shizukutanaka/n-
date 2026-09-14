@@ -28,5 +28,20 @@ packages = ["nmesh"]
 [tool.ruff]
 line-length = 100
 
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+# Planner has 25 existing errors; nullable/backend/literal fixes may alter runtime behavior.
+module = ["nmesh.planner.*"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+# winreg attributes only exist on Windows; the ignores are needed on other hosts.
+module = ["nmesh.probe.generic_gpu"]
+warn_unused_ignores = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
