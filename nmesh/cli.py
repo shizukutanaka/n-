@@ -439,6 +439,7 @@ def _make_plan(args: argparse.Namespace) -> object:
         eval_depth_lost=eval_depth_lost,
         embed_input_caps=embed_input_caps,
         embed_retrieval_limits=embed_retrieval_limits,
+        embed_measured=_embed_measured_keys(),
     )
 
 
@@ -492,6 +493,30 @@ def _context_depth_maps() -> tuple[
             if value.lost > 0
         },
     )
+
+
+def _embed_refused_tokens(record: EmbedRecord) -> int | None:
+    """Return the smallest probe size the backend refused, if any."""
+    refused = [
+        tokens for tokens, was_refused in (
+            (record.probe_tokens_small, record.refused_small),
+            (record.probe_tokens_large, record.refused_large),
+        )
+        if was_refused
+    ]
+    return min(refused) if refused else None
+
+
+def _embed_measured_keys() -> set[tuple[str, str, str]]:
+    return {
+        (
+            record.model_id.casefold(),
+            record.quant.casefold(),
+            record.backend.casefold(),
+        )
+        for record in load_embed_cache().values()
+        if record.harness == EMBED_HARNESS_VERSION
+    }
 
 
 def _embed_context_caps() -> dict[tuple[str, str, str], int]:
@@ -880,6 +905,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 eval_depth_lost=eval_depth_lost,
                 embed_input_caps=embed_input_caps,
                 embed_retrieval_limits=embed_retrieval_limits,
+                embed_measured=_embed_measured_keys(),
             )
             save_plan(plan)
         cache = {**load_cache(), **bench_overlay()}
@@ -1592,6 +1618,8 @@ def _bench(args: argparse.Namespace) -> int:
             runs=measurement.runs,
             harness=EMBED_HARNESS_VERSION,
             at=time.time(),
+            refused_small=measurement.refused_small,
+            refused_large=measurement.refused_large,
         )
         try:
             save_embed(record)
@@ -1734,6 +1762,15 @@ def _bench(args: argparse.Namespace) -> int:
                         "warn.embed_truncated",
                         language,
                         cap=record.cap,
+                    )
+                )
+            refused_tokens = _embed_refused_tokens(record)
+            if refused_tokens is not None:
+                _console().print(
+                    i18n.t(
+                        "label.embed_refused",
+                        language,
+                        tokens=refused_tokens,
                     )
                 )
             if retrieval_record is not None:

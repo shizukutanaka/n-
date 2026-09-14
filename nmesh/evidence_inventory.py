@@ -205,11 +205,28 @@ def _embed_rows() -> list[dict[str, object]]:
         if record.harness != EMBED_HARNESS_VERSION:
             reasons.append("harness_mismatch")
         if record.cap is None:
-            reasons.append("cap_unproven")
-            value = (
-                f"no cap below {record.probe_tokens_large}; "
-                f"encode={record.encode_tps:.1f} tok/s"
+            refused = min(
+                (
+                    tokens for tokens, was_refused in (
+                        (record.probe_tokens_small, record.refused_small),
+                        (record.probe_tokens_large, record.refused_large),
+                    )
+                    if was_refused
+                ),
+                default=None,
             )
+            if refused is None:
+                reasons.append("cap_unproven")
+                value = (
+                    f"no cap below {record.probe_tokens_large}; "
+                    f"encode={record.encode_tps:.1f} tok/s"
+                )
+            else:
+                reasons.append("input_refused")
+                value = (
+                    f"refused at {refused} tokens, not truncated; "
+                    f"encode={record.encode_tps:.1f} tok/s"
+                )
         else:
             value = f"cap={record.cap} tokens; encode={record.encode_tps:.1f} tok/s"
         rows.append({
@@ -223,7 +240,12 @@ def _embed_rows() -> list[dict[str, object]]:
             "encode_tps": record.encode_tps,
             "usable": record.harness == EMBED_HARNESS_VERSION and record.cap is not None,
             "reasons": reasons,
-            "remeasure": "nmesh bench --service embed",
+            "remeasure": (
+                ""
+                if record.harness == EMBED_HARNESS_VERSION
+                and reasons == ["input_refused"]
+                else "nmesh bench --service embed"
+            ),
         })
     return rows
 

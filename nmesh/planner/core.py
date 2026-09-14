@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1820,6 +1820,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                embed_retrieval_limits: Mapping[
                    tuple[str, str, str], RetrievalLimit
                ] | None = None,
+               embed_measured: Collection[tuple[str, str, str]] | None = None,
                ) -> Plan:
     selected = policy or Policy()
     roles = list(dict.fromkeys(selected.roles))
@@ -2320,7 +2321,18 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                 service.backend.casefold(),
             )
             cap = embed_input_caps.get(key)
-            if cap is None:
+            if cap is not None:
+                continue
+            if embed_measured is not None and key in embed_measured:
+                warnings.append(t(
+                    "note.embed_context_untruncated",
+                    selected.lang,
+                    model=service.model_id,
+                    quant=service.quant,
+                    backend=service.backend,
+                    context=service.context,
+                ))
+            else:
                 warnings.append(t(
                     "warn.embed_context_unverified",
                     selected.lang,

@@ -154,6 +154,10 @@ MESSAGES = {
         "warn.embed_truncated": (
             "Inputs longer than {cap} tokens are silently truncated by the backend."
         ),
+        "label.embed_refused": (
+            "The backend refused a {tokens} token input instead of truncating it, "
+            "so no silent cap follows from that probe."
+        ),
         "label.retrieval_measurement": (
             "Retrieval usability: usable through {usable} tokens; "
             "degraded beyond {degraded} tokens.\n{rungs}\n"
@@ -304,6 +308,11 @@ MESSAGES = {
             "{model} at {quant} on {backend}: embedding served context is "
             "unverified; run {command}."
         ),
+        "note.embed_context_untruncated": (
+            "{model} at {quant} on {backend}: the measurement found no silent "
+            "truncation, so planned context {context} stands; oversize inputs "
+            "are refused rather than shortened."
+        ),
         "warn.context_depth_broken": (
             "{model} at {quant} on {backend}: context probes that passed the "
             "shallow control failed at {depth} real prompt tokens, so the planned "
@@ -336,6 +345,7 @@ MESSAGES = {
         "evidence.column.remeasure": "Remeasure",
         "evidence.reason.harness_mismatch": "stored under an older benchmark harness",
         "evidence.reason.cap_unproven": "two different probe sizes did not prove a served cap",
+        "evidence.reason.input_refused": "the backend refused the oversize probe instead of truncating it",
         "evidence.reason.unstable": "the controlled benchmark was unstable",
         "evidence.reason.epoch_degraded": "the benchmark was measured on a degraded host epoch",
         "evidence.reason.unconfirmed": "fewer than two confirming benchmark sessions exist",
@@ -508,6 +518,7 @@ MESSAGES = {
         "err.bench_http": "{service}のベンチマーク要求が{url}でHTTPステータス{status}に失敗しました。",
         "label.embed_measurement": "埋め込みの実測上限: {cap} トークン、エンコード速度: {tps:.1f} tok/s。",
         "warn.embed_truncated": "{cap} トークンを超える入力はバックエンドで静かに切り詰められます。",
+        "label.embed_refused": "バックエンドは {tokens} トークンの入力を切り詰めずに拒否したため、このプローブから静かな上限は得られません。",
         "err.spec_draft_required": "--kind draft では --draft が必要です。",
         "err.spec_repeats": "--repeats は 3 以上で指定してください。",
         "err.spec_no_generative_service": "投機的デコードの測定に使える生成サービス（chat、code、worker）がありません。",
@@ -579,6 +590,7 @@ MESSAGES = {
         "label.gateway_log": "ゲートウェイログ: {path}",
         "warn.embed_context_capped": "{model} の {quant} / {backend} で、埋め込みの実測文脈は {cap} トークンが上限のため、計画文脈 {context} を短縮します。",
         "warn.embed_context_unverified": "{model} の {quant} / {backend} で、埋め込みの実測文脈は未確認です。{command}を実行してください。",
+        "note.embed_context_untruncated": "{model} の {quant} / {backend} で、静かな切り詰めは測定されませんでした。計画文脈 {context} はそのまま有効で、上限超過の入力は短縮されず拒否されます。",
         "label.retrieval_measurement": (
             "検索の有用性: {usable} トークンまで有用、{degraded} トークンを超えると劣化。\n{rungs}"
             "\nチャンク回復: {chunk}"
@@ -618,6 +630,7 @@ MESSAGES = {
         ),
         "evidence.embed_title": "埋め込み証拠",
         "evidence.reason.cap_unproven": "異なる2つのプローブサイズで実際の上限を確認できませんでした",
+        "evidence.reason.input_refused": "バックエンドが上限超過のプローブを切り詰めずに拒否しました",
     },
 }
 

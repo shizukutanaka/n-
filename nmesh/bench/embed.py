@@ -38,6 +38,8 @@ class EmbedRecord:
     runs: int
     harness: str
     at: float
+    refused_small: bool = False
+    refused_large: bool = False
 
     @property
     def cap(self) -> int | None:
@@ -48,7 +50,12 @@ class EmbedRecord:
         substantially shorter than requested, then taking the smaller served
         count within a small agreement tolerance, prevents a silently
         truncated input from exceeding the proven ceiling.
+
+        A probe the backend refused outright proves the opposite of silent
+        truncation, so no cap follows from it.
         """
+        if self.refused_small or self.refused_large:
+            return None
         if not (
             self.served_small
             < self.probe_tokens_small * EMBED_CAP_TRUNCATION_RATIO
@@ -78,6 +85,8 @@ class EmbedMeasurement:
     encode_tps_max: float
     encode_input_tokens: int
     runs: int
+    refused_small: bool = False
+    refused_large: bool = False
 
 
 def embed_key(
@@ -111,6 +120,13 @@ def _record(data: object) -> EmbedRecord | None:
         encode_input_tokens = data["encode_input_tokens"]
         runs = data["runs"]
         at = data["at"]
+        refused_small = data.get("refused_small", False)
+        refused_large = data.get("refused_large", False)
+        if (
+            not isinstance(refused_small, bool)
+            or not isinstance(refused_large, bool)
+        ):
+            return None
         if (
             not isinstance(model_id, str)
             or not isinstance(quant, str)
@@ -177,6 +193,8 @@ def _record(data: object) -> EmbedRecord | None:
             runs,
             harness,
             float(at),
+            refused_small,
+            refused_large,
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -266,6 +284,25 @@ def _measure_input(
     return tokens, elapsed
 
 
+def _probe_input(
+    client: httpx.Client,
+    url: str,
+    model_ref: str,
+    words: int,
+) -> int | None:
+    """Return served tokens, or None when the backend refuses the input.
+
+    An oversize probe is expected to be refused by backends that enforce a
+    batch limit instead of truncating, and that refusal is the measurement
+    rather than a failure.
+    """
+    try:
+        tokens, _ = _measure_input(client, url, model_ref, words)
+    except httpx.HTTPStatusError:
+        return None
+    return tokens
+
+
 def measure_embedding(
     client: httpx.Client,
     base_url: str,
@@ -288,8 +325,8 @@ def measure_embedding(
     probe_tokens_large = max(1, round(requested_context * 3.0))
     small_words = max(1, math.ceil(probe_tokens_small / tokens_per_word))
     large_words = max(1, math.ceil(probe_tokens_large / tokens_per_word))
-    served_small, _ = _measure_input(client, url, model_ref, small_words)
-    served_large, _ = _measure_input(client, url, model_ref, large_words)
+    probed_small = _probe_input(client, url, model_ref, small_words)
+    probed_large = _probe_input(client, url, model_ref, large_words)
 
     rates: list[float] = []
     served_mid: list[int] = []
@@ -299,12 +336,14 @@ def measure_embedding(
         rates.append(served / elapsed)
     return EmbedMeasurement(
         probe_tokens_small,
-        served_small,
+        probed_small or 0,
         probe_tokens_large,
-        served_large,
+        probed_large or 0,
         statistics.median(rates),
         min(rates),
         max(rates),
         round(statistics.median(served_mid)),
         runs,
+        probed_small is None,
+        probed_large is None,
     )
