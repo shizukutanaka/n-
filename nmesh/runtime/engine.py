@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import os
 import platform
 import re
 import shutil
@@ -347,13 +348,34 @@ def _extract_archive(archive: Path, destination: Path) -> None:
         with tarfile.open(archive, "r:gz") as source:
             members = source.getmembers()
             for member in members:
-                _safe_member(member.name, destination)
-                if member.issym() or member.islnk():
+                target = _safe_member(member.name, destination)
+                if member.islnk():
                     raise ValueError(f"archive link is not allowed: {member.name}")
+                if member.issym():
+                    link = Path(member.linkname)
+                    destination_root = destination.resolve()
+                    link_target = (target.parent / link).resolve()
+                    if (
+                        link.is_absolute()
+                        or ".." in link.parts
+                        or (
+                            link_target != destination_root
+                            and destination_root not in link_target.parents
+                        )
+                    ):
+                        raise ValueError(
+                            f"archive link escapes installation directory: "
+                            f"{member.name} -> {member.linkname}"
+                        )
             for member in members:
                 target = _safe_member(member.name, destination)
                 if member.isdir():
                     target.mkdir(parents=True, exist_ok=True)
+                elif member.issym():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if target.exists() or target.is_symlink():
+                        target.unlink()
+                    os.symlink(member.linkname, target)
                 elif member.isfile():
                     target.parent.mkdir(parents=True, exist_ok=True)
                     input_file = source.extractfile(member)
@@ -361,6 +383,7 @@ def _extract_archive(archive: Path, destination: Path) -> None:
                         raise ValueError(f"unable to read archive member: {member.name}")
                     with input_file, target.open("wb") as output:
                         shutil.copyfileobj(input_file, output)
+                    os.chmod(target, member.mode & 0o777)
         return
     raise ValueError(f"unsupported engine archive: {archive.name}")
 
