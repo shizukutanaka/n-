@@ -27,8 +27,8 @@ from nmesh import __version__, i18n
 from nmesh.artifact import gguf_info, service_fingerprint
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.bench import (
-    EMBED_HARNESS_VERSION,
     BENCH_HARNESS_VERSION,
+    EMBED_HARNESS_VERSION,
     EPOCH_HISTORY,
     MIN_DECODE_TOKENS,
     RETRIEVAL_HARNESS_VERSION,
