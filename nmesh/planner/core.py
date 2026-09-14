@@ -1856,7 +1856,6 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         )
         for index, warning in enumerate(profile.warnings)
     ]
-    warnings.append(t("warn.quality_prior", selected.lang))
     stale_bench_records = sum(
         record.harness != BENCH_HARNESS_VERSION
         for record in (bench_records or {}).values()
@@ -2342,6 +2341,37 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     backend=service.backend,
                     command=f"nmesh bench --service {service.name}",
                 ))
+    decode_services = [
+        service for service in services if not _is_embed_only(service)
+    ]
+    service_rates = {
+        service.name: measured.get((
+            service.model_id.casefold(),
+            service.quant.casefold(),
+            service.backend.casefold(),
+        ))
+        for service in decode_services
+    }
+    measured_rates = [
+        (service, rate) for service, rate in (
+            (service, service_rates[service.name])
+            for service in decode_services
+        )
+        if isinstance(rate, EvalSummary)
+    ]
+    if decode_services and len(measured_rates) == len(decode_services):
+        for service, rate in measured_rates:
+            warnings.append(t(
+                "note.quality_measured_selected",
+                selected.lang,
+                model=service.model_id,
+                quant=service.quant,
+                backend=service.backend,
+                rate=f"{rate.passed}/{rate.n_tasks}",
+                suite=rate.suite,
+            ))
+    else:
+        warnings.append(t("warn.quality_prior", selected.lang))
     for model_id in sorted(selected_unmeasured):
         warnings.append(
             t("warn.quality_unmeasured_selected", selected.lang, model=model_id)
