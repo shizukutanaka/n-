@@ -241,6 +241,45 @@ def test_structural_estimate_never_regresses_below_old_formula(
             )
 
 
+def test_estimate_below_floor_is_excluded_even_with_bench_records(
+    catalog: list[ModelSpec],
+) -> None:
+    large = next(item for item in catalog if item.id == "qwen2.5-32b-instruct")
+    small = next(item for item in catalog if item.id == "qwen2.5-1.5b-instruct")
+    models = [large, small]
+    policy = Policy(roles=["chat"], min_decode_tps=8.0)
+
+    without_records = build_plan(
+        profile(32), models, policy, bench_records=None,
+    )
+    with_records = build_plan(
+        profile(32), models, policy, bench_records={},
+    )
+
+    assert [item.model_id for item in without_records.services] == [
+        item.model_id for item in with_records.services
+    ]
+    assert with_records.services[0].model_id == small.id
+    assert large.id not in {item.model_id for item in with_records.services}
+
+
+def test_measured_unconfirmed_below_floor_is_kept(
+    monkeypatch, catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-1.5b-instruct")
+    monkeypatch.setattr(planner_core, "_bench_value", lambda *_args: 4.0)
+
+    result = build_plan(
+        profile(32),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=8.0),
+        bench_records={},
+    )
+
+    assert result.services[0].model_id == model.id
+    assert any("needs a second agreeing measurement" in warning for warning in result.warnings)
+
+
 def test_metadata_free_models_keep_old_weight_formula() -> None:
     model = ModelSpec(
         "legacy", "test", 123_456_789, 12, 8, 2, 64, 512, 4096,

@@ -779,6 +779,7 @@ def _candidate_for(
             )
             confirmed = (
                 not decode_applicable
+                or bench is None
                 or bench_records is None
                 or (
                     bench_record is not None
