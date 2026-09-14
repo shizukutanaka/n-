@@ -164,6 +164,11 @@ MESSAGES = {
             "The backend refused a {tokens} token input instead of truncating it, "
             "so no silent cap follows from that probe."
         ),
+        "label.retrieval_estimate": (
+            "Retrieval ladder: {requests} embedding requests, measured on "
+            "this host at about {minutes} minutes; the rate scales with the "
+            "measured encode throughput."
+        ),
         "label.retrieval_measurement": (
             "Retrieval usability: usable through {usable} tokens; "
             "degraded beyond {degraded} tokens.\n{rungs}\n"
@@ -610,6 +615,10 @@ MESSAGES = {
         "warn.embed_context_capped": "{model} の {quant} / {backend} で、埋め込みの実測文脈は {cap} トークンが上限のため、計画文脈 {context} を短縮します。",
         "warn.embed_context_unverified": "{model} の {quant} / {backend} で、埋め込みの実測文脈は未確認です。{command}を実行してください。",
         "note.embed_context_untruncated": "{model} の {quant} / {backend} で、静かな切り詰めは測定されませんでした。計画文脈 {context} はそのまま有効で、上限超過の入力は短縮されず拒否されます。",
+        "label.retrieval_estimate": (
+            "検索ラダー: 埋め込みリクエスト {requests} 件、この機の実測レートでは"
+            "およそ {minutes} 分。所要時間は実測のエンコード速度に比例します。"
+        ),
         "label.retrieval_measurement": (
             "検索の有用性: {usable} トークンまで有用、{degraded} トークンを超えると劣化。\n{rungs}"
             "\nチャンク回復: {chunk}"

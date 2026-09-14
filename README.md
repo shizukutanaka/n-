@@ -396,8 +396,12 @@ boundary-aware splitting was measured and rejected at pooled 6/8. The
 character path is deliberately language-neutral and does not add a tokenizer
 or probe request.
 `nmesh bench --service <embed-service> --retrieval` is opt-in because it takes
-approximately 430 ladder requests plus approximately 64 chunk requests and
-roughly 10 minutes on the measured host.
+432 ladder requests (6 rungs × 8 seeds × 8 documents plus a query each) plus
+about 72 chunk-recovery requests, and its wall time scales with this host's
+measured encode
+throughput — the estimate printed before the ladder comes from a calibration
+request on the workload's own text, and on a CPU-only host measured at
+387 tok/s the run took 33 minutes.
 HTTP response bodies remain English because `/v1/*` errors and authentication
 details are machine-facing API contracts for clients.
 
