@@ -266,9 +266,9 @@ def test_launch_gateway_uses_windows_detachment(monkeypatch, tmp_path: Path) -> 
         return FakeProcess()
 
     monkeypatch.setattr(cli.subprocess, "Popen", popen)
-    monkeypatch.setattr(cli.os, "name", "nt")
+    monkeypatch.setattr(cli, "is_windows", lambda: True)
     monkeypatch.setattr(cli, "record_gateway", lambda _pid, _port: None)
-    monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
 
     cli._launch_gateway(19000, detach=True)
 
@@ -289,7 +289,7 @@ def test_launch_gateway_uses_posix_detachment(monkeypatch, tmp_path: Path) -> No
         return FakeProcess()
 
     monkeypatch.setattr(cli.subprocess, "Popen", popen)
-    monkeypatch.setattr(cli.os, "name", "posix")
+    monkeypatch.setattr(cli, "is_windows", lambda: False)
     monkeypatch.setattr(cli, "record_gateway", lambda _pid, _port: None)
     monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
 
@@ -402,6 +402,7 @@ def test_autostart_install_writes_launcher_and_preserves_environment(
 ) -> None:
     monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
     monkeypatch.setattr(service_unit_module, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(cli, "is_windows", lambda: True)
     monkeypatch.setenv("NMESH_API_KEY", "do-not-print")
 
     assert cli.main(["autostart", "--install", "--json"]) == 0
