@@ -13,6 +13,7 @@ from .cache import (
     save_records,
 )
 from .embed import (
+    EMBED_ENCODE_WORDS,
     EMBED_HARNESS_VERSION,
     EmbedMeasurement,
     EmbedRecord,
@@ -53,6 +54,7 @@ from .retrieval import (
     load_retrieval_cache,
     measure_retrieval,
     measure_retrieval_chunk_arm,
+    measure_retrieval_estimate,
     pool_embeddings,
     retrieval_digest,
     retrieval_key,
@@ -68,6 +70,7 @@ from .runner import (
 
 __all__ = [
     "BENCH_HARNESS_VERSION",
+    "EMBED_ENCODE_WORDS",
     "EMBED_HARNESS_VERSION",
     "EPOCH_HISTORY",
     "EPOCH_MIN_RATIO",
@@ -113,6 +116,7 @@ __all__ = [
     "measure_reference",
     "measure_retrieval",
     "measure_retrieval_chunk_arm",
+    "measure_retrieval_estimate",
     "merge_measurement",
     "pool_embeddings",
     "prune_degraded",

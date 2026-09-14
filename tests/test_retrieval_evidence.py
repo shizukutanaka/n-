@@ -15,6 +15,7 @@ from nmesh.bench.retrieval import (
     load_retrieval_cache,
     measure_retrieval,
     measure_retrieval_chunk_arm,
+    measure_retrieval_estimate,
     retrieval_digest,
     save_retrieval,
 )
@@ -91,6 +92,40 @@ def test_measure_retrieval_uses_one_request_per_document_and_query() -> None:
     assert len(requests) == 2 * 2 * (8 + 1)
     assert all(rung.hits == 2 for rung in rungs)
     assert rungs[0].served_tokens < rungs[1].served_tokens
+
+
+def test_measure_retrieval_estimate_counts_requests_and_scales_with_tps(
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        text = json.loads(request.read())["input"]
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"embedding": [1.0, 0.0]}],
+                "usage": {"prompt_tokens": len(str(text).split())},
+            },
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        # One token per word (the mock serves word counts): 2 seeds ×
+        # (8 docs × words + 1 query) at tokens = words.
+        requests, fast = measure_retrieval_estimate(
+            client, "http://test", "embed",
+            encode_tps=50.0, seeds=(11, 23), rung_words=(10, 20),
+        )
+        _, slow = measure_retrieval_estimate(
+            client, "http://test", "embed",
+            encode_tps=25.0, seeds=(11, 23), rung_words=(10, 20),
+        )
+    finally:
+        client.close()
+    assert requests == 2 * 2 * (8 + 1)
+    # tokens ≈ words (the mock serves word counts): workload is
+    # 2 seeds × (8 docs × 10..30 words + 1 query), so halving the
+    # measured encode throughput doubles the estimate (rounding ±1s).
+    assert abs(slow - 2 * fast) <= 1
 
 
 def test_retrieval_control_failure_proves_nothing() -> None:
