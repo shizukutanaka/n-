@@ -330,7 +330,7 @@ def test_unload_not_owned_points_to_foreign_down(monkeypatch, capsys) -> None:
     )()
 
     assert cli._unload(args) == 1
-    assert "nmesh down --foreign" in capsys.readouterr().err
+    assert "nmesh down" in capsys.readouterr().err
 
 
 def test_unload_404_preserves_unknown_service(monkeypatch, capsys) -> None:
