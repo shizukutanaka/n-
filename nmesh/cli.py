@@ -52,6 +52,7 @@ from nmesh.bench import (
     measure_reference,
     measure_retrieval,
     measure_retrieval_chunk_arm,
+    measure_retrieval_estimate,
     merge_measurement,
     prune_degraded,
     reference_id,
@@ -1630,6 +1631,20 @@ def _bench(args: argparse.Namespace) -> int:
         if getattr(args, "retrieval", False):
             try:
                 with httpx.Client(timeout=300.0) as client:
+                    requests, seconds = measure_retrieval_estimate(
+                        client, base_url, service.model_ref,
+                        encode_tps=record.encode_tps,
+                    )
+                    print(i18n.t(
+                        "label.retrieval_estimate",
+                        i18n.lang(),
+                        requests=requests,
+                        minutes=max(1, round(seconds / 60)),
+                    ), file=(
+                        sys.stderr
+                        if getattr(args, "json", False)
+                        else sys.stdout
+                    ))
                     rungs = measure_retrieval(
                         client,
                         base_url,
@@ -3724,8 +3739,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     bench_parser.add_argument(
         "--retrieval",
         action="store_true",
-        help="measure retrieval usability (about 430 requests plus about 64 "
-        "chunk requests, roughly 10 minutes)",
+        help="measure retrieval usability (432 ladder requests plus about 72 "
+        "chunk-arm requests; wall time scales with this host's measured "
+        "encode throughput and is estimated from a calibration request "
+        "before the ladder runs)",
     )
     eval_parser = sub.add_parser("eval")
     eval_parser.add_argument("--service", default="chat")

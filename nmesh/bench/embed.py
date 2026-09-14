@@ -17,6 +17,7 @@ EMBED_HARNESS_VERSION = "embed-v1"
 EMBED_CAP_TRUNCATION_RATIO = 0.9
 EMBED_CAP_AGREEMENT_TOKENS = 2
 EMBED_CAP_AGREEMENT_RATIO = 0.01
+EMBED_ENCODE_WORDS = 512
 
 
 @dataclass(frozen=True)
@@ -331,7 +332,9 @@ def measure_embedding(
     rates: list[float] = []
     served_mid: list[int] = []
     for _ in range(runs):
-        served, elapsed = _measure_input(client, url, model_ref, 512)
+        served, elapsed = _measure_input(
+            client, url, model_ref, EMBED_ENCODE_WORDS
+        )
         served_mid.append(served)
         rates.append(served / elapsed)
     return EmbedMeasurement(

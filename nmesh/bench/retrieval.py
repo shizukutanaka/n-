@@ -33,6 +33,42 @@ _NEEDLE = "The Meridian archive access protocol uses code {code} ."
 _QUESTION = "What is the code for the Meridian archive access protocol?"
 
 
+def measure_retrieval_estimate(
+    client: httpx.Client,
+    base_url: str,
+    model_ref: str,
+    *,
+    encode_tps: float,
+    seeds: Sequence[int] = RETRIEVAL_SEEDS,
+    rung_words: Sequence[int] = RETRIEVAL_RUNG_WORDS,
+) -> tuple[int, int]:
+    """Return (requests, estimated seconds) for the retrieval ladder.
+
+    One calibration request on a real retrieval document yields the tokens per
+    ladder word for this tokenizer, so the estimate comes from the workload's
+    own token volume rather than a fixed minute count: wall time scales with
+    the host's measured encode throughput.
+    """
+    if not seeds or not rung_words:
+        raise RuntimeError("retrieval seeds and rung words must not be empty")
+    if encode_tps <= 0:
+        raise RuntimeError("encode throughput must be positive")
+    documents, _ = _documents(random.Random(0), RETRIEVAL_RUNG_WORDS[0], "000000")
+    _, served = _embed(
+        client, f"{base_url}/v1/embeddings", model_ref, documents[0]
+    )
+    if served <= 0:
+        raise RuntimeError("retrieval estimate calibration served zero tokens")
+    tokens_per_word = served / RETRIEVAL_RUNG_WORDS[0]
+    requests = len(seeds) * len(rung_words) * (RETRIEVAL_DOCS + 1)
+    words = sum(
+        len(seeds) * (RETRIEVAL_DOCS * rung + len(_QUESTION.split()))
+        for rung in rung_words
+    )
+    seconds = round(words * tokens_per_word / encode_tps)
+    return requests, seconds
+
+
 @dataclass(frozen=True)
 class RetrievalRung:
     words: int
