@@ -398,20 +398,29 @@ def _doctor(as_json: bool, profile_path: str | None = None) -> int:
 def _make_plan(args: argparse.Namespace) -> object:
     profile = _load_profile(args.profile) if getattr(args, "profile", None) else detect_hardware()
     args._simulated = bool(getattr(args, "profile", None))
-    roles = [role.strip() for role in args.roles.split(",") if role.strip()]
-    policy = Policy(roles=roles or ["chat", "code", "embed"], prefer=args.prefer,
-                    max_context=args.context, budget_source=getattr(args, "budget", "total"),
-                    kv_quant=getattr(args, "kv_quant", "f16"),
-                    parallel_slots=getattr(args, "parallel_slots", None),
-                    lang=i18n.lang(),
-                    languages=_parse_languages(getattr(args, "lang", None)),
-                    model_ids=_parse_model_ids(getattr(args, "model", None)),
-                    eval_evidence=not getattr(args, "ignore_eval_evidence", False),
-                    spec=getattr(args, "spec", "none"),
-                    spec_draft=getattr(args, "spec_draft", ""),
-                    spec_n_max=getattr(args, "spec_n_max", 3),
-                    ignore_spec_evidence=getattr(args, "ignore_spec_evidence", False),
-                    )
+    roles_arg = getattr(args, "roles", None)
+    roles = (
+        [role.strip() for role in roles_arg.split(",") if role.strip()]
+        if roles_arg is not None
+        else []
+    )
+    policy = Policy(
+        roles=roles or ["chat", "code", "embed"],
+        roles_explicit=roles_arg is not None,
+        prefer=args.prefer,
+        max_context=args.context,
+        budget_source=getattr(args, "budget", "total"),
+        kv_quant=getattr(args, "kv_quant", "f16"),
+        parallel_slots=getattr(args, "parallel_slots", None),
+        lang=i18n.lang(),
+        languages=_parse_languages(getattr(args, "lang", None)),
+        model_ids=_parse_model_ids(getattr(args, "model", None)),
+        eval_evidence=not getattr(args, "ignore_eval_evidence", False),
+        spec=getattr(args, "spec", "none"),
+        spec_draft=getattr(args, "spec_draft", ""),
+        spec_n_max=getattr(args, "spec_n_max", 3),
+        ignore_spec_evidence=getattr(args, "ignore_spec_evidence", False),
+    )
     telemetry_report = overlay_report()
     live = telemetry_report.values
     args._telemetry_keys = len(live)
@@ -661,9 +670,7 @@ def _plan(args: argparse.Namespace) -> int:
         print(i18n.t(key, i18n.lang(), error=error), file=sys.stderr)
         return 1
     if not result.services or not result.runnable:
-        print(i18n.t("err.plan_empty", i18n.lang()), file=sys.stderr)
-        for hint in result.install_hints:
-            print(hint, file=sys.stderr)
+        _print_plan_failure(result, json_output=args.json)
         return 1
     path = None
     if not getattr(args, "_simulated", False):
@@ -673,8 +680,7 @@ def _plan(args: argparse.Namespace) -> int:
             print(i18n.t("err.plan_save", i18n.lang(), error=error), file=sys.stderr)
             return 1
     if args.json:
-        data = asdict(result)
-        data["profile"]["warnings"] = _profile_warnings(result.profile, result.policy.lang)
+        data = _plan_json_data(result)
         if getattr(args, "_simulated", False):
             data["simulated"] = True
         _print_json(data)
@@ -763,7 +769,7 @@ def _render_plan(result: Plan) -> None:
 
 def _up_plan_args(args: argparse.Namespace) -> argparse.Namespace:
     return argparse.Namespace(
-        roles="chat,code,embed",
+        roles=getattr(args, "roles", None),
         prefer="balanced",
         context=None,
         budget="total",
@@ -782,10 +788,20 @@ def _up_plan_args(args: argparse.Namespace) -> argparse.Namespace:
     )
 
 
-def _print_plan_failure(plan: Plan) -> None:
+def _plan_json_data(plan: Plan) -> dict[str, object]:
+    data = asdict(plan)
+    data["profile"]["warnings"] = _profile_warnings(plan.profile, plan.policy.lang)
+    return data
+
+
+def _print_plan_failure(plan: Plan, *, json_output: bool = False) -> None:
     print(i18n.t("err.plan_empty", i18n.lang()), file=sys.stderr)
+    for warning in plan.warnings:
+        print(warning, file=sys.stderr)
     for hint in plan.install_hints:
         print(hint, file=sys.stderr)
+    if json_output:
+        _print_json(_plan_json_data(plan))
 
 
 def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
@@ -821,7 +837,7 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
             zipfile.BadZipFile,
         ) as error:
             print(i18n.t("err.up", i18n.lang(), error=error), file=sys.stderr)
-            _print_plan_failure(plan)
+            _print_plan_failure(plan, json_output=getattr(args, "json", False))
             return None
         _console().print(
             i18n.t(
@@ -838,7 +854,7 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
             print(i18n.t(key, i18n.lang(), error=error), file=sys.stderr)
             return None
     if not plan.services or not plan.runnable:
-        _print_plan_failure(plan)
+        _print_plan_failure(plan, json_output=getattr(args, "json", False))
         return None
     if not getattr(args, "json", False):
         _render_plan(plan)
@@ -3673,7 +3689,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--json", action="store_true")
     plan.add_argument("--explain", action="store_true")
     plan.add_argument("--prefer", choices=("quality", "speed", "balanced"), default="balanced")
-    plan.add_argument("--roles", default="chat,code,embed")
+    plan.add_argument("--roles", default=None)
     plan.add_argument("--context", type=int)
     plan.add_argument("--budget", choices=("total", "free"), default="total")
     plan.add_argument("--kv-quant", choices=("f16", "q8_0"), default="f16")
@@ -3695,6 +3711,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--port", type=int, default=18000)
     up_parser.add_argument("--ignore-free-memory", action="store_true")
     up_parser.add_argument("--lang")
+    up_parser.add_argument("--roles", default=None)
     up_parser.add_argument("--model", help="comma-separated model IDs")
     up_parser.add_argument("--ignore-eval-evidence", action="store_true")
     up_parser.add_argument("--spec", choices=("none", "ngram", "draft"), default="none")
@@ -3703,6 +3720,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--ignore-spec-evidence", action="store_true")
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=18000)
+    serve_parser.add_argument("--roles", default=None)
     reload_parser = sub.add_parser("reload")
     reload_parser.add_argument("--port", type=int, default=18000)
     reload_parser.add_argument("--json", action="store_true")

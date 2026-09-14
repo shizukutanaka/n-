@@ -95,6 +95,7 @@ class Policy:
     spec_draft: str = ""
     spec_n_max: int = 3
     ignore_spec_evidence: bool = False
+    roles_explicit: bool = False
 
     def __post_init__(self) -> None:
         if self.spec not in KINDS:
@@ -2639,7 +2640,11 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     model=service.model_id, languages=", ".join(missing),
                 ))
     covered = set(role_to_service)
-    runnable = bool(services) and covered >= set(roles) and not hints
+    runnable = (
+        bool(services)
+        and not hints
+        and (not selected.roles_explicit or covered >= set(roles))
+    )
     return Plan(
         datetime.now(timezone.utc).isoformat(), __version__, profile, profile.tier, selected,
         services, swap_group,
@@ -2707,7 +2712,8 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
                     str(pol.get("spec_draft", "")),
                     int(pol.get("spec_n_max", 3)),
                     bool(pol.get("ignore_spec_evidence", False)),
-                    )
+                    bool(pol.get("roles_explicit", False)),
+                )
     services: list[PlannedService] = []
     for item in data["services"]:
         sd = item
@@ -2767,6 +2773,7 @@ def save_plan(plan: Plan, path: Path | None = None) -> Path:
                 ("spec_draft", ""),
                 ("spec_n_max", 3),
                 ("ignore_spec_evidence", False),
+                ("roles_explicit", False),
             ):
                 if policy_payload.get(key) == default:
                     policy_payload.pop(key, None)
