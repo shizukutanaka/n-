@@ -95,6 +95,55 @@ def test_spec_record_save_load_round_trip(tmp_path) -> None:
     assert decide(restored) == (ALLOW, ALLOW)
 
 
+def test_spec_evidence_is_inventoried_with_decision_and_remeasure(
+    tmp_path, monkeypatch,
+) -> None:
+    from nmesh.evidence_inventory import collect_evidence
+
+    save(_record(speedup=1.5), tmp_path / "spec.json")
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    row = next(
+        row for row in collect_evidence()["records"] if row["kind"] == "spec"
+    )
+    assert row["usable"] is True
+    assert row["reasons"] == []
+    assert row["value"].startswith("allow;")
+    assert row["spec"] == "ngram n3"
+    assert row["remeasure"] == ""
+
+
+def test_spec_evidence_keeps_measured_rejection_silent(tmp_path, monkeypatch) -> None:
+    from nmesh.evidence_inventory import collect_evidence
+
+    save(_record(speedup=0.9), tmp_path / "spec.json")
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    row = next(
+        row for row in collect_evidence()["records"] if row["kind"] == "spec"
+    )
+    assert row["usable"] is False
+    assert row["reasons"] == ["spec_not_faster"]
+    # A measured rejection is a fact; nagging to re-run would be dishonest.
+    assert row["remeasure"] == ""
+
+
+def test_spec_evidence_nags_only_when_remeasuring_helps(
+    tmp_path, monkeypatch,
+) -> None:
+    from nmesh.evidence_inventory import collect_evidence
+
+    save(
+        _record(speedup=1.5, epoch="degraded"),
+        tmp_path / "spec.json",
+    )
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    row = next(
+        row for row in collect_evidence()["records"] if row["kind"] == "spec"
+    )
+    assert row["usable"] is False
+    assert row["reasons"] == ["spec_stale"]
+    assert row["remeasure"] == "nmesh spec measure --kind ngram"
+
+
 def test_missing_control_is_unstable(tmp_path: Path) -> None:
     record = _record()
     path = tmp_path / "spec.json"

@@ -25,6 +25,17 @@ from nmesh.eval.select import (
     effective_context_records,
     planner_eval_records,
 )
+from nmesh.spec.measure import SPEC_HARNESS_VERSION
+from nmesh.spec.record import (
+    ALLOW,
+    MIXED,
+    NOT_FASTER,
+    NOT_IDENTICAL,
+    decide,
+)
+from nmesh.spec.record import (
+    load_cache as load_spec_cache,
+)
 
 
 def _bench_parts(key: str) -> tuple[str, str, str]:
@@ -317,6 +328,45 @@ def _retrieval_rows() -> list[dict[str, object]]:
     return rows
 
 
+def _spec_rows() -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for key, record in load_spec_cache().items():
+        decision, _ = decide(record)
+        reasons: list[str] = []
+        if record.harness != SPEC_HARNESS_VERSION:
+            reasons.append("harness_mismatch")
+        if decision != ALLOW:
+            reasons.append(f"spec_{decision}")
+        gains = " ".join(
+            f"{item.name} {item.speedup:.2f}x" for item in record.classes
+        )
+        usable = record.harness == SPEC_HARNESS_VERSION and decision == ALLOW
+        rows.append({
+            "kind": "spec",
+            "key": key,
+            "model_id": record.target.model_id,
+            "quant": record.target.quant,
+            "backend": record.target.backend,
+            "spec": f"{record.spec.kind} n{record.spec.n_max}",
+            "value": f"{decision}; {gains}".rstrip("; "),
+            "usable": usable,
+            "reasons": reasons,
+            "remeasure": (
+                f"nmesh spec measure --kind {record.spec.kind}"
+                if reasons and not any(
+                    reason in {
+                        f"spec_{NOT_IDENTICAL}",
+                        f"spec_{NOT_FASTER}",
+                        f"spec_{MIXED}",
+                    }
+                    for reason in reasons
+                )
+                else ""
+            ),
+        })
+    return rows
+
+
 def collect_evidence() -> dict[str, object]:
     records = (
         _bench_rows()
@@ -324,6 +374,7 @@ def collect_evidence() -> dict[str, object]:
         + _depth_rows(load_context_cache())
         + _embed_rows()
         + _retrieval_rows()
+        + _spec_rows()
     )
     counts = {
         "total": len(records),
@@ -333,5 +384,6 @@ def collect_evidence() -> dict[str, object]:
         "depth": sum(row["kind"] == "depth" for row in records),
         "embed": sum(row["kind"] == "embed" for row in records),
         "retrieval": sum(row["kind"] == "retrieval" for row in records),
+        "spec": sum(row["kind"] == "spec" for row in records),
     }
     return {"records": records, "counts": counts}
