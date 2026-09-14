@@ -782,6 +782,7 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
     if (
         plan.missing_backends == ["llamacpp"]
         and not getattr(args, "no_download", False)
+        and not getattr(args, "dry_run", False)
         and not simulated
     ):
         try:

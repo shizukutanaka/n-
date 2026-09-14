@@ -131,8 +131,16 @@ def test_up_autoinstalls_once_rebuilds_and_reaches_runtime(monkeypatch) -> None:
     monkeypatch.setattr(cli.engine_runtime, "install", install)
     monkeypatch.setattr(cli, "save_plan", lambda _plan: None)
     monkeypatch.setattr(cli, "runtime_up", runtime_up)
+    monkeypatch.setattr(
+        cli,
+        "_launch_gateway",
+        lambda _port, detach: (SimpleNamespace(pid=1234), None),
+    )
+    monkeypatch.setattr(cli, "_wait_gateway", lambda _port, _process: True)
+    monkeypatch.setattr(cli, "clear_gateway", lambda _pid: None)
+    monkeypatch.setattr(cli, "disarm_atexit", lambda: None)
 
-    assert cli._runtime(_up_args()) == 0
+    assert cli._runtime(_up_args(dry_run=False, detach=True)) == 0
     assert install_calls == 1
     assert make_calls == 2
     assert len(runtime_calls) == 1
@@ -184,6 +192,25 @@ def test_up_no_download_does_not_autoinstall(monkeypatch, capsys) -> None:
     assert cli._ensure_runnable_plan(_up_args(no_download=True)) is None
     assert install_calls == 0
     assert "nmesh engine install" in capsys.readouterr().err
+
+
+def test_up_dry_run_does_not_autoinstall(monkeypatch, capsys) -> None:
+    install_calls = 0
+
+    def install(**_kwargs):
+        nonlocal install_calls
+        install_calls += 1
+        raise AssertionError("must not download in dry-run")
+
+    monkeypatch.setattr(cli, "load_plan", lambda: None)
+    monkeypatch.setattr(cli, "_make_plan", lambda _args: _plan(["llamacpp"], False))
+    monkeypatch.setattr(cli.engine_runtime, "install", install)
+
+    assert cli._runtime(_up_args()) == 1
+    assert install_calls == 0
+    captured = capsys.readouterr()
+    assert "plan produced no runnable services" in captured.err
+    assert "nmesh engine install" in captured.err
 
 
 def test_up_does_not_autoinstall_other_missing_backend(monkeypatch) -> None:

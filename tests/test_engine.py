@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tarfile
 import urllib.error
 import zipfile
@@ -195,6 +196,62 @@ def test_tar_member_path_traversal_is_rejected(tmp_path: Path) -> None:
         info.size = 1
         source.addfile(info, io.BytesIO(b"x"))
     with pytest.raises(ValueError, match="escapes"):
+        engine._extract_archive(archive, tmp_path / "install")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs Windows privileges")
+def test_tar_relative_symlink_chain_is_extracted(tmp_path: Path) -> None:
+    archive = tmp_path / "links.tar.gz"
+    content = b"shared library"
+    with tarfile.open(archive, "w:gz") as source:
+        library = tarfile.TarInfo("lib/libx.so.0.1")
+        library.mode = 0o755
+        library.size = len(content)
+        source.addfile(library, io.BytesIO(content))
+        soname = tarfile.TarInfo("lib/libx.so.0")
+        soname.type = tarfile.SYMTYPE
+        soname.linkname = "libx.so.0.1"
+        source.addfile(soname)
+        linker_name = tarfile.TarInfo("lib/libx.so")
+        linker_name.type = tarfile.SYMTYPE
+        linker_name.linkname = "libx.so.0"
+        source.addfile(linker_name)
+        executable = tarfile.TarInfo("bin/llama-server")
+        executable.mode = 0o755
+        executable.size = 3
+        source.addfile(executable, io.BytesIO(b"bin"))
+
+    destination = tmp_path / "install"
+    engine._extract_archive(archive, destination)
+
+    assert (destination / "lib/libx.so").is_symlink()
+    assert os.readlink(destination / "lib/libx.so") == "libx.so.0"
+    assert os.readlink(destination / "lib/libx.so.0") == "libx.so.0.1"
+    assert (destination / "lib/libx.so").read_bytes() == content
+    assert os.access(destination / "bin/llama-server", os.X_OK)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs Windows privileges")
+def test_tar_symlink_escaping_destination_is_rejected(tmp_path: Path) -> None:
+    for name, linkname in (("relative.tar.gz", "../../outside"), ("absolute.tar.gz", "/etc/passwd")):
+        archive = tmp_path / name
+        with tarfile.open(archive, "w:gz") as source:
+            link = tarfile.TarInfo("lib/evil")
+            link.type = tarfile.SYMTYPE
+            link.linkname = linkname
+            source.addfile(link)
+        with pytest.raises(ValueError, match="escapes"):
+            engine._extract_archive(archive, tmp_path / "install")
+
+
+def test_tar_hardlink_is_rejected(tmp_path: Path) -> None:
+    archive = tmp_path / "hardlink.tar.gz"
+    with tarfile.open(archive, "w:gz") as source:
+        link = tarfile.TarInfo("link")
+        link.type = tarfile.LNKTYPE
+        link.linkname = "a"
+        source.addfile(link)
+    with pytest.raises(ValueError, match="link is not allowed"):
         engine._extract_archive(archive, tmp_path / "install")
 
 
