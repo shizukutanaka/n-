@@ -323,7 +323,9 @@ def _retrieval_rows() -> list[dict[str, object]]:
             ),
             "usable": usable,
             "reasons": reasons,
-            "remeasure": "nmesh bench --service embed --retrieval",
+            "remeasure": (
+                "nmesh bench --service embed --retrieval" if reasons else ""
+            ),
         })
     return rows
 
