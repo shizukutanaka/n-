@@ -1413,6 +1413,67 @@ def test_embedding_capability_warnings_and_flags() -> None:
     assert any("above 512 tokens may be rejected" in warning for warning in limited.warnings)
 
 
+def test_measured_selection_replaces_the_unverified_prior_warning() -> None:
+    from nmesh.eval.cache import EvalSummary
+
+    model = ModelSpec(
+        "measured-chat", "test", 500_000_000, 24, 14, 2, 64, 896,
+        4096, ["chat"], 90.0, "test", {"hf_gguf": "test.gguf"},
+    )
+    unmeasured = build_plan(
+        profile(32), [model], Policy(roles=["chat"], min_decode_tps=0),
+    )
+    prior_warning = i18n.t("warn.quality_prior", "en")
+    assert prior_warning in unmeasured.warnings
+
+    service = unmeasured.services[0]
+    key = (
+        service.model_id.casefold(),
+        service.quant.casefold(),
+        service.backend.casefold(),
+    )
+    measured = build_plan(
+        profile(32), [model], Policy(roles=["chat"], min_decode_tps=0),
+        eval_cache={key: EvalSummary(0.875, 14, 16, {}, "core", "v2:test", 0, False)},
+    )
+    assert measured.services[0].model_id == service.model_id
+    assert prior_warning not in measured.warnings
+    assert any(
+        "measured at 14/16 on the core suite" in warning
+        for warning in measured.warnings
+    )
+
+
+def test_partly_measured_services_keep_the_prior_warning() -> None:
+    from nmesh.eval.cache import EvalSummary
+
+    models = [
+        ModelSpec(
+            "measured-chat", "test", 500_000_000, 24, 14, 2, 64, 896,
+            4096, ["chat"], 90.0, "test", {"hf_gguf": "chat.gguf"},
+        ),
+        ModelSpec(
+            "unmeasured-code", "test", 500_000_000, 24, 14, 2, 64, 896,
+            4096, ["code"], 90.0, "test", {"hf_gguf": "code.gguf"},
+        ),
+    ]
+    baseline = build_plan(
+        profile(32), models, Policy(roles=["chat", "code"], min_decode_tps=0),
+    )
+    chat = next(item for item in baseline.services if "chat" in item.roles)
+    plan = build_plan(
+        profile(32), models, Policy(roles=["chat", "code"], min_decode_tps=0),
+        eval_cache={
+            (
+                chat.model_id.casefold(),
+                chat.quant.casefold(),
+                chat.backend.casefold(),
+            ): EvalSummary(0.875, 14, 16, {}, "core", "v2:test", 0, False),
+        },
+    )
+    assert i18n.t("warn.quality_prior", "en") in plan.warnings
+
+
 def test_embedding_uses_supported_flag_aliases_without_warnings() -> None:
     model = ModelSpec(
         "embed-alias", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
