@@ -72,7 +72,7 @@ class HardwareProfile:
 
 検出手段（すべて失敗時は None / 縮退。例外を投げない）:
 - CPU/RAM/ディスク: `psutil`（必須依存）
-- NVIDIA: `pynvml`（任意依存）→ 失敗時 `nvidia-smi --query-gpu=index,name,memory.total,memory.free,compute_cap --format=csv,noheader,nounits`
+- NVIDIA: `nvidia-ml-py`（`pynvml` として import する任意依存）→ 失敗時 `nvidia-smi --query-gpu=index,name,memory.total,memory.free,compute_cap --format=csv,noheader,nounits`
 - AMD: `rocm-smi --showmeminfo vram --json`（Linux）/ Windowsは `wmic`/CIM でVRAM名のみ取得 → vendor="amd", 詳細不明時は保守的に扱う
 - Apple: `platform.machine() == "arm64" and os == macos` → `sysctl hw.memsize`、unified_memory=True、GPU VRAM = RAM の 70%（Metal の推奨上限）
 - Intel Arc: `xpu-smi` があれば、なければ非対応扱い（CPU扱い）

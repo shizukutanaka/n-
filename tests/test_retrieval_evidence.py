@@ -273,6 +273,21 @@ def test_stale_retrieval_digest_is_ignored_by_planner_and_inventory(
     )
     assert row["usable"] is False
     assert "stale_digest" in row["reasons"]
+    assert row["remeasure"] == "nmesh bench --service embed --retrieval"
+
+
+def test_usable_retrieval_record_does_not_nag_for_remeasure(
+    tmp_path, monkeypatch,
+) -> None:
+    record = _record(_ladder((8, 8, 8, 2)))
+    save_retrieval(record, tmp_path / "retrieval.json")
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    row = next(
+        row for row in collect_evidence()["records"] if row["kind"] == "retrieval"
+    )
+    assert row["usable"] is True
+    assert row["reasons"] == []
+    assert row["remeasure"] == ""
 
 
 def test_nondefault_retrieval_digest_is_ignored_by_planner(tmp_path, monkeypatch) -> None:
