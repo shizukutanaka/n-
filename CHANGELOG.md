@@ -6,6 +6,7 @@
 
 - Linux の llama.cpp 配布物に含まれる相対シンボリックリンクと実行ビットを保持して展開し、`nmesh up --dry-run` ではエンジンを自動取得しないようにしました。
 - Add character-bound gateway auto-chunking for non-whitespace text.
+- 純粋な推定値にもデコード速度の下限を適用し、未確認の実測値だけを再測定待ちとして残すようにしました。
 - Add pooled retrieval evidence and opt-in gateway auto-chunking.
 - `nmesh bench --retrieval` records single-vector retrieval usability; the planner warns rather than clamps when recall degrades and recommends chunking long inputs.
 - Retrieval evidence now confirms whether chunking at the measured usable length restores rank-1 retrieval before recommending it.
