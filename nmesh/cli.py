@@ -3582,6 +3582,8 @@ def _evidence(args: argparse.Namespace) -> int:
         ("eval", "evidence.eval_title"),
         ("depth", "evidence.depth_title"),
         ("embed", "evidence.embed_title"),
+        ("retrieval", "evidence.retrieval_title"),
+        ("spec", "evidence.spec_title"),
     ):
         # Bound value and key-text columns so evidence strings fit at 80 columns.
         width_options = {
@@ -3624,7 +3626,8 @@ def _evidence(args: argparse.Namespace) -> int:
                 if kind == "eval"
                 else (
                     f"req {row['requested_depth']} / served {row['served_depth']}"
-                    if kind == "depth" else ""
+                    if kind == "depth"
+                    else str(row.get("spec", "")) if kind == "spec" else ""
                 )
             )
             reasons = row["reasons"]
