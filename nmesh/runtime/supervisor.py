@@ -19,7 +19,7 @@ import psutil
 from nmesh import i18n
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.catalog import ModelSpec, load_catalog
-from nmesh.paths import nmesh_home
+from nmesh.paths import is_windows, nmesh_home
 from nmesh.planner import (
     BPW,
     Plan,
@@ -488,7 +488,7 @@ class Supervisor:
 
     def _launch(self, service: PlannedService) -> ProcessLike:
         kwargs: dict[str, object] = {"env": {**os.environ, **service.launch.env}}
-        if os.name == "nt":
+        if is_windows():
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             kwargs["start_new_session"] = True
@@ -866,7 +866,7 @@ class Supervisor:
             for process in list(self.processes.values()):
                 if process.poll() is not None:
                     continue
-                if os.name == "nt":
+                if is_windows():
                     process.terminate()
                 else:
                     try:
@@ -876,7 +876,7 @@ class Supervisor:
                 try:
                     process.wait(timeout=10)
                 except (subprocess.TimeoutExpired, TimeoutError):
-                    if os.name != "nt":
+                    if not is_windows():
                         try:
                             os.killpg(process.pid, signal.SIGKILL)
                         except OSError:
@@ -1039,7 +1039,7 @@ class Supervisor:
         if process is None:
             return
         if process.poll() is None:
-            if os.name == "nt":
+            if is_windows():
                 process.terminate()
             else:
                 try:
@@ -1049,7 +1049,7 @@ class Supervisor:
             try:
                 process.wait(timeout=10)
             except (subprocess.TimeoutExpired, TimeoutError):
-                if os.name != "nt":
+                if not is_windows():
                     try:
                         os.killpg(process.pid, signal.SIGKILL)
                     except OSError:

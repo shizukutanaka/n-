@@ -87,6 +87,7 @@ def test_backend_binary_is_found_in_nmesh_home_bin(monkeypatch, tmp_path: Path) 
     binary.parent.mkdir()
     binary.write_text("", encoding="utf-8")
     monkeypatch.delenv("NMESH_LLAMACPP_BIN", raising=False)
+    monkeypatch.setattr(detector, "is_windows", lambda: True)
     monkeypatch.setattr(detector, "nmesh_home", lambda: tmp_path)
     monkeypatch.setattr(detector.shutil, "which", lambda value: None)
 

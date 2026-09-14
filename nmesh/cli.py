@@ -136,7 +136,7 @@ from nmesh.orchestrate import (
 from nmesh.orchestrate import (
     save_all as save_all_delegation,
 )
-from nmesh.paths import nmesh_home
+from nmesh.paths import is_windows, nmesh_home
 from nmesh.planner import (
     Plan,
     PlannedService,
@@ -1094,7 +1094,7 @@ def _launch_gateway(port: int, detach: bool) -> tuple[subprocess.Popen[bytes], P
     log_path: Path | None = None
     log = None
     if detach:
-        if os.name == "nt":
+        if is_windows():
             kwargs["creationflags"] = 0x00000008 | 0x00000200
         else:
             kwargs["start_new_session"] = True
@@ -3939,8 +3939,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_json(result) if args.json else _console().print(result)
         return 0
     if args.command == "autostart":
-        filename, text, install_command = service_unit(args.port)
-        launcher_filename, launcher_text = launcher_script(args.port)
+        os_name = "nt" if is_windows() else None
+        filename, text, install_command = service_unit(args.port, os_name=os_name)
+        launcher_filename, launcher_text = launcher_script(args.port, os_name=os_name)
         home = nmesh_home()
         launcher_path = home / launcher_filename
         env_path = home / "gateway.env"
@@ -3948,7 +3949,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.install:
             home.mkdir(parents=True, exist_ok=True)
             launcher_path.write_text(launcher_text, encoding="utf-8", newline="")
-            if os.name != "nt":
+            if not is_windows():
                 launcher_path.chmod(0o700)
             if not env_path.exists():
                 api_key = os.environ.get("NMESH_API_KEY", "")
@@ -3958,11 +3959,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     encoding="utf-8",
                     newline="",
                 )
-                if os.name != "nt":
+                if not is_windows():
                     env_path.chmod(0o600)
             installed = True
         limitations = []
-        if os.name == "nt":
+        if is_windows():
             limitations.append(i18n.t("autostart.windows_limitations", i18n.lang()))
         data = {
             "filename": filename,

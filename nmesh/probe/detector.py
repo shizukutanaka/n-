@@ -10,7 +10,7 @@ from pathlib import Path
 
 import psutil
 
-from nmesh.paths import nmesh_home
+from nmesh.paths import is_windows, nmesh_home
 
 from .caps import llamacpp_caps
 from .generic_gpu import detect_generic
@@ -230,7 +230,7 @@ def _resolve_backend_binary(
         if managed is not None and managed.exe.is_file():
             return managed.exe.resolve()
     names = [command]
-    if os.name == "nt":
+    if is_windows():
         names = [f"{command}.exe", command]
     for name in names:
         candidate = nmesh_home() / "bin" / name
