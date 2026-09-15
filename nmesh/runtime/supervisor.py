@@ -32,6 +32,7 @@ from nmesh.planner import (
     split_memory,
 )
 from nmesh.probe import HardwareProfile, detect_hardware
+from nmesh.runtime import engine
 
 from .acquisition import Acquired, acquire
 from .logs import log_path, open_log, tail
@@ -478,6 +479,40 @@ class Supervisor:
         ]
         return replace(plan, services=updated_services), updated, True, artifact_replanned
 
+    def _resolve_launch_exe(
+        self, service: PlannedService
+    ) -> tuple[PlannedService, str | None]:
+        """Re-resolve the engine binary behind a planned launch command when
+        the engine it pointed at was removed or replaced after planning."""
+        if service.backend != "llamacpp" or not service.launch.argv:
+            return service, None
+        exe = service.launch.argv[0]
+        if Path(exe).exists():
+            return service, None
+        candidate = engine.active()
+        if candidate is None or candidate.backend != service.backend:
+            candidate = next(
+                (
+                    item
+                    for item in engine.installed()
+                    if item.backend == service.backend and item.exe.exists()
+                ),
+                None,
+            )
+        if candidate is None or not candidate.exe.exists():
+            return service, None
+        healed = replace(
+            service,
+            launch=replace(
+                service.launch, argv=[str(candidate.exe), *service.launch.argv[1:]]
+            ),
+        )
+        warning = i18n.t(
+            "warn.engine_substituted", i18n.lang(),
+            service=service.name, old=exe, tag=candidate.tag,
+        )
+        return healed, warning
+
     def _admit(
         self,
         plan: Plan,
@@ -896,6 +931,18 @@ class Supervisor:
                                 )
                                 self.active_plan = current
                             self.notes[service.name] = warning
+                        service, heal_warning = self._resolve_launch_exe(service)
+                        if heal_warning is not None:
+                            current = replace(
+                                current,
+                                services=[
+                                    service if item.name == service.name else item
+                                    for item in current.services
+                                ],
+                            )
+                            actualized = True
+                            self.active_plan = current
+                            self.notes[service.name] = heal_warning
                         self.processes[service.name] = self.launcher(service)
                         self.idle.discard(service.name)
                         self._arm_atexit()
