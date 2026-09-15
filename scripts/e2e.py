@@ -16,6 +16,13 @@ import urllib.request
 from pathlib import Path
 from typing import NoReturn
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from nmesh.paths import nmesh_home
+from nmesh.runtime import engine
+
 SUCCESS = 0
 FAILURE = 1
 BACKEND_UNAVAILABLE = 77
@@ -61,6 +68,15 @@ def _listener(port: int) -> bool:
         return sock.connect_ex(("127.0.0.1", port)) == 0
 
 
+def _managed_backends() -> list[Path]:
+    """Return llama-server binaries that ``nmesh up`` itself would use."""
+    active = engine.active()
+    ordered = ([active] if active is not None else []) + [
+        item for item in engine.installed() if active is None or item.tag != active.tag
+    ]
+    return [item.exe for item in ordered]
+
+
 def _backend() -> Path | None:
     configured = os.environ.get("NMESH_LLAMA_SERVER") or os.environ.get("NMESH_LLAMA_CPP")
     if configured:
@@ -70,6 +86,7 @@ def _backend() -> Path | None:
     found = shutil.which("llama-server")
     if found:
         candidates.append(Path(found))
+    candidates.extend(_managed_backends())
     candidates.extend((
         Path.home() / "llamacpp" / "llama-server.exe",
         Path.home() / "llamacpp" / "llama-server",
@@ -84,7 +101,7 @@ def _model_source(model_id: str | None = None, quant: str | None = None) -> Path
     configured = os.environ.get("NMESH_E2E_MODEL")
     if configured and Path(configured).is_file():
         return Path(configured).resolve()
-    model_dir = Path.home() / ".nmesh" / "models"
+    model_dir = nmesh_home() / "models"
     if not model_dir.is_dir():
         return None
     models = sorted(model_dir.glob("*.gguf"))
@@ -193,8 +210,8 @@ def main() -> int:
     backend = _backend()
     if backend is None:
         print(
-            "SKIP: real llama.cpp backend unavailable; "
-            "set NMESH_LLAMA_SERVER or install llama-server.",
+            "SKIP: real llama.cpp backend unavailable; run nmesh engine install, "
+            "set NMESH_LLAMA_SERVER, or put llama-server on PATH.",
             file=sys.stderr,
         )
         return BACKEND_UNAVAILABLE
@@ -258,8 +275,8 @@ def main() -> int:
                 _fail(f"/v1/completions {label}", "response has no choices")
         _http("GET /metrics/prometheus", f"{base}/metrics/prometheus")
         _run_step(env, "bench", "bench", "--service", "chat", "--tokens", "16", "--json")
-        _run_step(env, "status", "status", "--json")
-        _run_step(env, "down", "down", "--json")
+        _run_step(env, "status", "status", "--port", str(gateway_port), "--json")
+        _run_step(env, "down", "down", "--port", str(gateway_port), "--json")
         started = False
         _assert_no_listeners(ports)
         asserted = True
@@ -269,7 +286,7 @@ def main() -> int:
         return FAILURE
     finally:
         if started:
-            result = _command(env, "down", "--json")
+            result = _command(env, "down", "--port", str(gateway_port), "--json")
             print(f"\n== teardown down ==\n{result.stdout}", end="")
         if not asserted:
             time.sleep(0.2)

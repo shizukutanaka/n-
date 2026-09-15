@@ -141,9 +141,10 @@ def fetch_zenn(
             )
             response.raise_for_status()
             payload = _mapping(response.json())
-            if payload is None or not isinstance(payload.get("articles"), list):
-                raise ValueError("Zenn response did not contain articles")
-            articles = payload["articles"][:limit]
+            raw_articles = payload.get("articles") if payload is not None else None
+            if not isinstance(raw_articles, list):
+                raise TypeError("Zenn response did not contain articles")
+            articles = raw_articles[:limit]
             yields.append(f"{topic}={len(articles)}")
             for raw in articles:
                 article = _mapping(raw)

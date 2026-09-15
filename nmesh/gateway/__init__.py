@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from nmesh import i18n
 from nmesh.artifact import service_fingerprint
@@ -78,6 +79,9 @@ except ImportError:
     Response = None
     StreamingResponse = None
     Request = object
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI as FastAPIApp
 
 
 def _get(request: Mapping[str, object], key: str, default: object = None) -> object:
@@ -908,7 +912,7 @@ def create_app(
     plan: Plan | None = None,
     watchdog: bool = False,
     watchdog_interval: float = 15.0,
-) -> object:
+) -> FastAPIApp:
     if FastAPI is None:
         raise ImportError("Install nmesh[gateway] to use the gateway")
     explicit = plan is not None

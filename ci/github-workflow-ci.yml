@@ -15,6 +15,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e .[dev]
+      # tests/conftest.py imports the gateway, and tests/test_acquisition.py
+      # imports huggingface_hub, so collection fails without both extras.
+      - run: pip install -e .[dev,gateway,download]
       - run: ruff check .
+      - run: mypy nmesh
       - run: pytest -q

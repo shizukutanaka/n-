@@ -440,8 +440,8 @@ def _parse(data: object) -> SpecRecord | None:
         return None
     parsed_control = (
         [
-            item for row in control_rows
-            if (item := _control(row)) is not None
+            control for row in control_rows
+            if (control := _control(row)) is not None
         ]
         if control_rows is not None else []
     )

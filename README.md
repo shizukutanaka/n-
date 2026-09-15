@@ -48,7 +48,21 @@ Ollama、llama.cpp、vLLM、MLX-LM をサポートします。未インストー
 ## CI workflow
 
 GitHub の権限がある利用者は `ci/github-workflow-ci.yml` を
-`.github/workflows/ci.yml` にコピーして使用してください。
+`.github/workflows/ci.yml` にコピーして使用してください。ローカルで同じ
+3 つのゲートを実行するには次の通りです（`tests/conftest.py` が gateway を、
+`tests/test_acquisition.py` が `huggingface_hub` を import するため、
+`gateway` と `download` の extras が無いとテストは収集自体に失敗します）:
+
+```text
+pip install -e .[dev,gateway,download]
+ruff check .
+mypy nmesh
+pytest -q
+```
+
+`mypy nmesh` は `pyproject.toml` に列挙した既知負債のモジュール
+（`nmesh.cli`・`nmesh.gateway`・`nmesh.planner`・`nmesh.runtime.engine`・
+`nmesh.runtime.supervisor`）以外の全モジュールを検査します。
 
 ## Gateway service
 
@@ -276,12 +290,15 @@ python scripts/e2e.py
 ```
 
 It creates a temporary `NMESH_HOME`, selects free ports, and uses a local
-`llama-server` plus GGUF model. When possible, it reuses an already-downloaded
-GGUF from the real `~/.nmesh/models` directory read-only, by hard-linking,
-symlinking, or copying it into the scratch directory. Set `NMESH_E2E_MODEL`
-to choose a different local model. This is intentionally standalone rather
-than a pytest test because it requires a real model and can take several
-minutes.
+`llama-server` plus GGUF model. The backend is looked up in this order:
+`NMESH_LLAMA_SERVER` (or `NMESH_LLAMA_CPP`), `llama-server` on `PATH`, the
+engine `nmesh engine install` placed under `$NMESH_HOME/engines/llamacpp`
+(active build first), then `~/llamacpp/llama-server`. When possible, it
+reuses an already-downloaded GGUF from the real `$NMESH_HOME/models`
+directory read-only, by hard-linking, symlinking, or copying it into the
+scratch directory. Set `NMESH_E2E_MODEL` to choose a different local model.
+This is intentionally standalone rather than a pytest test because it
+requires a real model and can take several minutes.
 
 Exit codes:
 
