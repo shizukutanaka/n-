@@ -1086,12 +1086,31 @@ class Supervisor:
                     if lookup_plan is not None
                     else None
                 )
+                if planned is None:
+                    # The in-memory plan can predate the saved plan when this
+                    # supervisor belongs to a gateway that outlived an earlier
+                    # `up`; the persisted plan is the source of truth.
+                    persisted = load_plan()
+                    if persisted is not None and persisted is not lookup_plan:
+                        planned = next(
+                            (
+                                service
+                                for service in persisted.services
+                                if service.name == service_name
+                            ),
+                            None,
+                        )
+                        if planned is not None:
+                            lookup_plan = persisted
                 if planned is not None:
                     self._adopt(planned)
                     if service_name in self.external_shared:
                         return False
                     adopted = self.adopted.get(service_name)
-                    if adopted is not None and self.active_plan is None:
+                    if adopted is not None and (
+                        self.active_plan is None
+                        or lookup_plan is not self.active_plan
+                    ):
                         self.active_plan = lookup_plan
             if adopted is not None:
                 pid = adopted.get("pid")

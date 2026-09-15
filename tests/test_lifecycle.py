@@ -113,6 +113,67 @@ def test_foreign_stop_gateway_kills_orphaned_gateway_by_port(
     assert terminated == [4242]
 
 
+def test_unload_uses_persisted_plan_when_active_plan_lacks_service(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A gateway long outlives `nmesh up`, so its in-memory plan can miss a
+    service that is recorded in state and still running."""
+    launch = SimpleNamespace(
+        health_url="http://127.0.0.1:1/health",
+    )
+    embed = SimpleNamespace(
+        name="embed",
+        port=18011,
+        launch=launch,
+        model_ref="model",
+        quant="q8_0",
+        backend="llamacpp",
+        memory=SimpleNamespace(parallel_slots=1),
+    )
+    chat = SimpleNamespace(
+        name="chat",
+        port=18010,
+        launch=launch,
+        model_ref="model",
+        quant="q4_k_m",
+        backend="llamacpp",
+        memory=SimpleNamespace(parallel_slots=1),
+    )
+    stale_plan = SimpleNamespace(services=[chat])
+    persisted_plan = SimpleNamespace(services=[chat, embed])
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.load_plan", lambda: persisted_plan
+    )
+    pid = os.getpid()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "owner_pid": os.getpid() + 1,
+                "services": [
+                    {
+                        "service": "embed",
+                        "pid": pid,
+                        "port": 18011,
+                        "create_time": psutil.Process(pid).create_time(),
+                        "external": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    supervisor = Supervisor(state_path=state_path, terminator=terminated.append)
+    supervisor.active_plan = stale_plan
+    monkeypatch.setattr(Supervisor, "_healthy", lambda _self, _service: True)
+
+    assert supervisor.unload("embed") is True
+    assert terminated == [pid]
+    assert supervisor.active_plan is persisted_plan
+
+
 def test_runtime_log_rotation_and_tail(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
     monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "4")
