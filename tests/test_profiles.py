@@ -84,6 +84,26 @@ def test_profile_plan_is_simulated_and_does_not_save(tmp_path, monkeypatch, caps
     assert not plan_path.exists()
 
 
+def test_simulated_plan_ignores_this_machine_measurements(monkeypatch, capsys) -> None:
+    """Bench keys omit the CPU, so a CPU profile would inherit local numbers."""
+    from nmesh.bench import benchmark_key
+
+    def fake_cache() -> dict[str, float]:
+        return {
+            benchmark_key(model_id, quant, "llamacpp", "cpu", 0): 999.0
+            for model_id in ("qwen2.5-1.5b-instruct", "qwen2.5-3b-instruct")
+            for quant in ("q4_k_m", "q5_k_m", "q6_k", "q8_0")
+        }
+
+    monkeypatch.setattr(cli, "load_cache", fake_cache)
+    profile_path = PROFILE_DIR / "t0-cpu-32gb.json"
+    assert cli.main(["plan", "--profile", str(profile_path), "--roles", "chat", "--json"]) == 0
+    service = json.loads(capsys.readouterr().out)["services"][0]
+
+    assert service["decode_tps"] != 999.0
+    assert service["estimated"] is True
+
+
 def test_speed_preference_warns_when_speed_term_saturates(tmp_path) -> None:
     catalog = load_catalog(user_path=tmp_path / "models.yaml")
     profile = _profile(PROFILE_DIR / "t3-rtx4090-24gb.json")

@@ -3,7 +3,7 @@
 ## 未リリース
 
 - 型検査（`mypy nmesh`）の既知負債リストを `nmesh.cli`・`nmesh.planner` の 2 つに縮小し、`nmesh.gateway`・`nmesh.runtime.engine`・`nmesh.runtime.supervisor` を検査対象に戻しました（60/62 ファイル）。潜在バグを含めて修正: `subprocess.CREATE_NEW_PROCESS_GROUP` が Windows 以外に存在しない起動分岐、state.json の pid/services が dict 以外だった場合の `int(object)`・反復子エラー、ゲートウェイの `_reap` が KEEP_ALIVE 比較で None を演算し得た点、Prometheus メトリクス出力が非数値を `float()` に通す点、委譲判定の `int(object)`、manifest の `installed_at`/`flags` 未検証。
-
+- `nmesh plan --profile` のシミュレーションが、別マシンを計画しているのにこの機で測ったベンチ・実測ライブ計測・埋め込み入力上限と検索限界をそのまま適用し、「この機で測定」と言い続けていました（ベンチのキーは GPU 名を含むが CPU を含まないため、CPU プロファイルにこの機の実測 tok/s が混入していました）。シミュレートされた機には測定が無いので計画は一切使わず、バナーもその旨を説明するようにしました。モデル品質・使用可能な文脈深度・アーティファクト実測サイズなど機によらない証拠は引き続き使います。
 - 同梱の CI レシピ（`pip install -e .[dev]` → `pytest -q`）はテストを 1 件も収集できませんでした（`tests/conftest.py` が gateway を、`tests/test_acquisition.py` が `huggingface_hub` を import するため）。`gateway`・`download` extras を追加し、`mypy nmesh` をゲートに加えました。型検査は既知負債の 5 モジュール（`nmesh.cli`・`nmesh.gateway`・`nmesh.planner`・`nmesh.runtime.engine`・`nmesh.runtime.supervisor`）以外の全モジュールで緑です。
 - `scripts/e2e.py`（実バックエンド E2E）は `nmesh` 自身が `$NMESH_HOME/engines/llamacpp` に入れたエンジンを探さず、モデルも `~/.nmesh/models` 固定だったため、`nmesh up` が動く機でも常に 77（SKIP）でした。エンジンは `nmesh engine install` の成果物（active 優先）を、モデルは設定済み `NMESH_HOME` を見るようにし、`status`/`down` には自身のゲートウェイポートを渡すようにしました。この機で doctor→plan→up→chat/completions→metrics→bench→status→down→ポート解放まで完走します。
 - 型検査で見つかった潜在的な None/型の取り違えを修正しました（委譲記録の数値検証、GGUF の file_type 欠落時の量子化ラベル、Zenn 応答の articles、HF siblings 欠落、spec 記録の制御行、catalog ドラフトの sources、gateway ルート一覧）。

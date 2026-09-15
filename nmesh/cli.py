@@ -33,6 +33,7 @@ from nmesh.bench import (
     EPOCH_HISTORY,
     MIN_DECODE_TOKENS,
     RETRIEVAL_HARNESS_VERSION,
+    BenchRecord,
     EmbedRecord,
     EpochSample,
     RetrievalLimit,
@@ -407,7 +408,8 @@ def _doctor(as_json: bool, profile_path: str | None = None) -> int:
 
 def _make_plan(args: argparse.Namespace) -> object:
     profile = _load_profile(args.profile) if getattr(args, "profile", None) else detect_hardware()
-    args._simulated = bool(getattr(args, "profile", None))
+    simulated = bool(getattr(args, "profile", None))
+    args._simulated = simulated
     roles_arg = getattr(args, "roles", None)
     roles = (
         [role.strip() for role in roles_arg.split(",") if role.strip()]
@@ -431,21 +433,40 @@ def _make_plan(args: argparse.Namespace) -> object:
         spec_n_max=getattr(args, "spec_n_max", 3),
         ignore_spec_evidence=getattr(args, "ignore_spec_evidence", False),
     )
-    telemetry_report = overlay_report()
-    live = telemetry_report.values
-    args._telemetry_keys = len(live)
-    args._telemetry_under_load = telemetry_report.under_load
-    args._telemetry_off_reference = telemetry_report.off_reference
-    args._telemetry_unknown_depth = telemetry_report.unknown_depth
-    cache = {**load_cache(), **live}
+    # Throughput and capacity measurements describe the machine that ran them:
+    # their cache key carries the GPU name and layer count but not the CPU, so
+    # a simulated CPU placement would otherwise inherit this machine's tok/s
+    # and its llama.cpp build's embedding limits. A simulated machine has no
+    # measurements, so a simulated plan uses none. Model-level evidence (eval
+    # quality, usable context depth, artifact sizes) holds on any machine and
+    # stays in.
+    live: dict[str, float] = {}
+    cache: dict[str, float] = {}
+    records: dict[str, BenchRecord] = {}
+    embed_input_caps: dict[tuple[str, str, str], int] = {}
+    embed_retrieval_limits: dict[tuple[str, str, str], RetrievalLimit] = {}
+    embed_measured: set[tuple[str, str, str]] = set()
+    args._telemetry_keys = 0
+    args._telemetry_under_load = 0
+    args._telemetry_off_reference = 0
+    args._telemetry_unknown_depth = 0
+    if not simulated:
+        telemetry_report = overlay_report()
+        live = telemetry_report.values
+        args._telemetry_keys = len(live)
+        args._telemetry_under_load = telemetry_report.under_load
+        args._telemetry_off_reference = telemetry_report.off_reference
+        args._telemetry_unknown_depth = telemetry_report.unknown_depth
+        cache = {**load_cache(), **live}
+        records = {
+            key: value for key, value in load_records().items()
+            if key not in live
+        }
+        embed_input_caps = _embed_context_caps()
+        embed_retrieval_limits = _embed_retrieval_limits()
+        embed_measured = _embed_measured_keys()
     eval_records = load_eval_cache()
-    records = {
-        key: value for key, value in load_records().items()
-        if key not in live
-    }
     eval_depth_coverage, eval_depth_lost = _context_depth_maps()
-    embed_input_caps = _embed_context_caps()
-    embed_retrieval_limits = _embed_retrieval_limits()
     return build_plan(
         profile,
         load_catalog(),
@@ -458,7 +479,7 @@ def _make_plan(args: argparse.Namespace) -> object:
         eval_depth_lost=eval_depth_lost,
         embed_input_caps=embed_input_caps,
         embed_retrieval_limits=embed_retrieval_limits,
-        embed_measured=_embed_measured_keys(),
+        embed_measured=embed_measured,
     )
 
 
