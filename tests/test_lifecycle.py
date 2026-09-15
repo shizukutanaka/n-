@@ -207,6 +207,59 @@ def test_status_merges_persisted_entries_beyond_in_memory(
     assert names == {"chat", "embed"}
 
 
+def _up_service(name: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        name=name,
+        port=18010,
+        backend="llamacpp",
+        model_ref="model",
+        quant="q4_k_m",
+        launch=SimpleNamespace(health_url=None, shared_daemon=False),
+        memory=SimpleNamespace(parallel_slots=1),
+    )
+
+
+def test_up_surfaces_admission_warnings(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Admission may drop services under memory pressure — the warnings it
+    produced must reach the caller, not stay hidden inside the runtime."""
+    chat = _up_service("chat")
+    embed = _up_service("embed")
+    plan = SimpleNamespace(
+        services=[chat, embed], warnings=[], swap_group=set(), policy=None,
+    )
+    reduced = SimpleNamespace(
+        services=[chat],
+        warnings=["admission dropped embed: not enough free memory"],
+        swap_group=set(),
+        policy=None,
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.save_plan", lambda _plan: None
+    )
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+    monkeypatch.setattr(supervisor, "_admit", lambda _plan, _cache: reduced)
+    monkeypatch.setattr(supervisor, "_adopt", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_already_up", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_wait_health", lambda _service: True)
+    supervisor.launcher = lambda _service: SimpleNamespace(
+        pid=999999,
+        poll=lambda: 0,
+        wait=lambda *a, **k: None,
+        terminate=lambda: None,
+        kill=lambda: None,
+    )
+
+    result = supervisor.up(plan, no_download=True)
+    supervisor.disarm_atexit()
+
+    assert set(supervisor.processes) == {"chat"}
+    assert result.warnings == [
+        "admission dropped embed: not enough free memory"
+    ]
+
+
 def test_runtime_log_rotation_and_tail(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
     monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "4")
