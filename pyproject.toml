@@ -36,15 +36,11 @@ warn_unused_ignores = true
 [[tool.mypy.overrides]]
 # Known debt: `mypy nmesh` is a CI gate for every other module, so these stay
 # listed until their errors are fixed rather than silencing the whole package.
-# nmesh.cli: argparse.Namespace attribute access; nmesh.gateway: FastAPI is an
-# optional import bound to None; nmesh.planner, nmesh.runtime.engine,
-# nmesh.runtime.supervisor: nullable fields whose fixes can change behavior.
+# nmesh.cli: argparse.Namespace attribute access; nmesh.planner: nullable
+# fields whose fixes can change behavior.
 module = [
   "nmesh.cli",
-  "nmesh.gateway",
   "nmesh.planner.*",
-  "nmesh.runtime.engine",
-  "nmesh.runtime.supervisor",
 ]
 ignore_errors = true
 

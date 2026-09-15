@@ -24,6 +24,7 @@ from nmesh.bench.retrieval import (
 )
 from nmesh.orchestrate import (
     PROTOCOL_VERSION,
+    Delegation,
     DelegationRecord,
     Endpoint,
     Ledger,
@@ -67,21 +68,25 @@ try:
 except ValueError:
     KEEP_ALIVE = 0.0
 
-try:
+if TYPE_CHECKING:
     import httpx
     from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI as FastAPIApp
     from fastapi.responses import Response, StreamingResponse
     from starlette.requests import Request
-except ImportError:
-    FastAPI = None
-    httpx = None
-    HTTPException = RuntimeError
-    Response = None
-    StreamingResponse = None
-    Request = object
-
-if TYPE_CHECKING:
-    from fastapi import FastAPI as FastAPIApp
+else:
+    try:
+        import httpx
+        from fastapi import FastAPI, HTTPException
+        from fastapi.responses import Response, StreamingResponse
+        from starlette.requests import Request
+    except ImportError:
+        FastAPI = None
+        httpx = None
+        HTTPException = RuntimeError
+        Response = None
+        StreamingResponse = None
+        Request = object
 
 
 def _get(request: Mapping[str, object], key: str, default: object = None) -> object:
@@ -460,7 +465,7 @@ def _delegation_gate(
     str,
 ]:
     lead, worker, pair_reason = _delegation_pair(plan)
-    if pair_reason:
+    if pair_reason or lead is None or worker is None:
         return lead, worker, None, pair_reason, pair_reason
     record = best_for(
         load_cache(),
@@ -508,7 +513,7 @@ def _reserved_tokens(request: Mapping[str, object]) -> int:
     values = [0]
     for key in ("max_tokens", "max_completion_tokens"):
         value = request.get(key)
-        if value is None:
+        if not isinstance(value, (int, float, str)) or isinstance(value, bool):
             continue
         try:
             values.append(int(value))
@@ -588,6 +593,8 @@ async def _record_prompt_calibration(
     if not isinstance(usage, Mapping):
         return
     value = usage.get("prompt_tokens")
+    if not isinstance(value, (int, float, str)) or isinstance(value, bool):
+        return
     try:
         prompt_tokens = int(value)
     except (TypeError, ValueError):
@@ -690,6 +697,12 @@ def _embedding_truncation_error(cap: int, lower_bound: int) -> Response:
         status_code=400,
         media_type="application/json",
     )
+
+
+def _metric_number(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"non-numeric metric value: {value!r}")
+    return float(value)
 
 
 def _prometheus_escape(value: object) -> str:
@@ -804,32 +817,32 @@ def _prometheus_text(
             for key, metric_name in metric_names.items():
                 if key in metrics:
                     families[metric_name][2].append((labels, metrics[key]))
-    for service, metrics in limiter.metrics().items():
+    for service, counts in limiter.metrics().items():
         labels = {"service": service}
-        families["nmesh_concurrency_limit"][2].append((labels, metrics["limit"]))
-        families["nmesh_concurrency_in_flight"][2].append((labels, metrics["in_flight"]))
-        families["nmesh_concurrency_waiting"][2].append((labels, metrics["waiting"]))
-    for service_kind, metrics in _calibration_metrics(services or []).items():
+        families["nmesh_concurrency_limit"][2].append((labels, counts["limit"]))
+        families["nmesh_concurrency_in_flight"][2].append((labels, counts["in_flight"]))
+        families["nmesh_concurrency_waiting"][2].append((labels, counts["waiting"]))
+    for service_kind, calibration in _calibration_metrics(services or []).items():
         labels = {
-            "kind": metrics["kind"],
-            "measured": str(metrics["measured"]).lower(),
-            "model": metrics["model"],
+            "kind": str(calibration["kind"]),
+            "measured": str(calibration["measured"]).lower(),
+            "model": str(calibration["model"]),
             "service": service_kind.rsplit("|", 1)[0],
         }
         families["nmesh_token_calibration_cjk_per_char"][2].append(
-            (labels, metrics["cjk_per_char"])
+            (labels, calibration["cjk_per_char"])
         )
         families["nmesh_token_calibration_other_per_char"][2].append(
-            (labels, metrics["other_per_char"])
+            (labels, calibration["other_per_char"])
         )
         families["nmesh_token_calibration_samples"][2].append(
-            (labels, metrics["samples"])
+            (labels, calibration["samples"])
         )
     lines: list[str] = []
     for name, (help_text, metric_type, values) in families.items():
         lines.extend((f"# HELP {name} {help_text}", f"# TYPE {name} {metric_type}"))
         lines.extend(
-            f"{name}{_prometheus_labels(labels)} {float(value):g}"
+            f"{name}{_prometheus_labels(labels)} {_metric_number(value):g}"
             for labels, value in values
         )
     return "\n".join(lines) + "\n"
@@ -995,8 +1008,10 @@ def create_app(
                 continue
             if in_flight.count(name) or last_use.age(name, now) is None:
                 continue
+            idle_for = last_use.age(name, now)
             if (
-                last_use.age(name, now) > KEEP_ALIVE
+                idle_for is not None
+                and idle_for > KEEP_ALIVE
                 and await asyncio.to_thread(unload, name)
             ):
                 gate.invalidate()
@@ -1053,12 +1068,13 @@ def create_app(
                 )
         locked = service.name in plan_snapshot.swap_group
         if locked:
+
+            def _ensure_target() -> None:
+                ensure_running(service.name, plan_snapshot)
+
             try:
                 await asyncio.wait_for(
-                    gate.acquire(
-                        service.name,
-                        lambda: ensure_running(service.name, plan_snapshot),
-                    ),
+                    gate.acquire(service.name, _ensure_target),
                     timeout=300.0,
                 )
             except asyncio.TimeoutError as error:
@@ -1135,9 +1151,11 @@ def create_app(
                     gate.release()
                 if limit_slots:
                     limiter.release(slot_token)
-                error = _completion_not_supported(path, upstream.status_code, service.backend)
-                if error is not None:
-                    raise error
+                unsupported = _completion_not_supported(
+                    path, upstream.status_code, service.backend
+                )
+                if unsupported is not None:
+                    raise unsupported
                 return Response(content=content, status_code=upstream.status_code,
                                 media_type=upstream.headers.get("content-type"))
 
@@ -1407,11 +1425,11 @@ def create_app(
                 response = await post_upstream(body)
                 content = response.content
                 if response.status_code >= 400:
-                    error = _completion_not_supported(
+                    unsupported = _completion_not_supported(
                         path, response.status_code, service.backend
                     )
-                    if error is not None:
-                        raise error
+                    if unsupported is not None:
+                        raise unsupported
                     return Response(content=content, status_code=response.status_code,
                                     media_type=response.headers.get("content-type"))
                 data = json.loads(content)
@@ -1521,11 +1539,16 @@ def create_app(
                 status_code=409,
                 detail=_delegation_gate_error(reason, record, lead, worker),
             )
+        requested_limit = (
+            request.get("max_tokens")
+            or request.get("max_completion_tokens")
+            or 256
+        )
         try:
-            max_tokens = int(
-                request.get("max_tokens")
-                or request.get("max_completion_tokens")
-                or 256
+            max_tokens = (
+                int(requested_limit)
+                if isinstance(requested_limit, (int, float, str))
+                else 256
             )
         except (TypeError, ValueError):
             max_tokens = 256
@@ -1562,7 +1585,7 @@ def create_app(
                 ticket = in_flight.enter(service.name)
                 managed.append((service, slot, ticket))
 
-            def run() -> object:
+            def run() -> Delegation:
                 assert httpx is not None
                 with httpx.Client(
                     timeout=httpx.Timeout(300.0, connect=10.0)
@@ -1696,7 +1719,7 @@ def create_app(
         if any(result["unloaded"] for result in results):
             gate.invalidate()
         unloaded.extend(
-            result["service"]
+            str(result["service"])
             for result in results
             if result["unloaded"]
         )
