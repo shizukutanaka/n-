@@ -13,9 +13,10 @@ import time
 import urllib.request
 import zipfile
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Protocol
 from urllib.error import HTTPError
 from urllib.parse import quote
 
@@ -341,7 +342,7 @@ def _doctor(as_json: bool, profile_path: str | None = None) -> int:
     language = i18n.lang()
     free_vram, free_ram = free_budgets(profile)
     selected = None if profile_path else load_plan()
-    selected_models = [
+    selected_models: list[dict[str, str | list[str]]] = [
         {"service": service.name, "model": service.model_id,
          "languages": list(service.languages)}
         for service in selected.services
@@ -400,12 +401,31 @@ def _doctor(as_json: bool, profile_path: str | None = None) -> int:
         models.add_column(i18n.t("label.model", language))
         models.add_column(i18n.t("label.languages", language))
         for item in selected_models:
-            models.add_row(item["service"], item["model"], ",".join(item["languages"]))
+            languages = item["languages"]
+            models.add_row(
+                str(item["service"]),
+                str(item["model"]),
+                ",".join(languages) if isinstance(languages, list) else str(languages),
+            )
         _console().print(models)
     return 0
 
 
-def _make_plan(args: argparse.Namespace) -> object:
+def _argv_text(value: object) -> str:
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"invalid argv: {value!r}")
+    return " ".join(str(item) for item in value)
+
+
+def _bench_cache(live: Mapping[str, float]) -> dict[object, float]:
+    """Stored measurements with live telemetry taking precedence."""
+    merged: dict[object, float] = {}
+    merged.update(load_cache())
+    merged.update(live)
+    return merged
+
+
+def _make_plan(args: argparse.Namespace) -> Plan:
     profile = _load_profile(args.profile) if getattr(args, "profile", None) else detect_hardware()
     args._simulated = bool(getattr(args, "profile", None))
     roles_arg = getattr(args, "roles", None)
@@ -437,7 +457,7 @@ def _make_plan(args: argparse.Namespace) -> object:
     args._telemetry_under_load = telemetry_report.under_load
     args._telemetry_off_reference = telemetry_report.off_reference
     args._telemetry_unknown_depth = telemetry_report.unknown_depth
-    cache = {**load_cache(), **live}
+    cache = _bench_cache(live)
     eval_records = load_eval_cache()
     records = {
         key: value for key, value in load_records().items()
@@ -617,11 +637,25 @@ def _stale_grader_notes(records: Mapping[str, EvalRecord]) -> list[str]:
     ]
 
 
+@dataclass(frozen=True)
+class _Divergence:
+    """A stored run of the same model that disagrees with the current one."""
+
+    config: str
+    artifact: str | None
+    pass_rate: float
+    compared: int
+    disagreeing: list[str]
+    discordant_here: int
+    discordant_there: int
+    zero_power_families: list[str]
+
+
 def _eval_divergence(
     result: EvalRun, records: Mapping[str, EvalRecord],
-) -> list[dict[str, object]]:
+) -> list[_Divergence]:
     current = {outcome.id: outcome.passed for outcome in result.outcomes}
-    divergence: list[dict[str, object]] = []
+    divergence: list[_Divergence] = []
     for record in records.values():
         if (
             record.model_id != result.model_id
@@ -657,18 +691,18 @@ def _eval_divergence(
         compared_families = {
             task_id.split(".")[0] for task_id in comparable
         }
-        divergence.append({
-            "config": f"{record.quant}|{record.backend}",
-            "artifact": record.artifact or None,
-            "pass_rate": record.pass_rate,
-            "compared": len(comparable),
-            "disagreeing": disagreeing,
-            "discordant_here": len(discordant_here),
-            "discordant_there": len(discordant_there),
-            "zero_power_families": sorted(
+        divergence.append(_Divergence(
+            config=f"{record.quant}|{record.backend}",
+            artifact=record.artifact or None,
+            pass_rate=record.pass_rate,
+            compared=len(comparable),
+            disagreeing=disagreeing,
+            discordant_here=len(discordant_here),
+            discordant_there=len(discordant_there),
+            zero_power_families=sorted(
                 compared_families - disagreeing_families
             ),
-        })
+        ))
     return divergence
 
 
@@ -898,19 +932,20 @@ def _runtime(args: argparse.Namespace) -> int:
         plan = _ensure_runnable_plan(args)
         if plan is None:
             return 1
-        if (
-            getattr(args, "lang", None)
-            or _parse_model_ids(getattr(args, "model", None))
-            or getattr(args, "ignore_eval_evidence", False)
-        ):
-            updates: dict[str, object] = {}
+        requested_model_ids = _parse_model_ids(getattr(args, "model", None))
+        ignore_eval_evidence = bool(getattr(args, "ignore_eval_evidence", False))
+        if getattr(args, "lang", None) or requested_model_ids or ignore_eval_evidence:
+            policy = plan.policy
             if getattr(args, "lang", None):
-                updates["lang"] = i18n.lang()
-                updates["languages"] = _parse_languages(args.lang)
-            if _parse_model_ids(getattr(args, "model", None)):
-                updates["model_ids"] = _parse_model_ids(args.model)
-            if getattr(args, "ignore_eval_evidence", False):
-                updates["eval_evidence"] = False
+                policy = replace(
+                    policy,
+                    lang=i18n.lang(),
+                    languages=_parse_languages(args.lang),
+                )
+            if requested_model_ids:
+                policy = replace(policy, model_ids=requested_model_ids)
+            if ignore_eval_evidence:
+                policy = replace(policy, eval_evidence=False)
             live = bench_overlay()
             records = {
                 key: value for key, value in load_records().items()
@@ -922,8 +957,8 @@ def _runtime(args: argparse.Namespace) -> int:
             embed_retrieval_limits = _embed_retrieval_limits()
             plan = build_plan(
                 detect_hardware(), load_catalog(),
-                replace(plan.policy, **updates),
-                {**load_cache(), **live},
+                policy,
+                _bench_cache(live),
                 _eval_rates(eval_records),
                 load_artifact_cache(),
                 records,
@@ -934,7 +969,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 embed_measured=_embed_measured_keys(),
             )
             save_plan(plan)
-        cache = {**load_cache(), **bench_overlay()}
+        cache = _bench_cache(bench_overlay())
         try:
             result = runtime_up(
                 plan, no_download=args.no_download, dry_run=args.dry_run,
@@ -981,8 +1016,13 @@ def _runtime(args: argparse.Namespace) -> int:
             (item for item in result.services if item.get("service") == "gateway"),
             None,
         )
+        recorded_port = gateway.get("port") if gateway else None
         try:
-            port = int(gateway.get("port", args.port)) if gateway else args.port
+            port = (
+                int(recorded_port)
+                if isinstance(recorded_port, (int, float, str))
+                else args.port
+            )
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2):
                 if gateway is None:
                     result.services.append({"service": "gateway", "port": port, "running": True})
@@ -1017,7 +1057,7 @@ def _runtime(args: argparse.Namespace) -> int:
                        backend=item["backend"], model_ref=item["model_ref"],
                        port=item["port"], context=item["context"],
                        slots=item["parallel_slots"], layers=item["n_gpu_layers"],
-                       argv=" ".join(str(x) for x in item["argv"]))
+                       argv=_argv_text(item["argv"]))
             )
     else:
         _console().print(result)
@@ -1130,7 +1170,7 @@ def _unload(args: argparse.Namespace) -> int:
             "shared": "err.unload_shared",
             "external": "err.unload_external",
             "not_owned": "err.unload_not_owned",
-        }.get(reason, "err.unload_unknown")
+        }.get(str(reason), "err.unload_unknown")
         print(i18n.t(reason_key, i18n.lang(), service=args.service), file=sys.stderr)
         return 1
     if args.json:
@@ -1140,6 +1180,17 @@ def _unload(args: argparse.Namespace) -> int:
                      services=", ".join(unloaded) if unloaded else
                      i18n.t("label.none", i18n.lang())))
     return 0
+
+
+class _GatewayProcess(Protocol):
+    """The parts of a gateway handle the CLI drives, adopted or spawned."""
+
+    @property
+    def pid(self) -> int: ...
+
+    def poll(self) -> int | None: ...
+
+    def terminate(self) -> None: ...
 
 
 class _AdoptedGateway:
@@ -1158,7 +1209,9 @@ class _AdoptedGateway:
         try:
             psutil.Process(self.pid).wait(timeout=timeout)
         except psutil.TimeoutExpired:
-            raise subprocess.TimeoutExpired(self.pid, timeout) from None
+            raise subprocess.TimeoutExpired(
+                str(self.pid), timeout if timeout is not None else 0.0,
+            ) from None
         except psutil.Error:
             pass
         return 0
@@ -1173,6 +1226,7 @@ class _AdoptedGateway:
 def _launch_gateway(
     port: int, detach: bool,
 ) -> tuple[subprocess.Popen[bytes] | _AdoptedGateway, Path | None]:
+    """Serve on ``port``, adopting a gateway that already answers there."""
     if gateway_health(port):
         adopted = gateway_listener_pid(port)
         if adopted is None:
@@ -1182,29 +1236,30 @@ def _launch_gateway(
         record_gateway(adopted, port)
         return _AdoptedGateway(adopted), None
     command = [sys.executable, "-m", "nmesh.gateway.server", "--port", str(port)]
-    kwargs: dict[str, object] = {}
-    log_path: Path | None = None
-    log = None
-    if detach:
+    if not detach:
+        process = subprocess.Popen(command)
+        record_gateway(process.pid, port)
+        return process, None
+    log_path = nmesh_home() / "gateway.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    rotate_log(log_path)
+    with log_path.open("ab") as log:
         if is_windows():
-            kwargs["creationflags"] = 0x00000008 | 0x00000200
+            # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            process = subprocess.Popen(
+                command, stdout=log, stderr=log, close_fds=True,
+                creationflags=0x00000008 | 0x00000200,
+            )
         else:
-            kwargs["start_new_session"] = True
-        log_path = nmesh_home() / "gateway.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        rotate_log(log_path)
-        log = log_path.open("ab")
-        kwargs["stdout"] = log
-        kwargs["stderr"] = log
-        kwargs["close_fds"] = True
-    process = subprocess.Popen(command, **kwargs)
-    if log is not None:
-        log.close()
+            process = subprocess.Popen(
+                command, stdout=log, stderr=log, close_fds=True,
+                start_new_session=True,
+            )
     record_gateway(process.pid, port)
     return process, log_path
 
 
-def _wait_gateway(port: int, process: subprocess.Popen[bytes], timeout: float = 20.0) -> bool:
+def _wait_gateway(port: int, process: _GatewayProcess, timeout: float = 20.0) -> bool:
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if process.poll() is not None:
@@ -1296,11 +1351,11 @@ def _models_scan(args: argparse.Namespace) -> int:
         for artifact in artifacts
     }
     groups: dict[str, str] = {}
-    for index, group in enumerate(duplicate_groups, 1):
-        for artifact in group.artifacts:
+    for index, duplicate_group in enumerate(duplicate_groups, 1):
+        for artifact in duplicate_group.artifacts:
             groups[resolved_paths[artifact.path]] = f"dup:{index}"
-    for index, group in enumerate(variant_groups, 1):
-        for artifact in group.artifacts:
+    for index, variant_group in enumerate(variant_groups, 1):
+        for artifact in variant_group.artifacts:
             groups.setdefault(
                 resolved_paths[artifact.path], f"var:{index}"
             )
@@ -1324,6 +1379,14 @@ def _models_scan(args: argparse.Namespace) -> int:
         }
     reclaimable_bytes = sum(group.reclaimable_bytes for group in duplicate_groups)
     total_bytes = sum(artifact.bytes for artifact in artifacts)
+    totals = {
+        "files": len(artifacts),
+        "bytes": total_bytes,
+        "gib": total_bytes / 1024**3,
+        "reclaimable_bytes": reclaimable_bytes,
+        "reclaimable_gib": reclaimable_bytes / 1024**3,
+        "variant_groups": len(variant_groups),
+    }
     payload = {
         "stores": store_totals,
         "artifacts": artifact_payloads,
@@ -1344,14 +1407,7 @@ def _models_scan(args: argparse.Namespace) -> int:
             }
             for group in variant_groups
         ],
-        "totals": {
-            "files": len(artifacts),
-            "bytes": total_bytes,
-            "gib": total_bytes / 1024**3,
-            "reclaimable_bytes": reclaimable_bytes,
-            "reclaimable_gib": reclaimable_bytes / 1024**3,
-            "variant_groups": len(variant_groups),
-        },
+        "totals": totals,
     }
     if args.json:
         _print_json(payload)
@@ -1386,18 +1442,18 @@ def _models_scan(args: argparse.Namespace) -> int:
     _console().print(i18n.t(
         "models.scan_total",
         language,
-        files=payload["totals"]["files"],
-        gib=payload["totals"]["gib"],
+        files=totals["files"],
+        gib=totals["gib"],
     ))
     _console().print(i18n.t(
         "models.scan_reclaimable",
         language,
-        gib=payload["totals"]["reclaimable_gib"],
+        gib=totals["reclaimable_gib"],
     ))
     _console().print(i18n.t(
         "models.scan_variants",
         language,
-        count=payload["totals"]["variant_groups"],
+        count=totals["variant_groups"],
     ))
     return 0
 
@@ -1447,15 +1503,13 @@ def _models(args: argparse.Namespace) -> int:
             for service in (plan.services if plan is not None else [])
             if service.model_ref
         }
-        items = []
+        items: list[dict[str, object]] = []
         for path in sorted(model_root.rglob("*.gguf")) if model_root.exists() else []:
             info = gguf_info(path)
             label = parse_label(path.name)
             quant = (
-                FILE_TYPE_QUANT.get(info.file_type)
-                if info is not None
-                else label
-            )
+                FILE_TYPE_QUANT.get(info.file_type) if info.file_type is not None else None
+            ) if info is not None else label
             items.append({
                 "path": str(path),
                 "bytes": path.stat().st_size,
@@ -1473,7 +1527,7 @@ def _models(args: argparse.Namespace) -> int:
                 table.add_column(column)
             for item in items:
                 table.add_row(
-                    item["path"], str(item["bytes"]), str(item["quant"] or "-"),
+                    str(item["path"]), str(item["bytes"]), str(item["quant"] or "-"),
                     str(item["label"] or "-"), str(item["planned"]),
                 )
             _console().print(table)
@@ -1502,12 +1556,13 @@ def _engine(args: argparse.Namespace) -> int:
         if command == "list":
             entries = engine_runtime.installed()
             active = engine_runtime.active()
-            payload = {
+            available = engine_runtime.build_tags() if args.available else []
+            payload: dict[str, object] = {
                 "installed": [asdict(item) for item in entries],
                 "active": asdict(active) if active is not None else None,
             }
             if args.available:
-                payload["available"] = engine_runtime.build_tags()
+                payload["available"] = available
             if args.json:
                 _print_json(payload)
                 return 0
@@ -1534,7 +1589,7 @@ def _engine(args: argparse.Namespace) -> int:
             if args.available:
                 _console().print(
                     f"{i18n.t('engine.available', i18n.lang())}: "
-                    + ", ".join(payload["available"])
+                    + ", ".join(available)
                 )
             return 0
         if command == "install":
@@ -1638,7 +1693,7 @@ def _bench(args: argparse.Namespace) -> int:
     if service.roles == ["embed"]:
         try:
             with httpx.Client(timeout=300.0) as client:
-                measurement = measure_embedding(
+                embed_measurement = measure_embedding(
                     client,
                     base_url,
                     service.model_ref,
@@ -1666,29 +1721,29 @@ def _bench(args: argparse.Namespace) -> int:
             )
             return 1
         gpu_name = plan.profile.gpus[0].name if plan.profile.gpus else "cpu"
-        record = EmbedRecord(
+        embed_record = EmbedRecord(
             model_id=service.model_id,
             quant=service.quant,
             backend=service.backend,
             gpu_name=gpu_name,
             n_gpu_layers=service.n_gpu_layers or 0,
             requested_context=service.context,
-            probe_tokens_small=measurement.probe_tokens_small,
-            served_small=measurement.served_small,
-            probe_tokens_large=measurement.probe_tokens_large,
-            served_large=measurement.served_large,
-            encode_tps=measurement.encode_tps,
-            encode_tps_min=measurement.encode_tps_min,
-            encode_tps_max=measurement.encode_tps_max,
-            encode_input_tokens=measurement.encode_input_tokens,
-            runs=measurement.runs,
+            probe_tokens_small=embed_measurement.probe_tokens_small,
+            served_small=embed_measurement.served_small,
+            probe_tokens_large=embed_measurement.probe_tokens_large,
+            served_large=embed_measurement.served_large,
+            encode_tps=embed_measurement.encode_tps,
+            encode_tps_min=embed_measurement.encode_tps_min,
+            encode_tps_max=embed_measurement.encode_tps_max,
+            encode_input_tokens=embed_measurement.encode_input_tokens,
+            runs=embed_measurement.runs,
             harness=EMBED_HARNESS_VERSION,
             at=time.time(),
-            refused_small=measurement.refused_small,
-            refused_large=measurement.refused_large,
+            refused_small=embed_measurement.refused_small,
+            refused_large=embed_measurement.refused_large,
         )
         try:
-            save_embed(record)
+            save_embed(embed_record)
         except OSError as error:
             print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
             return 1
@@ -1698,7 +1753,7 @@ def _bench(args: argparse.Namespace) -> int:
                 with httpx.Client(timeout=300.0) as client:
                     requests, seconds = measure_retrieval_estimate(
                         client, base_url, service.model_ref,
-                        encode_tps=record.encode_tps,
+                        encode_tps=embed_record.encode_tps,
                     )
                     print(i18n.t(
                         "label.retrieval_estimate",
@@ -1714,7 +1769,7 @@ def _bench(args: argparse.Namespace) -> int:
                         client,
                         base_url,
                         service.model_ref,
-                        cap=record.cap,
+                        cap=embed_record.cap,
                     )
             except httpx.HTTPError as error:
                 response = getattr(error, "response", None)
@@ -1806,7 +1861,7 @@ def _bench(args: argparse.Namespace) -> int:
                 )
                 return 1
         if args.json:
-            output: dict[str, object] = {**asdict(record), "cap": record.cap}
+            output: dict[str, object] = {**asdict(embed_record), "cap": embed_record.cap}
             if retrieval_record is not None:
                 output["retrieval"] = {
                     **asdict(retrieval_record),
@@ -1827,24 +1882,24 @@ def _bench(args: argparse.Namespace) -> int:
             _print_json(output)
         else:
             language = i18n.lang()
-            cap = record.cap if record.cap is not None else "unproven"
+            cap = embed_record.cap if embed_record.cap is not None else "unproven"
             _console().print(
                 i18n.t(
                     "label.embed_measurement",
                     language,
                     cap=cap,
-                    tps=record.encode_tps,
+                    tps=embed_record.encode_tps,
                 )
             )
-            if record.cap is not None and record.cap < service.context:
+            if embed_record.cap is not None and embed_record.cap < service.context:
                 _console().print(
                     i18n.t(
                         "warn.embed_truncated",
                         language,
-                        cap=record.cap,
+                        cap=embed_record.cap,
                     )
                 )
-            refused_tokens = _embed_refused_tokens(record)
+            refused_tokens = _embed_refused_tokens(embed_record)
             if refused_tokens is not None:
                 _console().print(
                     i18n.t(
@@ -2127,7 +2182,7 @@ def _bench(args: argparse.Namespace) -> int:
     else:
         marker = "~" if measurement.approximate else ""
         prefill_marker = "~" if measurement.prefill_source != "timings" else ""
-        lines = []
+        lines: list[str] = []
         if record is not None:
             lines.extend((
                 i18n.t("label.median_decode", language, marker=marker,
@@ -2575,7 +2630,7 @@ def _eval(args: argparse.Namespace) -> int:
         "suite_upgrade_note": suite_upgrade_note,
         "stale_grader_notes": stale_grader_notes,
         "config_note": config_note,
-        "divergence": divergence,
+        "divergence": [asdict(other) for other in divergence],
         "artifact_warning": artifact_warning,
         "context_probe": context_probe,
     }
@@ -2645,35 +2700,33 @@ def _eval(args: argparse.Namespace) -> int:
         _console().print(failure_kinds_note)
     if artifact_warning is not None:
         _console().print(artifact_warning)
-    for item in divergence:
-        ids = ", ".join(item["disagreeing"]) or "-"
+    for other in divergence:
+        ids = ", ".join(other.disagreeing) or "-"
         _console().print(i18n.t(
             "note.eval_divergence",
             language,
-            config=item["config"],
-            other_rate=f"{item['pass_rate']:.1%}",
+            config=other.config,
+            other_rate=f"{other.pass_rate:.1%}",
             rate=f"{result.pass_rate:.1%}",
-            count=len(item["disagreeing"]),
-            compared=item["compared"],
+            count=len(other.disagreeing),
+            compared=other.compared,
             ids=ids,
         ))
         _console().print(i18n.t(
             "note.eval_paired_power",
             language,
-            compared=item["compared"],
-            discordant=(
-                item["discordant_here"] + item["discordant_there"]
-            ),
-            here=item["discordant_here"],
-            there=item["discordant_there"],
+            compared=other.compared,
+            discordant=other.discordant_here + other.discordant_there,
+            here=other.discordant_here,
+            there=other.discordant_there,
             required=min_discordant_for_significance(),
-            families=", ".join(item["zero_power_families"]) or "-",
+            families=", ".join(other.zero_power_families) or "-",
         ))
     _console().print(i18n.t(
         "label.eval_overall", language, passed=result.passed, total=result.n_tasks,
         rate=result.pass_rate,
     ))
-    failed_ids = ", ".join(item["id"] for item in failed) or "-"
+    failed_ids = ", ".join(outcome.id for outcome in failed_outcomes) or "-"
     _console().print(i18n.t("label.eval_failed", language, ids=failed_ids))
     return 0
 
@@ -3575,7 +3628,6 @@ def _watch(args: argparse.Namespace) -> int:
                 status.detail,
             )
         _console().print(table)
-        catalog_metrics = output["catalog"]
         catalog_table = Table(title=i18n.t("label.watch_catalog_title", language))
         catalog_table.add_column(i18n.t("label.watch_metric", language))
         catalog_table.add_column(i18n.t("label.watch_value", language))
@@ -3980,10 +4032,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "watch":
         return _watch(args)
     if args.command == "autotune":
-        plan = load_plan()
-        if plan is None or not plan.services:
+        saved_plan = load_plan()
+        if saved_plan is None or not saved_plan.services:
             return 1
-        service = plan.services[0]
+        service = saved_plan.services[0]
         if service.roles == ["embed"]:
             print(
                 i18n.t(
@@ -4018,33 +4070,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                     service, context=context, n_gpu_layers=layers,
                     launch=replace(service.launch, argv=argv),
                 )
-                tuned_plan = replace(plan, services=[
-                    tuned if item.name == service.name else item for item in plan.services
+                tuned_plan = replace(saved_plan, services=[
+                    tuned if item.name == service.name else item for item in saved_plan.services
                 ])
                 runtime_down()
                 try:
                     runtime_up(tuned_plan, no_download=True)
-                    result = measure(tuned, base_url)
+                    tuned_result = measure(tuned, base_url)
                 except (OSError, RuntimeError) as error:
                     print(i18n.t("err.autotune_measure", i18n.lang(), error=error),
                           file=sys.stderr)
                     runtime_down()
                     try:
-                        runtime_up(plan, no_download=True)
+                        runtime_up(saved_plan, no_download=True)
                     except (OSError, RuntimeError) as restore_error:
                         print(
                             i18n.t("err.autotune_restore", i18n.lang(), error=restore_error),
                             file=sys.stderr,
                         )
                     return 1
-                save_plan(plan)
-                if best is None or result.decode_tps > best[2]:
-                    best = (context, layers, result.decode_tps)
+                save_plan(saved_plan)
+                if best is None or tuned_result.decode_tps > best[2]:
+                    best = (context, layers, tuned_result.decode_tps)
                     best_plan = tuned_plan
         if best is None:
             runtime_down()
             try:
-                runtime_up(plan, no_download=True)
+                runtime_up(saved_plan, no_download=True)
             except (OSError, RuntimeError):
                 pass
             return 1
@@ -4054,10 +4106,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             runtime_up(best_plan, no_download=True)
         except (OSError, RuntimeError) as error:
-            save_plan(plan)
+            save_plan(saved_plan)
             runtime_down()
             try:
-                runtime_up(plan, no_download=True)
+                runtime_up(saved_plan, no_download=True)
             except (OSError, RuntimeError) as restore_error:
                 print(
                     i18n.t("err.autotune_restore", i18n.lang(), error=restore_error),
@@ -4068,9 +4120,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        result = {"service": service.name, "context": best[0], "n_gpu_layers": best[1],
-                  "decode_tps": best[2]}
-        _print_json(result) if args.json else _console().print(result)
+        summary = {"service": service.name, "context": best[0], "n_gpu_layers": best[1],
+                   "decode_tps": best[2]}
+        _print_json(summary) if args.json else _console().print(summary)
         return 0
     if args.command == "autostart":
         os_name = "nt" if is_windows() else None
