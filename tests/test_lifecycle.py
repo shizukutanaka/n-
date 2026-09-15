@@ -174,6 +174,39 @@ def test_unload_uses_persisted_plan_when_active_plan_lacks_service(
     assert supervisor.active_plan is persisted_plan
 
 
+def test_status_merges_persisted_entries_beyond_in_memory(
+    tmp_path: Path,
+) -> None:
+    """A supervisor tracking only some services in memory (e.g. the gateway,
+    which never spawned the `up` services) must still report the rest of
+    state.json instead of silently dropping live services."""
+    pid = os.getpid()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "services": [
+                    {
+                        "service": "embed",
+                        "pid": pid,
+                        "port": 18011,
+                        "create_time": psutil.Process(pid).create_time(),
+                        "external": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    supervisor = Supervisor(state_path=state_path)
+    supervisor.adopted["chat"] = {"pid": pid, "port": 18010}
+
+    names = {str(item["service"]) for item in supervisor.status().services}
+
+    assert names == {"chat", "embed"}
+
+
 def test_runtime_log_rotation_and_tail(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
     monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "4")

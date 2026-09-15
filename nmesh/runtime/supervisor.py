@@ -1267,17 +1267,33 @@ class Supervisor:
                         self.state_path.unlink()
                     except FileNotFoundError:
                         pass
-        elif gateway_entry is not None and payload is not None:
-            entries.append(gateway_entry)
-            if not gateway_running:
-                payload.pop("gateway", None)
-                if payload.get("services"):
-                    self._write_state(payload)
-                else:
-                    try:
-                        self.state_path.unlink()
-                    except FileNotFoundError:
-                        pass
+        elif payload is not None:
+            # state.json records everything nmesh started; this supervisor may
+            # only track a subset in memory (e.g. the gateway never spawned
+            # the services `nmesh up` did), so merge what it does not know.
+            seen = {str(item.get("service")) for item in entries}
+            persisted = payload.get("services")
+            if isinstance(persisted, list):
+                for item in persisted:
+                    if (
+                        isinstance(item, dict)
+                        and str(item.get("service")) not in seen
+                    ):
+                        merged = dict(item)
+                        merged["running"] = self._entry_alive(item)
+                        entries.append(merged)
+                        seen.add(str(item.get("service")))
+            if gateway_entry is not None:
+                entries.append(gateway_entry)
+                if not gateway_running:
+                    payload.pop("gateway", None)
+                    if payload.get("services"):
+                        self._write_state(payload)
+                    else:
+                        try:
+                            self.state_path.unlink()
+                        except FileNotFoundError:
+                            pass
         names = {str(item.get("service")) for item in entries}
         entries.extend({
             "service": name,

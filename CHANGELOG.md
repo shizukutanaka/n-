@@ -2,6 +2,7 @@
 
 ## 未リリース
 
+- `nmesh status`（およびゲートウェイ内の `runtime_status`）が、supervisor のメモリ内に1つでもエントリがあると state.json の永続記録を一切マージしないため、プロセスが知らない稼働中サービスを一覧から落としていました。これにより `nmesh unload` が生存中のサービスに「実行中ではありません」と返す原因にもなっていました。メモリ内に無いサービス名の永続エントリも `running` を再計算して併記するようにしました。
 - `nmesh unload <service>` が、実際には稼働中のサービスに対して「実行中ではありません」と返すことがありました。ゲートウェイ内の supervisor はプランを初回 heartbeat 時に一度だけ読み、plan.json が後から更新されてもメモリ内のプランを再読み込みしないため、プランに後から追加されたサービスを採用対象として見つけられませんでした（別プロセスから直接 `runtime.unload` すれば成功する、という不一致）。`unload` はメモリ内プランにサービスが見つからない場合、永続化されたプランにも照会して採用を試みるようにしました。
 - `nmesh orchestrate measure` の worker 既定値が、計画の中で lead 以外の最初のサービス（既定計画では埋め込み専用の `embed`）を選んでいたため、`nmesh up` 済みの機で実行すると必ず「生成用ではありません」で失敗していました。既定は生成可能なサービス（chat・code・worker）からのみ選び、候補が無い場合は「lead 以外に生成用サービスがもう1つ必要」と案内するようにしました。
 - 型検査（`mypy nmesh`）の既知負債リストを `nmesh.cli`・`nmesh.planner` の 2 つに縮小し、`nmesh.gateway`・`nmesh.runtime.engine`・`nmesh.runtime.supervisor` を検査対象に戻しました（60/62 ファイル）。潜在バグを含めて修正: `subprocess.CREATE_NEW_PROCESS_GROUP` が Windows 以外に存在しない起動分岐、state.json の pid/services が dict 以外だった場合の `int(object)`・反復子エラー、ゲートウェイの `_reap` が KEEP_ALIVE 比較で None を演算し得た点、Prometheus メトリクス出力が非数値を `float()` に通す点、委譲判定の `int(object)`、manifest の `installed_at`/`flags` 未検証。
