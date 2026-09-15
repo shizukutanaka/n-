@@ -9,7 +9,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import RLock
 from typing import Protocol
@@ -115,6 +115,7 @@ class Launcher(Protocol):
 class RuntimeStatus:
     running: bool
     services: list[dict[str, object]]
+    warnings: list[str] = field(default_factory=list)
 
 
 class Supervisor:
@@ -910,7 +911,15 @@ class Supervisor:
                         # not silently shrink the user's saved plan.
                         save_plan(current)
                     self._persist(current)
-                    return self.status()
+                    result = self.status()
+                    # Admission may have dropped services this run; surface
+                    # those warnings so the user sees the degradation.
+                    result.warnings.extend(
+                        warning
+                        for warning in current.warnings
+                        if warning not in plan.warnings
+                    )
+                    return result
                 except (OSError, RuntimeError):
                     self.down()
                     if attempt == 3:

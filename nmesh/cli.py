@@ -1082,6 +1082,8 @@ def _runtime(args: argparse.Namespace) -> int:
             )
     else:
         _console().print(result)
+        for warning in result.warnings:
+            _console().print(warning)
         if args.command == "status":
             for item in result.services:
                 if item.get("idle"):
