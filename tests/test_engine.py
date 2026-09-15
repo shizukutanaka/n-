@@ -7,6 +7,7 @@ import tarfile
 import urllib.error
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -141,6 +142,48 @@ def test_install_selects_shallowest_executable(monkeypatch, tmp_path: Path) -> N
         accelerator=None,
     )
     assert item.exe == (tmp_path / "b10830" / "llama-server.exe").resolve()
+
+
+def test_install_skips_release_with_no_assets(monkeypatch, tmp_path: Path) -> None:
+    """The newest tag can reach the feed before binaries finish uploading;
+    install must take the newest tag that actually publishes assets."""
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    monkeypatch.setattr(engine, "build_tags", lambda fetch=None: ["b10830", "b10829"])
+    monkeypatch.setattr(
+        engine,
+        "published_assets",
+        lambda tag, fetch=None: [] if tag == "b10830" else ["linux cpu"],
+    )
+    monkeypatch.setattr(
+        engine,
+        "select_asset",
+        lambda tag, assets, **kwargs: (SimpleNamespace(
+            asset="fake.tar.gz", url="https://example/fake.tar.gz",
+            extra_assets=(), variant="cpu",
+        ), None),
+    )
+    archive = io.BytesIO()
+    info = tarfile.TarInfo("llama-server")
+    info.size = 4
+    with tarfile.open(fileobj=archive, mode="w:gz") as source:
+        source.addfile(info, io.BytesIO(b"fake"))
+    payload = archive.getvalue()
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: type(
+            "Result", (), {"stdout": "", "stderr": "version: x", "returncode": 0}
+        )(),
+    )
+    monkeypatch.setattr("nmesh.probe.caps.llamacpp_caps", lambda _: None)
+    item, warnings = engine.install(
+        dest=tmp_path,
+        download=lambda _url, path: path.write_bytes(payload),
+        system="linux",
+        machine="x86_64",
+        accelerator=None,
+    )
+    assert item.tag == "b10829"
+    assert warnings[0] == "b10830 published no assets"
 
 
 def test_explicit_unpublished_variant_reports_assets() -> None:
