@@ -266,6 +266,25 @@ def test_huggingface_extraction_is_anchored() -> None:
         assert verify(mentions, client) == ()
 
 
+def test_flag_extraction_is_limited_to_llamacpp_commands() -> None:
+    """caps.json holds llama.cpp flags, so other tools' flags are not comparable."""
+    items = (SourceItem(
+        "qiita",
+        "https://example/item",
+        "",
+        "git diff --no-ext-diff\n"
+        "npm ci --frozen-lockfile\n"
+        "./llama-server -m model.gguf --jinja --cache-type-k q8_0\n"
+        "docker run --gpus all vllm/vllm-openai --max-model-len 8192\n"
+        "systemctl disable llama-server --now\n"
+        "llama-bench \\\n  --n-gpu-layers 99\n",
+        "",
+    ),)
+    assert [
+        mention.value for mention in extract(items) if mention.kind == "flag"
+    ] == ["--cache-type-k", "--jinja", "--n-gpu-layers"]
+
+
 def test_flag_finding_records_caps_binaries(tmp_path: Path, monkeypatch) -> None:
     caps = tmp_path / "caps.json"
     caps.write_text(json.dumps({
