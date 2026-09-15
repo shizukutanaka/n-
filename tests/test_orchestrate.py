@@ -423,6 +423,33 @@ def test_delegation_record_round_trip_defaults_and_validation(tmp_path: Path) ->
         assert load_cache(path) == {}
 
 
+def test_orchestrate_measure_rejects_embed_only_fallback_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A chat+embed plan has no second generative service to delegate to."""
+    chat = SimpleNamespace(
+        name="chat", model_id="chat", quant="q4", backend="llamacpp",
+        model_ref="chat.gguf", roles=("chat", "code"), port=1,
+    )
+    embed = SimpleNamespace(
+        name="embed", model_id="embed", quant="f16", backend="llamacpp",
+        model_ref="embed.gguf", roles=("embed",), port=2,
+    )
+    plan = SimpleNamespace(
+        services=[chat, embed],
+        routing=SimpleNamespace(role_to_service={"chat": "chat", "embed": "embed"}),
+        profile=SimpleNamespace(),
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(
+        cli, "orchestrate_measure",
+        lambda *args, **kwargs: pytest.fail("measured without a worker"),
+    )
+    assert cli.main(["orchestrate", "measure"]) == 1
+    assert "second generative service" in capsys.readouterr().err
+
+
 def test_orchestrate_measure_no_reference_reports_unverified_cost(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

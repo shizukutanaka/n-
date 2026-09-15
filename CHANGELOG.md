@@ -2,6 +2,7 @@
 
 ## 未リリース
 
+- `nmesh orchestrate measure` の worker 既定値が、計画の中で lead 以外の最初のサービス（既定計画では埋め込み専用の `embed`）を選んでいたため、`nmesh up` 済みの機で実行すると必ず「生成用ではありません」で失敗していました。既定は生成可能なサービス（chat・code・worker）からのみ選び、候補が無い場合は「lead 以外に生成用サービスがもう1つ必要」と案内するようにしました。
 - 型検査（`mypy nmesh`）の既知負債リストを `nmesh.cli`・`nmesh.planner` の 2 つに縮小し、`nmesh.gateway`・`nmesh.runtime.engine`・`nmesh.runtime.supervisor` を検査対象に戻しました（60/62 ファイル）。潜在バグを含めて修正: `subprocess.CREATE_NEW_PROCESS_GROUP` が Windows 以外に存在しない起動分岐、state.json の pid/services が dict 以外だった場合の `int(object)`・反復子エラー、ゲートウェイの `_reap` が KEEP_ALIVE 比較で None を演算し得た点、Prometheus メトリクス出力が非数値を `float()` に通す点、委譲判定の `int(object)`、manifest の `installed_at`/`flags` 未検証。
 - `nmesh plan --profile` のシミュレーションが、別マシンを計画しているのにこの機で測ったベンチ・実測ライブ計測・埋め込み入力上限と検索限界をそのまま適用し、「この機で測定」と言い続けていました（ベンチのキーは GPU 名を含むが CPU を含まないため、CPU プロファイルにこの機の実測 tok/s が混入していました）。シミュレートされた機には測定が無いので計画は一切使わず、バナーもその旨を説明するようにしました。モデル品質・使用可能な文脈深度・アーティファクト実測サイズなど機によらない証拠は引き続き使います。
 - 同梱の CI レシピ（`pip install -e .[dev]` → `pytest -q`）はテストを 1 件も収集できませんでした（`tests/conftest.py` が gateway を、`tests/test_acquisition.py` が `huggingface_hub` を import するため）。`gateway`・`download` extras を追加し、`mypy nmesh` をゲートに加えました。型検査は既知負債の 5 モジュール（`nmesh.cli`・`nmesh.gateway`・`nmesh.planner`・`nmesh.runtime.engine`・`nmesh.runtime.supervisor`）以外の全モジュールで緑です。
