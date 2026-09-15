@@ -443,6 +443,16 @@ def install(
     if selected_tag is None:
         raise RuntimeError("no llama.cpp build tags were published")
     assets = published_assets(selected_tag, fetch=fetch)
+    tag_warnings: list[str] = []
+    if tag is None:
+        # A release can reach the feed before its binaries finish
+        # uploading; install the newest tag that actually has assets.
+        for candidate in tags[1:]:
+            if assets:
+                break
+            tag_warnings.append(f"{selected_tag} published no assets")
+            selected_tag = candidate
+            assets = published_assets(candidate, fetch=fetch)
     if system is None:
         system = platform.system()
     if machine is None:
@@ -466,7 +476,7 @@ def install(
     target = root / selected_tag
     target.mkdir(parents=True, exist_ok=True)
     archive = target / asset.asset
-    warnings = [selection_warning] if selection_warning else []
+    warnings = tag_warnings + ([selection_warning] if selection_warning else [])
     try:
         download(asset.url, archive)
         digest = hashlib.sha256()
