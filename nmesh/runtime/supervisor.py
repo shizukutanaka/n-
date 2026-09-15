@@ -188,9 +188,16 @@ class Supervisor:
     def _entry_alive(cls, entry: Mapping[str, object]) -> bool:
         pid = entry.get("pid")
         if pid is not None:
+            if not isinstance(pid, (int, float, str)):
+                return False
             try:
-                return _pid_alive(int(pid), float(entry["create_time"])
-                                 if entry.get("create_time") is not None else None)
+                raw_created = entry.get("create_time")
+                created = (
+                    float(raw_created)
+                    if isinstance(raw_created, (int, float, str))
+                    else None
+                )
+                return _pid_alive(int(pid), created)
             except (TypeError, ValueError):
                 return False
         if entry.get("shared") or entry.get("external"):
@@ -270,7 +277,7 @@ class Supervisor:
                 live = pid is not None and self._entry_alive(gateway)
             except (TypeError, ValueError):
                 live = False
-            if live:
+            if live and isinstance(pid, (int, float, str)):
                 self._terminator(int(pid))
             elif foreign:
                 port = gateway.get("port")
@@ -525,22 +532,32 @@ class Supervisor:
         )
 
     def _launch(self, service: PlannedService) -> ProcessLike:
-        kwargs: dict[str, object] = {"env": {**os.environ, **service.launch.env}}
-        if is_windows():
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            kwargs["start_new_session"] = True
+        env: dict[str, str] = {**os.environ, **service.launch.env}
         handle = None
         if os.environ.get("NMESH_BACKEND_LOG") != "0":
             try:
                 handle = open_log(service.name)
             except OSError:
                 handle = None
-        if handle is not None:
-            kwargs["stdout"] = handle
-            kwargs["stderr"] = subprocess.STDOUT
+        stdout = handle
+        stderr = subprocess.STDOUT if handle is not None else None
         try:
-            return subprocess.Popen(service.launch.argv, **kwargs)
+            if is_windows():
+                return subprocess.Popen(
+                    service.launch.argv,
+                    env=env,
+                    stdout=stdout,
+                    stderr=stderr,
+                    # only defined on Windows; is_windows() guards it
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,  # type: ignore[attr-defined]
+                )
+            return subprocess.Popen(
+                service.launch.argv,
+                env=env,
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=True,
+            )
         finally:
             if handle is not None:
                 handle.close()
@@ -853,16 +870,18 @@ class Supervisor:
                                     drop_unaffordable=True,
                                 )
                                 replan_done = True
-                                service = next(
+                                refreshed = next(
                                     (
                                         item for item in current.services
                                         if item.name == service.name
                                     ),
                                     None,
                                 )
+                                if refreshed is None:
+                                    self.active_plan = current
+                                    continue
+                                service = refreshed
                             self.active_plan = current
-                            if service is None:
-                                continue
                         elif service.backend == "ollama":
                             warning = i18n.t(
                                 "warn.ollama_context_default",
@@ -955,7 +974,8 @@ class Supervisor:
                         if gateway_retained:
                             state["gateway"] = gateway
                 retained: list[dict[str, object]] = []
-                for entry in state.get("services", []):
+                entries_state = state.get("services")
+                for entry in entries_state if isinstance(entries_state, list) else ():
                     if not isinstance(entry, dict):
                         continue
                     if entry.get("service") in adopted_names:
@@ -1125,15 +1145,23 @@ class Supervisor:
                 (item for item in self.active_plan.services if item.name == name), None
             )
 
+        def planned_fields(name: str) -> dict[str, object]:
+            service = planned(name)
+            if service is None:
+                return {}
+            return {
+                "model_ref": service.model_ref,
+                "quant": service.quant,
+                "backend": service.backend,
+            }
+
         entries = [{
             "service": name,
             "pid": process.pid,
             "running": process.poll() is None,
             "restarts": len(self.restarts.get(name, [])),
             "parallel_slots": _slots(self.active_plan, name),
-            **({"model_ref": planned(name).model_ref,
-                "quant": planned(name).quant,
-                "backend": planned(name).backend} if planned(name) else {}),
+            **planned_fields(name),
             **({"note": self.notes[name]} if name in self.notes else {}),
         } for name, process in self.processes.items()]
         entries.extend({
@@ -1142,25 +1170,21 @@ class Supervisor:
             "running": True,
             "shared": True,
             "parallel_slots": _slots(self.active_plan, name),
-            **({"model_ref": planned(name).model_ref,
-                "quant": planned(name).quant,
-                "backend": planned(name).backend} if planned(name) else {}),
+            **planned_fields(name),
             **({"note": self.notes[name]} if name in self.notes else {}),
         } for name in self.shared_services if name not in self.processes)
         entries.extend({
             "service": name,
             "pid": record.get("pid"),
             "running": (
-                self._healthy(planned(name))
-                if planned(name) is not None
+                self._healthy(target)
+                if (target := planned(name)) is not None
                 else self._entry_alive(record)
             ),
             "external": True,
             "adopted": True,
             "parallel_slots": _slots(self.active_plan, name),
-            **({"model_ref": planned(name).model_ref,
-                "quant": planned(name).quant,
-                "backend": planned(name).backend} if planned(name) else {}),
+            **planned_fields(name),
             **({"note": self.notes[name]} if name in self.notes else {}),
         } for name, record in self.adopted.items() if name not in self.processes)
         entries.extend({
@@ -1170,9 +1194,7 @@ class Supervisor:
             "shared": True,
             "external": True,
             "parallel_slots": _slots(self.active_plan, name),
-            **({"model_ref": planned(name).model_ref,
-                "quant": planned(name).quant,
-                "backend": planned(name).backend} if planned(name) else {}),
+            **planned_fields(name),
             **({"note": self.notes[name]} if name in self.notes else {}),
         } for name in self.external_shared if name not in self.processes)
         entries.extend({
@@ -1182,9 +1204,7 @@ class Supervisor:
             "idle": True,
             "restarts": len(self.restarts.get(name, [])),
             "parallel_slots": _slots(self.active_plan, name),
-            **({"model_ref": planned(name).model_ref,
-                "quant": planned(name).quant,
-                "backend": planned(name).backend} if planned(name) else {}),
+            **planned_fields(name),
             **({"note": self.notes[name]} if name in self.notes else {}),
         } for name in self.idle if name not in self.processes
         and name not in self.shared_services
@@ -1199,10 +1219,12 @@ class Supervisor:
             gateway_running = self._entry_alive(gateway)
             gateway_entry["running"] = gateway_running
         if not entries and payload is not None:
-            state_services = [
-                dict(item) for item in payload.get("services", [])
-                if isinstance(item, dict)
-            ]
+            persisted = payload.get("services")
+            state_services = (
+                [dict(item) for item in persisted if isinstance(item, dict)]
+                if isinstance(persisted, list)
+                else []
+            )
             entries = state_services
             live_services = []
             for item in state_services:
@@ -1226,7 +1248,7 @@ class Supervisor:
                         self.state_path.unlink()
                     except FileNotFoundError:
                         pass
-        elif gateway_entry is not None:
+        elif gateway_entry is not None and payload is not None:
             entries.append(gateway_entry)
             if not gateway_running:
                 payload.pop("gateway", None)
@@ -1267,11 +1289,17 @@ class Supervisor:
             if boot_recovery:
                 state = self._load_state()
                 if state is not None:
-                    persisted_names = {
-                        str(entry.get("service"))
-                        for entry in state.get("services", [])
-                        if isinstance(entry, dict) and entry.get("service") is not None
-                    }
+                    persisted = state.get("services")
+                    persisted_names = (
+                        {
+                            str(entry.get("service"))
+                            for entry in persisted
+                            if isinstance(entry, dict)
+                            and entry.get("service") is not None
+                        }
+                        if isinstance(persisted, list)
+                        else set()
+                    )
             changed = False
             for service in self.active_plan.services:
                 if service.name in self.idle:

@@ -347,12 +347,14 @@ def _extract_archive(archive: Path, destination: Path) -> None:
     if archive.name.endswith(".tar.gz"):
         with tarfile.open(archive, "r:gz") as source:
             members = source.getmembers()
-            for member in members:
-                target = _safe_member(member.name, destination)
-                if member.islnk():
-                    raise ValueError(f"archive link is not allowed: {member.name}")
-                if member.issym():
-                    link = Path(member.linkname)
+            for tar_member in members:
+                target = _safe_member(tar_member.name, destination)
+                if tar_member.islnk():
+                    raise ValueError(
+                        f"archive link is not allowed: {tar_member.name}"
+                    )
+                if tar_member.issym():
+                    link = Path(tar_member.linkname)
                     destination_root = destination.resolve()
                     link_target = (target.parent / link).resolve()
                     if (
@@ -365,25 +367,27 @@ def _extract_archive(archive: Path, destination: Path) -> None:
                     ):
                         raise ValueError(
                             f"archive link escapes installation directory: "
-                            f"{member.name} -> {member.linkname}"
+                            f"{tar_member.name} -> {tar_member.linkname}"
                         )
-            for member in members:
-                target = _safe_member(member.name, destination)
-                if member.isdir():
+            for tar_member in members:
+                target = _safe_member(tar_member.name, destination)
+                if tar_member.isdir():
                     target.mkdir(parents=True, exist_ok=True)
-                elif member.issym():
+                elif tar_member.issym():
                     target.parent.mkdir(parents=True, exist_ok=True)
                     if target.exists() or target.is_symlink():
                         target.unlink()
-                    os.symlink(member.linkname, target)
-                elif member.isfile():
+                    os.symlink(tar_member.linkname, target)
+                elif tar_member.isfile():
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    input_file = source.extractfile(member)
-                    if input_file is None:
-                        raise ValueError(f"unable to read archive member: {member.name}")
-                    with input_file, target.open("wb") as output:
-                        shutil.copyfileobj(input_file, output)
-                    os.chmod(target, member.mode & 0o777)
+                    tar_stream = source.extractfile(tar_member)
+                    if tar_stream is None:
+                        raise ValueError(
+                            f"unable to read archive member: {tar_member.name}"
+                        )
+                    with tar_stream, target.open("wb") as output:
+                        shutil.copyfileobj(tar_stream, output)
+                    os.chmod(target, tar_member.mode & 0o777)
         return
     raise ValueError(f"unsupported engine archive: {archive.name}")
 
@@ -392,7 +396,16 @@ def _manifest_path(root: Path) -> Path:
     return root / "manifest.json"
 
 
+def _manifest_number(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"invalid engine manifest number: {value!r}")
+    return float(value)
+
+
 def _from_manifest(payload: dict[str, object]) -> InstalledEngine:
+    flags = payload.get("flags", [])
+    if not isinstance(flags, list):
+        raise TypeError("invalid engine manifest flags")
     return InstalledEngine(
         str(payload.get("backend", "llamacpp")),
         str(payload["tag"]),
@@ -401,8 +414,8 @@ def _from_manifest(payload: dict[str, object]) -> InstalledEngine:
         str(payload["version_line"]) if payload.get("version_line") else None,
         str(payload["sha256"]),
         str(payload["asset"]),
-        float(payload["installed_at"]),
-        tuple(str(flag) for flag in payload.get("flags", [])),
+        _manifest_number(payload["installed_at"]),
+        tuple(str(flag) for flag in flags),
     )
 
 

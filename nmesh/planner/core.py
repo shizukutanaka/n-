@@ -26,7 +26,7 @@ from nmesh.eval.stats import (
 from nmesh.i18n import t
 from nmesh.orchestrate.measure import RoleIdentity
 from nmesh.paths import nmesh_home
-from nmesh.probe import GPUInfo, HardwareProfile, Tier
+from nmesh.probe import GPUInfo, HardwareProfile, Tier, profile_from_dict
 from nmesh.spec import (
     KINDS,
     SpecConfig,
@@ -181,16 +181,15 @@ def _incomparable_warning(
 ) -> tuple[tuple[str, str], str]:
     left_quant, left_backend, left_summary = left
     right_quant, right_backend, right_summary = right
-    pair = tuple(sorted((
-        (
-            f"{(left_model_id or model_id).casefold()}|"
-            f"{left_quant.casefold()}|{left_backend.casefold()}"
-        ),
-        (
-            f"{(right_model_id or model_id).casefold()}|"
-            f"{right_quant.casefold()}|{right_backend.casefold()}"
-        ),
-    )))
+    left_key = (
+        f"{(left_model_id or model_id).casefold()}|"
+        f"{left_quant.casefold()}|{left_backend.casefold()}"
+    )
+    right_key = (
+        f"{(right_model_id or model_id).casefold()}|"
+        f"{right_quant.casefold()}|{right_backend.casefold()}"
+    )
+    pair = (left_key, right_key) if left_key <= right_key else (right_key, left_key)
     message = t(
         "warn.eval_incomparable_conditions",
         lang,
@@ -430,7 +429,7 @@ def _launch(
     tensor_parallel: int,
     slots: int = 1,
     gpu_fraction: float | None = None,
-    backend_flags: frozenset[str] | None = None,
+    backend_flags: frozenset[str] | tuple[str, ...] | None = None,
     kv_quant: str = "f16",
     warnings: list[str] | None = None,
     gpu_devices: tuple[str, ...] | None = None,
@@ -473,14 +472,17 @@ def _launch(
             )
     else:
         known = backend_flags is not None
+        flags: frozenset[str] | tuple[str, ...] = (
+            backend_flags if backend_flags is not None else ()
+        )
         parallel = not known or any(
-            flag in backend_flags for flag in ("-np", "--parallel")
+            flag in flags for flag in ("-np", "--parallel")
         )
         gpu_layers = (
             gpu_devices != ()
             and (not known or _supports_gpu_layers(backend_flags))
         )
-        tensor_split = not known or "--tensor-split" in backend_flags
+        tensor_split = not known or "--tensor-split" in flags
         argv = [
             binary or "llama-server", "-m", ref, "-c",
             str(context * slots if parallel else context),
@@ -524,9 +526,9 @@ def _launch(
                 t("warn.spec_unsupported", language, service=model.id)
             )
         if backend == "llamacpp" and embed_only:
-            if not known or "--embeddings" in backend_flags:
+            if not known or "--embeddings" in flags:
                 embedding_flag = "--embeddings"
-            elif "--embedding" in backend_flags:
+            elif "--embedding" in flags:
                 embedding_flag = "--embedding"
             else:
                 embedding_flag = None
@@ -536,7 +538,7 @@ def _launch(
                 warnings.append(
                     t("warn.embeddings_unsupported", language, model=model.id)
                 )
-            pooling_supported = not known or "--pooling" in backend_flags
+            pooling_supported = not known or "--pooling" in flags
             if model.pooling and pooling_supported:
                 argv.extend(["--pooling", model.pooling])
             elif warnings is not None:
@@ -549,18 +551,18 @@ def _launch(
                     physical_batch_flag = "-ub"
                 else:
                     logical_batch_flag = (
-                        "-b" if "-b" in backend_flags else "--batch-size"
+                        "-b" if "-b" in flags else "--batch-size"
                     )
                     physical_batch_flag = (
-                        "-ub" if "-ub" in backend_flags else "--ubatch-size"
+                        "-ub" if "-ub" in flags else "--ubatch-size"
                     )
                 batch_supported = not known or (
                     any(
-                        flag in backend_flags
+                        flag in flags
                         for flag in ("-b", "--batch-size")
                     )
                     and any(
-                        flag in backend_flags
+                        flag in flags
                         for flag in ("-ub", "--ubatch-size")
                     )
                 )
@@ -1246,7 +1248,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
 
 def _rebuild_launch(service: PlannedService, tensor_parallel: int,
                     layers: int | None,
-                    backend_flags: frozenset[str] | None = None,
+                    backend_flags: frozenset[str] | tuple[str, ...] | None = None,
                     warnings: list[str] | None = None,
                     gpu_devices: tuple[str, ...] | None = None,
                     language: str = "en") -> LaunchSpec:
@@ -1765,15 +1767,18 @@ def _assign_slots(
 
 def _rewrite_launch(
     service: PlannedService, slots: int, gpu_fraction: float | None,
-    backend_flags: frozenset[str] | None = None,
+    backend_flags: frozenset[str] | tuple[str, ...] | None = None,
     warnings: list[str] | None = None,
     language: str = "en",
 ) -> LaunchSpec:
     argv = list(service.launch.argv)
     if service.backend == "llamacpp":
         known = backend_flags is not None
+        flags: frozenset[str] | tuple[str, ...] = (
+            backend_flags if backend_flags is not None else ()
+        )
         parallel = not known or any(
-            flag in backend_flags for flag in ("-np", "--parallel")
+            flag in flags for flag in ("-np", "--parallel")
         )
         if "-c" in argv:
             argv[argv.index("-c") + 1] = str(
@@ -2188,13 +2193,12 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                 warnings.append(t("warn.worker_not_coresident", selected.lang))
             continue
 
-        candidate = _plan_group(group, pools)
-        if candidate is None and len(group) > 1:
+        group_candidate = _plan_group(group, pools)
+        if group_candidate is None and len(group) > 1:
             for role in group:
-                role_candidate = pools.get(role, [])
-                if role_candidate:
-                    role_candidate = role_candidate[0]
-                    role_candidate = apply_eval_override([role], role_candidate)
+                role_pool = pools.get(role, [])
+                if role_pool:
+                    role_candidate = apply_eval_override([role], role_pool[0])
                     saturation_warning = _speed_saturation_warning(
                         role, role_candidate, pools[role], selected,
                     )
@@ -2214,25 +2218,25 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                 else:
                     warnings.append(t("warn.no_candidate", selected.lang, role=role))
             continue
-        if candidate is None:
+        if group_candidate is None:
             warnings.append(t("warn.no_candidate", selected.lang, role=group[0]))
             continue
-        candidate = apply_eval_override(group, candidate)
+        group_candidate = apply_eval_override(group, group_candidate)
         saturation_warning = _speed_saturation_warning(
-            group[0], candidate, pools[group[0]], selected,
+            group[0], group_candidate, pools[group[0]], selected,
         )
         if saturation_warning is not None:
             warnings.append(saturation_warning)
         empty_candidate = (
             _plan_group(group, empty_pools) if empty_pools is not None else None
         )
-        warn_capacity_tradeoff(group[0], candidate, empty_candidate)
+        warn_capacity_tradeoff(group[0], group_candidate, empty_candidate)
         _add_service(
-            group, candidate, profile, services, swap_group, role_to_service, hints,
-            missing_backends, selected.budget_source, warnings, selected.lang,
-            spec_policy=selected,
+            group, group_candidate, profile, services, swap_group, role_to_service,
+            hints, missing_backends, selected.budget_source, warnings,
+            selected.lang, spec_policy=selected,
         )
-        total_download += int(candidate.memory.disk_needed)
+        total_download += int(group_candidate.memory.disk_needed)
     seen_unconfirmed: set[str] = set()
     for measurement in bench_unconfirmed:
         identity = f"{measurement['model']}|{measurement['quant']}"
@@ -2266,15 +2270,15 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     selected_unmeasured: set[str] = set()
     for service in services:
         if service.model_id.casefold() in requested_model_ids:
-            model = next(
+            catalog_model = next(
                 (
                     item for item in catalog_models
                     if item.id.casefold() == service.model_id.casefold()
                 ),
                 None,
             )
-            if model is not None and model.quality is None:
-                selected_unmeasured.add(model.id)
+            if catalog_model is not None and catalog_model.quality is None:
+                selected_unmeasured.add(catalog_model.id)
     if eval_depth_coverage is not None or eval_depth_lost is not None:
         for service in services:
             key = (
@@ -2512,14 +2516,14 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                             and other_rate >= selected_rate
                             and evidence_test.p_value >= 0.05
                         ):
-                            pair = (
+                            quant_pair = (
                                 other.id,
                                 other_candidate.quant,
                                 service.model_id,
                                 service.quant,
                             )
-                            if pair not in indistinguishable_pairs:
-                                indistinguishable_pairs.add(pair)
+                            if quant_pair not in indistinguishable_pairs:
+                                indistinguishable_pairs.add(quant_pair)
                                 warnings.append(t(
                                     "note.quant_indistinguishable",
                                     selected.lang,
@@ -2545,15 +2549,15 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         ):
                             continue
                         if evidence_test.p_value < 0.05:
-                            pair = (
+                            quant_pair = (
                                 other.id,
                                 other_candidate.quant,
                                 service.model_id,
                                 service.quant,
                             )
-                            if pair in contradiction_pairs:
+                            if quant_pair in contradiction_pairs:
                                 continue
-                            contradiction_pairs.add(pair)
+                            contradiction_pairs.add(quant_pair)
                             if same_model:
                                 warnings.append(t(
                                     "warn.quant_penalty_contradiction",
@@ -2654,47 +2658,36 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     )
 
 
-def _gpu_from_dict(data: object) -> GPUInfo:
-    if not isinstance(data, dict):
-        raise TypeError("Invalid GPU data")
-    cap = data.get("compute_capability")
-    return GPUInfo(
-        int(data["index"]), str(data["name"]), str(data["vendor"]),
-        int(data["total_vram_bytes"]), int(data["free_vram_bytes"]),
-        tuple(cap) if isinstance(cap, list) else cap, bool(data["driving_display"]),
-        str(data.get("vram_source", "unknown")),
-    )
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        raise TypeError("expected a list")
+    return [str(item) for item in value]
 
 
 def _plan_from_dict(data: dict[str, object]) -> Plan:
     pd = data["profile"]
     if not isinstance(pd, dict):
         raise TypeError("Invalid profile")
-    profile = HardwareProfile(
-        str(pd["os"]), str(pd["cpu_name"]), int(pd["physical_cores"]), int(pd["logical_cores"]),
-        int(pd["total_ram_bytes"]), int(pd["available_ram_bytes"]), int(pd["free_disk_bytes"]),
-        bool(pd["unified_memory"]), [_gpu_from_dict(item) for item in pd["gpus"]],
-        {str(k): v if isinstance(v, str) else None for k, v in pd["available_backends"].items()},
-        Tier(str(pd["tier"])), [str(x) for x in pd.get("warnings", [])],
-        {
-            str(name): tuple(str(flag) for flag in flags)
-            for name, flags in pd.get("backend_flags", {}).items()
-        },
-        {str(name): str(path) for name, path in pd.get("backend_paths", {}).items()},
-        {
-            str(name): (
-                tuple(str(device) for device in devices)
-                if isinstance(devices, list)
-                else None
-            )
-            for name, devices in pd.get("backend_gpu_devices", {}).items()
-        },
-        [
-            {str(key): str(value) for key, value in params.items()}
-            if isinstance(params, dict)
-            else {}
-            for params in pd.get("warning_params", [])
-        ],
+    profile = profile_from_dict(pd)
+    profile_warnings = pd.get("warnings", [])
+    profile_params = pd.get("warning_params", [])
+    profile = replace(
+        profile,
+        warnings=(
+            [str(item) for item in profile_warnings]
+            if isinstance(profile_warnings, list)
+            else []
+        ),
+        warning_params=(
+            [
+                {str(key): str(value) for key, value in params.items()}
+                if isinstance(params, dict)
+                else {}
+                for params in profile_params
+            ]
+            if isinstance(profile_params, list)
+            else []
+        ),
     )
     pol = data["policy"]
     if not isinstance(pol, dict):
@@ -2714,8 +2707,11 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
                     bool(pol.get("ignore_spec_evidence", False)),
                     bool(pol.get("roles_explicit", False)),
                 )
+    services_raw = data["services"]
+    if not isinstance(services_raw, list):
+        raise TypeError("Invalid services")
     services: list[PlannedService] = []
-    for item in data["services"]:
+    for item in services_raw:
         sd = item
         if not isinstance(sd, dict):
             raise TypeError("Invalid service")
@@ -2751,12 +2747,17 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
         raise TypeError("Invalid routing")
     routing = RoutingRules(str(rd["mode"]), {str(k): str(v) for k, v in rd["role_to_service"].items()},
                            {str(k): str(v) for k, v in rd["aliases"].items()})
+    total_download_value = data["total_download_bytes"]
+    if isinstance(total_download_value, bool) or not isinstance(
+        total_download_value, (int, float, str)
+    ):
+        raise TypeError("Invalid total_download_bytes")
     return Plan(
         str(data["created_at"]), str(data["nmesh_version"]), profile, Tier(str(data["tier"])),
-        policy, services, [str(x) for x in data["swap_group"]], routing,
-        [str(x) for x in data["warnings"]], [str(x) for x in data["install_hints"]],
-        int(data["total_download_bytes"]), bool(data.get("runnable", True)),
-        [str(x) for x in data.get("missing_backends", [])],
+        policy, services, _string_list(data["swap_group"]), routing,
+        _string_list(data["warnings"]), _string_list(data["install_hints"]),
+        int(total_download_value), bool(data.get("runnable", True)),
+        _string_list(data.get("missing_backends", [])),
     )
 
 
