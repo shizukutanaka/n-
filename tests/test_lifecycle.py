@@ -214,7 +214,7 @@ def _up_service(name: str) -> SimpleNamespace:
         backend="llamacpp",
         model_ref="model",
         quant="q4_k_m",
-        launch=SimpleNamespace(health_url=None, shared_daemon=False),
+        launch=SimpleNamespace(health_url=None, shared_daemon=False, argv=[]),
         memory=SimpleNamespace(parallel_slots=1),
     )
 
