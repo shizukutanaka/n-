@@ -902,7 +902,12 @@ class Supervisor:
                         self.failed.pop(service.name, None)
                         if not self._wait_health(service):
                             raise RuntimeError(self._unhealthy_message(service.name))
-                    if current is plan or actualized:
+                    if (current is plan or actualized) and {
+                        item.name for item in current.services
+                    } == {item.name for item in plan.services}:
+                        # Only persist when the service set is unchanged: an
+                        # admission drop under transient memory pressure must
+                        # not silently shrink the user's saved plan.
                         save_plan(current)
                     self._persist(current)
                     return self.status()
