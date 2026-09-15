@@ -2700,7 +2700,7 @@ def _eval(args: argparse.Namespace) -> int:
 
 
 def _orchestration_service(
-    plan: Plan, selector: str, role: str
+    plan: Plan, selector: str,
 ) -> PlannedService | None:
     selector = plan.routing.role_to_service.get(selector, selector)
     service = next(
@@ -2737,17 +2737,33 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
     if plan is None or not plan.services:
         print(i18n.t("err.orchestrate_plan", i18n.lang()), file=sys.stderr)
         return 1
-    lead = _orchestration_service(plan, args.lead, "lead")
-    worker = _orchestration_service(plan, args.worker, "worker")
+    lead = _orchestration_service(plan, args.lead)
+    worker = _orchestration_service(plan, args.worker)
     if worker is None and args.worker == "worker":
-        worker = next((item for item in plan.services if item != lead), None)
-    if lead is None or worker is None:
+        worker = next(
+            (
+                item for item in plan.services
+                if item != lead and _orchestration_generative(item)
+            ),
+            None,
+        )
+    if lead is None:
         print(
             i18n.t(
                 "err.orchestrate_service",
                 i18n.lang(),
                 lead=args.lead,
                 worker=args.worker,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    if worker is None:
+        print(
+            i18n.t(
+                "err.orchestrate_no_worker",
+                i18n.lang(),
+                lead=lead.name,
             ),
             file=sys.stderr,
         )
