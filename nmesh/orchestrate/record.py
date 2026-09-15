@@ -383,7 +383,7 @@ def _parse(data: object) -> DelegationRecord | None:
     n_tasks = _count(data.get("n_tasks"))
     if n_tasks is None or n_tasks == 0:
         return None
-    counts = {
+    raw_counts = {
         name: _count(data.get(name), n_tasks)
         for name in (
             "worker_passed",
@@ -399,32 +399,33 @@ def _parse(data: object) -> DelegationRecord | None:
             "unscorable",
         )
     }
-    tokens = {
+    raw_tokens = {
         name: _count(data.get(name))
         for name in ("lead_tokens_solo", "lead_tokens_delegated")
     }
+    counts: dict[str, int] = {}
+    tokens: dict[str, int] = {}
+    for target, source in ((counts, raw_counts), (tokens, raw_tokens)):
+        for name, count in source.items():
+            if count is None:
+                return None
+            target[name] = count
     allowance = _count(data.get("reasoning_allowance", 0))
     accuracy = _ratio(data.get("verifier_accuracy"))
     delegated_p = _ratio(data.get("delegated_p"))
     ceiling_p = _ratio(data.get("ceiling_p"))
-    seconds = {
-        name: data.get(name) for name in ("seconds_solo", "seconds_delegated")
-    }
-    if (
-        any(value is None for value in counts.values())
-        or any(value is None for value in tokens.values())
-        or allowance is None
-        or accuracy is None
-        or delegated_p is None
-        or ceiling_p is None
-        or any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-            or value < 0
-            for value in seconds.values()
-        )
-    ):
+    seconds: dict[str, float] = {}
+    for name in ("seconds_solo", "seconds_delegated"):
+        elapsed = data.get(name)
+        if (
+            isinstance(elapsed, bool)
+            or not isinstance(elapsed, (int, float))
+            or not math.isfinite(elapsed)
+            or elapsed < 0
+        ):
+            return None
+        seconds[name] = float(elapsed)
+    if allowance is None or accuracy is None or delegated_p is None or ceiling_p is None:
         return None
     reference_id = data.get("reference_id", "")
     reference_tps = data.get("reference_tps", 0.0)
@@ -464,8 +465,8 @@ def _parse(data: object) -> DelegationRecord | None:
         at=float(at),
         repeats=repeats,
         unstable_tasks=unstable_tasks,
-        seconds_solo=float(seconds["seconds_solo"]),
-        seconds_delegated=float(seconds["seconds_delegated"]),
+        seconds_solo=seconds["seconds_solo"],
+        seconds_delegated=seconds["seconds_delegated"],
         lead_tokens_solo=tokens["lead_tokens_solo"],
         lead_tokens_delegated=tokens["lead_tokens_delegated"],
         **counts,

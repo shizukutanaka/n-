@@ -111,7 +111,7 @@ def _gguf_files(repo_id: str) -> dict[str, int | None]:
 
     result: dict[str, int | None] = {}
     info = HfApi().model_info(repo_id, files_metadata=True)
-    for sibling in info.siblings:
+    for sibling in info.siblings or ():
         name = getattr(sibling, "rfilename", None)
         if not isinstance(name, str) or not name.lower().endswith(".gguf"):
             continue

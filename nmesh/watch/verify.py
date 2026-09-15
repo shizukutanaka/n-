@@ -7,6 +7,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Protocol, runtime_checkable
 
 import httpx
 
@@ -178,9 +179,9 @@ def _model_finding(
         siblings_value = metadata.get("siblings")
         siblings = (
             tuple(
-                _text(_mapping(item).get("rfilename"))
+                _text(sibling.get("rfilename"))
                 for item in siblings_value
-                if _mapping(item) is not None
+                if (sibling := _mapping(item)) is not None
             )
             if isinstance(siblings_value, list)
             else ()
@@ -268,19 +269,19 @@ def caps_available() -> bool:
     return _caps_flags() is not None
 
 
+@runtime_checkable
+class _RoutePath(Protocol):
+    path: str
+
+
 def _gateway_routes() -> frozenset[str] | None:
     try:
         app = create_app()
-        routes = app.routes
-        paths: set[str] = set()
-        for route in routes:
-            try:
-                path = route.path
-            except AttributeError:
-                continue
-            if isinstance(path, str):
-                paths.add(path)
-        return frozenset(paths)
+        return frozenset(
+            route.path
+            for route in app.routes
+            if isinstance(route, _RoutePath) and isinstance(route.path, str)
+        )
     except (FileNotFoundError, ImportError, OSError, RuntimeError, TypeError, ValueError):
         return None
 

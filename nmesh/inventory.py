@@ -215,7 +215,10 @@ def scan(stores: dict[str, Path]) -> list[Artifact]:
                     tensors=info.tensors,
                     elements=info.elements,
                     file_type=info.file_type,
-                    quant=FILE_TYPE_QUANT.get(info.file_type),
+                    quant=(
+                        None if info.file_type is None
+                        else FILE_TYPE_QUANT.get(info.file_type)
+                    ),
                     label=label,
                     tags=tags.get(path.name, ()),
                     identity=_identity(info),

@@ -40,7 +40,7 @@ from nmesh.spec.record import (
 
 def _bench_parts(key: str) -> tuple[str, str, str]:
     parts = key.split("|")
-    return tuple(parts[:3]) if len(parts) >= 3 else (key, "", "")
+    return (parts[0], parts[1], parts[2]) if len(parts) >= 3 else (key, "", "")
 
 
 def _bench_rows() -> list[dict[str, object]]:

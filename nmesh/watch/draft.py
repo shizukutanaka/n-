@@ -40,13 +40,14 @@ def _draft_text(finding: Finding) -> str:
     repo = finding.value
     verified = finding.verified
     model_id = repo.lower().replace("/", "-")
+    sources: dict[str, str] = {"hf": repo}
     fields: dict[str, object] = {
         "id": model_id,
-        "sources": {"hf": repo},
+        "sources": sources,
         "quality": None,
     }
     if verified.get("weight_sets"):
-        fields["sources"]["hf_gguf"] = repo
+        sources["hf_gguf"] = repo
     for key in ("params", "license"):
         if key in verified:
             fields[key] = verified[key]
@@ -95,7 +96,7 @@ def _draft_text(finding: Finding) -> str:
             lines.append("  quality: null")
         elif field == "sources" and field in fields:
             lines.append("  sources:")
-            for source, url in fields[field].items():
+            for source, url in sources.items():
                 lines.append(f"    {source}: {_yaml(url)}")
         elif field in fields:
             lines.append(f"  {field}: {_yaml(value)}")
