@@ -2038,19 +2038,19 @@ def test_eval_divergence_reports_disagreeing_tasks() -> None:
             },
         ),
     }
-    assert cli._eval_divergence(result, records) == [{
-        "config": "f16|ollama",
-        "artifact": None,
-        "pass_rate": 0.5,
-        "compared": 2,
-        "disagreeing": [
+    assert cli._eval_divergence(result, records) == [cli._Divergence(
+        config="f16|ollama",
+        artifact=None,
+        pass_rate=0.5,
+        compared=2,
+        disagreeing=[
             "arithmetic.subtract",
             "multilingual.ja_translate",
         ],
-        "discordant_here": 1,
-        "discordant_there": 1,
-        "zero_power_families": [],
-    }]
+        discordant_here=1,
+        discordant_there=1,
+        zero_power_families=[],
+    )]
     assert cli._eval_divergence(replace(result, cache_prompt=False), records) == []
 
 
