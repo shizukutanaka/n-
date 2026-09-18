@@ -27,7 +27,6 @@
 
 - `nmesh status` / `nmesh down` / `nmesh up` の非 JSON 出力が `RuntimeStatus(...)` の dataclass repr をそのまま表示していました。サービス一覧をテーブル（Service / State / Port / Model / Backend）で表示するようにし、稼働サービスが無い場合は「no services running」と表示します（en/ja）。
 
-||||||| parent of a299a2f (run: honor --port, print gateway errors to stderr with a next step)
 - `nmesh run` に `--port` を追加し、エラーを stderr に出して次の一手を示すようにしました。これまではポート 18000 固定でカスタムポートの gateway に届かず、接続失敗も stdout に raw エラーだけが出ていました。
 - サービス起動失敗時に、計画ポートが別プロセスで占有されている場合はその旨を明示するようにしました（`port N is still in use by another process`）。これまでは上流の生ログ（`couldn't bind HTTP server socket`）だけが出ていました。判定は connect ではなく bind 試行で行います — connect だと外部リスナーの accept バックログを消費してリトライ時に誤判定するため。
 - 実行可能な保存済み `plan.json` がある状態で `nmesh up` に計画系オプション（`--roles`/`--kv-quant`/`--spec*`/`--sleep-idle-seconds`/`--cache-reuse`/`--context-shift`）を渡しても、保存済みプランがそのまま使われオプションが無警告で無視されていました。無視されるオプションを stderr に警告するようにしました。
