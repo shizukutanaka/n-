@@ -4,6 +4,7 @@ import atexit
 import json
 import os
 import signal
+import socket
 import subprocess
 import time
 import urllib.error
@@ -100,6 +101,22 @@ def gateway_listener_pid(port: int) -> int | None:
             if any("nmesh.gateway" in part for part in cmdline):
                 return connection.pid
     return None
+
+
+def _port_in_use(port: int) -> bool:
+    """True when *port* cannot be bound — i.e. a live listener owns it.
+
+    Probing with connect() would consume the foreign listener's accept
+    backlog and flip to False on retries; a bind attempt fails exactly the
+    way the backend's own bind did.
+    """
+    try:
+        with socket.socket() as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind(("127.0.0.1", port))
+    except OSError:
+        return True
+    return False
 
 
 def gateway_health(port: int) -> bool:
@@ -615,11 +632,15 @@ class Supervisor:
             f"{detail}"
         )
 
-    def _unhealthy_message(self, service_name: str) -> str:
-        return self._with_log_tail(
-            service_name,
-            i18n.t("err.service_unhealthy", i18n.lang(), service=service_name),
+    def _unhealthy_message(
+        self, service_name: str, port: int | None = None
+    ) -> str:
+        message = i18n.t(
+            "err.service_unhealthy", i18n.lang(), service=service_name
         )
+        if port is not None and _port_in_use(port):
+            message = f"{message} {i18n.t('err.service_port_in_use', i18n.lang(), port=port)}"
+        return self._with_log_tail(service_name, message)
 
     def _healthy(self, service: PlannedService) -> bool:
         if service.launch.health_url is None:
@@ -951,7 +972,9 @@ class Supervisor:
                         self._arm_atexit()
                         self.failed.pop(service.name, None)
                         if not self._wait_health(service):
-                            raise RuntimeError(self._unhealthy_message(service.name))
+                            raise RuntimeError(
+                                self._unhealthy_message(service.name, service.port)
+                            )
                     if (current is plan or actualized) and {
                         item.name for item in current.services
                     } == {item.name for item in plan.services}:
@@ -1122,7 +1145,9 @@ class Supervisor:
                 self._arm_atexit()
                 if not self._wait_health(target):
                     self._stop_process(service_name)
-                    raise RuntimeError(self._unhealthy_message(service_name))
+                    raise RuntimeError(
+                        self._unhealthy_message(service_name, target.port)
+                    )
                 self.failed.pop(service_name, None)
             if actualized:
                 save_plan(selected, self.plan_path)
