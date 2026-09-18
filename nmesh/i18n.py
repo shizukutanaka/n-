@@ -28,6 +28,11 @@ MESSAGES = {
         "info.engine_autoinstall": "No llama.cpp backend found; installing the managed engine {tag} ({variant}).",
         "engine.use": "Using {tag} ({variant})",
         "engine.remove": "Removed {tag}",
+        "err.engine_in_use": (
+            "engine {tag} is active and used by running services "
+            "({services}) — stop them with `nmesh down` first, or pass "
+            "--force to remove anyway."
+        ),
         "engine.active_cleared": "Active engine cleared",
         "models.removed": "Removed {path}",
         "models.planned_refusal": "Refusing to remove a model referenced by the plan: {path}; use --force",
@@ -486,6 +491,10 @@ MESSAGES = {
         "info.engine_autoinstall": "llama.cpp バックエンドが見つからないため、管理対象エンジン {tag}（{variant}）をインストールします。",
         "engine.use": "{tag}（{variant}）を使用します",
         "engine.remove": "{tag}を削除しました",
+        "err.engine_in_use": (
+            "エンジン {tag} は稼働中のサービス（{services}）が使用中です — "
+            "先に `nmesh down` で停止するか、--force で強制削除してください。"
+        ),
         "engine.active_cleared": "アクティブなエンジンを解除しました",
         "models.removed": "{path}を削除しました",
         "models.planned_refusal": "プランが参照するモデルは削除できません: {path}。--force を使用してください",
