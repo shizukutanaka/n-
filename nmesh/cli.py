@@ -3928,10 +3928,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", dest="global_dry_run")
     parser.add_argument("--json", action="store_true", dest="global_json")
     sub = parser.add_subparsers(dest="command")
-    doctor = sub.add_parser("doctor")
+    doctor = sub.add_parser("doctor", help="check installation health and evidence state")
     doctor.add_argument("--json", action="store_true")
     doctor.add_argument("--profile")
-    plan = sub.add_parser("plan")
+    plan = sub.add_parser("plan", help="create or update the deployment plan")
     plan.add_argument("--json", action="store_true")
     plan.add_argument("--explain", action="store_true")
     plan.add_argument("--prefer", choices=("quality", "speed", "balanced"), default="balanced")
@@ -3951,7 +3951,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--ignore-spec-evidence", action="store_true")
     plan.add_argument("--lang")
     plan.add_argument("--profile")
-    up_parser = sub.add_parser("up")
+    up_parser = sub.add_parser("up", help="start services and gateway from the plan")
     up_parser.add_argument("--json", action="store_true")
     up_parser.add_argument("--dry-run", action="store_true")
     up_parser.add_argument("--no-download", action="store_true")
@@ -3970,25 +3970,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--cache-reuse", type=int, default=0)
     up_parser.add_argument("--context-shift", action="store_true")
     up_parser.add_argument("--ignore-spec-evidence", action="store_true")
-    serve_parser = sub.add_parser("serve")
+    serve_parser = sub.add_parser("serve", help="run the API gateway in the foreground")
     serve_parser.add_argument("--port", type=int, default=18000)
     serve_parser.add_argument("--roles", default=None)
-    reload_parser = sub.add_parser("reload")
+    reload_parser = sub.add_parser("reload", help="reload model weights into running services")
     reload_parser.add_argument("--port", type=int, default=18000)
     reload_parser.add_argument("--json", action="store_true")
-    unload_parser = sub.add_parser("unload")
+    unload_parser = sub.add_parser("unload", help="unload a service's model from RAM")
     unload_parser.add_argument("service", nargs="?")
     unload_parser.add_argument("--port", type=int, default=18000)
     unload_parser.add_argument("--json", action="store_true")
-    for name in ("status", "down"):
-        item = sub.add_parser(name)
+    for name, helptext in {
+        "status": "show service and gateway status",
+        "down": "stop all services",
+    }.items():
+        item = sub.add_parser(name, help=helptext)
         item.add_argument("--json", action="store_true")
         item.add_argument("--port", type=int, default=18000)
-    run_parser = sub.add_parser("run")
+    run_parser = sub.add_parser("run", help="send a chat prompt to a service")
     run_parser.add_argument("prompt")
     run_parser.add_argument("--role", default="chat")
     run_parser.add_argument("--json", action="store_true")
-    bench_parser = sub.add_parser("bench")
+    bench_parser = sub.add_parser("bench", help="measure service throughput")
     bench_parser.add_argument("--service", default="chat")
     bench_parser.add_argument("--tokens", type=int, default=128)
     bench_parser.add_argument("--runs", type=_positive_int, default=3)
@@ -4003,7 +4006,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "encode throughput and is estimated from a calibration request "
         "before the ladder runs)",
     )
-    eval_parser = sub.add_parser("eval")
+    eval_parser = sub.add_parser("eval", help="run the quality evaluation suite")
     eval_parser.add_argument("--service", default="chat")
     eval_parser.add_argument("--json", action="store_true")
     eval_parser.add_argument(
@@ -4012,12 +4015,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="comma-separated categories "
         f"({','.join(EXTENDED_CATEGORIES)})",
     )
-    orchestrate_parser = sub.add_parser("orchestrate")
+    orchestrate_parser = sub.add_parser("orchestrate", help="measure lead/worker delegation")
     orchestrate_commands = orchestrate_parser.add_subparsers(
         dest="orchestrate_command",
         required=True,
     )
-    measure_parser = orchestrate_commands.add_parser("measure")
+    measure_parser = orchestrate_commands.add_parser(
+        "measure", help="run a delegation measurement"
+    )
     measure_parser.add_argument("--suite", choices=("core", "extended", "hard"), default="hard")
     measure_parser.add_argument("--lead", default="chat")
     measure_parser.add_argument("--worker", default="worker")
@@ -4028,11 +4033,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     measure_parser.add_argument("--limit", type=_positive_int)
     measure_parser.add_argument("--no-reference", action="store_true")
     measure_parser.add_argument("--json", action="store_true")
-    show_parser = orchestrate_commands.add_parser("show")
+    show_parser = orchestrate_commands.add_parser(
+        "show", help="show past delegation runs"
+    )
     show_parser.add_argument("--json", action="store_true")
-    spec_parser = sub.add_parser("spec")
+    spec_parser = sub.add_parser("spec", help="measure or show speculation evidence")
     spec_commands = spec_parser.add_subparsers(dest="spec_command", required=True)
-    spec_measure = spec_commands.add_parser("measure")
+    spec_measure = spec_commands.add_parser(
+        "measure", help="measure speculative decoding speedup"
+    )
     spec_measure.add_argument("--kind", choices=("ngram", "draft"), required=True)
     spec_measure.add_argument("--draft")
     spec_measure.add_argument("--repeats", type=int, default=3)
@@ -4040,7 +4049,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     spec_measure.add_argument("--service")
     spec_measure.add_argument("--no-reference", action="store_true")
     spec_measure.add_argument("--json", action="store_true")
-    spec_show = spec_commands.add_parser("show")
+    spec_show = spec_commands.add_parser("show", help="show speculation evidence")
     spec_show.add_argument("--json", action="store_true")
     eval_parser.add_argument(
         "--suite", choices=("core", "extended", "hard"), default="core",
@@ -4067,13 +4076,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="per-task request timeout in seconds; default is derived from "
         "the task token budget",
     )
-    evidence_parser = sub.add_parser("evidence")
+    evidence_parser = sub.add_parser("evidence", help="audit measurement evidence inventory")
     evidence_parser.add_argument("--json", action="store_true")
-    logs_parser = sub.add_parser("logs")
+    logs_parser = sub.add_parser("logs", help="show service logs")
     logs_parser.add_argument("service", nargs="?")
     logs_parser.add_argument("--lines", type=_positive_int, default=50)
     logs_parser.add_argument("--json", action="store_true")
-    watch_parser = sub.add_parser("watch")
+    watch_parser = sub.add_parser("watch", help="scan external sources for claims to verify")
     watch_parser.add_argument("--sources", default="zenn,qiita")
     watch_parser.add_argument(
         "--limit",
@@ -4087,38 +4096,46 @@ def main(argv: Sequence[str] | None = None) -> int:
     watch_parser.add_argument("--offline")
     watch_parser.add_argument("--unit", action="store_true")
     watch_parser.add_argument("--interval-hours", type=_positive_int, default=24)
-    auto = sub.add_parser("autotune")
+    auto = sub.add_parser("autotune", help="auto-tune the plan via fixed measurement cells")
     auto.add_argument("--json", action="store_true")
-    autostart = sub.add_parser("autostart")
+    autostart = sub.add_parser("autostart", help="install a user-level autostart unit")
     autostart.add_argument("--port", type=int, default=18000)
     autostart.add_argument("--install", action="store_true")
     autostart.add_argument("--json", action="store_true")
-    models = sub.add_parser("models")
+    models = sub.add_parser("models", help="list or remove local models")
     models.add_argument("--role")
     models.add_argument("--json", action="store_true")
     model_commands = models.add_subparsers(dest="models_command")
-    model_list = model_commands.add_parser("local")
+    model_list = model_commands.add_parser("local", help="list local models")
     model_list.add_argument("--json", action="store_true")
-    model_scan = model_commands.add_parser("scan")
+    model_scan = model_commands.add_parser(
+        "scan", help="scan directories for models"
+    )
     model_scan.add_argument("--json", action="store_true")
     model_scan.add_argument("--root", action="append", default=[])
-    model_rm = model_commands.add_parser("rm")
+    model_rm = model_commands.add_parser("rm", help="remove a local model")
     model_rm.add_argument("name")
     model_rm.add_argument("--force", action="store_true")
     model_rm.add_argument("--json", action="store_true")
-    engine = sub.add_parser("engine")
+    engine = sub.add_parser("engine", help="manage inference engine installs")
     engine_commands = engine.add_subparsers(dest="engine_command", required=True)
-    engine_list = engine_commands.add_parser("list")
+    engine_list = engine_commands.add_parser(
+        "list", help="list installed or available engines"
+    )
     engine_list.add_argument("--available", action="store_true")
     engine_list.add_argument("--json", action="store_true")
-    engine_install = engine_commands.add_parser("install")
+    engine_install = engine_commands.add_parser(
+        "install", help="install an engine"
+    )
     engine_install.add_argument("--version")
     engine_install.add_argument("--variant", default="auto")
     engine_install.add_argument("--json", action="store_true")
-    engine_use = engine_commands.add_parser("use")
+    engine_use = engine_commands.add_parser("use", help="set the active engine")
     engine_use.add_argument("tag")
     engine_use.add_argument("--json", action="store_true")
-    engine_remove = engine_commands.add_parser("remove")
+    engine_remove = engine_commands.add_parser(
+        "remove", help="remove an installed engine"
+    )
     engine_remove.add_argument("tag")
     engine_remove.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
