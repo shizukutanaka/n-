@@ -33,7 +33,9 @@ def isolate_saved_plan(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         supervisor_module,
         "save_plan",
-        lambda plan: planner_save_plan(plan, tmp_path / "plan.json"),
+        lambda plan, path=None: planner_save_plan(
+            plan, path if path is not None else tmp_path / "plan.json"
+        ),
     )
 
 

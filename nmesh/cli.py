@@ -3249,7 +3249,9 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
         port = int(probe.getsockname()[1])
     with tempfile.TemporaryDirectory(prefix="nmesh-spec-") as temp:
         state_path = Path(temp) / "state.json"
-        supervisor = Supervisor(state_path=state_path)
+        supervisor = Supervisor(
+            state_path=state_path, plan_path=Path(temp) / "plan.json"
+        )
         try:
             def arm(enabled: bool):
                 launch = replace(
