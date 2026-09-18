@@ -1791,3 +1791,44 @@ def test_context_depth_coverage_warns_without_changing_candidate() -> None:
     assert broken.services[0] == ordinary_service
     assert any("measured as broken" in item for item in broken.warnings)
     assert not any("quality evidence only reaches" in item for item in broken.warnings)
+
+
+def test_multi_gpu_services_pin_visibility_env() -> None:
+    result = build_plan(
+        profile(64, (24, 24)),
+        symmetric_catalog(),
+        Policy(roles=["chat", "code"]),
+    )
+    pinned = {
+        service.name: service.launch.env.get("CUDA_VISIBLE_DEVICES")
+        for service in result.services
+    }
+    assert sorted(pinned.values()) == ["0", "1"]
+    for service in result.services:
+        expected = ",".join(str(index) for index in service.gpu_indices)
+        assert service.launch.env["CUDA_VISIBLE_DEVICES"] == expected
+    assert any("pinned to GPU(s)" in warning for warning in result.warnings)
+
+
+def test_single_gpu_does_not_pin() -> None:
+    result = build_plan(
+        profile(64, (24,)),
+        placement_catalog()[:1],
+        Policy(roles=["chat"]),
+    )
+    assert "CUDA_VISIBLE_DEVICES" not in result.services[0].launch.env
+
+
+def test_full_gpu_spread_does_not_pin() -> None:
+    big = ModelSpec(
+        "huge", "huge", 60_000_000_000, 80, 40, 10, 128, 4096, 8192,
+        ["chat"], 90.0, "apache", {"hf_gguf": "huge.gguf"},
+    )
+    result = build_plan(
+        profile(8, (24, 24)),
+        [big],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert sorted(service.gpu_indices) == [0, 1]
+    assert "CUDA_VISIBLE_DEVICES" not in service.launch.env

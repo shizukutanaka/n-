@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -44,6 +45,7 @@ from nmesh.telemetry import record as record_telemetry
 from nmesh.telemetry import summary as telemetry_summary
 
 from .gate import SwapGate
+from .jobs import JobRegistry
 from .limit import SlotLimiter
 from .tokens import (
     Sums,
@@ -992,6 +994,7 @@ def create_app(
 
     gate = SwapGate()
     limiter = SlotLimiter()
+    jobs = JobRegistry()
     in_flight = _InFlight()
     plan_state = _PlanState(selected, explicit, gate, limiter)
     revive_locks: dict[str, asyncio.Lock] = {}
@@ -1054,18 +1057,24 @@ def create_app(
         started = time.perf_counter()
         last_use.touch(service.name)
         slot_token: object | None = None
+        job = jobs.submit(service.name, path)
         if limit_slots:
             slot_token = await limiter.acquire(service, QUEUE_TIMEOUT)
             if slot_token is None:
+                assert job is not None
+                position = jobs.position(job)
+                jobs.finish(job, ok=False, detail="queue_timeout")
                 slots = max(1, service.memory.parallel_slots)
                 raise HTTPException(
                     status_code=503,
                     detail=(
                         f"Service {service.name} is at its concurrency limit "
-                        f"({slots} slots)"
+                        f"({slots} slots); job {job.id} timed out at "
+                        f"queue position {position}"
                     ),
                     headers={"Retry-After": "1"},
                 )
+        jobs.start(job)
         locked = service.name in plan_snapshot.swap_group
         if locked:
 
@@ -1131,6 +1140,8 @@ def create_app(
                     gate.release()
                 if limit_slots:
                     limiter.release(slot_token)
+                if job is not None:
+                    jobs.finish(job, ok=False, detail="upstream_unreachable")
                 raise
             except httpx.HTTPError as error:
                 await client.aclose()
@@ -1140,6 +1151,8 @@ def create_app(
                     gate.release()
                 if limit_slots:
                     limiter.release(slot_token)
+                if job is not None:
+                    jobs.finish(job, ok=False, detail=str(error))
                 raise HTTPException(status_code=502, detail=str(error)) from error
             if upstream.status_code >= 400:
                 content = await upstream.aread()
@@ -1155,11 +1168,20 @@ def create_app(
                     path, upstream.status_code, service.backend
                 )
                 if unsupported is not None:
+                    if job is not None:
+                        jobs.finish(job, ok=False,
+                                    detail=f"upstream_{upstream.status_code}")
                     raise unsupported
+                if job is not None:
+                    jobs.finish(job, ok=False,
+                                detail=f"upstream_{upstream.status_code}")
                 return Response(content=content, status_code=upstream.status_code,
                                 media_type=upstream.headers.get("content-type"))
 
+            stream_completed = False
+
             async def stream() -> AsyncIterator[bytes]:
+                nonlocal stream_completed
                 buffer = b""
                 tokens = 0
                 usage: dict[str, object] | None = None
@@ -1234,6 +1256,7 @@ def create_app(
                         output = transform(buffer)
                         if output is not None:
                             yield output
+                    stream_completed = True
                 except httpx.HTTPError as error:
                     raise HTTPException(status_code=502, detail=str(error)) from error
                 finally:
@@ -1245,6 +1268,12 @@ def create_app(
                         gate.release()
                     if limit_slots:
                         limiter.release(slot_token)
+                    if job is not None:
+                        jobs.finish(
+                            job,
+                            ok=stream_completed,
+                            detail=None if stream_completed else "stream_interrupted",
+                        )
                     if instrument:
                         span = (last_line_time - first_line_time
                                 if first_line_time is not None and last_line_time is not None
@@ -1286,7 +1315,12 @@ def create_app(
                         except Exception:  # noqa: BLE001, S110
                             pass
                     await _record_prompt_calibration(service, request, usage)
-            return StreamingResponse(stream(), media_type="text/event-stream")
+            return StreamingResponse(
+                stream(), media_type="text/event-stream",
+                headers=(
+                    {"X-Nmesh-Job-Id": job.id} if job is not None else {}
+                ),
+            )
         try:
             async def post_upstream(payload: Mapping[str, object]) -> httpx.Response:
                 try:
@@ -1429,11 +1463,23 @@ def create_app(
                         path, response.status_code, service.backend
                     )
                     if unsupported is not None:
+                        if job is not None:
+                            jobs.finish(
+                                job, ok=False,
+                                detail=f"upstream_{response.status_code}",
+                            )
                         raise unsupported
+                    if job is not None:
+                        jobs.finish(
+                            job, ok=False,
+                            detail=f"upstream_{response.status_code}",
+                        )
                     return Response(content=content, status_code=response.status_code,
                                     media_type=response.headers.get("content-type"))
                 data = json.loads(content)
         except (httpx.HTTPError, json.JSONDecodeError) as error:
+            if job is not None:
+                jobs.finish(job, ok=False, detail=str(error))
             raise HTTPException(status_code=502, detail=str(error)) from error
         finally:
             await client.aclose()
@@ -1443,6 +1489,8 @@ def create_app(
                 gate.release()
             if limit_slots:
                 limiter.release(slot_token)
+            if job is not None and sys.exc_info()[1] is not None:
+                jobs.finish(job, ok=False, detail=str(sys.exc_info()[1]))
         if isinstance(data, dict) and "model" in data:
             data["model"] = request.get("model", service.model_id)
         embedding_headers: dict[str, str] = {}
@@ -1474,6 +1522,11 @@ def create_app(
                         body, url, input_text, embedding_cap
                     )
                     if lower_bound is not None:
+                        if job is not None:
+                            jobs.finish(
+                                job, ok=False,
+                                detail=f"truncation_guard_{embedding_cap}",
+                            )
                         return _embedding_truncation_error(
                             embedding_cap, lower_bound
                         )
@@ -1513,10 +1566,20 @@ def create_app(
         )
         embedding_headers.update(embedding_chunk_headers)
         if embedding_headers:
+            if job is not None:
+                embedding_headers["X-Nmesh-Job-Id"] = job.id
+                jobs.finish(job, ok=True)
             return Response(
                 content=json.dumps(data),
                 media_type="application/json",
                 headers=embedding_headers,
+            )
+        if job is not None:
+            jobs.finish(job, ok=True)
+            return Response(
+                content=json.dumps(data),
+                media_type="application/json",
+                headers={"X-Nmesh-Job-Id": job.id},
             )
         return data
 
@@ -1807,6 +1870,20 @@ def create_app(
             _prometheus_text(limiter, selected.services),
             media_type="text/plain; version=0.0.4",
         )
+
+    @app.get("/v1/jobs")
+    async def list_jobs(limit: int = 50) -> dict[str, object]:
+        return {
+            "jobs": [job.as_dict() for job in jobs.list(limit)],
+            "counts": jobs.counts(),
+        }
+
+    @app.get("/v1/jobs/{job_id}")
+    async def get_job(job_id: str) -> dict[str, object]:
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return job.as_dict()
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: dict[str, object]) -> object:

@@ -1272,6 +1272,45 @@ def _unload(args: argparse.Namespace) -> int:
     return 0
 
 
+def _jobs(args: argparse.Namespace) -> int:
+    language = i18n.lang()
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{args.port}/v1/jobs?limit={args.limit}",
+            timeout=10,
+        ) as response:
+            data = json.loads(response.read().decode())
+    except (HTTPError, OSError, json.JSONDecodeError):
+        print(i18n.t("err.jobs_gateway", language, port=args.port),
+              file=sys.stderr)
+        return 1
+    if args.json:
+        _print_json(data)
+        return 0
+    job_list = data.get("jobs", [])
+    if not job_list:
+        _console().print(i18n.t("jobs.empty", language))
+        return 0
+    table = Table(title=i18n.t("jobs.title", language))
+    table.add_column(i18n.t("label.job", language))
+    table.add_column(i18n.t("label.state", language))
+    table.add_column(i18n.t("label.service", language))
+    table.add_column(i18n.t("label.endpoint", language))
+    table.add_column(i18n.t("label.age_s", language), justify="right")
+    now = time.time()
+    for job in job_list:
+        age = now - float(job.get("queued_at") or now)
+        table.add_row(
+            str(job.get("id") or ""),
+            str(job.get("state") or ""),
+            str(job.get("service") or ""),
+            str(job.get("endpoint") or ""),
+            f"{age:.0f}",
+        )
+    _console().print(table)
+    return 0
+
+
 class _GatewayProcess(Protocol):
     """The parts of a gateway handle the CLI drives, adopted or spawned."""
 
@@ -4076,6 +4115,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     logs_parser.add_argument("service", nargs="?")
     logs_parser.add_argument("--lines", type=_positive_int, default=50)
     logs_parser.add_argument("--json", action="store_true")
+    jobs_parser = sub.add_parser("jobs", help="list queued and running gateway jobs")
+    jobs_parser.add_argument("--port", type=int, default=18000)
+    jobs_parser.add_argument("--limit", type=_positive_int, default=50)
+    jobs_parser.add_argument("--json", action="store_true")
     watch_parser = sub.add_parser("watch")
     watch_parser.add_argument("--sources", default="zenn,qiita")
     watch_parser.add_argument(
@@ -4147,6 +4190,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _bench(args)
     if args.command == "logs":
         return _logs(args)
+    if args.command == "jobs":
+        return _jobs(args)
     if args.command == "eval":
         return _eval(args)
     if args.command == "evidence":

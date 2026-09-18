@@ -296,6 +296,33 @@ def _gpu_budget(gpu: GPUInfo, source: str = "total") -> float:
     return max(vram * 0.92 - (0.8 * GIB if gpu.driving_display else 0.0), 0.0)
 
 
+def _gpu_pin_env(
+    profile: HardwareProfile, assigned: Sequence[int],
+) -> dict[str, str]:
+    """Visibility env var that pins a service to its assigned GPUs.
+
+    Returns {} when the service spans every GPU (nothing to isolate) or when
+    the assigned GPUs have no known vendor variable — an unrecognised value
+    is simply ignored by the backend, matching today's spread behaviour.
+    """
+    if not assigned or len(profile.gpus) <= 1:
+        return {}
+    all_indices = {gpu.index for gpu in profile.gpus}
+    if set(assigned) >= all_indices:
+        return {}
+    vendors = {
+        gpu.vendor for gpu in profile.gpus if gpu.index in set(assigned)
+    }
+    variable = (
+        "CUDA_VISIBLE_DEVICES" if vendors == {"nvidia"}
+        else "HIP_VISIBLE_DEVICES" if vendors == {"amd"}
+        else None
+    )
+    if variable is None:
+        return {}
+    return {variable: ",".join(str(index) for index in assigned)}
+
+
 def estimate_memory(
     model: ModelSpec, quant: str, context: int, parallel_slots: int = 1,
     profile: HardwareProfile | None = None, kv_quant: str = "f16",
@@ -1623,6 +1650,22 @@ def _place_services(
                     gpu_devices=profile.backend_gpu_devices.get(current.backend),
                     language=policy.lang,
                 ),
+            )
+        pin = (
+            {}
+            if current.launch.shared_daemon
+            else _gpu_pin_env(profile, current.gpu_indices)
+        )
+        if pin:
+            current = replace(
+                current,
+                launch=replace(
+                    current.launch, env={**current.launch.env, **pin}
+                ),
+            )
+            warnings.append(
+                t("note.gpu_pinned", policy.lang, service=current.name,
+                  indices=",".join(str(index) for index in current.gpu_indices))
             )
         warn_cpu_fallback(current)
         placed[service.name] = current

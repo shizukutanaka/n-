@@ -2,6 +2,9 @@
 
 ## 未リリース
 
+- ゲートウェイにジョブキューの可視化を追加 — 推論リクエストに `job-N` を採番し、スロット待ちは `queued`、実行中は `running`、完了/失敗を記録します。`GET /v1/jobs`（一覧＋サービス別 counts）と `GET /v1/jobs/{id}`、応答ヘッダ `X-Nmesh-Job-Id`、CLI `nmesh jobs [--port N] [--json]` を追加。スロット上限で 503 になる場合、ジョブ id と待ち位置を返します
+- 複数 GPU 環境で `gpu_indices` に配置済みのサービスを起動時に実際に GPU へピン留め — これまで割当は計算されるだけで launch に反映されず、全サービスが全 GPU に分散していました。nvidia → `CUDA_VISIBLE_DEVICES`、amd → `HIP_VISIBLE_DEVICES` を launch env に付与（全 GPU 使用・共有 daemon・未対応ベンダーでは付与しません）。多 GPU 実機未検証のため「estimated placement」と注記します
+
 - `pip install nmesh`（base）で `nmesh` が起動不能だった — httpx が `gateway` extra に隔離されていたのを core deps へ移動。`serve` は extras 未導入時に raw traceback ではなく `pip install nmesh[gateway]` を案内
 
 

@@ -261,3 +261,85 @@ def test_unlimited_ollama_requests_are_not_serialized(monkeypatch) -> None:
     finally:
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_jobs_endpoint_tracks_request_lifecycle() -> None:
+    upstream = _limit_upstream()
+    try:
+        plan = _llama_plan(1)
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        with TestClient(create_app(plan)) as client:
+            response = client.post("/v1/chat/completions", json={"messages": []})
+            assert response.status_code == 200
+            job_id = response.headers["x-nmesh-job-id"]
+            job = client.get(f"/v1/jobs/{job_id}").json()
+            assert job["state"] == "done"
+            assert job["service"] == "chat"
+            listing = client.get("/v1/jobs").json()
+            assert any(item["id"] == job_id for item in listing["jobs"])
+            assert client.get("/v1/jobs/job-nope").status_code == 404
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_jobs_show_queued_state_and_queue_timeout_failure(monkeypatch) -> None:
+    upstream = _limit_upstream()
+    try:
+        plan = _llama_plan(1)
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        monkeypatch.setattr(gateway_module, "QUEUE_TIMEOUT", 0.05)
+        with TestClient(create_app(plan)) as client:
+            _LimitHandler.block = True
+            first = threading.Thread(
+                target=lambda: client.post(
+                    "/v1/chat/completions", json={"messages": []}
+                )
+            )
+            first.start()
+            assert _LimitHandler.started.wait(timeout=2)
+            queued = client.get("/v1/jobs").json()
+            assert queued["counts"]["chat"]["running"] == 1
+            timed_out = client.post(
+                "/v1/chat/completions", json={"messages": []}
+            )
+            assert timed_out.status_code == 503
+            assert "queue position" in timed_out.json()["error"]["message"]
+            jobs = client.get("/v1/jobs").json()["jobs"]
+            failed = next(
+                job for job in jobs if job["state"] == "failed"
+            )
+            assert failed["detail"] == "queue_timeout"
+            _LimitHandler.release.set()
+            first.join(timeout=5)
+            _LimitHandler.block = False
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+def test_job_registry_transitions_and_capacity() -> None:
+    from nmesh.gateway.jobs import JobRegistry
+
+    registry = JobRegistry(capacity=2)
+    first = registry.submit("chat", "/v1/chat/completions")
+    second = registry.submit("chat", "/v1/chat/completions")
+    assert registry.position(second) == 2
+    registry.start(first)
+    assert registry.position(first) == 0
+    registry.finish(first, ok=True)
+    third = registry.submit("embed", "/v1/embeddings")
+    registry.finish(second, ok=False, detail="boom")
+    registry.finish(third, ok=True)
+    # capacity keeps only the 2 most recent finished jobs
+    assert registry.get(first.id) is None
+    assert registry.get(third.id).state == "done"
+    counts = registry.counts()
+    assert counts == {}
+    running = registry.submit("chat", "/v1/chat/completions")
+    registry.start(running)
+    assert registry.counts() == {"chat": {"queued": 0, "running": 1}}
+    # finish is idempotent
+    registry.finish(running, ok=True)
+    registry.finish(running, ok=False)
+    assert registry.get(running.id).state == "done"
