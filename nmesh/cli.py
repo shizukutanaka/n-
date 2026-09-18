@@ -3841,6 +3841,29 @@ def _evidence(args: argparse.Namespace) -> int:
             _console().print(i18n.t("evidence.depth_json_hint", language))
     if not records:
         _console().print(i18n.t("evidence.empty", language))
+    decisions = payload.get("recommendations")
+    if isinstance(decisions, list) and decisions:
+        actions = Table(title=i18n.t("evidence.actions_title", language))
+        for column in ("priority", "action", "reason", "confidence"):
+            actions.add_column(i18n.t(f"evidence.column.{column}", language))
+        action_reasons: set[str] = set()
+        for decision in decisions:
+            if not isinstance(decision, dict):
+                continue
+            reason = str(decision.get("reason", ""))
+            action_reasons.update(reason.split("+"))
+            confidence = decision.get("confidence", 0)
+            actions.add_row(
+                str(decision.get("priority", "")),
+                str(decision.get("action", "")),
+                reason,
+                f"{float(confidence):.2f}" if isinstance(confidence, (int, float)) else "",
+            )
+        _console().print(actions)
+        for reason in sorted(action_reasons):
+            _console().print(
+                f"{reason}: {i18n.t(f'evidence.reason.{reason}', language)}"
+            )
     return 0
 
 

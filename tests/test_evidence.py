@@ -223,3 +223,52 @@ def test_superseded_records_are_explained_and_all_unusable_rows_have_reasons(
         row["usable"] or row["reasons"]
         for row in rows
     )
+
+
+def test_recommendations_merges_remeasure_actions(monkeypatch, tmp_path) -> None:
+    from nmesh.evidence_inventory import recommendations
+
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    records = [
+        {"kind": "bench", "remeasure": "nmesh bench",
+         "reasons": ["unstable", "unconfirmed"]},
+        {"kind": "bench", "remeasure": "nmesh bench", "reasons": ["unstable"]},
+        {"kind": "eval", "remeasure": "nmesh eval --suite core",
+         "reasons": ["grader_digest_mismatch"]},
+        {"kind": "eval", "remeasure": "", "reasons": ["superseded"]},
+    ]
+    decisions = recommendations(records)
+    assert [d["action"] for d in decisions] == [
+        "nmesh bench",
+        "nmesh eval --suite core",
+    ]
+    assert all(d["priority"] == "P1" for d in decisions)
+    assert all(d["risk"] == "low" for d in decisions)
+    assert decisions[0]["reason"] == "unconfirmed+unstable"
+    assert decisions[0]["confidence"] == 0.9
+
+
+def test_recommendations_empty_inventory_suggests_bench() -> None:
+    from nmesh.evidence_inventory import recommendations
+
+    decisions = recommendations([])
+    assert decisions == [{
+        "priority": "P2",
+        "action": "nmesh bench",
+        "reason": "no_measurements",
+        "risk": "low",
+        "confidence": 0.8,
+    }]
+
+
+def test_evidence_json_includes_recommendations(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    assert cli.main(["evidence", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["recommendations"] == [{
+        "priority": "P2",
+        "action": "nmesh bench",
+        "reason": "no_measurements",
+        "risk": "low",
+        "confidence": 0.8,
+    }]

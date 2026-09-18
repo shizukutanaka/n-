@@ -369,6 +369,45 @@ def _spec_rows() -> list[dict[str, object]]:
     return rows
 
 
+def recommendations(records: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Evidence rows -> prioritized next actions (decision layer).
+
+    Each action is a real CLI command whose measurement would turn unusable
+    evidence usable again. Records sharing a remeasure command are merged so
+    one action is suggested once with all its reasons. `confidence` is rule
+    confidence, not a learned estimate.
+    """
+    by_action: dict[str, set[str]] = {}
+    for row in records:
+        remeasure = str(row.get("remeasure", ""))
+        if not remeasure:
+            continue
+        reasons = row.get("reasons", [])
+        if isinstance(reasons, list):
+            by_action.setdefault(remeasure, set()).update(
+                str(reason) for reason in reasons
+            )
+    decisions: list[dict[str, object]] = [
+        {
+            "priority": "P1",
+            "action": action,
+            "reason": "+".join(sorted(reasons)),
+            "risk": "low",
+            "confidence": 0.9,
+        }
+        for action, reasons in sorted(by_action.items())
+    ]
+    if not records:
+        decisions.append({
+            "priority": "P2",
+            "action": "nmesh bench",
+            "reason": "no_measurements",
+            "risk": "low",
+            "confidence": 0.8,
+        })
+    return decisions
+
+
 def collect_evidence() -> dict[str, object]:
     records = (
         _bench_rows()
@@ -388,4 +427,8 @@ def collect_evidence() -> dict[str, object]:
         "retrieval": sum(row["kind"] == "retrieval" for row in records),
         "spec": sum(row["kind"] == "spec" for row in records),
     }
-    return {"records": records, "counts": counts}
+    return {
+        "records": records,
+        "counts": counts,
+        "recommendations": recommendations(records),
+    }
