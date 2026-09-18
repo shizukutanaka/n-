@@ -458,7 +458,7 @@ class Supervisor:
                 artifact_replanned,
             )
         argv = list(service.launch.argv)
-        if "-m" in argv:
+        if service.backend == "llamacpp" and "-m" in argv:
             argv[argv.index("-m") + 1] = model_ref
         elif "--model" in argv:
             argv[argv.index("--model") + 1] = model_ref

@@ -110,6 +110,9 @@ def test_unknown_llamacpp_device_probe_preserves_gpu_placement() -> None:
 
 
 def test_generic_detection_is_skipped_when_specialized_detection_succeeds(monkeypatch) -> None:
+    # Apple Silicon short-circuits before the specialized detectors; keep the
+    # probe's generic-GPU branch reachable on arm64 hosts too.
+    monkeypatch.setattr(detector.platform, "machine", lambda: "x86_64")
     gpu = GPUInfo(0, "NVIDIA", "nvidia", 8 * GIB, 8 * GIB, None, False)
     monkeypatch.setattr(
         detector, "_detect_nvidia", lambda warnings, warning_params=None: [gpu]
@@ -129,6 +132,7 @@ def test_generic_detection_is_skipped_when_specialized_detection_succeeds(monkey
 
 
 def test_low_vram_generic_gpu_remains_visible_with_explanation(monkeypatch) -> None:
+    monkeypatch.setattr(detector.platform, "machine", lambda: "x86_64")
     gpu = GPUInfo(0, "Intel UHD", "intel", GIB, GIB, None, True)
     monkeypatch.setattr(
         detector, "_detect_nvidia", lambda warnings, warning_params=None: []

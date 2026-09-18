@@ -42,6 +42,10 @@ OpenAI 互換 API を提供します。
 
 Ollama、llama.cpp、vLLM、MLX-LM をサポートします。未インストールでも
 `nmesh plan` は候補と具体的なインストール方法を表示します。
+MLX-LM は Apple Silicon 実機（M4）で chat 完走を検証済みです（embed は
+`mlx_lm.server` がエンドポイントを持たないため非対応）。mlx バックエンドは
+catalog の `hf_mlx` ソース（MLX 形式リポジトリ）を優先使用し、無い場合は
+`hf` を使います。
 モデルの追加や上書きは `~/.nmesh/models.yaml` に bundled catalog と同じ形式で記述します。
 同じ `id` のモデルはユーザー定義が優先されます。
 
