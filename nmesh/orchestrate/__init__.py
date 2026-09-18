@@ -18,6 +18,7 @@ from .protocol import (
     complete,
     delegate,
     read_verdict,
+    verify_judgment,
 )
 from .record import (
     ALLOW,
@@ -81,4 +82,5 @@ __all__ = [
     "record_key",
     "save",
     "save_all",
+    "verify_judgment",
 ]

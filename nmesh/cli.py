@@ -3012,6 +3012,7 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
         "accepted_but_wrong": run.verifier.accepted_but_wrong,
         "rejected_but_right": run.verifier.rejected_but_right,
         "verifier_unparsed": run.verifier.unparsed,
+        "verifier_confidence": run.verifier.mean_confidence,
         "lead_tokens_solo": run.lead_tokens_solo,
         "lead_tokens_delegated": run.lead_tokens_delegated,
         "verify_overhead": run.verify_overhead,
@@ -3070,6 +3071,11 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
             wrong=run.verifier.accepted_but_wrong,
             right=run.verifier.rejected_but_right,
             unparsed=run.verifier.unparsed,
+            confidence=(
+                f"{run.verifier.mean_confidence:.3f}"
+                if run.verifier.mean_confidence is not None
+                else "n/a"
+            ),
         ),
         i18n.t(
             "label.orchestrate_cost",
