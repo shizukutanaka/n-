@@ -67,6 +67,7 @@ class TaskRow:
     accepted: bool
     unparsed_verdict: bool
     unscorable: bool
+    confidence: float | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +88,9 @@ class VerifierReport:
     rejected_but_right: int
     unparsed: int
     accuracy: float
+    #: Mean option-mass confidence over verdicts decided from logprobs;
+    #: ``None`` when no verdict carried a probability distribution.
+    mean_confidence: float | None = None
 
 
 @dataclass(frozen=True)
@@ -132,6 +136,11 @@ class DelegationRun:
 
 def _passed(task: Task, text: str, unscorable: bool) -> bool:
     return False if unscorable else bool(task.check(text))
+
+
+def _mean_confidence(rows: Sequence[TaskRow]) -> float | None:
+    values = [row.confidence for row in rows if row.confidence is not None]
+    return sum(values) / len(values) if values else None
 
 
 def _comparison(rows: Sequence[TaskRow], candidate: str) -> Comparison:
@@ -195,6 +204,7 @@ def measure(
                     accepted=outcome.accepted,
                     unparsed_verdict=outcome.unparsed_verdict,
                     unscorable=outcome.unscorable or lead_call.unscorable,
+                    confidence=outcome.verdict_confidence,
                 )
             )
             ceiling_flags.append(worker_passed or lead_passed)
@@ -240,6 +250,7 @@ def measure(
             ),
             unparsed=sum(row.unparsed_verdict for row in rows),
             accuracy=agreements / len(rows),
+            mean_confidence=_mean_confidence(rows),
         ),
         lead_tokens_solo=solo.prompt_tokens + solo.completion_tokens,
         lead_tokens_delegated=(

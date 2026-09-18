@@ -6,6 +6,11 @@ answer, and on anything other than an explicit acceptance the lead answers the
 task itself. There is no re-delegation loop, so the number of upstream calls
 per task is bounded by three regardless of how badly the worker answers.
 
+Judgment follows the TypeSafe-Jev pattern: a branch on a probability
+distribution over defined options ({YES, NO} via ``top_logprobs``), not a
+parse of generated prose. Backends without logprob reporting fall back to
+text parsing, which remains an escalation, never a silent acceptance.
+
 Both models are addressed through ``/v1/chat/completions``, so the protocol
 works against any backend nmesh can plan (llama.cpp, Ollama, vLLM) and against
 the nmesh gateway itself.
@@ -13,6 +18,7 @@ the nmesh gateway itself.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -22,7 +28,7 @@ import httpx
 #: Bumped whenever the verifier prompt or the escalation rule changes. A
 #: measurement made under a different protocol is not comparable, so this
 #: string is part of the record identity.
-PROTOCOL_VERSION = "delegate-v2"
+PROTOCOL_VERSION = "delegate-v3"
 
 VERIFY_PROMPT = (
     "You are a strict checker. Decide whether the ANSWER satisfies the TASK "
@@ -84,6 +90,9 @@ class Delegation:
     worker: Call
     verify: Call
     rescue: Call | None = None
+    #: Normalized option-mass confidence of the verdict when the backend
+    #: reported logprobs (P(decision) over {YES, NO}), else ``None``.
+    verdict_confidence: float | None = None
 
     @property
     def unscorable(self) -> bool:
@@ -177,14 +186,12 @@ def delegate(
     book = ledger if ledger is not None else Ledger()
     answer = complete(client, worker, prompt, max_tokens)
     book.worker.add(answer)
-    verify = complete(
-        client,
-        lead,
-        VERIFY_PROMPT.format(prompt=prompt, answer=answer.text),
-        VERIFY_MAX_TOKENS,
+    verify, decision, confidence = verify_judgment(
+        client, lead, prompt, answer.text
     )
     book.verify.add(verify)
-    decision = read_verdict(verify.text)
+    if decision is None:
+        decision = read_verdict(verify.text)
     if decision is True:
         return Delegation(
             answer=answer.text,
@@ -193,6 +200,7 @@ def delegate(
             unparsed_verdict=False,
             worker=answer,
             verify=verify,
+            verdict_confidence=confidence,
         )
     rescue = complete(client, lead, prompt, max_tokens)
     book.rescue.add(rescue)
@@ -204,7 +212,92 @@ def delegate(
         worker=answer,
         verify=verify,
         rescue=rescue,
+        verdict_confidence=confidence,
     )
+
+
+def verify_judgment(
+    client: httpx.Client,
+    endpoint: Endpoint,
+    prompt: str,
+    answer: str,
+) -> tuple[Call, bool | None, float | None]:
+    """Ask the lead to judge ``answer`` and read the option distribution.
+
+    Judgment is a branch on a distribution over defined options, not a parse
+    of generated prose: the request asks for ``top_logprobs`` so the verdict
+    carries P(YES) and P(NO). The decision is the argmax over the two
+    options and the confidence is its share of the option mass. Backends
+    without logprobs yield ``(call, None, None)`` and the caller falls back
+    to text parsing.
+    """
+    started = time.monotonic()
+    payload: dict[str, object] = {
+        "model": endpoint.model_ref,
+        "messages": [
+            {
+                "role": "user",
+                "content": VERIFY_PROMPT.format(prompt=prompt, answer=answer),
+            }
+        ],
+        "max_tokens": VERIFY_MAX_TOKENS,
+        "temperature": 0,
+        "stream": False,
+        "logprobs": True,
+        "top_logprobs": 8,
+    }
+    if endpoint.cache_prompt is not None:
+        payload["cache_prompt"] = endpoint.cache_prompt
+    response = client.post(
+        f"{endpoint.base_url.rstrip('/')}/v1/chat/completions",
+        json=payload,
+    )
+    response.raise_for_status()
+    body = response.json()
+    call = Call(
+        text=_content(body),
+        prompt_tokens=_usage(body, "prompt_tokens"),
+        completion_tokens=_usage(body, "completion_tokens"),
+        unscorable=_truncated_empty(body),
+        seconds=time.monotonic() - started,
+    )
+    decision, confidence = _verdict_distribution(body)
+    return call, decision, confidence
+
+
+def _verdict_distribution(
+    payload: object,
+) -> tuple[bool | None, float | None]:
+    """P(YES)/P(NO) from the first generated token's ``top_logprobs``."""
+    choice = _first_choice(payload)
+    logprobs = choice.get("logprobs") if isinstance(choice, Mapping) else None
+    content = logprobs.get("content") if isinstance(logprobs, Mapping) else None
+    if not isinstance(content, list) or not content:
+        return None, None
+    first = content[0]
+    top = first.get("top_logprobs") if isinstance(first, Mapping) else None
+    if not isinstance(top, list):
+        return None, None
+    yes = 0.0
+    no = 0.0
+    for entry in top:
+        if not isinstance(entry, Mapping):
+            continue
+        token = entry.get("token")
+        logprob = entry.get("logprob")
+        if not isinstance(token, str) or not isinstance(logprob, (int, float)):
+            continue
+        option = token.strip().upper()
+        if option == "YES":
+            yes += math.exp(logprob)
+        elif option == "NO":
+            no += math.exp(logprob)
+    total = yes + no
+    if total <= 0:
+        return None, None
+    if yes > no:
+        return True, yes / total
+    return False, no / total
 
 
 def _content(payload: object) -> str:
