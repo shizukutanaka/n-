@@ -262,7 +262,6 @@ FastAPI + uvicorn、既定 `127.0.0.1:18000`。
 2. コードらしさ（```/ 拡張子 / `def |class |function |SELECT |import ` などのパターン、または `code` 役割サービスが存在し入力にコードブロックがある） → code サービス
 3. 入力トークン概算 > そのサービスの context の 80% → より大きな context を持つサービス
 4. それ以外 → chat サービス
-5. LLMルーター（任意・`routing.mode: llm`）: tiny モデルに 1 トークン分類を投げる。既定は off（速度優先）。
 
 swap モードでは gateway がリクエストを直列化（`asyncio.Lock`）し、モデル切替中は 503 ではなく待たせる（タイムアウト 300 秒）。
 
