@@ -396,11 +396,23 @@ def _backend(profile: HardwareProfile, model: ModelSpec, layers: int) -> tuple[s
 
 
 def _source_for(backend: str, model: ModelSpec, quant: str) -> str:
-    if backend in {"vllm", "mlx"}:
+    if backend == "mlx":
+        return model.sources.get("hf_mlx") or model.sources["hf"]
+    if backend == "vllm":
         return model.sources["hf"]
     if backend == "llamacpp":
         return str(nmesh_home() / "models" / f"{model.id}-{quant}.gguf")
     return model.sources["ollama"]
+
+
+def _download_repo_for(backend: str, model: ModelSpec) -> str | None:
+    if backend == "mlx":
+        return model.sources.get("hf_mlx") or model.sources.get("hf")
+    if backend == "vllm":
+        return model.sources.get("hf")
+    if backend == "llamacpp":
+        return model.sources.get("hf_gguf") or model.sources.get("hf")
+    return model.sources.get("ollama")
 
 
 def _service_port_base() -> int:
@@ -1202,7 +1214,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         launch = replace(launch, env={"NMESH_HF_REPO": candidate.model.sources["hf_gguf"]})
     service = PlannedService(
         name, group, candidate.model.id, _source_for(candidate.backend, candidate.model, candidate.quant),
-        candidate.model.sources.get("hf_gguf") or candidate.model.sources.get("hf"),
+        _download_repo_for(candidate.backend, candidate.model),
         candidate.quant, candidate.backend, candidate.context,
         11434 if candidate.backend == "ollama" else port, indices,
         None if candidate.backend in {"vllm", "mlx", "ollama"} else layers,

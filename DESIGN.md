@@ -114,6 +114,7 @@ class HardwareProfile:
     ollama: "qwen2.5:7b-instruct"
     hf_gguf: "Qwen/Qwen2.5-7B-Instruct-GGUF"
     hf: "Qwen/Qwen2.5-7B-Instruct"
+    hf_mlx: "mlx-community/Qwen2.5-7B-Instruct-4bit"  # 任意: mlx 用の MLX 形式リポジトリ（無ければ hf を使用）
 ```
 
 初版に含める役割別ラインナップ（各サイズ帯を1つ以上）:
@@ -203,7 +204,7 @@ class Policy:
    - 複数GPU: 単一モデルが1枚に収まるなら GPU 固定割り当て（役割を分散）。収まらないモデルのみ tensor split (`--tensor-split` / vLLM `--tensor-parallel-size`)。
 6. backend 選択（利用可能なものの中から）:
    - Linux + NVIDIA + 全層GPU + 非GGUF が使える → `vllm`
-   - Apple Silicon + `mlx_lm` あり → `mlx`
+   - Apple Silicon + `mlx_lm` あり → `mlx`（生成系のみ。`mlx_lm.server` は `/v1/embeddings` を持たないため embed 役割は警告付き）
    - それ以外で `llama-server` あり → `llamacpp`（部分オフロード可能なのはこれと ollama のみ）
    - `ollama` あり → `ollama`（最も導入が容易。既定のフォールバック）
    - 何も無い → Plan に `install_hints` を出して `runnable: false`

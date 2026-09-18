@@ -322,6 +322,25 @@ def test_measured_unconfirmed_below_floor_is_kept(
     assert any("needs a second agreeing measurement" in warning for warning in result.warnings)
 
 
+def test_download_repo_picked_per_backend() -> None:
+    model = ModelSpec(
+        "m", "test", 1_000_000_000, 24, 16, 4, 128, 2048, 4096,
+        ["chat"], 80.0, "apache",
+        {"hf": "org/fp16", "hf_gguf": "org/gguf", "hf_mlx": "org/mlx-4bit",
+         "ollama": "org/ollama"},
+    )
+    assert planner_core._download_repo_for("mlx", model) == "org/mlx-4bit"
+    assert planner_core._download_repo_for("vllm", model) == "org/fp16"
+    assert planner_core._download_repo_for("llamacpp", model) == "org/gguf"
+    assert planner_core._download_repo_for("ollama", model) == "org/ollama"
+
+    no_mlx = ModelSpec(
+        "m2", "test", 1_000_000_000, 24, 16, 4, 128, 2048, 4096,
+        ["chat"], 80.0, "apache", {"hf": "org/fp16"},
+    )
+    assert planner_core._download_repo_for("mlx", no_mlx) == "org/fp16"
+
+
 def test_metadata_free_models_keep_old_weight_formula() -> None:
     model = ModelSpec(
         "legacy", "test", 123_456_789, 12, 8, 2, 64, 512, 4096,
