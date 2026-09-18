@@ -96,6 +96,7 @@ class Policy:
     spec_n_max: int = 3
     ignore_spec_evidence: bool = False
     roles_explicit: bool = False
+    sleep_idle_seconds: int = 0
 
     def __post_init__(self) -> None:
         if self.spec not in KINDS:
@@ -104,6 +105,8 @@ class Policy:
             raise ValueError("spec_draft is required for draft speculation")
         if self.spec_n_max < 1:
             raise ValueError("spec_n_max must be positive")
+        if self.sleep_idle_seconds < 0:
+            raise ValueError("sleep_idle_seconds must be >= 0")
 
 
 @dataclass(frozen=True)
@@ -450,6 +453,7 @@ def _launch(
     spec: str = "none",
     spec_draft: str = "",
     spec_n_max: int = 3,
+    sleep_idle_seconds: int = 0,
     *,
     binary: str | None = None,
 ) -> LaunchSpec:
@@ -537,6 +541,13 @@ def _launch(
             warnings.append(
                 t("warn.spec_unsupported", language, service=model.id)
             )
+        if backend == "llamacpp" and sleep_idle_seconds > 0:
+            if not known or "--sleep-idle-seconds" in flags:
+                argv += ["--sleep-idle-seconds", str(sleep_idle_seconds)]
+            elif warnings is not None:
+                warnings.append(
+                    t("warn.sleep_idle_unsupported", language, model=model.id)
+                )
         if backend == "llamacpp" and embed_only:
             if not known or "--embeddings" in flags:
                 embedding_flag = "--embeddings"
@@ -1208,6 +1219,9 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         spec=spec_kind,
         spec_draft=spec_draft,
         spec_n_max=(spec_policy.spec_n_max if spec_policy is not None else 3),
+        sleep_idle_seconds=(
+            spec_policy.sleep_idle_seconds if spec_policy is not None else 0
+        ),
         binary=profile.backend_paths.get(candidate.backend),
     )
     if candidate.backend == "llamacpp" and "hf_gguf" in candidate.model.sources:
@@ -2718,6 +2732,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
                     int(pol.get("spec_n_max", 3)),
                     bool(pol.get("ignore_spec_evidence", False)),
                     bool(pol.get("roles_explicit", False)),
+                    int(pol.get("sleep_idle_seconds", 0)),
                 )
     services_raw = data["services"]
     if not isinstance(services_raw, list):

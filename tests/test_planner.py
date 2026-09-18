@@ -773,6 +773,52 @@ def test_supported_llamacpp_kv_quantization_is_launched(
     assert len(speed_warnings) == 1
 
 
+def test_sleep_idle_seconds_is_launched_when_supported(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl", "--sleep-idle-seconds")},
+    )
+    result = build_plan(
+        machine, [model],
+        Policy(roles=["chat"], sleep_idle_seconds=300),
+    )
+    argv = result.services[0].launch.argv
+    assert argv[argv.index("--sleep-idle-seconds") + 1] == "300"
+
+
+def test_sleep_idle_seconds_warns_when_unsupported(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl")},
+    )
+    result = build_plan(
+        machine, [model],
+        Policy(roles=["chat"], sleep_idle_seconds=300),
+    )
+    assert not any(
+        "--sleep-idle-seconds" in flag for flag in result.services[0].launch.argv
+    )
+    assert any("sleep-idle" in warning for warning in result.warnings)
+
+
+def test_sleep_idle_seconds_off_by_default(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    result = build_plan(
+        profile(64, (24,)), [model], Policy(roles=["chat"]),
+    )
+    assert not any(
+        "--sleep-idle-seconds" in flag for flag in result.services[0].launch.argv
+    )
+
+
 def test_unsupported_llamacpp_kv_quantization_downgrades_accounting(
     catalog: list[ModelSpec],
 ) -> None:
