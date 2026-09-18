@@ -9,7 +9,6 @@
 
 - `nmesh down` が停止したサービスを表示する — 以前は常に「実行中のサービスはありません」とだけ返し、何を止めたか確認できなかった（Supervisor.down() が常に空の結果を返していた）
 
-||||||| parent of 774abba (unload/reload のタイムアウト延長 — in-flight 中の偽装 timed out を修正)
 - `nmesh unload`/`reload` のタイムアウトを延長 — in-flight 要求中にモデル終了が10秒を超えると CLI が「timed out」と言いながら実際は unload していた偽装失敗を修正
 
 - `nmesh orchestrate measure --worker-url` の案内文は「外部 worker を渡せ」と言うのに、プラン内に2つ目の生成サービスが無いと拒否されていました。`--worker-url` 指定時はプラン内 worker 解決をスキップし、外部エンドポイントで委譲測定が実行できます。
