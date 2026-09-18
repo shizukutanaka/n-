@@ -1001,6 +1001,7 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
 
 def _runtime(args: argparse.Namespace) -> int:
     exit_code = 0
+    status_data_jobs: dict[str, dict[str, int]] | None = None
     if args.command == "serve":
         try:
             process, _ = _launch_gateway(args.port, detach=False)
@@ -1120,6 +1121,15 @@ def _runtime(args: argparse.Namespace) -> int:
                     )
                 else:
                     gateway["running"] = True
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/v1/jobs?limit=20", timeout=2
+                ) as jobs_response:
+                    jobs_data = json.loads(jobs_response.read().decode())
+                if isinstance(jobs_data, dict) and jobs_data.get("counts"):
+                    status_data_jobs = jobs_data["counts"]
+            except (OSError, HTTPError, json.JSONDecodeError):
+                pass
         except OSError:
             if gateway is None:
                 result.services.append(
@@ -1131,6 +1141,8 @@ def _runtime(args: argparse.Namespace) -> int:
                 gateway["running"] = False
         result.running = any(bool(item.get("running")) for item in result.services)
     status_data = asdict(result)
+    if status_data_jobs:
+        status_data["jobs"] = status_data_jobs
     if args.command == "up" and args.detach and gateway_log is not None:
         status_data["gateway_log"] = str(gateway_log)
     language = i18n.lang()
@@ -1149,6 +1161,15 @@ def _runtime(args: argparse.Namespace) -> int:
             )
     else:
         _print_runtime_status(result, language)
+        if status_data_jobs:
+            for service, counts in status_data_jobs.items():
+                _console().print(
+                    i18n.t(
+                        "jobs.counts", language, service=service,
+                        running=counts.get("running", 0),
+                        queued=counts.get("queued", 0),
+                    )
+                )
         for warning in result.warnings:
             _console().print(warning)
         if args.command == "status":
