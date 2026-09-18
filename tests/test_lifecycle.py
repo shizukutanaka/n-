@@ -7,6 +7,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
 
 import psutil
 
@@ -963,3 +964,14 @@ def test_jobs_cli_gateway_unreachable(monkeypatch, tmp_path: Path, capsys) -> No
     captured = capsys.readouterr()
     assert "18000" in captured.err
     assert "nmesh up" in captured.err
+def test_jobs_cli_old_gateway_404(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    def _raise(*_a, **_k):
+        raise HTTPError("http://x", 404, "not found", {}, None)
+
+    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    assert cli.main(["jobs"]) == 1
+    captured = capsys.readouterr()
+    assert "older build" in captured.err or "古いビルド" in captured.err
+    assert "nmesh down" in captured.err

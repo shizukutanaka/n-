@@ -70,7 +70,10 @@ class JobRegistry:
 
     def position(self, job: Job) -> int:
         with self._lock:
-            queued = [j for j in self._jobs.values() if j.state == "queued"]
+            queued = [
+                j for j in self._jobs.values()
+                if j.state == "queued" and j.service == job.service
+            ]
             queued.sort(key=lambda j: j.queued_at)
             for idx, entry in enumerate(queued, start=1):
                 if entry.id == job.id:

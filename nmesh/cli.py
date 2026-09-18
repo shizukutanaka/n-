@@ -1280,7 +1280,15 @@ def _jobs(args: argparse.Namespace) -> int:
             timeout=10,
         ) as response:
             data = json.loads(response.read().decode())
-    except (HTTPError, OSError, json.JSONDecodeError):
+    except HTTPError as error:
+        if error.code == 404:
+            print(i18n.t("err.jobs_old_gateway", language, port=args.port),
+                  file=sys.stderr)
+        else:
+            print(i18n.t("err.jobs_gateway", language, port=args.port),
+                  file=sys.stderr)
+        return 1
+    except (OSError, json.JSONDecodeError):
         print(i18n.t("err.jobs_gateway", language, port=args.port),
               file=sys.stderr)
         return 1
