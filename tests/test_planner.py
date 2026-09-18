@@ -819,6 +819,38 @@ def test_sleep_idle_seconds_off_by_default(
     )
 
 
+def test_cache_reuse_is_launched_when_supported(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl", "--cache-reuse")},
+    )
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], cache_reuse=256),
+    )
+    argv = result.services[0].launch.argv
+    assert argv[argv.index("--cache-reuse") + 1] == "256"
+
+
+def test_cache_reuse_warns_when_unsupported(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl")},
+    )
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], cache_reuse=256),
+    )
+    assert not any(
+        "--cache-reuse" in flag for flag in result.services[0].launch.argv
+    )
+    assert any("cache-reuse" in warning for warning in result.warnings)
+
+
 def test_unsupported_llamacpp_kv_quantization_downgrades_accounting(
     catalog: list[ModelSpec],
 ) -> None:

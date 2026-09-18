@@ -2,6 +2,7 @@
 
 ## 未リリース
 
+- `--cache-reuse N`（`plan`/`up`）を追加しました。対応する llama.cpp ビルドの全サービスに `--cache-reuse N` を渡し、リクエスト間でプロンプトキャッシュを KV シフトで再利用します（固定システムプロンプトを持つ会話の TTFT を改善）。既定は 0（従来どおり無効）。ビルドがフラグに対応しない場合は警告を出してフラグを出力しません。
 - `--sleep-idle-seconds N`（`plan`/`up`）を追加しました。対応する llama.cpp ビルドの全サービスに `--sleep-idle-seconds N` を渡し、アイドル N 秒後にモデルと KV キャッシュを RAM から退避させます（次のリクエストで自動復帰）。既定は 0（従来どおり常駐）。ビルドがフラグに対応しない場合は警告を出してフラグを出力しません。
 - `nmesh spec measure` が、計測用の一時 Supervisor で `up()` を呼んだ際、内部の `save_plan` が常に実際の `plan.json` に書き込むため、単一サービスの計測用プラン（エフェメラルポート付き）でユーザーのプランを上書きしていました。実際に plan.json が chat 単独・計測用ポートに置き換わるのを確認しました。Supervisor に `plan_path` を追加し、`spec measure` は一時ディレクトリのプランに書き込むようにしました。
 - Apple Silicon 実機（M4・macOS 26）で MLX バックエンドを実地検証し、`nmesh up` が起動できない 2 つの不具合を修正しました。取得フェーズは backend 問わず GGUF リポジトリ（`hf_gguf` ソース）を `snapshot_download` していたため、mlx が読めない GGUF を取得した上、取得済みパスの argv 差し込みが最初の `-m` の直後を書き換えるため `python -m mlx_lm.server` の `-m` がモデルフラグと衝突し、`python -m <GGUFスナップショットパス>` となって `ModuleNotFoundError` で即死していました。`-m` の差し込みは llama.cpp 専用に限定し、mlx/vLLM は `--model`/位置引数を使うように修正し、ダウンロード先リポジトリも backend 別に解決するようにしました。さらにカタログに `hf_mlx` ソースキー（mlx-community の MLX 形式リポジトリ）を追加し、mlx がフル精度 HF リポジトリ（7B で約 15GiB）ではなくプランの量子化見積りに一致する 4bit 変換版を供給するようにしました。修正後、実機で `doctor`（Apple Silicon・unified メモリ・mlx=installed を検出）→ `plan`（mlx 選択）→ `up --detach` → ゲートウェイ経由の `/v1/chat/completions` が実応答を返すまで完走しました。なお `mlx_lm.server` は `/v1/embeddings` を持たず bge-m3 等の埋め込みモデルは起動できないため、embed 役割の mlx 計画は従来どおり警告付きのままです。

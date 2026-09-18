@@ -97,6 +97,7 @@ class Policy:
     ignore_spec_evidence: bool = False
     roles_explicit: bool = False
     sleep_idle_seconds: int = 0
+    cache_reuse: int = 0
 
     def __post_init__(self) -> None:
         if self.spec not in KINDS:
@@ -107,6 +108,8 @@ class Policy:
             raise ValueError("spec_n_max must be positive")
         if self.sleep_idle_seconds < 0:
             raise ValueError("sleep_idle_seconds must be >= 0")
+        if self.cache_reuse < 0:
+            raise ValueError("cache_reuse must be >= 0")
 
 
 @dataclass(frozen=True)
@@ -454,6 +457,7 @@ def _launch(
     spec_draft: str = "",
     spec_n_max: int = 3,
     sleep_idle_seconds: int = 0,
+    cache_reuse: int = 0,
     *,
     binary: str | None = None,
 ) -> LaunchSpec:
@@ -547,6 +551,13 @@ def _launch(
             elif warnings is not None:
                 warnings.append(
                     t("warn.sleep_idle_unsupported", language, model=model.id)
+                )
+        if backend == "llamacpp" and cache_reuse > 0:
+            if not known or "--cache-reuse" in flags:
+                argv += ["--cache-reuse", str(cache_reuse)]
+            elif warnings is not None:
+                warnings.append(
+                    t("warn.cache_reuse_unsupported", language, model=model.id)
                 )
         if backend == "llamacpp" and embed_only:
             if not known or "--embeddings" in flags:
@@ -1222,6 +1233,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         sleep_idle_seconds=(
             spec_policy.sleep_idle_seconds if spec_policy is not None else 0
         ),
+        cache_reuse=(spec_policy.cache_reuse if spec_policy is not None else 0),
         binary=profile.backend_paths.get(candidate.backend),
     )
     if candidate.backend == "llamacpp" and "hf_gguf" in candidate.model.sources:
@@ -2733,6 +2745,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
                     bool(pol.get("ignore_spec_evidence", False)),
                     bool(pol.get("roles_explicit", False)),
                     int(pol.get("sleep_idle_seconds", 0)),
+                    int(pol.get("cache_reuse", 0)),
                 )
     services_raw = data["services"]
     if not isinstance(services_raw, list):
