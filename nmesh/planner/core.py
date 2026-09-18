@@ -406,8 +406,10 @@ def _source_for(backend: str, model: ModelSpec, quant: str) -> str:
 
 
 def _download_repo_for(backend: str, model: ModelSpec) -> str | None:
-    if backend in {"vllm", "mlx"}:
+    if backend == "mlx":
         return model.sources.get("hf_mlx") or model.sources.get("hf")
+    if backend == "vllm":
+        return model.sources.get("hf")
     if backend == "llamacpp":
         return model.sources.get("hf_gguf") or model.sources.get("hf")
     return model.sources.get("ollama")
