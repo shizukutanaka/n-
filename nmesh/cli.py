@@ -1301,6 +1301,34 @@ def _unload(args: argparse.Namespace) -> int:
 
 def _jobs(args: argparse.Namespace) -> int:
     language = i18n.lang()
+    if args.cancel:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{args.port}/v1/jobs/{args.cancel}",
+            method="DELETE",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                data = json.loads(response.read().decode())
+        except HTTPError as error:
+            if error.code == 404:
+                print(i18n.t("err.jobs_missing", language, job=args.cancel),
+                      file=sys.stderr)
+            elif error.code == 409:
+                print(i18n.t("err.jobs_cancel", language, job=args.cancel),
+                      file=sys.stderr)
+            else:
+                print(i18n.t("err.jobs_gateway", language, port=args.port),
+                      file=sys.stderr)
+            return 1
+        except (OSError, json.JSONDecodeError):
+            print(i18n.t("err.jobs_gateway", language, port=args.port),
+                  file=sys.stderr)
+            return 1
+        if args.json:
+            _print_json(data)
+        else:
+            _console().print(i18n.t("jobs.cancelled", language, job=args.cancel))
+        return 0
     try:
         with urllib.request.urlopen(
             f"http://127.0.0.1:{args.port}/v1/jobs?limit={args.limit}",
@@ -4153,6 +4181,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     jobs_parser = sub.add_parser("jobs", help="list queued and running gateway jobs")
     jobs_parser.add_argument("--port", type=int, default=18000)
     jobs_parser.add_argument("--limit", type=_positive_int, default=50)
+    jobs_parser.add_argument("--cancel", metavar="JOB_ID",
+                             help="cancel a queued job (running jobs cannot be interrupted)")
     jobs_parser.add_argument("--json", action="store_true")
     watch_parser = sub.add_parser("watch")
     watch_parser.add_argument("--sources", default="zenn,qiita")

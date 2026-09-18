@@ -1059,9 +1059,23 @@ def create_app(
         slot_token: object | None = None
         job = jobs.submit(service.name, path)
         if limit_slots:
-            slot_token = await limiter.acquire(service, QUEUE_TIMEOUT)
+            deadline = time.monotonic() + QUEUE_TIMEOUT
+            while job.state == "queued" and slot_token is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                slot_token = await limiter.acquire(
+                    service, min(0.5, remaining)
+                )
+            if job.state == "cancelled":
+                if slot_token is not None:
+                    limiter.release(slot_token)
+                    slot_token = None
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"job {job.id} cancelled while queued",
+                )
             if slot_token is None:
-                assert job is not None
                 position = jobs.position(job)
                 jobs.finish(job, ok=False, detail="queue_timeout")
                 slots = max(1, service.memory.parallel_slots)
@@ -1074,7 +1088,13 @@ def create_app(
                     ),
                     headers={"Retry-After": "1"},
                 )
-        jobs.start(job)
+        if not jobs.start(job):
+            if slot_token is not None:
+                limiter.release(slot_token)
+            raise HTTPException(
+                status_code=409,
+                detail=f"job {job.id} cancelled while queued",
+            )
         locked = service.name in plan_snapshot.swap_group
         if locked:
 
@@ -1883,6 +1903,21 @@ def create_app(
         job = jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
+        return job.as_dict()
+
+    @app.delete("/v1/jobs/{job_id}")
+    async def cancel_job(job_id: str) -> dict[str, object]:
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        if not jobs.cancel(job):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"job {job.id} is {job.state}; "
+                    "only queued jobs can be cancelled"
+                ),
+            )
         return job.as_dict()
 
     @app.post("/v1/chat/completions")

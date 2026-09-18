@@ -4,6 +4,7 @@ import asyncio
 import json
 import socket
 import threading
+import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
@@ -343,3 +344,67 @@ def test_job_registry_transitions_and_capacity() -> None:
     registry.finish(running, ok=True)
     registry.finish(running, ok=False)
     assert registry.get(running.id).state == "done"
+
+
+def test_jobs_cancel_queued_job() -> None:
+    upstream = _limit_upstream()
+    try:
+        plan = _llama_plan(1)
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        with TestClient(create_app(plan)) as client:
+            _LimitHandler.block = True
+            first = threading.Thread(
+                target=lambda: client.post(
+                    "/v1/chat/completions", json={"messages": []}
+                )
+            )
+            first.start()
+            assert _LimitHandler.started.wait(timeout=2)
+            results: list[object] = []
+            second = threading.Thread(
+                target=lambda: results.append(
+                    client.post("/v1/chat/completions", json={"messages": []})
+                )
+            )
+            second.start()
+            queued_id = None
+            for _ in range(50):
+                queued = [
+                    j for j in client.get("/v1/jobs").json()["jobs"]
+                    if j["state"] == "queued"
+                ]
+                if queued:
+                    queued_id = queued[0]["id"]
+                    break
+                time.sleep(0.05)
+            assert queued_id is not None
+            cancelled = client.delete(f"/v1/jobs/{queued_id}")
+            assert cancelled.status_code == 200
+            assert cancelled.json()["state"] == "cancelled"
+            second.join(timeout=5)
+            assert results[0].status_code == 409
+            again = client.delete(f"/v1/jobs/{queued_id}")
+            assert again.status_code == 409
+            assert client.delete("/v1/jobs/job-nope").status_code == 404
+            _LimitHandler.release.set()
+            first.join(timeout=5)
+            _LimitHandler.block = False
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_job_registry_cancel() -> None:
+    from nmesh.gateway.jobs import JobRegistry
+
+    registry = JobRegistry()
+    queued = registry.submit("chat", "/v1/chat/completions")
+    assert registry.cancel(queued) is True
+    assert registry.get(queued.id).state == "cancelled"
+    assert registry.cancel(queued) is False
+    running = registry.submit("chat", "/v1/chat/completions")
+    registry.start(running)
+    assert registry.cancel(running) is False
+    listed = [j.id for j in registry.list()]
+    assert queued.id in listed and running.id in listed

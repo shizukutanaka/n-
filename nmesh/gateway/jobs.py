@@ -11,7 +11,7 @@ class Job:
     id: str
     service: str
     endpoint: str
-    state: str = "queued"  # queued | running | done | failed
+    state: str = "queued"  # queued | running | done | failed | cancelled
     queued_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -47,10 +47,13 @@ class JobRegistry:
             self._jobs[job.id] = job
             return job
 
-    def start(self, job: Job) -> None:
+    def start(self, job: Job) -> bool:
         with self._lock:
+            if job.state != "queued":
+                return False
             job.state = "running"
             job.started_at = time.time()
+            return True
 
     def finish(self, job: Job, ok: bool, detail: str | None = None) -> None:
         with self._lock:
@@ -60,9 +63,24 @@ class JobRegistry:
             job.finished_at = time.time()
             job.detail = detail
             self._finished_order.append(job.id)
-            while len(self._finished_order) > self._capacity:
-                old = self._finished_order.pop(0)
-                self._jobs.pop(old, None)
+            self._evict()
+
+    def cancel(self, job: Job) -> bool:
+        """Cancel a queued job. Returns False if it already started/finished."""
+        with self._lock:
+            if job.state != "queued":
+                return False
+            job.state = "cancelled"
+            job.finished_at = time.time()
+            job.detail = "cancelled"
+            self._finished_order.append(job.id)
+            self._evict()
+            return True
+
+    def _evict(self) -> None:
+        while len(self._finished_order) > self._capacity:
+            old = self._finished_order.pop(0)
+            self._jobs.pop(old, None)
 
     def get(self, job_id: str) -> Job | None:
         with self._lock:
@@ -85,7 +103,7 @@ class JobRegistry:
             active = [j for j in self._jobs.values()
                       if j.state in {"queued", "running"}]
             done = [j for j in self._jobs.values()
-                    if j.state in {"done", "failed"}]
+                    if j.state in {"done", "failed", "cancelled"}]
         active.sort(key=lambda j: j.queued_at)
         done.sort(key=lambda j: j.finished_at or 0.0, reverse=True)
         return (active + done)[:limit]
