@@ -17,7 +17,6 @@
 
 - `nmesh up` の Services テーブルで起動直後のサービスの Port セルが空白になっていました（直後の `status` では正しく表示）。`Supervisor.status()` がプロセス管理下のエントリにポートを含めていなかったのを修正し、計画済みポートを必ず出します。
 
-||||||| parent of 51a6d26 (verifier judges by option distribution, not by parsing prose (Jev pattern))
 - 委譲の検証判定を「生成された文章のパース」から「定義済み選択肢上の確率分布」に変更しました（TypeSafe Jev の判断層パターン）。検証呼び出しは `top_logprobs` を要求し、最初のトークンの {YES, NO} 分布から argmax で判定するため、logprobs 対応バックエンドでは未解析判定が原理的に発生しません。各判定は選択肢質量で正規化した信頼度を持ち、`orchestrate measure` の出力と `--json` の `verifier_confidence` に平均信頼度を出します。logprobs を返さないバックエンドは従来どおりテキスト解析にフォールバックし、未解析はこれまで通り必ずエスカレーションします（拒否方向への安全側）。プロトコル版は delegate-v3 で、旧記録と混同しません。
 - `nmesh status` / `nmesh down` / `nmesh up` の非 JSON 出力が `RuntimeStatus(...)` の dataclass repr をそのまま表示していました。サービス一覧をテーブル（Service / State / Port / Model / Backend）で表示するようにし、稼働サービスが無い場合は「no services running」と表示します（en/ja）。
 
