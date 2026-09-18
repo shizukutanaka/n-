@@ -147,7 +147,7 @@ MESSAGES = {
         "err.no_log": "No log found for service: {service}",
         "err.runtime_start": "Runtime startup failed",
         "err.gateway_reload": "gateway reload failed: {error}",
-        "err.gateway_extras": "Gateway requires the 'gateway' extra: pip install nmesh[gateway]",
+        "err.gateway_extras": "Gateway requires the 'gateway' extra: pip install \"nmesh[gateway] @ git+https://github.com/shizukutanaka/n-.git\"",
         "err.gateway_unload": "gateway unload failed: {error}",
         "err.gateway_unavailable": "gateway unavailable: {error}",
         "err.doctor": "doctor failed: {error}",
@@ -697,7 +697,7 @@ MESSAGES = {
 }
 
 MESSAGES["ja"].update({
-    "err.gateway_extras": "\u30b2\u30fc\u30c8\u30a6\u30a7\u30a4\u306b\u306f 'gateway' \u30a8\u30af\u30b9\u30c8\u30e9\u304c\u5fc5\u8981\u3067\u3059: pip install nmesh[gateway]",
+    "err.gateway_extras": "\u30b2\u30fc\u30c8\u30a6\u30a7\u30a4\u306b\u306f 'gateway' \u30a8\u30af\u30b9\u30c8\u30e9\u304c\u5fc5\u8981\u3067\u3059: pip install \"nmesh[gateway] @ git+https://github.com/shizukutanaka/n-.git\"",
     "err.gateway_unload": "\u30b2\u30fc\u30c8\u30a6\u30a7\u30a4\u306e\u30a2\u30f3\u30ed\u30fc\u30c9\u306b\u5931\u6557\u3057\u307e\u3057\u305f: {error}",
     "label.unloaded": "\u30a2\u30f3\u30ed\u30fc\u30c9\u5b8c\u4e86: {services}",
     "label.service_idle": "{service}: \u30a2\u30a4\u30c9\u30eb",
