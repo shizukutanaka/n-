@@ -80,6 +80,8 @@ def _eval_rows(records: Mapping[str, EvalRecord]) -> list[dict[str, object]]:
         tasks = SUITES.get(record.suite)
         if tasks is None:
             reasons.append("suite_unknown")
+        elif record.n_tasks < len(tasks):
+            reasons.append("partial_suite")
         elif record.digest != suite_digest(tasks):
             reasons.append("grader_digest_mismatch")
         if record.unscorable:

@@ -2,6 +2,8 @@
 
 ## 未リリース
 
+- `nmesh eval --categories` で絞り込んで実行した評価の証拠が「古い採点規則」（grader_digest_mismatch）と誤診断されていました。部分的な実行は `partial_suite`（絞込実行・planner には全スイートが必要）として正しく表示します。
+
 - `nmesh up` の Services テーブルで起動直後のサービスの Port セルが空白になっていました（直後の `status` では正しく表示）。`Supervisor.status()` がプロセス管理下のエントリにポートを含めていなかったのを修正し、計画済みポートを必ず出します。
 
 - `nmesh status` / `nmesh down` / `nmesh up` の非 JSON 出力が `RuntimeStatus(...)` の dataclass repr をそのまま表示していました。サービス一覧をテーブル（Service / State / Port / Model / Backend）で表示するようにし、稼働サービスが無い場合は「no services running」と表示します（en/ja）。
