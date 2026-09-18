@@ -7,14 +7,17 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import httpx
 
 from nmesh.catalog import load_catalog
-from nmesh.gateway import create_app
 from nmesh.paths import nmesh_home
 from nmesh.planner import BPW
+
+if TYPE_CHECKING:
+    from nmesh.gateway import FastAPIApp
+    from nmesh.planner import Plan
 from nmesh.runtime.acquisition import parse_label
 
 from .extract import Mention
@@ -272,6 +275,16 @@ def caps_available() -> bool:
 @runtime_checkable
 class _RoutePath(Protocol):
     path: str
+
+
+def create_app(
+    plan: Plan | None = None, watchdog: bool = False,
+    watchdog_interval: float = 15.0,
+) -> FastAPIApp:
+    """Lazy gateway import — keeps FastAPI out of CLI startup."""
+    from nmesh.gateway import create_app as _create_app
+
+    return _create_app(plan, watchdog, watchdog_interval)
 
 
 def _gateway_routes() -> frozenset[str] | None:
