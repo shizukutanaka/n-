@@ -740,3 +740,23 @@ def test_autostart_install_writes_launcher_and_preserves_environment(
     output = capsys.readouterr().out
     assert "/sc onlogon" in output
     assert "self-crash" in output
+
+
+def test_autostart_install_writes_unit_file(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(service_unit_module, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(cli, "is_windows", lambda: False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    config_home = tmp_path / "xdg-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+    assert cli.main(["autostart", "--install", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    unit_path = Path(data["unit_path"])
+    assert unit_path == config_home / "systemd" / "user" / "nmesh-gateway.service"
+    unit = unit_path.read_text(encoding="utf-8")
+    assert "[Service]" in unit
+    assert "ExecStart=" in unit
+    assert data["install_command"].endswith(str(unit_path))

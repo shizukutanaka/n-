@@ -169,7 +169,12 @@ from nmesh.runtime.logs import available as available_logs
 from nmesh.runtime.logs import log_path
 from nmesh.runtime.logs import rotate as rotate_log
 from nmesh.runtime.logs import tail as tail_log
-from nmesh.runtime.service_unit import launcher_script, service_unit, watch_unit
+from nmesh.runtime.service_unit import (
+    launcher_script,
+    service_unit,
+    unit_install_path,
+    watch_unit,
+)
 from nmesh.runtime.supervisor import Supervisor
 from nmesh.spec import (
     KIND_DRAFT,
@@ -4164,13 +4169,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_json(summary) if args.json else _console().print(summary)
         return 0
     if args.command == "autostart":
-        os_name = "nt" if is_windows() else None
+        if is_windows():
+            os_name = "nt"
+        elif sys.platform.startswith("darwin"):
+            os_name = "darwin"
+        else:
+            os_name = "posix"
         filename, text, install_command = service_unit(args.port, os_name=os_name)
         launcher_filename, launcher_text = launcher_script(args.port, os_name=os_name)
         home = nmesh_home()
         launcher_path = home / launcher_filename
         env_path = home / "gateway.env"
         installed = False
+        unit_path: Path | None = None
         if args.install:
             home.mkdir(parents=True, exist_ok=True)
             launcher_path.write_text(launcher_text, encoding="utf-8", newline="")
@@ -4186,6 +4197,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if not is_windows():
                     env_path.chmod(0o600)
+            unit_path = unit_install_path(filename, os_name)
+            if unit_path is not None:
+                unit_path.parent.mkdir(parents=True, exist_ok=True)
+                unit_path.write_text(text, encoding="utf-8", newline="")
             installed = True
         limitations = []
         if is_windows():
@@ -4196,6 +4211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "install_command": install_command,
             "launcher_path": str(launcher_path),
             "env_path": str(env_path),
+            "unit_path": str(unit_path) if unit_path is not None else None,
             "installed": installed,
             "limitations": limitations,
         }
@@ -4206,6 +4222,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.install:
                 print(i18n.t("label.launcher_written", i18n.lang(), path=launcher_path))
                 print(i18n.t("label.gateway_env", i18n.lang(), path=env_path))
+                if unit_path is not None:
+                    print(i18n.t("label.unit_written", i18n.lang(), path=unit_path))
             for limitation in limitations:
                 print(i18n.t("label.autostart_limitation", i18n.lang(), text=limitation))
         return 0

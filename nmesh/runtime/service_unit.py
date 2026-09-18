@@ -5,6 +5,7 @@ import os
 import shlex
 import subprocess
 import sys
+from pathlib import Path
 
 from nmesh.paths import nmesh_home
 
@@ -46,6 +47,24 @@ exec {executable} -m nmesh.gateway.server --port {port}
     return filename, text
 
 
+def unit_install_path(
+    filename: str, os_name: str | None = None
+) -> Path | None:
+    """Where the generated unit must be saved for the install command."""
+    windows = os.name == "nt" if os_name is None else os_name == "nt"
+    if windows:
+        return None
+    macos = (
+        sys.platform.startswith("darwin")
+        if os_name is None
+        else os_name.startswith("darwin")
+    )
+    if macos:
+        return Path.home() / "Library" / "LaunchAgents" / filename
+    config_home = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
+    return Path(config_home) / "systemd" / "user" / filename
+
+
 def service_unit(
     port: int = 18000, os_name: str | None = None
 ) -> tuple[str, str, str]:
@@ -81,7 +100,8 @@ def service_unit(
 </dict>
 </plist>
 """
-        return "com.nmesh.gateway.plist", text, f"launchctl load ~/Library/LaunchAgents/{label}.plist"
+        install = unit_install_path(f"{label}.plist", current)
+        return "com.nmesh.gateway.plist", text, f"launchctl load {install}"
     text = f"""[Unit]
 Description=nmesh gateway
 After=network.target
@@ -93,7 +113,8 @@ Restart=on-failure
 [Install]
 WantedBy=default.target
 """
-    return "nmesh-gateway.service", text, "systemctl --user enable --now ~/.config/systemd/user/nmesh-gateway.service"
+    install = unit_install_path("nmesh-gateway.service", current)
+    return "nmesh-gateway.service", text, f"systemctl --user enable --now {install}"
 
 
 def watch_unit(
@@ -157,5 +178,6 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 """
-    command = "systemctl --user enable --now ~/.config/systemd/user/nmesh-watch.timer"
+    install = unit_install_path("nmesh-watch.timer", current)
+    command = f"systemctl --user enable --now {install}"
     return "nmesh-watch.service + nmesh-watch.timer", text, command
