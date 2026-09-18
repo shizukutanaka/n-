@@ -2,6 +2,9 @@
 
 ## 未リリース
 
+- `nmesh unload`/`reload` のタイムアウトを延長 — in-flight 要求中にモデル終了が10秒を超えると CLI が「timed out」と言いながら実際は unload していた偽装失敗を修正
+
+
 - `nmesh orchestrate measure --worker-url` の案内文は「外部 worker を渡せ」と言うのに、プラン内に2つ目の生成サービスが無いと拒否されていました。`--worker-url` 指定時はプラン内 worker 解決をスキップし、外部エンドポイントで委譲測定が実行できます。
 
 - `nmesh eval --categories` で絞り込んで実行した評価の証拠が「古い採点規則」（grader_digest_mismatch）と誤診断されていました。部分的な実行は `partial_suite`（絞込実行・planner には全スイートが必要）として正しく表示します。
