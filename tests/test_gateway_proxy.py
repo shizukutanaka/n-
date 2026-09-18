@@ -152,6 +152,52 @@ class _RawErrorHandler(BaseHTTPRequestHandler):
         return
 
 
+class _RerankHandler(BaseHTTPRequestHandler):
+    request_body: ClassVar[dict[str, object]] = {}
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.__class__.request_body = json.loads(self.rfile.read(length))
+        payload = json.dumps({
+            "model": "/internal/path/model.gguf",
+            "object": "list",
+            "results": [{"index": 0, "relevance_score": 0.5}],
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def test_gateway_rerank_proxies_to_embed_service() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _RerankHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec("embed-model", "test", 500_000_000, 24, 16, 2, 64,
+                          1024, 4096, ["embed"], 80.0, "test",
+                          {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["embed"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        client = TestClient(create_app(plan))
+        response = client.post("/v1/rerank", json={
+            "model": "nmesh-auto", "query": "q", "documents": ["a", "b"],
+        })
+        assert response.status_code == 200
+        body = response.json()
+        assert body["results"][0]["relevance_score"] == 0.5
+        assert body["model"] == "nmesh-auto"
+        assert _RerankHandler.request_body["model"] == service.model_ref
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
 def test_gateway_proxy_rewrites_model_and_forwards_sse() -> None:
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
     thread = threading.Thread(target=upstream.serve_forever, daemon=True)

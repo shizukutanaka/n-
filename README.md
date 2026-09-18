@@ -323,6 +323,12 @@ strings; nmesh concatenates that input for context-length routing. Both
 completion endpoints honor explicit `nmesh-<service>` model IDs, streaming,
 backend slot limits, swap ordering, and telemetry.
 
+When the plan includes an `embed` service, the gateway also exposes
+`/v1/embeddings` and `/v1/rerank`. The rerank endpoint accepts a Cohere-style
+`{query, documents}` body and returns `results` with `relevance_score`s —
+with llama.cpp backends the embed service is started with `--reranking`
+whenever the engine build supports the flag.
+
 Set `NMESH_API_KEY` before starting the gateway to require
 `Authorization: Bearer <key>` on `/v1/*` and `/metrics*`. `/health` remains
 unauthenticated for readiness probes. When the variable is unset, authentication
