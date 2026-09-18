@@ -266,7 +266,7 @@ FastAPI + uvicorn、既定 `127.0.0.1:18000`。
 
 swap モードでは gateway がリクエストを直列化（`asyncio.Lock`）し、モデル切替中は 503 ではなく待たせる（タイムアウト 300 秒）。
 
-## 9. Bench / Autotune
+## 9. Bench
 
 `nmesh bench [--service chat] [--tokens 128]`:
 - prefill: 512トークン相当のプロンプト、decode: 128トークン生成、3回中央値
