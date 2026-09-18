@@ -16,7 +16,7 @@ from nmesh.planner import Policy, build_plan
 from nmesh.runtime import service_unit as service_unit_module
 from nmesh.runtime.logs import log_path, open_log, tail
 from nmesh.runtime.service_unit import launcher_script, service_unit
-from nmesh.runtime.supervisor import Supervisor
+from nmesh.runtime.supervisor import RuntimeStatus, Supervisor
 
 from .test_planner import profile
 
@@ -841,3 +841,71 @@ def test_down_cli_no_services_message(monkeypatch, tmp_path: Path, capsys) -> No
     out = capsys.readouterr().out
     assert "RuntimeStatus(" not in out
     assert "no services running" in out
+
+
+def test_engine_remove_refuses_active_engine_in_use(
+    monkeypatch, tmp_path: Path, capsys,
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "nmesh.runtime.engine.active",
+        lambda: SimpleNamespace(tag="b1", exe=tmp_path / "e" / "llama-server"),
+    )
+    monkeypatch.setattr(
+        "nmesh.cli.runtime_status",
+        lambda: RuntimeStatus(False, [{
+            "service": "chat", "running": True, "backend": "llamacpp",
+        }]),
+    )
+    called: list[str] = []
+    monkeypatch.setattr(
+        "nmesh.runtime.engine.remove",
+        lambda tag: called.append(tag) or True,
+    )
+
+    assert cli.main(["engine", "remove", "b1"]) == 1
+    assert called == []
+    assert "--force" in capsys.readouterr().err
+
+
+def test_engine_remove_allows_active_engine_with_force(
+    monkeypatch, tmp_path: Path, capsys,
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "nmesh.runtime.engine.active",
+        lambda: SimpleNamespace(tag="b1", exe=tmp_path / "e" / "llama-server"),
+    )
+    monkeypatch.setattr(
+        "nmesh.cli.runtime_status",
+        lambda: RuntimeStatus(False, [{
+            "service": "chat", "running": True, "backend": "llamacpp",
+        }]),
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.engine.remove", lambda _tag: True,
+    )
+
+    assert cli.main(["engine", "remove", "b1", "--force"]) == 0
+
+
+def test_engine_remove_ignores_non_llamacpp_services(
+    monkeypatch, tmp_path: Path, capsys,
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "nmesh.runtime.engine.active",
+        lambda: SimpleNamespace(tag="b1", exe=tmp_path / "e" / "llama-server"),
+    )
+    monkeypatch.setattr(
+        "nmesh.cli.runtime_status",
+        lambda: RuntimeStatus(False, [
+            {"service": "gateway", "running": True},
+            {"service": "remote", "running": True, "backend": "ollama"},
+        ]),
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.engine.remove", lambda _tag: True,
+    )
+
+    assert cli.main(["engine", "remove", "b1"]) == 0

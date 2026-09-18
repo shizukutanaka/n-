@@ -1707,6 +1707,25 @@ def _engine(args: argparse.Namespace) -> int:
                 ))
             return 0
         if command == "remove":
+            active_engine = engine_runtime.active()
+            is_active = active_engine is not None and active_engine.tag == args.tag
+            if is_active and not args.force:
+                running = [
+                    str(item.get("service"))
+                    for item in runtime_status().services
+                    if item.get("running") and item.get("backend") == "llamacpp"
+                ]
+                if running:
+                    print(
+                        i18n.t(
+                            "err.engine_in_use",
+                            i18n.lang(),
+                            tag=args.tag,
+                            services=", ".join(sorted(running)),
+                        ),
+                        file=sys.stderr,
+                    )
+                    return 1
             was_active = engine_runtime.remove(args.tag)
             payload = {"removed": args.tag, "active_cleared": was_active}
             if args.json:
@@ -4106,6 +4125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     engine_use.add_argument("--json", action="store_true")
     engine_remove = engine_commands.add_parser("remove")
     engine_remove.add_argument("tag")
+    engine_remove.add_argument("--force", action="store_true")
     engine_remove.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     if args.global_json and hasattr(args, "json"):

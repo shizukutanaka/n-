@@ -2,6 +2,8 @@
 
 ## 未リリース
 
+- `nmesh engine remove` が、稼働中の llamacpp サービスが使っている active エンジンを無警告で削除していました（稼働プロセスは fd 保持で生き延びますが、idle 退避後の復帰や再起動時に失敗します）。稼働サービスが使用中の場合は削除を拒否し、`nmesh down` か `--force` を案内します。
+
 - `nmesh status` / `nmesh down` / `nmesh up` の非 JSON 出力が `RuntimeStatus(...)` の dataclass repr をそのまま表示していました。サービス一覧をテーブル（Service / State / Port / Model / Backend）で表示するようにし、稼働サービスが無い場合は「no services running」と表示します（en/ja）。
 
 - サービス起動失敗時に、計画ポートが別プロセスで占有されている場合はその旨を明示するようにしました（`port N is still in use by another process`）。これまでは上流の生ログ（`couldn't bind HTTP server socket`）だけが出ていました。判定は connect ではなく bind 試行で行います — connect だと外部リスナーの accept バックログを消費してリトライ時に誤判定するため。
