@@ -1346,6 +1346,14 @@ def _reload(args: argparse.Namespace) -> int:
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             if response.status >= 400:
+                print(
+                    i18n.t(
+                        "err.gateway_reload",
+                        i18n.lang(),
+                        error=f"HTTP {response.status}",
+                    ),
+                    file=sys.stderr,
+                )
                 return 1
             data = json.loads(response.read().decode())
     except (OSError, json.JSONDecodeError) as error:
@@ -1746,6 +1754,7 @@ def _reference_context(
 def _bench(args: argparse.Namespace) -> int:
     plan = load_plan()
     if plan is None or not plan.services:
+        print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
         return 1
     service = next((item for item in plan.services if item.name == args.service), plan.services[0])
     running = runtime_status()
@@ -2341,6 +2350,7 @@ def _bench(args: argparse.Namespace) -> int:
 def _eval(args: argparse.Namespace) -> int:
     plan = load_plan()
     if plan is None or not plan.services:
+        print(i18n.t("err.eval_up", i18n.lang()), file=sys.stderr)
         return 1
     service = next((item for item in plan.services if item.name == args.service), None)
     if service is None:

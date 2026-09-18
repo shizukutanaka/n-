@@ -823,3 +823,17 @@ def test_autostart_install_writes_unit_file(
     assert "[Service]" in unit
     assert "ExecStart=" in unit
     assert data["install_command"].endswith(str(unit_path))
+
+
+def test_eval_cli_no_plan_message(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    assert cli.main(["eval"]) == 1
+    assert "nmesh up" in capsys.readouterr().err
+
+
+def test_bench_cli_no_plan_message(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    assert cli.main(["bench"]) == 1
+    assert "nmesh up" in capsys.readouterr().err
