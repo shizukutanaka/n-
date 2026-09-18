@@ -16,7 +16,7 @@ from nmesh.planner import Policy, build_plan
 from nmesh.runtime import service_unit as service_unit_module
 from nmesh.runtime.logs import log_path, open_log, tail
 from nmesh.runtime.service_unit import launcher_script, service_unit
-from nmesh.runtime.supervisor import Supervisor
+from nmesh.runtime.supervisor import RuntimeStatus, Supervisor
 
 from .test_planner import profile
 
