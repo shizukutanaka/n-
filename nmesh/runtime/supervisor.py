@@ -1260,6 +1260,7 @@ class Supervisor:
                 "model_ref": service.model_ref,
                 "quant": service.quant,
                 "backend": service.backend,
+                "port": service.port,
             }
 
         entries = [{
