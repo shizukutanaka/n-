@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import platform
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -25,7 +26,7 @@ from nmesh.eval.stats import (
 )
 from nmesh.i18n import t
 from nmesh.orchestrate.measure import RoleIdentity
-from nmesh.paths import nmesh_home
+from nmesh.paths import is_windows, nmesh_home
 from nmesh.probe import GPUInfo, HardwareProfile, Tier, profile_from_dict
 from nmesh.spec import (
     KINDS,
@@ -54,6 +55,14 @@ INSTALL_HINTS = {
     "vllm": "install.vllm",
     "mlx": "install.mlx",
 }
+
+
+def _install_tools() -> str:
+    if is_windows():
+        return "windows"
+    if platform.system().lower() == "darwin":
+        return "macos"
+    return "linux"
 
 
 def _effective_prior(model: ModelSpec, quant: str) -> float | None:
@@ -1144,7 +1153,12 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
                  resident_override: bool | None = None,
                  spec_policy: Policy | None = None) -> None:
     if not candidate.installed:
-        hints.append(t(INSTALL_HINTS[candidate.backend], language))
+        hints.append(t(
+            INSTALL_HINTS[candidate.backend], language,
+            tools=t(
+                f"install.llamacpp.tools_{_install_tools()}", language
+            ),
+        ))
         if candidate.backend not in missing_backends:
             missing_backends.append(candidate.backend)
     indices: list[int] = []
