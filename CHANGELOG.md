@@ -18,6 +18,12 @@
 - 複数 GPU 環境で `gpu_indices` に配置済みのサービスを起動時に実際に GPU へピン留め — これまで割当は計算されるだけで launch に反映されず、全サービスが全 GPU に分散していました。nvidia → `CUDA_VISIBLE_DEVICES`、amd → `HIP_VISIBLE_DEVICES` を launch env に付与（全 GPU 使用・共有 daemon・未対応ベンダーでは付与しません）。多 GPU 実機未検証のため「estimated placement」と注記します
 
 - `pip install nmesh`（base）で `nmesh` が起動不能だった — httpx が `gateway` extra に隔離されていたのを core deps へ移動。`serve` は extras 未導入時に raw traceback ではなく `pip install nmesh[gateway]` を案内
+
+
+=======
+
+- MIT LICENSE・CONTRIBUTING.md を追加（配布・コントリビューション用の不足分）
+
 - `nmesh down` が停止したサービスを表示する — 以前は常に「実行中のサービスはありません」とだけ返し、何を止めたか確認できなかった（Supervisor.down() が常に空の結果を返していた）
 - `nmesh orchestrate measure --worker-url` の案内文は「外部 worker を渡せ」と言うのに、プラン内に2つ目の生成サービスが無いと拒否されていました。`--worker-url` 指定時はプラン内 worker 解決をスキップし、外部エンドポイントで委譲測定が実行できます。
 
