@@ -981,5 +981,49 @@ def test_engine_remove_ignores_non_llamacpp_services(
         "nmesh.runtime.engine.remove", lambda _tag: True,
     )
 
+<<<<<<< HEAD
     assert cli.main(["engine", "remove", "b1"]) == 0
 >>>>>>> 90db695 (稼働中サービスが使う active エンジンの無警告削除を --force 必須に)
+||||||| parent of 7cab486 (restore test_down_reports_stopped_services (rebase artifact))
+    assert cli.main(["engine", "remove", "b1"]) == 0
+=======
+    assert cli.main(["engine", "remove", "b1"]) == 0
+
+def test_down_reports_stopped_services(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "owner_pid": os.getpid() + 1,
+                "services": [
+                    {
+                        "service": "chat",
+                        "pid": 123,
+                        "port": 18010,
+                        "model_ref": "model.gguf",
+                        "backend": "llamacpp",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor._pid_alive", lambda *_a: True,
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.gateway_listener_pid", lambda _port: None,
+    )
+    supervisor = Supervisor(state_path=state_path, terminator=terminated.append)
+
+    result = supervisor.down(foreign=True)
+
+    assert terminated == [123]
+    services = {item["service"]: item for item in result.services}
+    assert services["chat"]["running"] is False
+    assert services["chat"]["port"] == 18010
+>>>>>>> 7cab486 (restore test_down_reports_stopped_services (rebase artifact))
