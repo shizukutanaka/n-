@@ -2,6 +2,7 @@
 
 ## 未リリース
 
+- `nmesh autostart --install` はランチャーと `gateway.env` だけを書き込み、unit 本文を表示するだけでした。そのため表示される `systemctl --user enable --now ~/.config/systemd/user/nmesh-gateway.service` が参照するファイルが存在せず、Linux で自動起動の設定が完了できませんでした（macOS の plist も同様）。`--install` は unit/plist を実際の保存先（`$XDG_CONFIG_HOME/systemd/user/` または `~/Library/LaunchAgents/`）に書き込み、保存先を `--json` の `unit_path` と表示で明示するようにしました。enable コマンドのパスも XDG_CONFIG_HOME を反映した実パスを出します。
 - `nmesh up` が、計画時に解決されたエンジンバイナリ（例: `engines/llamacpp/b10955/.../llama-server`）が `nmesh engine remove` や入替で消えていた場合、素の `FileNotFoundError` で落ちていました。起動前に argv[0] の実在を確認し、無ければインストール済みエンジン（active 優先）へ付け替えて起動し、置換は status の note と計画の永続化で明示するようにしました。
 - `nmesh engine install`（タグ未指定）が、アセットがまだ1件も公開されていない最新リリースを選んで即座に失敗していました（実際に b10975 が「published assets: none」で新規インストール不能を確認）。アセットを公開している最新タグを選ぶようにしました。明示 `--version` 指定時は従来どおり正直にエラーにします。
 - `nmesh up` が admission でサービスを落としたとき、その警告が RuntimeStatus に載らずユーザーに伝わりませんでした（実行結果に出ないため「落とした」こと自体が静か）。`RuntimeStatus.warnings` を追加し、`up` の結果表示・`--json` で警告を出すようにしました。
