@@ -2,6 +2,9 @@
 
 ## 未リリース
 
+- GitHub 公開用ファイル一式: `install.sh`（POSIX）/`install.ps1`（Windows）インストーラー、`.github/ISSUE_TEMPLATE/`（bug/feature）、`.github/PULL_REQUEST_TEMPLATE.md`、`SECURITY.md`、README の Quickstart にインストーラー経路を追加
+
+
 - `pip install nmesh`（base）で `nmesh` が起動不能だった — httpx が `gateway` extra に隔離されていたのを core deps へ移動。`serve` は extras 未導入時に raw traceback ではなく `pip install nmesh[gateway]` を案内
 
 
