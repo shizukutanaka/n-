@@ -51,7 +51,6 @@ from nmesh.bench import (
     load_history,
     load_records,
     load_retrieval_cache,
-    measure,
     measure_controlled,
     measure_embedding,
     measure_reference,
@@ -4090,8 +4089,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     watch_parser.add_argument("--offline")
     watch_parser.add_argument("--unit", action="store_true")
     watch_parser.add_argument("--interval-hours", type=_positive_int, default=24)
-    auto = sub.add_parser("autotune")
-    auto.add_argument("--json", action="store_true")
     autostart = sub.add_parser("autostart")
     autostart.add_argument("--port", type=int, default=18000)
     autostart.add_argument("--install", action="store_true")
@@ -4161,99 +4158,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _spec_show(args)
     if args.command == "watch":
         return _watch(args)
-    if args.command == "autotune":
-        saved_plan = load_plan()
-        if saved_plan is None or not saved_plan.services:
-            return 1
-        service = saved_plan.services[0]
-        if service.roles == ["embed"]:
-            print(
-                i18n.t(
-                    "err.bench_embedding",
-                    i18n.lang(),
-                    service=service.name,
-                ),
-                file=sys.stderr,
-            )
-            return 2
-        context_values = sorted({max(service.context // 2, 128), service.context})
-        layer_values = sorted({service.n_gpu_layers or 0, max((service.n_gpu_layers or 0) // 2, 0)})
-        running = runtime_status()
-        if not _service_running(service, running):
-            print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
-            return 1
-        base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
-            f"http://127.0.0.1:{service.port}"
-        )
-        best: tuple[int, int, float] | None = None
-        best_plan = None
-        for context in context_values:
-            for layers in layer_values:
-                argv = list(service.launch.argv)
-                if "--max-model-len" in argv:
-                    argv[argv.index("--max-model-len") + 1] = str(context)
-                if "-c" in argv:
-                    argv[argv.index("-c") + 1] = str(context)
-                if "-ngl" in argv:
-                    argv[argv.index("-ngl") + 1] = str(layers)
-                tuned = replace(
-                    service, context=context, n_gpu_layers=layers,
-                    launch=replace(service.launch, argv=argv),
-                )
-                tuned_plan = replace(saved_plan, services=[
-                    tuned if item.name == service.name else item for item in saved_plan.services
-                ])
-                runtime_down()
-                try:
-                    runtime_up(tuned_plan, no_download=True)
-                    tuned_result = measure(tuned, base_url)
-                except (OSError, RuntimeError) as error:
-                    print(i18n.t("err.autotune_measure", i18n.lang(), error=error),
-                          file=sys.stderr)
-                    runtime_down()
-                    try:
-                        runtime_up(saved_plan, no_download=True)
-                    except (OSError, RuntimeError) as restore_error:
-                        print(
-                            i18n.t("err.autotune_restore", i18n.lang(), error=restore_error),
-                            file=sys.stderr,
-                        )
-                    return 1
-                save_plan(saved_plan)
-                if best is None or tuned_result.decode_tps > best[2]:
-                    best = (context, layers, tuned_result.decode_tps)
-                    best_plan = tuned_plan
-        if best is None:
-            runtime_down()
-            try:
-                runtime_up(saved_plan, no_download=True)
-            except (OSError, RuntimeError):
-                pass
-            return 1
-        runtime_down()
-        assert best_plan is not None
-        save_plan(best_plan)
-        try:
-            runtime_up(best_plan, no_download=True)
-        except (OSError, RuntimeError) as error:
-            save_plan(saved_plan)
-            runtime_down()
-            try:
-                runtime_up(saved_plan, no_download=True)
-            except (OSError, RuntimeError) as restore_error:
-                print(
-                    i18n.t("err.autotune_restore", i18n.lang(), error=restore_error),
-                    file=sys.stderr,
-                )
-            print(
-                i18n.t("err.autotune_winning", i18n.lang(), error=error),
-                file=sys.stderr,
-            )
-            return 1
-        summary = {"service": service.name, "context": best[0], "n_gpu_layers": best[1],
-                   "decode_tps": best[2]}
-        _print_json(summary) if args.json else _console().print(summary)
-        return 0
     if args.command == "autostart":
         if is_windows():
             os_name = "nt"

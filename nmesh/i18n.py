@@ -245,9 +245,7 @@ MESSAGES = {
         "err.eval_run": "Evaluation failed: {error}",
         "err.eval_save": "evaluation failed to save: {error}",
         "err.eval_categories": "No evaluation tasks match the requested categories.",
-        "err.autotune_measure": "Autotune failed: {error}",
-        "err.autotune_restore": "failed to restore original autotune configuration: {error}",
-        "err.autotune_winning": "failed to restore winning autotune configuration: {error}",
+
         "label.item": "Item",
         "label.value": "Value",
         "label.free": "free",
@@ -573,7 +571,7 @@ MESSAGES = {
         "label.spec_control": "A/A対照: 最悪比率 {ratio}、同一出力 {identical}",
         "label.spec_ref_spread": "参照ばらつき",
         "label.spec_cand_spread": "候補ばらつき",
-        "err.autotune_measure": "自動調整に失敗しました: {error}",
+
         "label.item": "項目",
         "label.value": "値",
         "label.free": "空き",
@@ -638,8 +636,7 @@ MESSAGES = {
         "err.up": "up に失敗しました: {error}",
         "err.gateway_not_ready": "gateway の準備が完了しませんでした。{path} を確認してください",
         "err.bench_save": "ベンチマーク結果の保存に失敗しました: {error}",
-        "err.autotune_restore": "自動調整前の設定の復元に失敗しました: {error}",
-        "err.autotune_winning": "最適設定の復元に失敗しました: {error}",
+
         "label.vram_source": "VRAM の情報源",
         "label.gateway_log": "ゲートウェイログ: {path}",
         "warn.embed_context_capped": "{model} の {quant} / {backend} で、埋め込みの実測文脈は {cap} トークンが上限のため、計画文脈 {context} を短縮します。",
