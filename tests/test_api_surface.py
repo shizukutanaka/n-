@@ -459,7 +459,9 @@ def test_run_returns_failure_when_gateway_is_unavailable(monkeypatch) -> None:
         raise OSError("connection refused")
 
     monkeypatch.setattr(cli.urllib.request, "urlopen", fail)
-    result = cli._run_prompt(SimpleNamespace(prompt="hello", role="chat", json=False))
+    result = cli._run_prompt(
+        SimpleNamespace(prompt="hello", role="chat", json=False, port=18000)
+    )
     assert result == 1
 
 

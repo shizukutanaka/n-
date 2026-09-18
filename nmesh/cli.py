@@ -3927,6 +3927,13 @@ def _run_prompt(args: argparse.Namespace) -> int:
     headers = {"Content-Type": "application/json", **_gateway_headers()}
     request = urllib.request.Request("http://127.0.0.1:18000/v1/chat/completions", payload,
                                      headers)
+    request = urllib.request.Request("http://127.0.0.1:18000/v1/chat/completions", payload,
+                                     {"Content-Type": "application/json"})
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{args.port}/v1/chat/completions",
+        payload,
+        {"Content-Type": "application/json"},
+    )
     try:
         with urllib.request.urlopen(request, timeout=300) as response:
             payload = json.loads(response.read().decode())
@@ -3937,7 +3944,8 @@ def _run_prompt(args: argparse.Namespace) -> int:
             return 0
     except (OSError, json.JSONDecodeError, KeyError, IndexError) as error:
         output = i18n.t("err.gateway_unavailable", i18n.lang(), error=error)
-    print(output)
+    print(output, file=sys.stderr)
+    print(i18n.t("err.gateway_unavailable.hint", i18n.lang()), file=sys.stderr)
     return 1
 
 
@@ -4106,6 +4114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_parser = sub.add_parser("run")
     run_parser.add_argument("prompt")
     run_parser.add_argument("--role", default="chat")
+    run_parser.add_argument("--port", type=int, default=18000)
     run_parser.add_argument("--json", action="store_true")
     bench_parser = sub.add_parser("bench")
     bench_parser.add_argument("--service", default="chat")
