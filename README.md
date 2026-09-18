@@ -17,7 +17,8 @@ reported as a warning and the remaining runnable services can still start.
 ## Quickstart（3 コマンド）
 
 ```text
-pip install -e ".[gateway]"
+curl -fsSL https://raw.githubusercontent.com/shizukutanaka/n-/main/install.sh | bash
+# または: pip install "nmesh[gateway,download] @ git+https://github.com/shizukutanaka/n-.git"
 nmesh doctor            # ハードウェアと使えるバックエンドを表示
 nmesh up --detach       # 機械に合うモデルを選んで起動（llama.cpp が無ければ自分で取得）
 # → http://127.0.0.1:18000/v1 が OpenAI 互換で使えます
