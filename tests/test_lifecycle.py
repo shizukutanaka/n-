@@ -823,3 +823,13 @@ def test_autostart_install_writes_unit_file(
     assert "[Service]" in unit
     assert "ExecStart=" in unit
     assert data["install_command"].endswith(str(unit_path))
+
+
+def test_run_cli_unreachable_gateway_hint(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    assert cli.main(["run", "hi", "--port", "19999"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "gateway unavailable" in captured.err
+    assert "nmesh up" in captured.err
