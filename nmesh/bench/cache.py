@@ -393,14 +393,3 @@ def benchmark(run: Callable[[int, int], float], prefill_tokens: int = 512,
               decode_tokens: int = 128, runs: int = 3) -> float:
     values = [run(prefill_tokens, decode_tokens) for _ in range(runs)]
     return statistics.median(values)
-
-
-def autotune(run: Callable[[int, int], float], contexts: list[int],
-             gpu_layers: list[int]) -> tuple[int, int, float]:
-    best = (contexts[0], gpu_layers[0], float("-inf"))
-    for context in contexts:
-        for layers in gpu_layers:
-            value = run(context, layers)
-            if value > best[2]:
-                best = (context, layers, value)
-    return best

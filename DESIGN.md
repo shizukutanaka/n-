@@ -272,7 +272,7 @@ swap モードでは gateway がリクエストを直列化（`asyncio.Lock`）�
 - prefill: 512トークン相当のプロンプト、decode: 128トークン生成、3回中央値
 - 結果を `~/.nmesh/bench.json` に `(model_id, quant, backend, gpu_name, n_gpu_layers)` キーで保存
 - `nmesh plan` は次回以降この実測値を推定値の代わりに使う
-- `nmesh autotune`: context と n_gpu_layers を数点振って最良 tok/s の設定を Plan に反映
+
 
 ## 10. CLI
 
@@ -283,7 +283,7 @@ swap モードでは gateway がリクエストを直列化（`asyncio.Lock`）�
 | `nmesh up [--no-download] [--detach]` | 計画に従って起動 + gateway 起動 |
 | `nmesh status` / `nmesh down` | 状態表示 / 全停止 |
 | `nmesh run "プロンプト"` [--role code] | ワンショット実行（gateway 経由） |
-| `nmesh bench` / `nmesh autotune` | 実測・自動調整 |
+| `nmesh bench` | 実測 |
 | `nmesh models [--role code]` | カタログ表示（このPCで動くものに ✓ ） |
 
 出力は `rich` で表組み。`--json` で機械可読。
