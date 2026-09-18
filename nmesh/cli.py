@@ -459,6 +459,7 @@ def _make_plan(args: argparse.Namespace) -> Plan:
         ignore_spec_evidence=getattr(args, "ignore_spec_evidence", False),
         sleep_idle_seconds=getattr(args, "sleep_idle_seconds", 0),
         cache_reuse=getattr(args, "cache_reuse", 0),
+        context_shift=getattr(args, "context_shift", False),
     )
     # Throughput and capacity measurements describe the machine that ran them:
     # their cache key carries the GPU name and layer count but not the CPU, so
@@ -858,6 +859,7 @@ def _up_plan_args(args: argparse.Namespace) -> argparse.Namespace:
         ignore_spec_evidence=getattr(args, "ignore_spec_evidence", False),
         sleep_idle_seconds=getattr(args, "sleep_idle_seconds", 0),
         cache_reuse=getattr(args, "cache_reuse", 0),
+        context_shift=getattr(args, "context_shift", False),
         profile=getattr(args, "profile", None),
     )
 
@@ -3876,6 +3878,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--spec-n-max", type=int, default=3)
     plan.add_argument("--sleep-idle-seconds", type=int, default=0)
     plan.add_argument("--cache-reuse", type=int, default=0)
+    plan.add_argument("--context-shift", action="store_true")
     plan.add_argument("--ignore-spec-evidence", action="store_true")
     plan.add_argument("--lang")
     plan.add_argument("--profile")
@@ -3896,6 +3899,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--spec-n-max", type=int, default=3)
     up_parser.add_argument("--sleep-idle-seconds", type=int, default=0)
     up_parser.add_argument("--cache-reuse", type=int, default=0)
+    up_parser.add_argument("--context-shift", action="store_true")
     up_parser.add_argument("--ignore-spec-evidence", action="store_true")
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=18000)

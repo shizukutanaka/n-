@@ -98,6 +98,7 @@ class Policy:
     roles_explicit: bool = False
     sleep_idle_seconds: int = 0
     cache_reuse: int = 0
+    context_shift: bool = False
 
     def __post_init__(self) -> None:
         if self.spec not in KINDS:
@@ -458,6 +459,7 @@ def _launch(
     spec_n_max: int = 3,
     sleep_idle_seconds: int = 0,
     cache_reuse: int = 0,
+    context_shift: bool = False,
     *,
     binary: str | None = None,
 ) -> LaunchSpec:
@@ -558,6 +560,17 @@ def _launch(
             elif warnings is not None:
                 warnings.append(
                     t("warn.cache_reuse_unsupported", language, model=model.id)
+                )
+        if backend == "llamacpp" and context_shift and not embed_only:
+            if not known or "--context-shift" in flags:
+                argv.append("--context-shift")
+                if warnings is not None:
+                    warnings.append(
+                        t("warn.context_shift_enabled", language, model=model.id)
+                    )
+            elif warnings is not None:
+                warnings.append(
+                    t("warn.context_shift_unsupported", language, model=model.id)
                 )
         if backend == "llamacpp" and embed_only:
             if not known or "--embeddings" in flags:
@@ -1234,6 +1247,9 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
             spec_policy.sleep_idle_seconds if spec_policy is not None else 0
         ),
         cache_reuse=(spec_policy.cache_reuse if spec_policy is not None else 0),
+        context_shift=(
+            spec_policy.context_shift if spec_policy is not None else False
+        ),
         binary=profile.backend_paths.get(candidate.backend),
     )
     if candidate.backend == "llamacpp" and "hf_gguf" in candidate.model.sources:
@@ -2746,6 +2762,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
                     bool(pol.get("roles_explicit", False)),
                     int(pol.get("sleep_idle_seconds", 0)),
                     int(pol.get("cache_reuse", 0)),
+                    bool(pol.get("context_shift", False)),
                 )
     services_raw = data["services"]
     if not isinstance(services_raw, list):
