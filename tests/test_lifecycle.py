@@ -912,3 +912,12 @@ def test_down_reports_stopped_services(
     services = {item["service"]: item for item in result.services}
     assert services["chat"]["running"] is False
     assert services["chat"]["port"] == 18010
+
+def test_run_cli_unreachable_gateway_hint(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    assert cli.main(["run", "hi", "--port", "19999"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "gateway unavailable" in captured.err
+    assert "nmesh up" in captured.err
