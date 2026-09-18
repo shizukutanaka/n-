@@ -823,3 +823,21 @@ def test_autostart_install_writes_unit_file(
     assert "[Service]" in unit
     assert "ExecStart=" in unit
     assert data["install_command"].endswith(str(unit_path))
+
+
+def test_status_cli_renders_table_not_repr(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    assert cli.main(["status", "--port", "19999"]) == 0
+    out = capsys.readouterr().out
+    assert "RuntimeStatus(" not in out
+    assert "gateway" in out and "stopped" in out
+
+
+def test_down_cli_no_services_message(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    assert cli.main(["down"]) == 0
+    out = capsys.readouterr().out
+    assert "RuntimeStatus(" not in out
+    assert "no services running" in out
