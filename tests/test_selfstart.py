@@ -243,3 +243,20 @@ def test_up_does_not_autoinstall_simulated_profile(monkeypatch) -> None:
 
     assert cli._ensure_runnable_plan(_up_args(profile="profile.json")) is None
     assert install_calls == 0
+
+
+def test_ignored_up_plan_flags_lists_nondefaults() -> None:
+    assert cli._ignored_up_plan_flags(_up_args()) == []
+    assert cli._ignored_up_plan_flags(_up_args(context_shift=True)) == [
+        "--context-shift"
+    ]
+    assert cli._ignored_up_plan_flags(
+        _up_args(kv_quant="q8_0", cache_reuse=256)
+    ) == ["--kv-quant", "--cache-reuse"]
+
+
+def test_saved_plan_warns_when_up_flags_ignored(monkeypatch, capsys) -> None:
+    saved = SimpleNamespace(services=[object()], runnable=True)
+    monkeypatch.setattr(cli, "load_plan", lambda: saved)
+    assert cli._ensure_runnable_plan(_up_args(context_shift=True)) is saved
+    assert "--context-shift" in capsys.readouterr().err
