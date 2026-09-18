@@ -1841,6 +1841,15 @@ def create_app(
             request, service, selected, telemetry_keys, "/v1/embeddings", instrument=False
         )
 
+    @app.post("/v1/rerank")
+    async def rerank(request: dict[str, object]) -> object:
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
+        service = _service(selected, selected.routing.role_to_service.get("embed", ""))
+        return await proxy(
+            request, service, selected, telemetry_keys, "/v1/rerank", instrument=False
+        )
+
     return app
 
 

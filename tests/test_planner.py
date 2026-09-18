@@ -881,6 +881,32 @@ def test_context_shift_warns_when_unsupported(
     assert any("context-shift" in warning for warning in result.warnings)
 
 
+def test_reranking_is_launched_after_pooling_for_embed(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "bge-m3")
+    result = build_plan(
+        profile(64, (24,)), [model], Policy(roles=["embed"]),
+    )
+    argv = result.services[0].launch.argv
+    assert "--reranking" in argv
+    assert argv.index("--reranking") > argv.index("--pooling")
+
+
+def test_reranking_omitted_when_embed_flag_unsupported(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "bge-m3")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl")},
+    )
+    result = build_plan(
+        machine, [model], Policy(roles=["embed"]),
+    )
+    assert "--reranking" not in result.services[0].launch.argv
+
+
 def test_unsupported_llamacpp_kv_quantization_downgrades_accounting(
     catalog: list[ModelSpec],
 ) -> None:
