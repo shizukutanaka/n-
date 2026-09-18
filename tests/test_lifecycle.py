@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -386,6 +387,33 @@ def test_unhealthy_message_includes_backend_log_tail(monkeypatch, tmp_path: Path
 
     assert "Service did not become healthy: chat" in message
     assert "backend failed to start" in message
+
+
+def test_unhealthy_message_names_occupied_port(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        message = Supervisor()._unhealthy_message("chat", port)
+    finally:
+        listener.close()
+
+    assert "Service did not become healthy: chat" in message
+    assert f"port {port}" in message
+
+
+def test_unhealthy_message_omits_port_hint_when_free(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    free_port = probe.getsockname()[1]
+    probe.close()
+
+    message = Supervisor()._unhealthy_message("chat", free_port)
+
+    assert "port" not in message.lower()
 
 
 def test_logs_cli(monkeypatch, tmp_path: Path, capsys) -> None:
