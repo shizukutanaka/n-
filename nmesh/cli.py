@@ -2879,7 +2879,7 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    if worker is None:
+    if worker is None and not args.worker_url:
         print(
             i18n.t(
                 "err.orchestrate_no_worker",
@@ -2900,30 +2900,42 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    if not args.worker_url and not _orchestration_generative(worker):
-        print(
-            i18n.t(
-                "err.orchestrate_nongenerative",
-                i18n.lang(),
-                role="worker",
-                service=worker.name,
-            ),
-            file=sys.stderr,
-        )
-        return 1
+    if not args.worker_url:
+        assert worker is not None
+        if not _orchestration_generative(worker):
+            print(
+                i18n.t(
+                    "err.orchestrate_nongenerative",
+                    i18n.lang(),
+                    role="worker",
+                    service=worker.name,
+                ),
+                file=sys.stderr,
+            )
+            return 1
     tasks = SUITES[args.suite]
     if args.limit is not None:
         tasks = tasks[:args.limit]
     lead_url = args.lead_url or _orchestration_url(lead)
-    worker_url = args.worker_url or _orchestration_url(worker)
+    worker_url = args.worker_url or (
+        _orchestration_url(worker) if worker is not None else ""
+    )
     if not args.lead_url and not _service_running(lead, runtime_status()):
         print(i18n.t("err.orchestrate_up", i18n.lang()), file=sys.stderr)
         return 1
-    if not args.worker_url and not _service_running(worker, runtime_status()):
+    if not args.worker_url and worker is not None and not _service_running(
+        worker, runtime_status()
+    ):
         print(i18n.t("err.orchestrate_up", language), file=sys.stderr)
         return 1
     lead_identity = _orchestration_identity(lead)
-    worker_identity = _orchestration_identity(worker)
+    worker_identity = (
+        _orchestration_identity(worker)
+        if worker is not None
+        else RoleIdentity(
+            model_id="external", quant="", backend="external",
+        )
+    )
     reference_context = (
         None if args.no_reference else _reference_context(lead)
     )
@@ -2956,9 +2968,11 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
                 ),
                 worker=Endpoint(
                     worker_url,
-                    worker.model_ref,
+                    worker.model_ref if worker is not None else "",
                     cache_prompt=(
-                        False if worker.backend == "llamacpp" else None
+                        False
+                        if worker is not None and worker.backend == "llamacpp"
+                        else None
                     ),
                 ),
                 lead_identity=lead_identity,
