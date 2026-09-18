@@ -203,17 +203,79 @@ def test_delegate_escalates_once_on_unreadable_verdict(monkeypatch: pytest.Monke
     def fake_complete(_client: object, endpoint: Endpoint, prompt: str, max_tokens: int) -> Call:
         del max_tokens
         calls.append(endpoint.model_ref)
-        if endpoint.model_ref == "verify":
-            return Call("maybe", 2, 1, False, 0.0)
         return Call("rescued", 2, 1, False, 0.0)
 
+    def fake_verify(_client: object, endpoint: Endpoint, prompt: str, answer: str):
+        calls.append(endpoint.model_ref)
+        return Call("maybe", 2, 1, False, 0.0), None, None
+
     monkeypatch.setattr(protocol_module, "complete", fake_complete)
+    monkeypatch.setattr(protocol_module, "verify_judgment", fake_verify)
     result = delegate(
         object(), "task", 10, lead=Endpoint("lead", "lead"), worker=Endpoint("worker", "worker")
     )
     assert result.escalated
     assert result.unparsed_verdict
+    assert result.verdict_confidence is None
     assert calls == ["worker", "lead", "lead"]
+
+
+def test_delegate_accepts_on_option_distribution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A logprob-verdict accepts without touching the text fallback."""
+
+    def fake_complete(_client: object, endpoint: Endpoint, prompt: str, max_tokens: int) -> Call:
+        del max_tokens
+        return Call("answer", 2, 1, False, 0.0)
+
+    def fake_verify(_client: object, endpoint: Endpoint, prompt: str, answer: str):
+        return Call("YES", 2, 1, False, 0.0), True, 0.97
+
+    monkeypatch.setattr(protocol_module, "complete", fake_complete)
+    monkeypatch.setattr(protocol_module, "verify_judgment", fake_verify)
+    result = delegate(
+        object(), "task", 10, lead=Endpoint("lead", "lead"), worker=Endpoint("worker", "worker")
+    )
+    assert result.accepted
+    assert not result.escalated
+    assert result.verdict_confidence == 0.97
+
+
+def _verdict_body(top: list[tuple[str, float]], text: str = "YES") -> dict:
+    return {
+        "choices": [{
+            "message": {"content": text},
+            "finish_reason": "stop",
+            "logprobs": {"content": [{"token": text, "logprob": top[0][1],
+                                      "top_logprobs": [
+                                          {"token": token, "logprob": lp}
+                                          for token, lp in top
+                                      ]}]},
+        }],
+        "usage": {},
+    }
+
+
+def test_verdict_distribution_argmax_and_confidence() -> None:
+    from nmesh.orchestrate.protocol import _verdict_distribution
+
+    decision, confidence = _verdict_distribution(_verdict_body([
+        ("YES", -0.1), ("NO", -3.0), ("Yes", -4.0), ("the", -5.0),
+    ]))
+    assert decision is True
+    assert 0.9 < confidence < 1.0
+
+    decision, confidence = _verdict_distribution(_verdict_body([
+        ("NO", -0.05), ("YES", -6.0),
+    ], text="NO"))
+    assert decision is False
+    assert confidence > 0.95
+
+
+def test_verdict_distribution_missing_logprobs() -> None:
+    from nmesh.orchestrate.protocol import _verdict_distribution
+
+    assert _verdict_distribution({"choices": [{"message": {"content": "YES"}}]}) == (None, None)
+    assert _verdict_distribution(_verdict_body([("the", -0.01)])) == (None, None)
 
 
 def test_measure_reports_paired_arms_and_costs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -226,14 +288,17 @@ def test_measure_reports_paired_arms_and_costs(monkeypatch: pytest.MonkeyPatch) 
         del max_tokens
         if endpoint.model_ref == "worker":
             text = "good" if prompt == "one" else "bad"
-        elif prompt.startswith("You are a strict checker"):
-            text = "YES" if "ANSWER:\ngood" in prompt else "NO"
         else:
             text = "bad" if prompt == "one" else "good"
         return Call(text, 3, 2, False, 0.1)
 
+    def fake_verify(_client: object, endpoint: Endpoint, prompt: str, answer: str):
+        correct = answer == "good"
+        return Call("YES" if correct else "NO", 3, 2, False, 0.1), correct, 0.9
+
     monkeypatch.setattr(measure_module, "complete", fake_complete)
     monkeypatch.setattr(protocol_module, "complete", fake_complete)
+    monkeypatch.setattr(protocol_module, "verify_judgment", fake_verify)
     run = measure(
         tasks,
         lead=Endpoint("lead", "lead"),

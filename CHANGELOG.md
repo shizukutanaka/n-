@@ -17,6 +17,8 @@
 
 - `nmesh up` の Services テーブルで起動直後のサービスの Port セルが空白になっていました（直後の `status` では正しく表示）。`Supervisor.status()` がプロセス管理下のエントリにポートを含めていなかったのを修正し、計画済みポートを必ず出します。
 
+||||||| parent of 51a6d26 (verifier judges by option distribution, not by parsing prose (Jev pattern))
+- 委譲の検証判定を「生成された文章のパース」から「定義済み選択肢上の確率分布」に変更しました（TypeSafe Jev の判断層パターン）。検証呼び出しは `top_logprobs` を要求し、最初のトークンの {YES, NO} 分布から argmax で判定するため、logprobs 対応バックエンドでは未解析判定が原理的に発生しません。各判定は選択肢質量で正規化した信頼度を持ち、`orchestrate measure` の出力と `--json` の `verifier_confidence` に平均信頼度を出します。logprobs を返さないバックエンドは従来どおりテキスト解析にフォールバックし、未解析はこれまで通り必ずエスカレーションします（拒否方向への安全側）。プロトコル版は delegate-v3 で、旧記録と混同しません。
 - `nmesh status` / `nmesh down` / `nmesh up` の非 JSON 出力が `RuntimeStatus(...)` の dataclass repr をそのまま表示していました。サービス一覧をテーブル（Service / State / Port / Model / Backend）で表示するようにし、稼働サービスが無い場合は「no services running」と表示します（en/ja）。
 
 - サービス起動失敗時に、計画ポートが別プロセスで占有されている場合はその旨を明示するようにしました（`port N is still in use by another process`）。これまでは上流の生ログ（`couldn't bind HTTP server socket`）だけが出ていました。判定は connect ではなく bind 試行で行います — connect だと外部リスナーの accept バックログを消費してリトライ時に誤判定するため。
@@ -26,6 +28,7 @@
 - `--cache-reuse N`（`plan`/`up`）を追加しました。対応する llama.cpp ビルドの全サービスに `--cache-reuse N` を渡し、リクエスト間でプロンプトキャッシュを KV シフトで再利用します（固定システムプロンプトを持つ会話の TTFT を改善）。既定は 0（従来どおり無効）。ビルドがフラグに対応しない場合は警告を出してフラグを出力しません。
 - `--sleep-idle-seconds N`（`plan`/`up`）を追加しました。対応する llama.cpp ビルドの全サービスに `--sleep-idle-seconds N` を渡し、アイドル N 秒後にモデルと KV キャッシュを RAM から退避させます（次のリクエストで自動復帰）。既定は 0（従来どおり常駐）。ビルドがフラグに対応しない場合は警告を出してフラグを出力しません。
 - `nmesh spec measure` が、計測用の一時 Supervisor で `up()` を呼んだ際、内部の `save_plan` が常に実際の `plan.json` に書き込むため、単一サービスの計測用プラン（エフェメラルポート付き）でユーザーのプランを上書きしていました。実際に plan.json が chat 単独・計測用ポートに置き換わるのを確認しました。Supervisor に `plan_path` を追加し、`spec measure` は一時ディレクトリのプランに書き込むようにしました。
+
 - Apple Silicon 実機（M4・macOS 26）で MLX バックエンドを実地検証し、`nmesh up` が起動できない 2 つの不具合を修正しました。取得フェーズは backend 問わず GGUF リポジトリ（`hf_gguf` ソース）を `snapshot_download` していたため、mlx が読めない GGUF を取得した上、取得済みパスの argv 差し込みが最初の `-m` の直後を書き換えるため `python -m mlx_lm.server` の `-m` がモデルフラグと衝突し、`python -m <GGUFスナップショットパス>` となって `ModuleNotFoundError` で即死していました。`-m` の差し込みは llama.cpp 専用に限定し、mlx/vLLM は `--model`/位置引数を使うように修正し、ダウンロード先リポジトリも backend 別に解決するようにしました。さらにカタログに `hf_mlx` ソースキー（mlx-community の MLX 形式リポジトリ）を追加し、mlx がフル精度 HF リポジトリ（7B で約 15GiB）ではなくプランの量子化見積りに一致する 4bit 変換版を供給するようにしました。修正後、実機で `doctor`（Apple Silicon・unified メモリ・mlx=installed を検出）→ `plan`（mlx 選択）→ `up --detach` → ゲートウェイ経由の `/v1/chat/completions` が実応答を返すまで完走しました。なお `mlx_lm.server` は `/v1/embeddings` を持たず bge-m3 等の埋め込みモデルは起動できないため、embed 役割の mlx 計画は従来どおり警告付きのままです。
 - `nmesh autostart --install` はランチャーと `gateway.env` だけを書き込み、unit 本文を表示するだけでした。そのため表示される `systemctl --user enable --now ~/.config/systemd/user/nmesh-gateway.service` が参照するファイルが存在せず、Linux で自動起動の設定が完了できませんでした（macOS の plist も同様）。`--install` は unit/plist を実際の保存先（`$XDG_CONFIG_HOME/systemd/user/` または `~/Library/LaunchAgents/`）に書き込み、保存先を `--json` の `unit_path` と表示で明示するようにしました。enable コマンドのパスも XDG_CONFIG_HOME を反映した実パスを出します。
 - `nmesh up` が、計画時に解決されたエンジンバイナリ（例: `engines/llamacpp/b10955/.../llama-server`）が `nmesh engine remove` や入替で消えていた場合、素の `FileNotFoundError` で落ちていました。起動前に argv[0] の実在を確認し、無ければインストール済みエンジン（active 優先）へ付け替えて起動し、置換は status の note と計画の永続化で明示するようにしました。
