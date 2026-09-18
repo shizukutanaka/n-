@@ -1232,7 +1232,7 @@ def _unload(args: argparse.Namespace) -> int:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with urllib.request.urlopen(request, timeout=60) as response:
             data = json.loads(response.read().decode())
     except HTTPError as error:
         if error.code == 404 and args.service is not None:
@@ -1371,7 +1371,7 @@ def _reload(args: argparse.Namespace) -> int:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with urllib.request.urlopen(request, timeout=300) as response:
             if response.status >= 400:
                 return 1
             data = json.loads(response.read().decode())
