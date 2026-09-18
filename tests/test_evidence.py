@@ -223,3 +223,20 @@ def test_superseded_records_are_explained_and_all_unusable_rows_have_reasons(
         row["usable"] or row["reasons"]
         for row in rows
     )
+
+
+def test_eval_partial_suite_reason(tmp_path, monkeypatch) -> None:
+    """A `--categories`-filtered run stores a subset digest; report it as
+    partial coverage, not as stale grading rules."""
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    subset = SUITES["core"][:4]
+    partial = EvalRecord(
+        model_id="model", quant="f16", backend="llamacpp",
+        n_tasks=4, passed=3, pass_rate=0.75, by_category={}, at=1.0,
+        suite="core", digest=suite_digest(subset),
+    )
+    _write_records(tmp_path, "eval.json", {"partial": partial})
+
+    row = next(r for r in _rows("eval") if r["key"] == "partial")
+    assert "partial_suite" in row["reasons"]
+    assert "grader_digest_mismatch" not in row["reasons"]
