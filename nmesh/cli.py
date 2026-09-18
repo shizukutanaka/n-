@@ -4074,7 +4074,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     logs_parser.add_argument("--lines", type=_positive_int, default=50)
     logs_parser.add_argument("--json", action="store_true")
     watch_parser = sub.add_parser("watch")
-    watch_parser.add_argument("--sources", default="zenn,qiita")
+    watch_parser.add_argument(
+        "--sources",
+        default="zenn,qiita",
+        help="comma-separated source tags (e.g. zenn,qiita)",
+    )
     watch_parser.add_argument(
         "--limit",
         type=_positive_int,
@@ -4083,10 +4087,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     watch_parser.add_argument("--all", action="store_true", dest="all")
     watch_parser.add_argument("--json", action="store_true")
-    watch_parser.add_argument("--write-drafts")
-    watch_parser.add_argument("--offline")
+    watch_parser.add_argument(
+        "--write-drafts",
+        metavar="DIR",
+        help="write drafts for verified findings into DIR",
+    )
+    watch_parser.add_argument(
+        "--offline",
+        metavar="PATH",
+        help="read saved source items from a JSON file instead of fetching",
+    )
     watch_parser.add_argument("--unit", action="store_true")
-    watch_parser.add_argument("--interval-hours", type=_positive_int, default=24)
+    watch_parser.add_argument(
+        "--interval-hours",
+        type=_positive_int,
+        default=24,
+        help="only re-check sources whose snapshot is older than this",
+    )
     auto = sub.add_parser("autotune")
     auto.add_argument("--json", action="store_true")
     autostart = sub.add_parser("autostart")
