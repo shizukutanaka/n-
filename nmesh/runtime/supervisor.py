@@ -1001,6 +1001,17 @@ class Supervisor:
 
     def down(self, foreign: bool = False, gateway_port: int | None = None) -> RuntimeStatus:
         swept: int | None = None
+        stopped: list[dict[str, object]] = []
+        seen_stopped: set[str] = set()
+
+        def report(name: str, fields: dict[str, object]) -> None:
+            if name in seen_stopped:
+                return
+            seen_stopped.add(name)
+            stopped.append(
+                {**fields, "service": name, "running": False}
+            )
+
         with self._lock:
             state = self._load_state()
             if state is not None:
@@ -1021,17 +1032,38 @@ class Supervisor:
                     ):
                         self._terminator(int(gateway["pid"]))
                         swept = int(gateway["pid"])
-            if foreign:
-                # A gateway owns the watchdog that respawns services — kill it
-                # (recorded or orphaned) before touching service processes.
-                self._sweep_gateway(gateway_port, swept)
+                        report("gateway", {"pid": swept, "port": gateway_port})
+            # A gateway owns the watchdog that respawns services — kill it
+            # (recorded or orphaned) before touching service processes.
+            if foreign and self._sweep_gateway(gateway_port, swept) is not None:
+                report("gateway", {"port": gateway_port})
             adopted_names = set(self.adopted)
-            for record in self.adopted.values():
+            for name, record in self.adopted.items():
                 pid = record.get("pid")
                 if isinstance(pid, int) and not isinstance(pid, bool):
                     self._terminator(pid)
-            for process in list(self.processes.values()):
+                    report(name, record)
+            for name, process in list(self.processes.items()):
+                report_fields: dict[str, object] = {"pid": process.pid}
+                planned = (
+                    next(
+                        (
+                            item for item in self.active_plan.services
+                            if item.name == name
+                        ),
+                        None,
+                    )
+                    if self.active_plan is not None
+                    else None
+                )
+                if planned is not None:
+                    report_fields.update({
+                        "port": planned.port,
+                        "model_ref": planned.model_ref,
+                        "backend": planned.backend,
+                    })
                 if process.poll() is not None:
+                    report(name, report_fields)
                     continue
                 if is_windows():
                     process.terminate()
@@ -1050,6 +1082,7 @@ class Supervisor:
                             process.kill()
                     else:
                         process.kill()
+                report(name, report_fields)
             if state is not None:
                 gateway_retained = False
                 gateway = state.pop("gateway", None)
@@ -1071,6 +1104,7 @@ class Supervisor:
                         continue
                     if foreign and entry.get("pid") is not None and self._entry_alive(entry):
                         self._terminator(int(entry["pid"]))
+                        report(str(entry.get("service")), entry)
                         continue
                     if self._entry_alive(entry):
                         retained.append(entry)
@@ -1090,15 +1124,17 @@ class Supervisor:
             self.restarts.clear()
             self.failed.clear()
             self.active_plan = None
-        return RuntimeStatus(False, [])
+        return RuntimeStatus(False, stopped)
 
-    def _sweep_gateway(self, port: int | None, swept: int | None) -> None:
+    def _sweep_gateway(self, port: int | None, swept: int | None) -> int | None:
         """Terminate an nmesh gateway still listening on *port* that state missed."""
         if port is None:
-            return
+            return None
         orphan = gateway_listener_pid(port)
         if orphan is not None and orphan != swept:
             self._terminator(orphan)
+            return orphan
+        return None
 
     def ensure_running(self, service_name: str, plan: Plan | None = None) -> RuntimeStatus:
         with self._lock:
