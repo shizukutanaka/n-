@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import socket
@@ -1325,6 +1326,8 @@ def _launch_gateway(
         record_gateway(adopted, port)
         return _AdoptedGateway(adopted), None
     command = [sys.executable, "-m", "nmesh.gateway.server", "--port", str(port)]
+    if importlib.util.find_spec("uvicorn") is None or importlib.util.find_spec("fastapi") is None:
+        raise OSError(i18n.t("err.gateway_extras", i18n.lang()))
     if not detach:
         process = subprocess.Popen(command)
         record_gateway(process.pid, port)

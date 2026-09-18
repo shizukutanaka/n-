@@ -2,6 +2,9 @@
 
 ## 未リリース
 
+- `pip install nmesh`（base）で `nmesh` が起動不能だった — httpx が `gateway` extra に隔離されていたのを core deps へ移動。`serve` は extras 未導入時に raw traceback ではなく `pip install nmesh[gateway]` を案内
+
+
 - `nmesh down` が停止したサービスを表示する — 以前は常に「実行中のサービスはありません」とだけ返し、何を止めたか確認できなかった（Supervisor.down() が常に空の結果を返していた）
 
 
