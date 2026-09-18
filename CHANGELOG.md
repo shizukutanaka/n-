@@ -2,6 +2,7 @@
 
 ## 未リリース
 
+- ゲートウェイが Anthropic Messages API（`POST /v1/messages` と `POST /v1/messages/count_tokens`）を透過するようにしました。上流 llama.cpp が提供する Anthropic 互換エンドポイントへそのまま中継し、Claude Code 系クライアントなど Anthropic 形式で話すツールが nmesh に接続できます。ルーティング・スロット制限・swap グループの確保は `/v1/chat/completions` と同じ経路を使い、OpenAI 専用の `stream_options` は Anthropic リクエストには注入しません（上流が未知フィールドを拒否し得るため）。SSE の `event:` フレームは無改変で透過し、`message_start` 内のネストした `message.model` もクライアント向けのモデル名に書き換えます（これまでは上流の GGUF パスが漏れていました）。実機検証済み: 非ストリームで Anthropic message 応答、ストリームで `message_start`/`content_block_delta`/`message_stop` フレーム、`count_tokens` で `{"input_tokens": N}` を確認。
 - `--context-shift`（`plan`/`up`）を追加しました。対応する llama.cpp ビルドの生成系サービスに `--context-shift` を渡し、入力がコンテキスト窓を超えてもウィンドウをずらして生成を継続します（従来はエラー）。**最古のトークンは静かに捨てられる**ため、有効時は計画に警告を必ず出します。埋め込みサービスには付けません（埋め込みの静かな切り詰めは回答を破損させるため）。既定はオフ。ビルド非対応時は警告のみ。
 - `--cache-reuse N`（`plan`/`up`）を追加しました。対応する llama.cpp ビルドの全サービスに `--cache-reuse N` を渡し、リクエスト間でプロンプトキャッシュを KV シフトで再利用します（固定システムプロンプトを持つ会話の TTFT を改善）。既定は 0（従来どおり無効）。ビルドがフラグに対応しない場合は警告を出してフラグを出力しません。
 - `--sleep-idle-seconds N`（`plan`/`up`）を追加しました。対応する llama.cpp ビルドの全サービスに `--sleep-idle-seconds N` を渡し、アイドル N 秒後にモデルと KV キャッシュを RAM から退避させます（次のリクエストで自動復帰）。既定は 0（従来どおり常駐）。ビルドがフラグに対応しない場合は警告を出してフラグを出力しません。
