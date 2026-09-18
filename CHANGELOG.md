@@ -15,7 +15,6 @@
 
 - `nmesh eval --categories` で絞り込んで実行した評価の証拠が「古い採点規則」（grader_digest_mismatch）と誤診断されていました。部分的な実行は `partial_suite`（絞込実行・planner には全スイートが必要）として正しく表示します。
 
-||||||| parent of 8c8f4bc (llama.cpp 未導入時の案内を OS 別に — Linux で winget/brew を案内しない)
 - llama.cpp 未インストール時の案内が OS に関わらず「winget / brew / build from source」と表示していました。Linux では「build from source」、macOS では「brew」、Windows では「winget」のみを案内するよう OS 別に出し分けます。
 - `nmesh up` の Services テーブルで起動直後のサービスの Port セルが空白になっていました（直後の `status` では正しく表示）。`Supervisor.status()` がプロセス管理下のエントリにポートを含めていなかったのを修正し、計画済みポートを必ず出します。
 
