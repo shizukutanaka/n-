@@ -592,6 +592,17 @@ def _launch(
                 warnings.append(
                     t("warn.embeddings_pooling_unknown", language, model=model.id)
                 )
+            if (
+                embedding_flag is not None
+                and (
+                    not known
+                    or "--reranking" in flags
+                    or "--rerank" in flags
+                )
+            ):
+                # b10970: --reranking is silently disabled when it precedes
+                # --pooling; always emit it after.
+                argv.append("--reranking")
             if context > 512:
                 if not known:
                     logical_batch_flag = "-b"
