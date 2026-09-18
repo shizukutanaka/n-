@@ -322,6 +322,15 @@ strings; nmesh concatenates that input for context-length routing. Both
 completion endpoints honor explicit `nmesh-<service>` model IDs, streaming,
 backend slot limits, swap ordering, and telemetry.
 
+The gateway also passes through the Anthropic Messages API when the backend
+serves it (llama.cpp does): `POST /v1/messages` and
+`POST /v1/messages/count_tokens`. Requests route through the same planner
+as chat completions — role-based service selection, context-depth rerouting,
+slot limits, and swap ordering all apply — so Anthropic-shaped clients such as
+Claude Code can point at the gateway directly. Streaming Anthropic SSE frames
+(`event:`/`data:` pairs) pass through unmodified; OpenAI-only fields such as
+`stream_options` are not injected into Anthropic requests.
+
 Set `NMESH_API_KEY` before starting the gateway to require
 `Authorization: Bearer <key>` on `/v1/*` and `/metrics*`. `/health` remains
 unauthenticated for readiness probes. When the variable is unset, authentication
