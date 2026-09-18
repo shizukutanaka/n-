@@ -49,6 +49,19 @@ catalog の `hf_mlx` ソース（MLX 形式リポジトリ）を優先使用し�
 モデルの追加や上書きは `~/.nmesh/models.yaml` に bundled catalog と同じ形式で記述します。
 同じ `id` のモデルはユーザー定義が優先されます。
 
+## オフライン動作
+
+エンジンとモデルを一度取得すれば、実行時にネットワークは不要です。
+ネットワーク名前空間を完全に遮断した環境（外部接続なし・ループバックのみ）で
+`nmesh plan` / `up` / `status` / `down` / `doctor` と gateway 経由の
+chat completion・embeddings が動作することを実機検証済みです。gateway は
+`127.0.0.1` にのみ bind するため、LAN への露出もありません。
+
+ネットワークが必要なのは取得系だけです: エンジンのインストール
+（GitHub Releases）、モデルダウンロード（Hugging Face）、
+`nmesh watch` のフィード取得。これらが失敗しても起動済みサービスの
+推論・監視・停止は影響を受けません。
+
 ## CI workflow
 
 GitHub の権限がある利用者は `ci/github-workflow-ci.yml` を
@@ -64,9 +77,8 @@ mypy nmesh
 pytest -q
 ```
 
-`mypy nmesh` は `pyproject.toml` に列挙した既知負債のモジュール
-（`nmesh.cli`・`nmesh.gateway`・`nmesh.planner`・`nmesh.runtime.engine`・
-`nmesh.runtime.supervisor`）以外の全モジュールを検査します。
+`mypy nmesh` は `nmesh` パッケージの全モジュールを検査します（既知負債の
+除外はありません）。
 
 ## Gateway service
 
