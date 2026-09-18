@@ -17,7 +17,6 @@
 
 - `nmesh up` の Services テーブルで起動直後のサービスの Port セルが空白になっていました（直後の `status` では正しく表示）。`Supervisor.status()` がプロセス管理下のエントリにポートを含めていなかったのを修正し、計画済みポートを必ず出します。
 
-||||||| parent of c2b6c54 (gateway passes through Anthropic Messages API (/v1/messages, count_tokens))
 - ゲートウェイが Anthropic Messages API（`POST /v1/messages` と `POST /v1/messages/count_tokens`）を透過するようにしました。上流 llama.cpp が提供する Anthropic 互換エンドポイントへそのまま中継し、Claude Code 系クライアントなど Anthropic 形式で話すツールが nmesh に接続できます。ルーティング・スロット制限・swap グループの確保は `/v1/chat/completions` と同じ経路を使い、OpenAI 専用の `stream_options` は Anthropic リクエストには注入しません（上流が未知フィールドを拒否し得るため）。SSE の `event:` フレームは無改変で透過し、`message_start` 内のネストした `message.model` もクライアント向けのモデル名に書き換えます（これまでは上流の GGUF パスが漏れていました）。実機検証済み: 非ストリームで Anthropic message 応答、ストリームで `message_start`/`content_block_delta`/`message_stop` フレーム、`count_tokens` で `{"input_tokens": N}` を確認。
 - `nmesh status` / `nmesh down` / `nmesh up` の非 JSON 出力が `RuntimeStatus(...)` の dataclass repr をそのまま表示していました。サービス一覧をテーブル（Service / State / Port / Model / Backend）で表示するようにし、稼働サービスが無い場合は「no services running」と表示します（en/ja）。
 
