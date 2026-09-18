@@ -3807,8 +3807,12 @@ def _watch(args: argparse.Namespace) -> int:
 
 
 def _run_prompt(args: argparse.Namespace) -> int:
-    payload = json.dumps({"model": f"nmesh-{args.role}",
-                          "messages": [{"role": "user", "content": args.prompt}]}).encode()
+    stream = bool(getattr(args, "stream", False)) and not args.json
+    payload = json.dumps({
+        "model": f"nmesh-{args.role}",
+        "messages": [{"role": "user", "content": args.prompt}],
+        "stream": stream,
+    }).encode()
     request = urllib.request.Request(
         f"http://127.0.0.1:{args.port}/v1/chat/completions",
         payload,
@@ -3816,11 +3820,33 @@ def _run_prompt(args: argparse.Namespace) -> int:
     )
     try:
         with urllib.request.urlopen(request, timeout=300) as response:
-            payload = json.loads(response.read().decode())
-            if args.json:
-                print(json.dumps(payload, indent=2))
-            else:
-                print(payload["choices"][0]["message"]["content"])
+            if not stream:
+                payload = json.loads(response.read().decode())
+                if args.json:
+                    print(json.dumps(payload, indent=2))
+                else:
+                    print(payload["choices"][0]["message"]["content"])
+                return 0
+            for raw in response:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                delta = (
+                    chunk.get("choices", [{}])[0]
+                    .get("delta", {})
+                    .get("content")
+                )
+                if delta:
+                    sys.stdout.write(delta)
+                    sys.stdout.flush()
+            sys.stdout.write("\n")
             return 0
     except (OSError, json.JSONDecodeError, KeyError, IndexError) as error:
         output = i18n.t("err.gateway_unavailable", i18n.lang(), error=error)
@@ -3996,6 +4022,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_parser.add_argument("--role", default="chat")
     run_parser.add_argument("--port", type=int, default=18000)
     run_parser.add_argument("--json", action="store_true")
+    run_parser.add_argument(
+        "--stream", action="store_true",
+        help="print tokens as they are generated (ignored with --json)",
+    )
     bench_parser = sub.add_parser("bench")
     bench_parser.add_argument("--service", default="chat")
     bench_parser.add_argument("--tokens", type=int, default=128)

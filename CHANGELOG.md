@@ -2,6 +2,8 @@
 
 ## 未リリース
 
+- `nmesh run --stream` を追加 — チャット応答をトークン逐次表示（SSE ストリーミング、--json 併用時は従来どおり一括）
+
 - `pip install nmesh`（base）で `nmesh` が起動不能だった — httpx が `gateway` extra に隔離されていたのを core deps へ移動。`serve` は extras 未導入時に raw traceback ではなく `pip install nmesh[gateway]` を案内
 
 
