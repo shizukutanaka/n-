@@ -49,8 +49,26 @@ class Telemetry:
         self.path = path or nmesh_home() / "telemetry.json"
         self.max_samples = max_samples
         self._lock = threading.Lock()
+        self._cached: list[Sample] | None = None
+        self._cached_stamp: tuple[int, int] | None = None
+
+    def _stamp(self) -> tuple[int, int] | None:
+        try:
+            stat = self.path.stat()
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
 
     def _load(self) -> list[Sample]:
+        stamp = self._stamp()
+        if stamp is not None and stamp == self._cached_stamp and self._cached is not None:
+            return list(self._cached)
+        loaded = self._read()
+        self._cached = loaded
+        self._cached_stamp = self._stamp()
+        return list(loaded)
+
+    def _read(self) -> list[Sample]:
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
             values = payload.get("samples", []) if isinstance(payload, dict) else []
@@ -82,6 +100,8 @@ class Telemetry:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
                 temporary.write_text(payload, encoding="utf-8")
                 os.replace(temporary, self.path)
+                self._cached = list(samples)
+                self._cached_stamp = self._stamp()
             except OSError:
                 try:
                     temporary.unlink()
