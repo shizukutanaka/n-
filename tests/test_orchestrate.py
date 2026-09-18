@@ -641,3 +641,72 @@ def test_orchestrate_measure_demotion_write_failure_keeps_success(
     assert result["demoted"] == 1
     assert result["gate"] == ALLOW
     assert "readonly" in captured.err
+
+
+def test_measure_allows_external_worker_without_plan_service(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`--worker-url` documents an external-worker escape hatch; it must work
+    even when the plan has no second generative service."""
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    lead = SimpleNamespace(
+        name="chat", roles=["chat"], model_ref="lead-model",
+        model_id="lead-id", quant="q4_k_m", backend="llamacpp",
+        port=18010,
+    )
+    plan = SimpleNamespace(
+        services=[lead],
+        routing=SimpleNamespace(role_to_service={}),
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(
+        cli, "runtime_status",
+        lambda: cli.RuntimeStatus(False, [
+            {"service": "chat", "running": True},
+        ]),
+    )
+    captured: dict[str, object] = {}
+
+    diff = SimpleNamespace(gained=0, lost=0, p=1.0)
+    verifier = SimpleNamespace(
+        accuracy=1.0, accepted=1, accepted_but_wrong=0,
+        rejected_but_right=0, unparsed=0,
+    )
+    fake_run = SimpleNamespace(
+        n_tasks=1, worker_passed=1, lead_passed=1, delegated_passed=1,
+        ceiling_passed=1, delegated_vs_lead=diff, ceiling_vs_lead=diff,
+        verifier=verifier, lead_tokens_solo=10, lead_tokens_delegated=15,
+        verify_overhead=1.5, seconds_solo=0.1, seconds_delegated=0.2,
+        repeats=1, unstable_tasks=0, digest="d", protocol="p",
+    )
+
+    def fake_measure(tasks, **kwargs):
+        captured.update(kwargs)
+        return fake_run
+
+    monkeypatch.setattr(cli, "orchestrate_measure", fake_measure)
+    monkeypatch.setattr(cli, "combine", lambda runs: runs[0])
+    monkeypatch.setattr(cli, "load_history", dict)
+    monkeypatch.setattr(cli, "save_delegation", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "load_delegation_cache", dict)
+    monkeypatch.setattr(
+        cli, "from_run",
+        lambda *a, **k: SimpleNamespace(seconds_ratio=1.0, token_ratio=1.0),
+    )
+    monkeypatch.setattr(cli, "decide", lambda _r: ("ok", ""))
+    monkeypatch.setattr(cli, "decide_cost", lambda _r: ("ok", ""))
+    monkeypatch.setattr(
+        cli, "_service_running", lambda *_a: True,
+    )
+
+    result = cli.main([
+        "orchestrate", "measure",
+        "--suite", "core", "--limit", "1", "--repeats", "1",
+        "--no-reference",
+        "--worker-url", "http://127.0.0.1:9999",
+        "--json",
+    ])
+    assert result == 0
+    worker_ep = captured["worker"]
+    assert worker_ep.base_url == "http://127.0.0.1:9999"
+    assert captured["worker_identity"].backend == "external"
