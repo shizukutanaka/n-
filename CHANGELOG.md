@@ -23,7 +23,6 @@
 - 実行可能な保存済み `plan.json` がある状態で `nmesh up` に計画系オプション（`--roles`/`--kv-quant`/`--spec*`/`--sleep-idle-seconds`/`--cache-reuse`/`--context-shift`）を渡しても、保存済みプランがそのまま使われオプションが無警告で無視されていました。無視されるオプションを stderr に警告するようにしました。
 - `--context-shift`（`plan`/`up`）を追加しました。対応する llama.cpp ビルドの生成系サービスに `--context-shift` を渡し、生成中に出力がコンテキスト窓を超えてもウィンドウをずらして生成を継続します（従来は窓の終端で打ち切り）。**最古のトークンは静かに捨てられる**ため、有効時は計画に警告を必ず出します。なお窓を超える**入力プロンプト自体**は従来どおり llama-server が拒否します（context-shift は生成中のシフトであり、窓を超える入力の受理ではありません）。埋め込みサービスには付けません（埋め込みの静かな切り詰めは回答を破損させるため）。既定はオフ。ビルド非対応時は警告のみ。
 
-||||||| parent of 6932bb3 (evidence gains a decision layer: prioritized next actions with reason+confidence)
 - `--context-shift`（`plan`/`up`）を追加しました。対応する llama.cpp ビルドの生成系サービスに `--context-shift` を渡し、入力がコンテキスト窓を超えてもウィンドウをずらして生成を継続します（従来はエラー）。**最古のトークンは静かに捨てられる**ため、有効時は計画に警告を必ず出します。埋め込みサービスには付けません（埋め込みの静かな切り詰めは回答を破損させるため）。既定はオフ。ビルド非対応時は警告のみ。
 - `nmesh evidence` が優先度付きの推奨アクションを出すようになりました（決定層）。`recommendations()` は証拠行を `{priority, action, reason, risk, confidence}` の意思決定に変換します: 使用不可で再測定コマンドがある記録は P1、記録がゼロなら「nmesh bench」を P2 で提案します。同じコマンドは理由を併記して1行に集約し、`--json` には `recommendations` フィールドが追加されます。決定は決定論的ルールのみ（LLM 不使用）で、confidence はルール確度です。
 - `--cache-reuse N`（`plan`/`up`）を追加しました。対応する llama.cpp ビルドの全サービスに `--cache-reuse N` を渡し、リクエスト間でプロンプトキャッシュを KV シフトで再利用します（固定システムプロンプトを持つ会話の TTFT を改善）。既定は 0（従来どおり無効）。ビルドがフラグに対応しない場合は警告を出してフラグを出力しません。
