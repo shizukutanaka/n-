@@ -16,7 +16,7 @@ from nmesh.planner import Policy, build_plan
 from nmesh.runtime import service_unit as service_unit_module
 from nmesh.runtime.logs import log_path, open_log, tail
 from nmesh.runtime.service_unit import launcher_script, service_unit
-from nmesh.runtime.supervisor import RuntimeStatus, Supervisor
+from nmesh.runtime.supervisor import Supervisor
 
 from .test_planner import profile
 
@@ -873,7 +873,6 @@ def test_up_status_entries_include_port(
 
     entry = next(s for s in result.services if s.get("service") == "chat")
     assert entry.get("port") == 18010
-<<<<<<< HEAD
 
 
 def test_down_reports_stopped_services(
@@ -913,8 +912,7 @@ def test_down_reports_stopped_services(
     services = {item["service"]: item for item in result.services}
     assert services["chat"]["running"] is False
     assert services["chat"]["port"] == 18010
-||||||| parent of 90db695 (稼働中サービスが使う active エンジンの無警告削除を --force 必須に)
-=======
+
 
 def test_engine_remove_refuses_active_engine_in_use(
     monkeypatch, tmp_path: Path, capsys,
@@ -981,49 +979,4 @@ def test_engine_remove_ignores_non_llamacpp_services(
         "nmesh.runtime.engine.remove", lambda _tag: True,
     )
 
-<<<<<<< HEAD
     assert cli.main(["engine", "remove", "b1"]) == 0
->>>>>>> 90db695 (稼働中サービスが使う active エンジンの無警告削除を --force 必須に)
-||||||| parent of 7cab486 (restore test_down_reports_stopped_services (rebase artifact))
-    assert cli.main(["engine", "remove", "b1"]) == 0
-=======
-    assert cli.main(["engine", "remove", "b1"]) == 0
-
-def test_down_reports_stopped_services(
-    monkeypatch, tmp_path: Path,
-) -> None:
-    state_path = tmp_path / "state.json"
-    state_path.write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "owner_pid": os.getpid() + 1,
-                "services": [
-                    {
-                        "service": "chat",
-                        "pid": 123,
-                        "port": 18010,
-                        "model_ref": "model.gguf",
-                        "backend": "llamacpp",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    terminated: list[int] = []
-    monkeypatch.setattr(
-        "nmesh.runtime.supervisor._pid_alive", lambda *_a: True,
-    )
-    monkeypatch.setattr(
-        "nmesh.runtime.supervisor.gateway_listener_pid", lambda _port: None,
-    )
-    supervisor = Supervisor(state_path=state_path, terminator=terminated.append)
-
-    result = supervisor.down(foreign=True)
-
-    assert terminated == [123]
-    services = {item["service"]: item for item in result.services}
-    assert services["chat"]["running"] is False
-    assert services["chat"]["port"] == 18010
->>>>>>> 7cab486 (restore test_down_reports_stopped_services (rebase artifact))
