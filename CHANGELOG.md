@@ -19,7 +19,6 @@
 
 - `nmesh status` / `nmesh down` / `nmesh up` の非 JSON 出力が `RuntimeStatus(...)` の dataclass repr をそのまま表示していました。サービス一覧をテーブル（Service / State / Port / Model / Backend）で表示するようにし、稼働サービスが無い場合は「no services running」と表示します（en/ja）。
 
-||||||| parent of cd06cec (document verified offline operation; fix stale mypy coverage note)
 - README に「オフライン動作」節を追加しました。エンジンとモデル取得後の全ライフサイクル（plan/up/status/down/doctor と chat/embeddings 推論）がネットワーク遮断環境で動作することを実機検証し、取得系のみがネットワークを要することを明記しました。あわせて、mypy の説明を全モジュール検査の現状に更新しました。
 - サービス起動失敗時に、計画ポートが別プロセスで占有されている場合はその旨を明示するようにしました（`port N is still in use by another process`）。これまでは上流の生ログ（`couldn't bind HTTP server socket`）だけが出ていました。判定は connect ではなく bind 試行で行います — connect だと外部リスナーの accept バックログを消費してリトライ時に誤判定するため。
 - 実行可能な保存済み `plan.json` がある状態で `nmesh up` に計画系オプション（`--roles`/`--kv-quant`/`--spec*`/`--sleep-idle-seconds`/`--cache-reuse`/`--context-shift`）を渡しても、保存済みプランがそのまま使われオプションが無警告で無視されていました。無視されるオプションを stderr に警告するようにしました。
