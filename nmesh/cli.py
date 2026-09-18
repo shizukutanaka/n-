@@ -320,6 +320,30 @@ def _print_json(value: object) -> None:
     print(json.dumps(value, indent=2, default=str))
 
 
+def _print_runtime_status(result: RuntimeStatus, language: str) -> None:
+    if not result.services:
+        _console().print(i18n.t("status.none", language))
+        return
+    table = Table(title=i18n.t("label.services", language))
+    table.add_column(i18n.t("label.service", language))
+    table.add_column(i18n.t("label.state", language))
+    table.add_column(i18n.t("label.port", language), justify="right")
+    table.add_column(i18n.t("label.model", language))
+    table.add_column(i18n.t("label.backend", language))
+    for item in result.services:
+        table.add_row(
+            str(item.get("service") or ""),
+            i18n.t(
+                "status.running" if item.get("running") else "status.stopped",
+                language,
+            ),
+            str(item.get("port") or ""),
+            Path(str(item.get("model_ref") or "")).name,
+            str(item.get("backend") or ""),
+        )
+    _console().print(table)
+
+
 def _profile_warnings(profile: HardwareProfile, language: str) -> list[str]:
     params = profile.warning_params
     return [
@@ -1123,7 +1147,7 @@ def _runtime(args: argparse.Namespace) -> int:
                        argv=_argv_text(item["argv"]))
             )
     else:
-        _console().print(result)
+        _print_runtime_status(result, language)
         for warning in result.warnings:
             _console().print(warning)
         if args.command == "status":
