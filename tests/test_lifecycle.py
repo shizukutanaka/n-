@@ -841,3 +841,35 @@ def test_down_cli_no_services_message(monkeypatch, tmp_path: Path, capsys) -> No
     out = capsys.readouterr().out
     assert "RuntimeStatus(" not in out
     assert "no services running" in out
+
+
+def test_up_status_entries_include_port(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """The `up` result feeds the Services table — entries must carry the
+    service port or the row renders a blank Port cell until `status`."""
+    chat = _up_service("chat")
+    plan = SimpleNamespace(
+        services=[chat], warnings=[], swap_group=set(), policy=None,
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.save_plan", lambda *_a: None
+    )
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+    monkeypatch.setattr(supervisor, "_admit", lambda _plan, _cache: _plan)
+    monkeypatch.setattr(supervisor, "_adopt", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_already_up", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_wait_health", lambda _service: True)
+    supervisor.launcher = lambda _service: SimpleNamespace(
+        pid=999999,
+        poll=lambda: 0,
+        wait=lambda *a, **k: None,
+        terminate=lambda: None,
+        kill=lambda: None,
+    )
+
+    result = supervisor.up(plan, no_download=True)
+    supervisor.disarm_atexit()
+
+    entry = next(s for s in result.services if s.get("service") == "chat")
+    assert entry.get("port") == 18010

@@ -2,6 +2,8 @@
 
 ## 未リリース
 
+- `nmesh up` の Services テーブルで起動直後のサービスの Port セルが空白になっていました（直後の `status` では正しく表示）。`Supervisor.status()` がプロセス管理下のエントリにポートを含めていなかったのを修正し、計画済みポートを必ず出します。
+
 - `nmesh status` / `nmesh down` / `nmesh up` の非 JSON 出力が `RuntimeStatus(...)` の dataclass repr をそのまま表示していました。サービス一覧をテーブル（Service / State / Port / Model / Backend）で表示するようにし、稼働サービスが無い場合は「no services running」と表示します（en/ja）。
 
 - サービス起動失敗時に、計画ポートが別プロセスで占有されている場合はその旨を明示するようにしました（`port N is still in use by another process`）。これまでは上流の生ログ（`couldn't bind HTTP server socket`）だけが出ていました。判定は connect ではなく bind 試行で行います — connect だと外部リスナーの accept バックログを消費してリトライ時に誤判定するため。
