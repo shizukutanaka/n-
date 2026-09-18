@@ -1791,3 +1791,31 @@ def test_context_depth_coverage_warns_without_changing_candidate() -> None:
     assert broken.services[0] == ordinary_service
     assert any("measured as broken" in item for item in broken.warnings)
     assert not any("quality evidence only reaches" in item for item in broken.warnings)
+
+
+def test_install_hint_omits_foreign_package_managers(
+    catalog: list[ModelSpec], monkeypatch,
+) -> None:
+    """On Linux the llama.cpp install advice must not name winget/brew;
+    on Windows/macOS the matching tool must appear instead."""
+    import platform as _platform
+
+    from nmesh.planner import core as planner_core
+
+    for system, windows, expected in (
+        ("Linux", False, "build from source"),
+        ("Darwin", False, "brew"),
+        ("Windows", True, "winget"),
+    ):
+        monkeypatch.setattr(_platform, "system", lambda s=system: s)
+        monkeypatch.setattr(planner_core, "is_windows", lambda w=windows: w)
+        result = build_plan(
+            profile(8, backends={
+                "ollama": None, "llamacpp": None, "vllm": None, "mlx": None,
+            }),
+            catalog, Policy(roles=["chat"]),
+        )
+        hint = next(h for h in result.install_hints if "llama.cpp" in h)
+        assert expected in hint
+        if system == "Linux":
+            assert "winget" not in hint and "brew" not in hint

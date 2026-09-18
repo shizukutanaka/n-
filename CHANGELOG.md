@@ -2,6 +2,8 @@
 
 ## 未リリース
 
+- llama.cpp 未インストール時の案内が OS に関わらず「winget / brew / build from source」と表示していました。Linux では「build from source」、macOS では「brew」、Windows では「winget」のみを案内するよう OS 別に出し分けます。
+
 - `nmesh up` の Services テーブルで起動直後のサービスの Port セルが空白になっていました（直後の `status` では正しく表示）。`Supervisor.status()` がプロセス管理下のエントリにポートを含めていなかったのを修正し、計画済みポートを必ず出します。
 
 - `nmesh status` / `nmesh down` / `nmesh up` の非 JSON 出力が `RuntimeStatus(...)` の dataclass repr をそのまま表示していました。サービス一覧をテーブル（Service / State / Port / Model / Backend）で表示するようにし、稼働サービスが無い場合は「no services running」と表示します（en/ja）。
