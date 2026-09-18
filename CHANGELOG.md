@@ -19,6 +19,8 @@
 
 - `nmesh status` / `nmesh down` / `nmesh up` の非 JSON 出力が `RuntimeStatus(...)` の dataclass repr をそのまま表示していました。サービス一覧をテーブル（Service / State / Port / Model / Backend）で表示するようにし、稼働サービスが無い場合は「no services running」と表示します（en/ja）。
 
+||||||| parent of 98d085b (surface a message where eval/bench/reload used to fail silently)
+- `nmesh eval` / `nmesh bench` がプラン不在時にメッセージなしで exit 1 していたのを修正しました（「run nmesh up first」を stderr に表示）。`nmesh reload` が上流 HTTP 4xx/5xx で無言だった問題も同様に `gateway reload failed: HTTP {status}` を出すようにしました。
 - サービス起動失敗時に、計画ポートが別プロセスで占有されている場合はその旨を明示するようにしました（`port N is still in use by another process`）。これまでは上流の生ログ（`couldn't bind HTTP server socket`）だけが出ていました。判定は connect ではなく bind 試行で行います — connect だと外部リスナーの accept バックログを消費してリトライ時に誤判定するため。
 - 実行可能な保存済み `plan.json` がある状態で `nmesh up` に計画系オプション（`--roles`/`--kv-quant`/`--spec*`/`--sleep-idle-seconds`/`--cache-reuse`/`--context-shift`）を渡しても、保存済みプランがそのまま使われオプションが無警告で無視されていました。無視されるオプションを stderr に警告するようにしました。
 - `--context-shift`（`plan`/`up`）を追加しました。対応する llama.cpp ビルドの生成系サービスに `--context-shift` を渡し、生成中に出力がコンテキスト窓を超えてもウィンドウをずらして生成を継続します（従来は窓の終端で打ち切り）。**最古のトークンは静かに捨てられる**ため、有効時は計画に警告を必ず出します。なお窓を超える**入力プロンプト自体**は従来どおり llama-server が拒否します（context-shift は生成中のシフトであり、窓を超える入力の受理ではありません）。埋め込みサービスには付けません（埋め込みの静かな切り詰めは回答を破損させるため）。既定はオフ。ビルド非対応時は警告のみ。

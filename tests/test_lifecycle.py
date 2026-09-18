@@ -873,6 +873,7 @@ def test_up_status_entries_include_port(
 
     entry = next(s for s in result.services if s.get("service") == "chat")
     assert entry.get("port") == 18010
+<<<<<<< HEAD
 
 
 def test_down_reports_stopped_services(
@@ -912,3 +913,19 @@ def test_down_reports_stopped_services(
     services = {item["service"]: item for item in result.services}
     assert services["chat"]["running"] is False
     assert services["chat"]["port"] == 18010
+||||||| parent of daff92c (surface a message where eval/bench/reload used to fail silently)
+=======
+
+def test_eval_cli_no_plan_message(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    assert cli.main(["eval"]) == 1
+    assert "nmesh up" in capsys.readouterr().err
+
+
+def test_bench_cli_no_plan_message(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    assert cli.main(["bench"]) == 1
+    assert "nmesh up" in capsys.readouterr().err
+>>>>>>> daff92c (surface a message where eval/bench/reload used to fail silently)
