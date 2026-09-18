@@ -851,6 +851,36 @@ def test_cache_reuse_warns_when_unsupported(
     assert any("cache-reuse" in warning for warning in result.warnings)
 
 
+def test_context_shift_is_launched_and_warns_of_dropped_tokens(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl", "--context-shift")},
+    )
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], context_shift=True),
+    )
+    assert "--context-shift" in result.services[0].launch.argv
+    assert any("silently dropped" in warning for warning in result.warnings)
+
+
+def test_context_shift_warns_when_unsupported(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl")},
+    )
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], context_shift=True),
+    )
+    assert "--context-shift" not in result.services[0].launch.argv
+    assert any("context-shift" in warning for warning in result.warnings)
+
+
 def test_unsupported_llamacpp_kv_quantization_downgrades_accounting(
     catalog: list[ModelSpec],
 ) -> None:
