@@ -124,9 +124,11 @@ class Supervisor:
                  health_timeout: float = HEALTH_TIMEOUT,
                  probe: Callable[[], HardwareProfile] | None = None,
                  catalog: Callable[[], Sequence[ModelSpec]] | None = None,
-                 terminator: Callable[[int], None] | None = None):
+                 terminator: Callable[[int], None] | None = None,
+                 plan_path: Path | None = None):
         self.launcher = launcher or self._launch
         self.state_path = state_path
+        self.plan_path = plan_path
         self.health_timeout = health_timeout
         self.probe = probe or detect_hardware
         self.catalog = catalog or load_catalog
@@ -956,7 +958,7 @@ class Supervisor:
                         # Only persist when the service set is unchanged: an
                         # admission drop under transient memory pressure must
                         # not silently shrink the user's saved plan.
-                        save_plan(current)
+                        save_plan(current, self.plan_path)
                     self._persist(current)
                     result = self.status()
                     # Admission may have dropped services this run; surface
@@ -1123,7 +1125,7 @@ class Supervisor:
                     raise RuntimeError(self._unhealthy_message(service_name))
                 self.failed.pop(service_name, None)
             if actualized:
-                save_plan(selected)
+                save_plan(selected, self.plan_path)
             self._persist(selected)
             return self.status()
 

@@ -295,6 +295,41 @@ def test_up_surfaces_admission_warnings(
     ]
 
 
+def test_up_writes_plan_to_configured_plan_path(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A supervisor with an alternate plan path (e.g. `spec measure`'s
+    temporary one) must not clobber the user's real plan.json."""
+    chat = _up_service("chat")
+    plan = SimpleNamespace(
+        services=[chat], warnings=[], swap_group=set(), policy=None,
+    )
+    saved: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.save_plan",
+        lambda _plan, path=None: saved.append((_plan, path)),
+    )
+    plan_path = tmp_path / "plan.json"
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json", plan_path=plan_path
+    )
+    monkeypatch.setattr(supervisor, "_adopt", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_already_up", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_wait_health", lambda _service: True)
+    supervisor.launcher = lambda _service: SimpleNamespace(
+        pid=999999,
+        poll=lambda: 0,
+        wait=lambda *a, **k: None,
+        terminate=lambda: None,
+        kill=lambda: None,
+    )
+
+    supervisor.up(plan, no_download=True, admit=False)
+    supervisor.disarm_atexit()
+
+    assert saved == [(plan, plan_path)]
+
+
 def test_runtime_log_rotation_and_tail(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
     monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "4")

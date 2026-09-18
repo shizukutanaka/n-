@@ -746,8 +746,9 @@ def test_spec_cli_no_reference_records_unknown_epoch(
     )
 
     class FakeSupervisor:
-        def __init__(self, *, state_path: Path) -> None:
+        def __init__(self, *, state_path: Path, plan_path: Path | None = None) -> None:
             self.state_path = state_path
+            self.plan_path = plan_path
 
         def up(self, *_args, **_kwargs) -> None:
             return None
@@ -791,8 +792,9 @@ def test_spec_cli_transport_failure_writes_nothing(
     plan = _planned_spec(tmp_path, monkeypatch, decision=None)
 
     class FakeSupervisor:
-        def __init__(self, *, state_path: Path) -> None:
+        def __init__(self, *, state_path: Path, plan_path: Path | None = None) -> None:
             self.state_path = state_path
+            self.plan_path = plan_path
 
         def up(self, *_args, **_kwargs) -> None:
             return None
