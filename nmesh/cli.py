@@ -880,9 +880,40 @@ def _print_plan_failure(plan: Plan, *, json_output: bool = False) -> None:
         _print_json(_plan_json_data(plan))
 
 
+_UP_PLAN_FLAG_DEFAULTS: tuple[tuple[str, object, str], ...] = (
+    ("roles", None, "--roles"),
+    ("kv_quant", "f16", "--kv-quant"),
+    ("spec", "none", "--spec"),
+    ("spec_draft", "", "--spec-draft"),
+    ("spec_n_max", 3, "--spec-n-max"),
+    ("ignore_spec_evidence", False, "--ignore-spec-evidence"),
+    ("sleep_idle_seconds", 0, "--sleep-idle-seconds"),
+    ("cache_reuse", 0, "--cache-reuse"),
+    ("context_shift", False, "--context-shift"),
+)
+
+
+def _ignored_up_plan_flags(args: argparse.Namespace) -> list[str]:
+    return [
+        flag
+        for attr, default, flag in _UP_PLAN_FLAG_DEFAULTS
+        if getattr(args, attr, default) != default
+    ]
+
+
 def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
     plan = load_plan()
     if plan is not None and plan.services and plan.runnable:
+        ignored = _ignored_up_plan_flags(args)
+        if ignored:
+            print(
+                i18n.t(
+                    "warn.up_flags_saved_plan",
+                    i18n.lang(),
+                    flags=", ".join(ignored),
+                ),
+                file=sys.stderr,
+            )
         return plan
     plan_args = _up_plan_args(args)
     try:
