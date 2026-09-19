@@ -724,6 +724,23 @@ def test_kv_quantization_is_independent(catalog: list[ModelSpec]) -> None:
     assert q8.weight_bytes == f16.weight_bytes
 
 
+def test_kv_layers_scales_kv_cache_for_hybrid_models() -> None:
+    hybrid = ModelSpec(
+        "hybrid", "nemotron-h", 30_000_000_000, 52, 32, 2, 128, 2688,
+        262144, ["chat"], 76.0, "nvidia-open-model-license",
+        {"hf_gguf": "test/repo"}, kv_layers=6,
+    )
+    dense = ModelSpec(
+        "dense", "nemotron-h", 30_000_000_000, 52, 32, 2, 128, 2688,
+        262144, ["chat"], 76.0, "nvidia-open-model-license",
+        {"hf_gguf": "test/repo"},
+    )
+    est_h = estimate_memory(hybrid, "q4_k_m", 8192)
+    est_d = estimate_memory(dense, "q4_k_m", 8192)
+    assert est_h.kv_bytes_per_tok == pytest.approx(est_d.kv_bytes_per_tok * 6 / 52)
+    assert est_h.weight_bytes == est_d.weight_bytes
+
+
 def test_bench_lookup_isolated_by_kv_precision() -> None:
     model = ModelSpec(
         "bench-kv", "test", 500_000_000, 24, 16, 2, 64, 1024,
@@ -903,6 +920,22 @@ def test_rerank_gets_dedicated_service_with_reranking_flag(
     assert result.routing.role_to_service["rerank"] == "rerank"
 
 
+def test_rerank_prefers_dedicated_reranker_model(catalog: list[ModelSpec]) -> None:
+    # A roles=["rerank"] model should beat dual-use embed models for the
+    # rerank role; dual-use models stay available as fallback.
+    dedicated = next(
+        item for item in catalog if item.id == "qwen3-reranker-0.6b"
+    )
+    result = build_plan(
+        profile(64, (24,)), [dedicated], Policy(roles=["rerank"]),
+    )
+    rerank = next(
+        service for service in result.services if service.name == "rerank"
+    )
+    assert rerank.model_id == "qwen3-reranker-0.6b"
+    assert "--reranking" in rerank.launch.argv
+
+
 def test_rerank_service_omitted_when_flag_unsupported(
     catalog: list[ModelSpec],
 ) -> None:
@@ -1023,7 +1056,7 @@ def test_unsupported_kv_quantization_cannot_false_fit() -> None:
 
 def test_embedding_has_activation_memory_not_kv(catalog: list[ModelSpec]) -> None:
     model = next(item for item in catalog if item.id == "bge-m3")
-    result = build_plan(profile(32), catalog, Policy(roles=["embed"]))
+    result = build_plan(profile(32), [model], Policy(roles=["embed"]))
     service = result.services[0]
     assert service.model_id == model.id
     assert service.context == min(model.max_context, 8192)
@@ -1582,9 +1615,12 @@ def test_llamacpp_layers_are_resolved_against_assigned_card() -> None:
 def test_embedding_launch_flags_are_role_aware(catalog: list[ModelSpec]) -> None:
     assert next(item for item in catalog if item.id == "bge-m3").pooling == "cls"
     assert next(item for item in catalog if item.id == "nomic-embed-text-v1.5").pooling == "mean"
+    models = [
+        item for item in catalog if item.id in {"bge-m3", "qwen3-1.7b"}
+    ]
     result = build_plan(
         profile(64, (24,)),
-        catalog,
+        models,
         Policy(roles=["chat", "embed"], min_decode_tps=0),
     )
     embed = next(service for service in result.services if service.roles == ["embed"])

@@ -45,7 +45,7 @@ from nmesh.telemetry import record as record_telemetry
 from nmesh.telemetry import summary as telemetry_summary
 
 from .gate import SwapGate
-from .jobs import JobRegistry
+from .jobs import Job, JobRegistry
 from .limit import SlotLimiter
 from .tokens import (
     Sums,
@@ -923,6 +923,69 @@ class _PlanState:
         return self._reload_from_disk(force=True)
 
 
+async def _slot_progress(
+    services: Sequence[PlannedService], entries: list[Job]
+) -> dict[str, dict[str, int]]:
+    """Decode progress for running jobs, from llama.cpp's /slots endpoint.
+
+    A job is annotated only when the mapping is unambiguous: its service has
+    exactly one running job here and the backend reports exactly one
+    processing slot. Every failure mode (non-llamacpp backend, /slots
+    disabled, timeout, count drift) leaves the field absent rather than
+    reporting a wrong value.
+    """
+    running: dict[str, list[Job]] = {}
+    for job in entries:
+        if job.state == "running":
+            running.setdefault(job.service, []).append(job)
+    if not running or httpx is None:
+        return {}
+    out: dict[str, dict[str, int]] = {}
+    for service_name, service_jobs in running.items():
+        if len(service_jobs) != 1:
+            continue
+        service = next(
+            (item for item in services if item.name == service_name), None
+        )
+        if service is None or not _service_is_running_llamacpp(service):
+            continue
+        try:
+            async with httpx.AsyncClient(
+                base_url=_base_url(service), timeout=0.8
+            ) as client:
+                response = await client.get("/slots")
+            if response.status_code != 200:
+                continue
+            slots = response.json()
+        except (httpx.HTTPError, ValueError):
+            continue
+        if not isinstance(slots, list):
+            continue
+        processing = [
+            slot for slot in slots
+            if isinstance(slot, dict) and slot.get("is_processing") is True
+        ]
+        if len(processing) != 1:
+            continue
+        next_token = processing[0].get("next_token")
+        # /slots reports next_token as a one-element list.
+        if isinstance(next_token, list) and next_token:
+            token_info = next_token[0]
+        else:
+            token_info = next_token
+        progress: dict[str, int] = {}
+        if isinstance(token_info, dict):
+            decoded = _upstream_int(token_info.get("n_decoded"))
+            if decoded is not None:
+                progress["decoded"] = decoded
+            remaining = _upstream_int(token_info.get("n_remain"))
+            if remaining is not None:
+                progress["remaining"] = remaining
+        if progress:
+            out[service_jobs[0].id] = progress
+    return out
+
+
 def create_app(
     plan: Plan | None = None,
     watchdog: bool = False,
@@ -1029,6 +1092,29 @@ def create_app(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         path = request.url.path
+        origin = request.headers.get("origin")
+        # Browser frontends (Open WebUI-style) preflight with OPTIONS before
+        # sending Authorization; answer CORS before the key check, which would
+        # otherwise reject every preflight. The gateway binds 127.0.0.1 and the
+        # bearer key still guards real requests, so reflecting the origin is safe.
+        if (
+            origin
+            and path.startswith("/v1/")
+            and request.method == "OPTIONS"
+        ):
+            requested_headers = request.headers.get(
+                "access-control-request-headers", "authorization,content-type"
+            )
+            return Response(
+                status_code=204,
+                headers={
+                    "Access-Control-Allow-Origin": origin,
+                    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+                    "Access-Control-Allow-Headers": requested_headers,
+                    "Access-Control-Max-Age": "600",
+                    "Vary": "Origin",
+                },
+            )
         if api_key_bytes is not None and path.startswith(
             ("/v1/", "/metrics", "/admin/", "/logs")
         ):
@@ -1048,7 +1134,11 @@ def create_app(
                     media_type="application/json",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-        return await call_next(request)
+        response = await call_next(request)
+        if origin and path.startswith("/v1/"):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+        return response
 
     async def proxy(request: dict[str, object], service: PlannedService,
                     plan_snapshot: Plan, telemetry_keys: Mapping[str, str],
@@ -1133,7 +1223,7 @@ def create_app(
                 isinstance(stream_options, Mapping)
                 and bool(stream_options.get("include_usage"))
             )
-            if service.backend == "llamacpp":
+            if service.backend == "llamacpp" and not path.startswith("/v1/messages"):
                 upstream_stream_options = (
                     dict(stream_options) if isinstance(stream_options, Mapping) else {}
                 )
@@ -1256,8 +1346,15 @@ def create_app(
                         tokens += 1
                         first_line_time = first_line_time or now
                         last_line_time = now
-                    if "model" in payload:
-                        payload["model"] = request.get("model", service.model_id)
+                    nested_message = payload.get("message")
+                    if "model" in payload or (
+                        isinstance(nested_message, dict) and "model" in nested_message
+                    ):
+                        client_model = request.get("model", service.model_id)
+                        if "model" in payload:
+                            payload["model"] = client_model
+                        if isinstance(nested_message, dict) and "model" in nested_message:
+                            nested_message["model"] = client_model
                         content = (
                             b"data: "
                             + json.dumps(payload, separators=(",", ":")).encode()
@@ -1893,8 +1990,13 @@ def create_app(
 
     @app.get("/v1/jobs")
     async def list_jobs(limit: int = 50) -> dict[str, object]:
+        entries = jobs.list(limit)
+        progress = await _slot_progress(plan_state.snapshot()[0].services, entries)
         return {
-            "jobs": [job.as_dict() for job in jobs.list(limit)],
+            "jobs": [
+                {**job.as_dict(), **({"progress": p} if (p := progress.get(job.id)) else {})}
+                for job in entries
+            ],
             "counts": jobs.counts(),
         }
 
@@ -1903,7 +2005,11 @@ def create_app(
         job = jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
-        return job.as_dict()
+        progress = await _slot_progress(plan_state.snapshot()[0].services, [job])
+        data = job.as_dict()
+        if job_id in progress:
+            data["progress"] = progress[job_id]
+        return data
 
     @app.delete("/v1/jobs/{job_id}")
     async def cancel_job(job_id: str) -> dict[str, object]:
@@ -1942,6 +2048,28 @@ def create_app(
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/completions",
             limit_slots=True,
+        )
+
+    @app.post("/v1/messages")
+    async def anthropic_messages(request: dict[str, object]) -> object:
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
+        token_hint = await _routing_token_hint(request, selected)
+        service = _service(selected, route(request, selected, token_hint=token_hint))
+        return await proxy(
+            request, service, selected, telemetry_keys, "/v1/messages",
+            limit_slots=True,
+        )
+
+    @app.post("/v1/messages/count_tokens")
+    async def anthropic_count_tokens(request: dict[str, object]) -> object:
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
+        token_hint = await _routing_token_hint(request, selected)
+        service = _service(selected, route(request, selected, token_hint=token_hint))
+        return await proxy(
+            request, service, selected, telemetry_keys,
+            "/v1/messages/count_tokens", instrument=False,
         )
 
     @app.post("/v1/embeddings")

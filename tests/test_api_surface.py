@@ -212,6 +212,41 @@ def test_completion_404_names_backend() -> None:
         upstream.server_close()
 
 
+def test_cors_preflight_and_response_headers(monkeypatch) -> None:
+    monkeypatch.setenv("NMESH_API_KEY", "test-secret")
+    plan = _completion_plan(1)
+    with TestClient(create_app(plan)) as client:
+        preflight = client.options(
+            "/v1/chat/completions",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+        assert preflight.status_code == 204
+        assert (
+            preflight.headers["Access-Control-Allow-Origin"]
+            == "http://localhost:3000"
+        )
+        assert "authorization" in preflight.headers["Access-Control-Allow-Headers"]
+        # Preflight must not be blocked by auth.
+        assert "WWW-Authenticate" not in preflight.headers
+
+        models = client.get(
+            "/v1/models",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Authorization": "Bearer test-secret",
+            },
+        )
+        assert models.status_code == 200
+        assert models.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
+        # No Origin header -> no CORS headers (non-browser clients unaffected).
+        plain = client.get("/v1/models", headers={"Authorization": "Bearer test-secret"})
+        assert "Access-Control-Allow-Origin" not in plain.headers
+
+
 def test_api_key_authentication(monkeypatch) -> None:
     monkeypatch.delenv("NMESH_API_KEY", raising=False)
     plan = _completion_plan(1)
@@ -459,7 +494,9 @@ def test_run_returns_failure_when_gateway_is_unavailable(monkeypatch) -> None:
         raise OSError("connection refused")
 
     monkeypatch.setattr(cli.urllib.request, "urlopen", fail)
-    result = cli._run_prompt(SimpleNamespace(prompt="hello", role="chat", json=False))
+    result = cli._run_prompt(
+        SimpleNamespace(prompt="hello", role="chat", json=False, port=18000)
+    )
     assert result == 1
 
 
@@ -492,6 +529,27 @@ def test_run_sends_nmesh_api_key_when_set(monkeypatch) -> None:
 def test_gateway_headers_empty_without_api_key(monkeypatch) -> None:
     monkeypatch.delenv("NMESH_API_KEY", raising=False)
     assert cli._gateway_headers() == {}
+
+
+def test_run_surfaces_upstream_error_body(monkeypatch, capsys) -> None:
+    import io
+    import urllib.error
+
+    def fail(*args, **kwargs):
+        body = json.dumps(
+            {"error": {"message": "the current context does not logits computation"}}
+        ).encode()
+        raise urllib.error.HTTPError(
+            "http://127.0.0.1:18000/v1/chat/completions",
+            500, "Internal Server Error", {}, io.BytesIO(body),
+        )
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fail)
+    result = cli._run_prompt(SimpleNamespace(prompt="hi", role="embed", json=False))
+    assert result == 1
+    err = capsys.readouterr().err
+    assert "HTTP 500" in err
+    assert "logits computation" in err
 
 
 def test_serve_returns_nonzero_for_failed_gateway(monkeypatch) -> None:

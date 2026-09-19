@@ -273,6 +273,14 @@ def main() -> int:
             body = _http(f"/v1/completions {label}", f"{base}/v1/completions", completion)
             if not json.loads(body).get("choices"):
                 _fail(f"/v1/completions {label}", "response has no choices")
+        anthropic = {
+            "model": "nmesh-auto",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "Say hello briefly."}],
+        }
+        body = _http("anthropic /v1/messages", f"{base}/v1/messages", anthropic)
+        if json.loads(body).get("type") != "message":
+            _fail("anthropic /v1/messages", "response was not an Anthropic message")
         _http("GET /metrics/prometheus", f"{base}/metrics/prometheus")
         _run_step(env, "bench", "bench", "--service", "chat", "--tokens", "16", "--json")
         _run_step(env, "status", "status", "--port", str(gateway_port), "--json")

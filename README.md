@@ -28,6 +28,19 @@ nmesh は、ローカル LLM のためのハードウェア自動検出、モデ
 実行管理ツールです。ノート PC から複数 GPU のワークステーションまで構成を自動で計画し、
 OpenAI 互換 API を提供します。
 
+## 類似ツールとの違い
+
+| | nmesh | ollama | llama-swap | vLLM | LiteLLM |
+|---|---|---|---|---|---|
+| 役割 | HW→計画→実行管理 | モデル管理+実行 | ホットスワップのみ | 推論サーバ | リモートプロバイダのルーティング |
+| メモリ見積もり | 実測ベース（パラメータ×bpw+KV+overhead） | なし | なし（手動YAML） | なし | なし |
+| ハードウェア自動検出 | probe→tier→配置計画 | なし | なし | なし | なし |
+| 証拠ゲート | 推定値に estimated 表示・eval/spec 証拠で機能ON/OFF | なし | なし | なし | なし |
+| オフライン動作 | 完全対応（取得系のみネット要） | モデルDL要 | DLなし | DL要 | リモート前提 |
+| スワップ | メモリ admission 付き計画駆動 | なし | TTLベース | なし | なし |
+
+**独自性**: nmesh は「この機械で何が動くか」を推論する唯一のツールです。他は全て「ユーザーが構成を決める」を前提とし、nmesh は構成自体を証拠付きで提案します。失敗時は必ず理由と次の一手を出力します。
+
 ## ハードウェア tier
 
 | Tier | 条件 |
@@ -81,6 +94,12 @@ The gateway server enables a 15-second watchdog that revives failed services;
 use `create_app(..., watchdog=False)` when embedding it without supervision.
 Set `NMESH_QUEUE_TIMEOUT` to control how long chat requests wait for a backend
 concurrency slot before receiving a retryable 503 response.
+
+Browser frontends are supported: the gateway answers CORS preflights on
+`/v1/*` with the requesting `Origin` reflected, and attaches
+`Access-Control-Allow-Origin` to real responses. `OPTIONS` requests skip the
+`NMESH_API_KEY` check (preflights carry no credentials); real requests still
+require the key when set. The gateway only binds `127.0.0.1`.
 
 Runtime state is persisted atomically in `~/.nmesh/state.json`; `status` checks
 PID liveness and `down` can terminate services owned by another process.
@@ -332,6 +351,15 @@ embed model on a second llama.cpp process with `--reranking`). Without it,
 a Cohere-style `{query, documents}` body and returns `results` with
 `relevance_score`s.
 
+The gateway also passes through the Anthropic Messages API when the backend
+serves it (llama.cpp does): `POST /v1/messages` and
+`POST /v1/messages/count_tokens`. Requests route through the same planner
+as chat completions — role-based service selection, context-depth rerouting,
+slot limits, and swap ordering all apply — so Anthropic-shaped clients such as
+Claude Code can point at the gateway directly. Streaming Anthropic SSE frames
+(`event:`/`data:` pairs) pass through unmodified; OpenAI-only fields such as
+`stream_options` are not injected into Anthropic requests.
+
 Set `NMESH_API_KEY` before starting the gateway to require
 `Authorization: Bearer <key>` on `/v1/*` and `/metrics*`. `/health` remains
 unauthenticated for readiness probes. When the variable is unset, authentication
@@ -465,6 +493,24 @@ The generated service definitions intentionally reflect platform differences:
   logs on. Boot startup requires changing this to `/sc onstart` and choosing
   SYSTEM or saved credentials. The current simple Task Scheduler setup does
   not restart the gateway after a self-crash.
+
+## Upgrade and uninstall
+
+Everything nmesh owns lives under `NMESH_HOME` (default `~/.nmesh`): the
+installer's virtualenv (`venv/`), engines, models, `plan.json`, `state.json`,
+telemetry, calibration, logs, and the autostart launcher/env files.
+
+* **Upgrade**: `pip install --upgrade "nmesh[gateway,download] @ git+https://github.com/shizukutanaka/n-.git"`
+  in the venv, then `nmesh down && nmesh up --detach`. If launch-flag
+  semantics changed, `up` warns and asks for `nmesh plan` to regenerate.
+* **Backup**: `nmesh down`, then copy `NMESH_HOME` — `plan.json`,
+  `models.yaml`, telemetry, and the token/calibration records are portable
+  state; downloaded GGUFs and engine binaries can be refetched.
+* **Uninstall**: `nmesh down`; if autostart was installed, run the disable
+  step shown by `nmesh autostart` (e.g. `systemctl --user disable --now
+  nmesh-gateway` and remove the written unit file, or `launchctl unload` /
+  `schtasks /delete /tn nmesh-gateway`); then delete `NMESH_HOME` and the
+  `PATH` line you added for `~/.nmesh/venv/bin`.
 
 ### Prompt token accounting
 

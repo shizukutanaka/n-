@@ -2,9 +2,20 @@
 
 ## 未リリース
 ### Added
+- **gpt-oss-20b / gpt-oss-120b をカタログに追加**: OpenAI の open-weight MoE モデル（Apache-2.0、21B/117B 総パラメータ・3.6B/5.1B active）。`ggml-org/gpt-oss-{20,120}b-GGUF` の MXFP4 を取得対象にし、`NOMINAL_GGUF_BPW` に `mxfp4`（4.25 bpw）を追加 — 既定の q4_k_m 計画でもフォールバック解決されます（20b = 12.1GB）。同一リポジトリの `eagle3-gpt-oss-*` を `--spec-draft` の draft として測定可能。多言語ポリシー指定のプランでは英語専用モデルのため候補外になります（意図どおり）。mxfp4 は planner の候補量子化からは除外（gpt-oss のみが公開するため、全モデルで選ぶと実ダウンロードが黙って下位量子化に落ちるのを防ぐ）— 取得済みサービス・明示指定の見積もりは引き続き有効。
+- **nemotron-3.5-lightning-30b をカタログに追加 + ハイブリッド arch の KV 推定を修正**: NVIDIA の常駐エージェント向け MoE モデル（Mamba-2+MoE+Attention ハイブリッド、30B 総・3B active、52 層中 attention は 6 層のみ — GGUF テンソル名で実測確認）。従来は KV を全 52 層で見積もり ~9 倍の過大評価でした。カタログに任意フィールド `kv_layers`（attention 層数）を追加し、`estimate_memory` は KV を `kv_layers`（未指定時 = n_layers）で計算します。GGUF は unsloth リポジトリの UD-Q4_K_M 等を使用。
+- **Qwen3-Embedding-4B/8B と Qwen3-Reranker-0.6B/4B/8B をカタログに追加**: embed ロールが bge-m3 世代から MTEB 上位の Qwen3-Embedding（公式 GGUF、Q4_K_M あり）に更新できます。rerank ロールは専用リランカー（`roles: [rerank]`、GGUF は `pooling_type=RANK`/`cls.output` 付きの正規変換リポジトリ — 素の変換 GGUF ではスコアが潰れるため Voodisss `*-GGUF-llama_cpp` を使用）を優先選択し、該当モデルが無い場合は従来どおり embed 兼用モデル（`--reranking`）にフォールバックします。planner のロール判定は `_serves_role` に集約しました。
+- ゲートウェイに CORS 対応を追加 — `/v1/*` へのブラウザ preflight（OPTIONS）を 204 + Origin 反映で応答し、実レスポンスに `Access-Control-Allow-Origin` を付与。ブラウザ製 UI（Open WebUI 等）から直接利用可能に。preflight は認証チェックをバイパス（credential 非含有のため）、実リクエストは `NMESH_API_KEY` があれば引き続き必須。バインドは 127.0.0.1 のみ。
+- **実行中ジョブのデコード進捗**: `GET /v1/jobs`・`GET /v1/jobs/{id}` が llama.cpp の `/slots` から `progress: {decoded, remaining}` を付与し、`nmesh jobs` は実行中ジョブを `running 85/900` のように表示します。マッピングが一意でない場合（同一サービスに複数 running job、複数スロット処理中、非 llamacpp、/slots 無効）はフィールドを省略 — 誤った進捗を見せません。
+- `nmesh run --stream` を追加 — チャット応答をトークン逐次表示（SSE ストリーミング、--json 併用時は従来どおり一括）。`run --port` でポート指定も可能。
+- ゲートウェイが Anthropic Messages API を透過 — `POST /v1/messages` と `/v1/messages/count_tokens` を追加し、Claude 系クライアントが接続可能に。SSE の `message_start` は入れ子 `message.model` も書き換えます。
+- README に Upgrade/Backup/Uninstall の手順を追加 — `NMESH_HOME` 以下に全状態が集約されていること、autostart の解除手順（systemd/launchd/schtasks 別）を明記
+- MIT LICENSE・CONTRIBUTING.md を追加（配布・コントリビューション用の不足分）
+- README に類似ツール比較と nmesh の独自性を明記（llama-swap/Ollama/LM Studio との差分: メモリ admission・証拠ベースのモデル選択・オフライン動作）
 - **カタログを現行世代に更新**: Qwen3-0.6B/1.7B/4B/8B（Apache-2.0、GGUF は bartowski/公式ミラー — 公式の Qwen3-0.6B/1.7B GGUF は Q8_0 のみ公開のため Q4_K_M は bartowski 経由）、SmolLM3-3B、Qwen3-Embedding-0.6B（embed ロール、last-token pooling）を追加。CPU プロファイルでは `plan` の chat 既定が qwen2.5-1.5b から qwen3-1.7b へ更新されます（品質スコア 56 > 50、同一メモリ内）。Gemma-3 は HF がゲート済み（要ライセンス承諾ログイン）のため未収録。
 
 ### Fixed
+- `nmesh run` が上流サービスの HTTP エラー（例: embed ロールへの chat 要求）を「gateway unavailable」と誤表示していた — HTTP エラー時は上流の error.message を表示するように
 - **`NMESH_API_KEY` を設定すると CLI 自身がゲートウェイに 401 で拒否されていた問題を修正**: `run`/`jobs`/`unload`/`reload`/`status` のジョブ集計が `Authorization: Bearer` を送らず、認証を有効化したユーザーは CLI から一切操作できなくなっていました。ゲートウェイ向けの全リクエストが環境変数をヘッダに載せます（`run`/`jobs`/`unload`/`reload`/`status` の jobs 集計）。`/health` は従来どおり認証不要です。
 - **embed/rerank の同居回帰を修正**: #172 で embed サービスに `--reranking` を追加したところ、llama.cpp は1インスタンス=1つの pooling モードしか持てず `/v1/embeddings` がゼロベクトルを返すようになっていました（実機で確認）。rerank は専用サービスに分離 — `nmesh plan --roles chat,code,embed,rerank` で同一モデルの2プロセス目（`--reranking` のみ、llamacpp 限定）が計画され、`/v1/embeddings` は従来どおり embed サービスが応答します。rerank サービスがないプランでの `/v1/rerank` は「`nmesh plan --roles ...,rerank`」を案内する正直な 501 を返します。同一モデルのダウンロード量は二重計上しません（`launch_revision` 2 → 旧プランで `up` すると再計画を促します）。
 - `test_down_cli_no_services_message` が実稼働中のゲートウェイを巻き込んで失敗する（さらに実サービスを止める副作用）問題を、空きポートを掃除対象にすることで密閉化。

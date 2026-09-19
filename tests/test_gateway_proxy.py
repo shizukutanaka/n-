@@ -213,6 +213,74 @@ def test_gateway_rerank_501_without_rerank_service() -> None:
     assert "rerank" in response.text
 
 
+class _AnthropicHandler(BaseHTTPRequestHandler):
+    request_body: ClassVar[dict[str, object]] = {}
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.__class__.request_body = json.loads(self.rfile.read(length))
+        self.send_response(200)
+        if self.__class__.request_body.get("stream"):
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for frame in (
+                b"event: message_start\n"
+                + b'data: {"type":"message_start","message":{"model":"upstream-model","usage":{"input_tokens":9}}}\n\n',
+                b"event: content_block_delta\n"
+                + b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n',
+                b"event: message_stop\n" + b'data: {"type":"message_stop"}\n\n',
+            ):
+                self.wfile.write(frame)
+                self.wfile.flush()
+            return
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(
+            json.dumps({
+                "id": "msg_1", "type": "message", "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "model": self.request_body["model"],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 9, "output_tokens": 2},
+            }).encode()
+        )
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def test_gateway_forwards_anthropic_messages_without_openai_fields() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _AnthropicHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec("proxy-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        client = TestClient(create_app(plan))
+        response = client.post("/v1/messages", json={
+            "model": "nmesh-auto", "stream": True, "max_tokens": 16,
+            "messages": [{"role": "user",
+                          "content": [{"type": "text", "text": "hello"}]}],
+        })
+        assert response.status_code == 200
+        # Anthropic SSE frames (event: lines) pass through untouched, and the
+        # upstream model id nested in message_start is rewritten to the
+        # client-facing model just like a non-streamed response.
+        assert "event: message_start" in response.text
+        assert '"model":"nmesh-auto"' in response.text
+        assert "upstream-model" not in response.text
+        assert _AnthropicHandler.request_body["model"] == service.model_ref
+        # stream_options is an OpenAI-only field; it must not be injected
+        # into an Anthropic request even when the client asked to stream.
+        assert "stream_options" not in _AnthropicHandler.request_body
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
 def test_gateway_proxy_rewrites_model_and_forwards_sse() -> None:
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
     thread = threading.Thread(target=upstream.serve_forever, daemon=True)
