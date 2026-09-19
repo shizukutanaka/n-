@@ -1375,9 +1375,18 @@ def _jobs(args: argparse.Namespace) -> int:
     now = time.time()
     for job in job_list:
         age = now - float(job.get("queued_at") or now)
+        state = str(job.get("state") or "")
+        progress = job.get("progress")
+        if state == "running" and isinstance(progress, dict):
+            decoded = progress.get("decoded")
+            remaining = progress.get("remaining")
+            if isinstance(decoded, int) and isinstance(remaining, int):
+                state = f"running {decoded}/{decoded + remaining}"
+            elif isinstance(decoded, int):
+                state = f"running {decoded} tok"
         table.add_row(
             str(job.get("id") or ""),
-            str(job.get("state") or ""),
+            state,
             str(job.get("service") or ""),
             str(job.get("endpoint") or ""),
             f"{age:.0f}",
