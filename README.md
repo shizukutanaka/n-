@@ -14,6 +14,12 @@ nmesh は、ローカル LLM のためのハードウェア自動検出、モデ
 実行管理ツールです。ノート PC から複数 GPU のワークステーションまで構成を自動で計画し、
 OpenAI 互換 API を提供します。
 
+> **Note**: qwen3 系など reasoning モデルは推論（thinking）出力に数分かかることが
+> あります。動作確認だけならプロンプトに `/no_think` を付けるか、API では
+> `chat_template_kwargs: {"enable_thinking": false}` を指定すると即答します。
+> `nmesh eval` には `--reasoning-allowance` があります（後述「Answerless
+> truncation is not a failure」参照）。
+
 ## 類似ツールとの違い
 
 | | nmesh | ollama | llama-swap | vLLM | LiteLLM |
