@@ -1198,11 +1198,18 @@ def create_app(
                 )
             except asyncio.TimeoutError as error:
                 raise HTTPException(status_code=504, detail="Timed out waiting for service swap") from error
+            except Exception as error:
+                jobs.finish(job, ok=False, detail="ensure_failed")
+                raise HTTPException(status_code=503, detail=str(error)) from error
         if not locked and service.name in await asyncio.to_thread(idle_services):
             revive_lock = revive_locks.setdefault(service.name, asyncio.Lock())
             async with revive_lock:
                 if service.name in await asyncio.to_thread(idle_services):
-                    await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
+                    try:
+                        await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
+                    except Exception as error:
+                        jobs.finish(job, ok=False, detail="ensure_failed")
+                        raise HTTPException(status_code=503, detail=str(error)) from error
         body = _upstream_body(request, service)
         url = f"{_base_url(service)}{path}"
         embedding_cap = (
@@ -1756,9 +1763,14 @@ def create_app(
                     )
                     async with revive_lock:
                         if service.name in await asyncio.to_thread(idle_services):
-                            await asyncio.to_thread(
-                                ensure_running, service.name, plan_snapshot
-                            )
+                            try:
+                                await asyncio.to_thread(
+                                    ensure_running, service.name, plan_snapshot
+                                )
+                            except Exception as error:
+                                raise HTTPException(
+                                    status_code=503, detail=str(error)
+                                ) from error
                 slot = await limiter.acquire(service, QUEUE_TIMEOUT)
                 if slot is None:
                     raise concurrency_error(service)

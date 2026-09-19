@@ -4,12 +4,14 @@ import json
 import os
 import socket
 import sys
+import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
 
 import psutil
+import pytest
 
 from nmesh import cli
 from nmesh.catalog import load_catalog
@@ -330,6 +332,107 @@ def test_up_writes_plan_to_configured_plan_path(
     supervisor.disarm_atexit()
 
     assert saved == [(plan, plan_path)]
+
+
+def _stub_acquires(monkeypatch, supervisor: Supervisor) -> None:
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.acquire", lambda _service: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_apply_acquired",
+        lambda current, service, _acquired: (current, service, False, None),
+    )
+
+
+def _live_process() -> SimpleNamespace:
+    return SimpleNamespace(
+        pid=999999,
+        poll=lambda: None,
+        wait=lambda *a, **k: None,
+        terminate=lambda: None,
+        kill=lambda: None,
+    )
+
+
+def test_ensure_running_honors_failed_service(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Once the restart budget is exhausted the request path must surface the
+    stored failure, not silently resurrect the crash-looping service."""
+    chat = _up_service("chat")
+    plan = SimpleNamespace(
+        services=[chat], warnings=[], swap_group=set(), policy=None,
+    )
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+    supervisor.restarts["chat"] = [time.monotonic()] * 3
+    supervisor.failed["chat"] = "restart budget exhausted for chat"
+    monkeypatch.setattr(supervisor, "_adopt", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_already_up", lambda _service: False)
+    launched: list[str] = []
+    supervisor.launcher = lambda _service: launched.append(_service.name)
+
+    with pytest.raises(RuntimeError, match="restart budget exhausted"):
+        supervisor.ensure_running("chat", plan)
+
+    assert launched == []
+    assert supervisor.failed["chat"] == "restart budget exhausted for chat"
+
+
+def test_ensure_running_retries_once_window_expires(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """After the restart window elapses a failed service may be retried — a
+    transient crash loop should not disable it permanently."""
+    chat = _up_service("chat")
+    plan = SimpleNamespace(
+        services=[chat], warnings=[], swap_group=set(), policy=None,
+    )
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+    old = time.monotonic() - 400.0
+    supervisor.restarts["chat"] = [old, old, old]
+    supervisor.failed["chat"] = "earlier crash loop"
+    monkeypatch.setattr(supervisor, "_adopt", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_already_up", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_wait_health", lambda _service: True)
+    _stub_acquires(monkeypatch, supervisor)
+    supervisor.launcher = lambda _service: _live_process()
+
+    supervisor.ensure_running("chat", plan)
+    supervisor.disarm_atexit()
+
+    assert "chat" in supervisor.processes
+    assert "chat" not in supervisor.failed
+
+
+def test_ensure_running_breaks_circuit_after_repeated_unhealthy_launches(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Launches that never become healthy count against the restart budget —
+    a permanently broken service must not be relaunched on every request."""
+    chat = _up_service("chat")
+    plan = SimpleNamespace(
+        services=[chat], warnings=[], swap_group=set(), policy=None,
+    )
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+    monkeypatch.setattr(supervisor, "_adopt", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_already_up", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_wait_health", lambda _service: False)
+    _stub_acquires(monkeypatch, supervisor)
+    launches: list[str] = []
+    supervisor.launcher = (
+        lambda _service: launches.append(_service.name) or _live_process()
+    )
+
+    for _ in range(3):
+        with pytest.raises(RuntimeError):
+            supervisor.ensure_running("chat", plan)
+    launches.clear()
+    with pytest.raises(RuntimeError):
+        supervisor.ensure_running("chat", plan)
+    assert launches == []
+    assert "chat" in supervisor.failed
+    supervisor.disarm_atexit()
 
 
 def test_runtime_log_rotation_and_tail(monkeypatch, tmp_path: Path) -> None:
