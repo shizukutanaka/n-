@@ -2011,7 +2011,7 @@ def _bench(args: argparse.Namespace) -> int:
                         sys.stderr
                         if getattr(args, "json", False)
                         else sys.stdout
-                    ))
+                    ), flush=True)
                     rungs = measure_retrieval(
                         client,
                         base_url,
