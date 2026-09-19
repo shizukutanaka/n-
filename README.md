@@ -324,10 +324,13 @@ completion endpoints honor explicit `nmesh-<service>` model IDs, streaming,
 backend slot limits, swap ordering, and telemetry.
 
 When the plan includes an `embed` service, the gateway also exposes
-`/v1/embeddings` and `/v1/rerank`. The rerank endpoint accepts a Cohere-style
-`{query, documents}` body and returns `results` with `relevance_score`s —
-with llama.cpp backends the embed service is started with `--reranking`
-whenever the engine build supports the flag.
+`/v1/embeddings`. llama.cpp serves rerank OR embeddings per instance (a
+single pooling mode), so rerank is a dedicated service: request it with
+`nmesh plan --roles chat,code,embed,rerank` (the `rerank` role reuses the
+embed model on a second llama.cpp process with `--reranking`). Without it,
+`/v1/rerank` returns 501 explaining how to enable it. The endpoint accepts
+a Cohere-style `{query, documents}` body and returns `results` with
+`relevance_score`s.
 
 Set `NMESH_API_KEY` before starting the gateway to require
 `Authorization: Bearer <key>` on `/v1/*` and `/metrics*`. `/health` remains

@@ -2,6 +2,7 @@
 
 from .core import (
     BPW,
+    LAUNCH_REVISION,
     PLAN_PATH,
     QUANT_PENALTY,
     LaunchSpec,
@@ -22,6 +23,7 @@ from .core import (
 
 __all__ = [
     "BPW",
+    "LAUNCH_REVISION",
     "PLAN_PATH",
     "QUANT_PENALTY",
     "LaunchSpec",
