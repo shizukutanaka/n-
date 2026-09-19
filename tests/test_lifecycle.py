@@ -334,6 +334,71 @@ def test_up_writes_plan_to_configured_plan_path(
     assert saved == [(plan, plan_path)]
 
 
+def test_up_reacquires_service_after_artifact_replan(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A service swapped in by the post-acquisition replan still names the
+    planned artifact ({id}-{quant}.gguf), not the file actually downloaded —
+    it must be acquired again, or the launcher points llama-server at a file
+    that does not exist."""
+    chat = _up_service("chat")
+    chat.model_ref = "models/qwen3-0.6b-f16.gguf"
+    plan = SimpleNamespace(
+        services=[chat], warnings=[], swap_group=set(), policy=None,
+    )
+    refreshed = _up_service("chat")
+    refreshed.model_ref = "models/qwen3-0.6b-q8_0.gguf"
+    reduced = SimpleNamespace(
+        services=[refreshed], warnings=[], swap_group=set(), policy=None,
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.save_plan", lambda *a, **k: None
+    )
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+    admits = {"n": 0}
+
+    def fake_admit(_plan, _cache, drop_unaffordable=False):
+        admits["n"] += 1
+        return reduced if admits["n"] > 1 else _plan
+
+    monkeypatch.setattr(supervisor, "_admit", fake_admit)
+    monkeypatch.setattr(supervisor, "_adopt", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_already_up", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_wait_health", lambda _service: True)
+    acquisitions: list[str] = []
+
+    def fake_acquire(service):
+        acquisitions.append(service.model_ref)
+        return SimpleNamespace()
+
+    monkeypatch.setattr("nmesh.runtime.supervisor.acquire", fake_acquire)
+    applies = {"n": 0}
+
+    def fake_apply(current, service, _acquired):
+        applies["n"] += 1
+        if applies["n"] == 1:
+            return current, service, False, True
+        actualized = SimpleNamespace(
+            **{**vars(service), "model_ref": "models/Qwen_Qwen3-0.6B-Q8_0.gguf"}
+        )
+        return current, actualized, True, False
+
+    monkeypatch.setattr(supervisor, "_apply_acquired", fake_apply)
+    launched: list[str] = []
+    supervisor.launcher = lambda _service: (
+        launched.append(_service.model_ref) or _live_process()
+    )
+
+    supervisor.up(plan)
+    supervisor.disarm_atexit()
+
+    assert acquisitions == [
+        "models/qwen3-0.6b-f16.gguf",
+        "models/qwen3-0.6b-q8_0.gguf",
+    ]
+    assert launched == ["models/Qwen_Qwen3-0.6B-Q8_0.gguf"]
+
+
 def _stub_acquires(monkeypatch, supervisor: Supervisor) -> None:
     monkeypatch.setattr(
         "nmesh.runtime.supervisor.acquire", lambda _service: SimpleNamespace()

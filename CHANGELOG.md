@@ -16,6 +16,7 @@
 - **カタログを現行世代に更新**: Qwen3-0.6B/1.7B/4B/8B（Apache-2.0、GGUF は bartowski/公式ミラー — 公式の Qwen3-0.6B/1.7B GGUF は Q8_0 のみ公開のため Q4_K_M は bartowski 経由）、SmolLM3-3B、Qwen3-Embedding-0.6B（embed ロール、last-token pooling）を追加。CPU プロファイルでは `plan` の chat 既定が qwen2.5-1.5b から qwen3-1.7b へ更新されます（品質スコア 56 > 50、同一メモリ内）。Gemma-3 は HF がゲート済み（要ライセンス承諾ログイン）のため未収録。
 
 ### Fixed
+- **取得した実アーティファクト起因の再計画（admission replan）後、入れ替わったサービスが未取得のまま起動される問題を修正**: 計画 quant の GGUF がリポジトリに無く近位 quant（例: f16→bf16）がダウンロードされると実バイト数超過でプランが再計画されますが、差し替え後のサービスは計画名 `モデル名-quant.gguf`（未ダウンロード）を指したまま launch され、llama-server が起動即死 → `up` が全サービスを teardown してフォールバック（quant 格下げ＋別ファイルを二重ダウンロード）していました（Apple Silicon 実機で確認）。差し替えサービスにも `acquire` を再走して実ファイルパスへ解決してから起動します
 - **上流接続が ConnectTimeout で失敗した場合にリクエスト経路の自動復旧が発火しない問題を修正**: サービス停止後のポート状態やフィルタ/バックログ飽和では接続失敗が TCP refused ではなく接続タイムアウトとして返り、`ConnectTimeout` は `ConnectError` のサブクラスではない（どちらも `TransportError`）ため `ensure_running` による再起動+1回リトライがスキップされ即 502 になっていました。ストリーム/非ストリーム両経路で捕捉対象に追加
 - `artifacts.json`/`bench.json`/`epoch.json` の書き込みが非アトミックで、電源断・強制終了で半書き込み破損する可能性があった — 他の状態ファイルと同じ tmp+rename の原子書き込みに統一
 - 破損/切り詰められたキャッシュ GGUF が存在するだけで採用され、llama-server が起動クラッシュを繰り返していた問題を修正 — 取得時に記録した正確なサイズ（artifacts.json）と照合し、不一致なら破棄して再取得します。記録のないファイルは従来どおり採用します
