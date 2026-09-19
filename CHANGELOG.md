@@ -3,6 +3,7 @@
 ## 未リリース
 ### Added
 - **カタログを現行世代に更新**: Qwen3-0.6B/1.7B/4B/8B（Apache-2.0、GGUF は bartowski/公式ミラー — 公式の Qwen3-0.6B/1.7B GGUF は Q8_0 のみ公開のため Q4_K_M は bartowski 経由）、SmolLM3-3B、Qwen3-Embedding-0.6B（embed ロール、last-token pooling）を追加。CPU プロファイルでは `plan` の chat 既定が qwen2.5-1.5b から qwen3-1.7b へ更新されます（品質スコア 56 > 50、同一メモリ内）。Gemma-3 は HF がゲート済み（要ライセンス承諾ログイン）のため未収録。
+- **gpt-oss-20b / gpt-oss-120b をカタログに追加**: OpenAI の open-weight MoE モデル（Apache-2.0、21B/117B 総パラメータ・3.6B/5.1B active）。`ggml-org/gpt-oss-{20,120}b-GGUF` の MXFP4 を取得対象にし、`NOMINAL_GGUF_BPW` に `mxfp4`（4.25 bpw）を追加 — 既定の q4_k_m 計画でもフォールバック解決されます（20b = 12.1GB）。同一リポジトリの `eagle3-gpt-oss-*` を `--spec-draft` の draft として測定可能。多言語ポリシー指定のプランでは英語専用モデルのため候補外になります（意図どおり）。
 
 ### Fixed
 - **embed/rerank の同居回帰を修正**: #172 で embed サービスに `--reranking` を追加したところ、llama.cpp は1インスタンス=1つの pooling モードしか持てず `/v1/embeddings` がゼロベクトルを返すようになっていました（実機で確認）。rerank は専用サービスに分離 — `nmesh plan --roles chat,code,embed,rerank` で同一モデルの2プロセス目（`--reranking` のみ、llamacpp 限定）が計画され、`/v1/embeddings` は従来どおり embed サービスが応答します。rerank サービスがないプランでの `/v1/rerank` は「`nmesh plan --roles ...,rerank`」を案内する正直な 501 を返します。同一モデルのダウンロード量は二重計上しません（`launch_revision` 2 → 旧プランで `up` すると再計画を促します）。

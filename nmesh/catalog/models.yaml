@@ -457,3 +457,41 @@
     hf_gguf: "Qwen/Qwen3-Embedding-0.6B-GGUF"
     hf: "Qwen/Qwen3-Embedding-0.6B"
   pooling: last
+- id: gpt-oss-20b
+  family: gpt-oss
+  params: 21000000000
+  n_layers: 24
+  n_heads: 64
+  n_kv_heads: 8
+  head_dim: 64
+  hidden_size: 2880
+  vocab_size: 201088
+  head_layout: separate
+  max_context: 131072
+  roles: [chat, code, tool]
+  quality: 78
+  license: apache-2.0
+  languages: [en]
+  sources:
+    ollama: "gpt-oss:20b"
+    hf_gguf: "ggml-org/gpt-oss-20b-GGUF"
+    hf: "openai/gpt-oss-20b"
+- id: gpt-oss-120b
+  family: gpt-oss
+  params: 117000000000
+  n_layers: 36
+  n_heads: 64
+  n_kv_heads: 8
+  head_dim: 64
+  hidden_size: 2880
+  vocab_size: 201088
+  head_layout: separate
+  max_context: 131072
+  roles: [chat, code, tool]
+  quality: 88
+  license: apache-2.0
+  languages: [en]
+  sources:
+    ollama: "gpt-oss:120b"
+    hf_gguf: "ggml-org/gpt-oss-120b-GGUF"
+    hf: "openai/gpt-oss-120b"
