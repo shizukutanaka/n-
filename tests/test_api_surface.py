@@ -494,6 +494,27 @@ def test_gateway_headers_empty_without_api_key(monkeypatch) -> None:
     assert cli._gateway_headers() == {}
 
 
+def test_run_surfaces_upstream_error_body(monkeypatch, capsys) -> None:
+    import io
+    import urllib.error
+
+    def fail(*args, **kwargs):
+        body = json.dumps(
+            {"error": {"message": "the current context does not logits computation"}}
+        ).encode()
+        raise urllib.error.HTTPError(
+            "http://127.0.0.1:18000/v1/chat/completions",
+            500, "Internal Server Error", {}, io.BytesIO(body),
+        )
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fail)
+    result = cli._run_prompt(SimpleNamespace(prompt="hi", role="embed", json=False))
+    assert result == 1
+    err = capsys.readouterr().err
+    assert "HTTP 500" in err
+    assert "logits computation" in err
+
+
 def test_serve_returns_nonzero_for_failed_gateway(monkeypatch) -> None:
     process = SimpleNamespace(pid=123, wait=lambda: 1)
     monkeypatch.setattr(cli, "_launch_gateway", lambda _port, detach: (process, None))

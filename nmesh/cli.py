@@ -3935,6 +3935,18 @@ def _run_prompt(args: argparse.Namespace) -> int:
             else:
                 print(payload["choices"][0]["message"]["content"])
             return 0
+    except HTTPError as error:
+        detail = ""
+        try:
+            body = json.loads(error.read().decode())
+            upstream = body.get("error", {}) if isinstance(body, dict) else {}
+            if isinstance(upstream, dict) and upstream.get("message"):
+                detail = str(upstream["message"])
+        except (OSError, json.JSONDecodeError):
+            detail = ""
+        print(i18n.t("err.gateway_http", i18n.lang(), code=error.code,
+                     detail=detail or str(error)), file=sys.stderr)
+        return 1
     except (OSError, json.JSONDecodeError, KeyError, IndexError) as error:
         output = i18n.t("err.gateway_unavailable", i18n.lang(), error=error)
     print(output)
