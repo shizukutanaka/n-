@@ -1076,11 +1076,11 @@ class Supervisor:
                         or service.port is None
                     ):
                         continue
-                    pid = engine_listener_pid(service.port)
-                    if pid is not None:
-                        self._terminator(pid)
+                    orphan_pid = engine_listener_pid(service.port)
+                    if orphan_pid is not None:
+                        self._terminator(orphan_pid)
                         report(service.name, {
-                            "pid": pid,
+                            "pid": orphan_pid,
                             "port": service.port,
                             "model_ref": service.model_ref,
                             "backend": service.backend,
