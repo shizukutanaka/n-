@@ -13,9 +13,11 @@
 - README に Upgrade/Backup/Uninstall の手順を追加 — `NMESH_HOME` 以下に全状態が集約されていること、autostart の解除手順（systemd/launchd/schtasks 別）を明記
 - MIT LICENSE・CONTRIBUTING.md を追加（配布・コントリビューション用の不足分）
 - README に類似ツール比較と nmesh の独自性を明記（llama-swap/Ollama/LM Studio との差分: メモリ admission・証拠ベースのモデル選択・オフライン動作）
+- `NMESH_CONNECT_TIMEOUT` で上流サービスへの接続タイムアウトを調整可能に（既定 10 秒、従来どおり）。低速ネットワークでは延長、テスト等では短縮できます
 - **カタログを現行世代に更新**: Qwen3-0.6B/1.7B/4B/8B（Apache-2.0、GGUF は bartowski/公式ミラー — 公式の Qwen3-0.6B/1.7B GGUF は Q8_0 のみ公開のため Q4_K_M は bartowski 経由）、SmolLM3-3B、Qwen3-Embedding-0.6B（embed ロール、last-token pooling）を追加。CPU プロファイルでは `plan` の chat 既定が qwen2.5-1.5b から qwen3-1.7b へ更新されます（品質スコア 56 > 50、同一メモリ内）。Gemma-3 は HF がゲート済み（要ライセンス承諾ログイン）のため未収録。
 
 ### Fixed
+- **macOS で `psutil.net_connections()` が `AccessDenied` を投げ、ポートスキャン型の全安全機構が黙って無効化されていた問題を修正**: `down` の孤児掃討・`_adopt` の異モデル孤児回収・`_sweep_gateway` は `engine_listener_pid`/`gateway_listener_pid` に依存していましたが、macOS では非特権プロセスが他プロセスのソケットを列挙できないため常に None を返していました（実機で確認: リクエスト経路で復活した llama-server が `down` 後もポートと RAM を保持）。両関数を `_listener_pids` に集約し、psutil が拒否された場合は `lsof -iTCP:<port> -sTCP:LISTEN`（macOS 標準搭載、同一ユーザーのリスナーを非特権で列挙可能）にフォールバックします。psutil が使える環境では lsof は起動しません
 - **取得した実アーティファクト起因の再計画（admission replan）後、入れ替わったサービスが未取得のまま起動される問題を修正**: 計画 quant の GGUF がリポジトリに無く近位 quant（例: f16→bf16）がダウンロードされると実バイト数超過でプランが再計画されますが、差し替え後のサービスは計画名 `モデル名-quant.gguf`（未ダウンロード）を指したまま launch され、llama-server が起動即死 → `up` が全サービスを teardown してフォールバック（quant 格下げ＋別ファイルを二重ダウンロード）していました（Apple Silicon 実機で確認）。差し替えサービスにも `acquire` を再走して実ファイルパスへ解決してから起動します
 - **上流接続が ConnectTimeout で失敗した場合にリクエスト経路の自動復旧が発火しない問題を修正**: サービス停止後のポート状態やフィルタ/バックログ飽和では接続失敗が TCP refused ではなく接続タイムアウトとして返り、`ConnectTimeout` は `ConnectError` のサブクラスではない（どちらも `TransportError`）ため `ensure_running` による再起動+1回リトライがスキップされ即 502 になっていました。ストリーム/非ストリーム両経路で捕捉対象に追加
 - `artifacts.json`/`bench.json`/`epoch.json` の書き込みが非アトミックで、電源断・強制終了で半書き込み破損する可能性があった — 他の状態ファイルと同じ tmp+rename の原子書き込みに統一

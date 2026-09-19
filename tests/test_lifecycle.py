@@ -17,6 +17,7 @@ from nmesh import cli
 from nmesh.catalog import load_catalog
 from nmesh.planner import Policy, build_plan
 from nmesh.runtime import service_unit as service_unit_module
+from nmesh.runtime import supervisor as supervisor_module
 from nmesh.runtime.logs import log_path, open_log, tail
 from nmesh.runtime.service_unit import launcher_script, service_unit
 from nmesh.runtime.supervisor import Supervisor
@@ -397,6 +398,57 @@ def test_up_reacquires_service_after_artifact_replan(
         "models/qwen3-0.6b-q8_0.gguf",
     ]
     assert launched == ["models/Qwen_Qwen3-0.6B-Q8_0.gguf"]
+
+
+def test_engine_listener_pid_falls_back_to_lsof(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Unprivileged macOS denies `psutil.net_connections` outright — without
+    the lsof fallback the orphan sweep finds nothing and managed engines
+    survive `down` holding their ports."""
+    def denied(*_args, **_kwargs):
+        raise psutil.AccessDenied(1, "net_connections")
+
+    monkeypatch.setattr(supervisor_module.psutil, "net_connections", denied)
+    monkeypatch.setattr(supervisor_module, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        supervisor_module.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(stdout="4321\n"),
+    )
+    monkeypatch.setattr(
+        supervisor_module.psutil, "Process",
+        lambda _pid: SimpleNamespace(
+            exe=lambda: str(tmp_path / "engines" / "llamacpp" / "x" / "llama-server"),
+        ),
+    )
+    assert supervisor_module.engine_listener_pid(18010) == 4321
+
+
+def test_engine_listener_pid_does_not_shell_out_when_psutil_works(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """On platforms where net_connections works, lsof is never invoked."""
+    monkeypatch.setattr(supervisor_module, "nmesh_home", lambda: tmp_path)
+    connection = SimpleNamespace(
+        laddr=SimpleNamespace(port=18010), status="LISTEN", pid=4321,
+    )
+    monkeypatch.setattr(
+        supervisor_module.psutil, "net_connections",
+        lambda **_kwargs: [connection],
+    )
+    runs: list[object] = []
+    monkeypatch.setattr(
+        supervisor_module.subprocess, "run",
+        lambda *a, **k: runs.append(a) or SimpleNamespace(stdout=""),
+    )
+    monkeypatch.setattr(
+        supervisor_module.psutil, "Process",
+        lambda _pid: SimpleNamespace(
+            exe=lambda: str(tmp_path / "engines" / "llamacpp" / "x" / "llama-server"),
+        ),
+    )
+    assert supervisor_module.engine_listener_pid(18010) == 4321
+    assert runs == []
 
 
 def _stub_acquires(monkeypatch, supervisor: Supervisor) -> None:

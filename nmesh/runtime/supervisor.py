@@ -81,25 +81,47 @@ class ProcessLike(Protocol):
     def wait(self, timeout: float | None = None) -> int: ...
 
 
-def gateway_listener_pid(port: int) -> int | None:
-    """Return the pid of the nmesh gateway listening on *port*, if any."""
+def _listener_pids(port: int) -> list[int]:
+    """Pids of processes listening on *port*.
+
+    `psutil.net_connections` needs no extra rights on Linux but raises
+    AccessDenied on unprivileged macOS; fall back to `lsof`, which can
+    enumerate same-user listeners there.
+    """
     try:
         connections = psutil.net_connections(kind="tcp")
     except (psutil.Error, OSError):
-        return None
-    for connection in connections:
-        if (
-            connection.laddr
-            and connection.laddr.port == port
-            and connection.status == "LISTEN"
-            and connection.pid is not None
-        ):
-            try:
-                cmdline = psutil.Process(connection.pid).cmdline()
-            except (psutil.Error, OSError):
-                continue
-            if any("nmesh.gateway" in part for part in cmdline):
-                return connection.pid
+        connections = None
+    if connections is not None:
+        return [
+            connection.pid
+            for connection in connections
+            if (
+                connection.laddr
+                and connection.laddr.port == port
+                and connection.status == "LISTEN"
+                and connection.pid is not None
+            )
+        ]
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [int(line) for line in result.stdout.split() if line.isdigit()]
+
+
+def gateway_listener_pid(port: int) -> int | None:
+    """Return the pid of the nmesh gateway listening on *port*, if any."""
+    for pid in _listener_pids(port):
+        try:
+            cmdline = psutil.Process(pid).cmdline()
+        except (psutil.Error, OSError):
+            continue
+        if any("nmesh.gateway" in part for part in cmdline):
+            return pid
     return None
 
 
@@ -110,23 +132,13 @@ def engine_listener_pid(port: int) -> int | None:
     process that merely bound the port is never returned.
     """
     root = str(nmesh_home())
-    try:
-        connections = psutil.net_connections(kind="tcp")
-    except (psutil.Error, OSError):
-        return None
-    for connection in connections:
-        if (
-            connection.laddr
-            and connection.laddr.port == port
-            and connection.status == "LISTEN"
-            and connection.pid is not None
-        ):
-            try:
-                exe = psutil.Process(connection.pid).exe()
-            except (psutil.Error, OSError):
-                continue
-            if exe.startswith(root):
-                return connection.pid
+    for pid in _listener_pids(port):
+        try:
+            exe = psutil.Process(pid).exe()
+        except (psutil.Error, OSError):
+            continue
+        if exe.startswith(root):
+            return pid
     return None
 
 
