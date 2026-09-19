@@ -479,6 +479,24 @@ The generated service definitions intentionally reflect platform differences:
   SYSTEM or saved credentials. The current simple Task Scheduler setup does
   not restart the gateway after a self-crash.
 
+## Upgrade and uninstall
+
+Everything nmesh owns lives under `NMESH_HOME` (default `~/.nmesh`): the
+installer's virtualenv (`venv/`), engines, models, `plan.json`, `state.json`,
+telemetry, calibration, logs, and the autostart launcher/env files.
+
+* **Upgrade**: `pip install --upgrade "nmesh[gateway,download] @ git+https://github.com/shizukutanaka/n-.git"`
+  in the venv, then `nmesh down && nmesh up --detach`. If launch-flag
+  semantics changed, `up` warns and asks for `nmesh plan` to regenerate.
+* **Backup**: `nmesh down`, then copy `NMESH_HOME` — `plan.json`,
+  `models.yaml`, telemetry, and the token/calibration records are portable
+  state; downloaded GGUFs and engine binaries can be refetched.
+* **Uninstall**: `nmesh down`; if autostart was installed, run the disable
+  step shown by `nmesh autostart` (e.g. `systemctl --user disable --now
+  nmesh-gateway` and remove the written unit file, or `launchctl unload` /
+  `schtasks /delete /tn nmesh-gateway`); then delete `NMESH_HOME` and the
+  `PATH` line you added for `~/.nmesh/venv/bin`.
+
 ### Prompt token accounting
 
 Context-length routing needs a prompt-token count. The built-in heuristic
