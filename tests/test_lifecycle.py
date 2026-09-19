@@ -332,6 +332,72 @@ def test_up_writes_plan_to_configured_plan_path(
     assert saved == [(plan, plan_path)]
 
 
+def test_down_reclaims_orphans_when_state_lost(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A lost/corrupt state.json must not leak service processes — plan.json
+    survives power loss and lets down() find orphans by their planned ports."""
+    chat = _up_service("chat")
+    plan = SimpleNamespace(
+        services=[chat], warnings=[], swap_group=set(), policy=None,
+    )
+    killed: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json",
+        terminator=killed.append,
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.load_plan", lambda *a, **k: plan
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.gateway_listener_pid", lambda _port: None
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid",
+        lambda port: 424242 if port == chat.port else None,
+    )
+
+    result = supervisor.down(foreign=True, gateway_port=18000)
+
+    assert killed == [424242]
+    stopped = {item["service"] for item in result.services}
+    assert "chat" in stopped
+
+
+def test_down_does_not_sweep_foreign_port_listeners(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A process that merely bound a planned port but is not an nmesh-managed
+    engine must be left alone."""
+    chat = _up_service("chat")
+    plan = SimpleNamespace(
+        services=[chat], warnings=[], swap_group=set(), policy=None,
+    )
+    killed: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json",
+        terminator=killed.append,
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.load_plan", lambda *a, **k: plan
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.gateway_listener_pid", lambda _port: None
+    )
+    # foreign listener — engine_listener_pid returns None for it
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid", lambda _port: None
+    )
+
+    result = supervisor.down(foreign=True, gateway_port=18000)
+
+    assert killed == []
+    assert result.services == [] or all(
+        item["service"] != "chat" for item in result.services
+    )
+
+
+
 def test_runtime_log_rotation_and_tail(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
     monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "4")
