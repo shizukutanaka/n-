@@ -20,9 +20,6 @@ class BackendCaps:
     flags: frozenset[str]
     gpu_devices: tuple[str, ...] | None = None
 
-    def supports(self, *aliases: str) -> bool:
-        return any(alias in self.flags for alias in aliases)
-
 
 def parse_help(text: str) -> tuple[frozenset[str], str | None]:
     flags: set[str] = set()
