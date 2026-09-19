@@ -212,6 +212,41 @@ def test_completion_404_names_backend() -> None:
         upstream.server_close()
 
 
+def test_cors_preflight_and_response_headers(monkeypatch) -> None:
+    monkeypatch.setenv("NMESH_API_KEY", "test-secret")
+    plan = _completion_plan(1)
+    with TestClient(create_app(plan)) as client:
+        preflight = client.options(
+            "/v1/chat/completions",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+        assert preflight.status_code == 204
+        assert (
+            preflight.headers["Access-Control-Allow-Origin"]
+            == "http://localhost:3000"
+        )
+        assert "authorization" in preflight.headers["Access-Control-Allow-Headers"]
+        # Preflight must not be blocked by auth.
+        assert "WWW-Authenticate" not in preflight.headers
+
+        models = client.get(
+            "/v1/models",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Authorization": "Bearer test-secret",
+            },
+        )
+        assert models.status_code == 200
+        assert models.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
+        # No Origin header -> no CORS headers (non-browser clients unaffected).
+        plain = client.get("/v1/models", headers={"Authorization": "Bearer test-secret"})
+        assert "Access-Control-Allow-Origin" not in plain.headers
+
+
 def test_api_key_authentication(monkeypatch) -> None:
     monkeypatch.delenv("NMESH_API_KEY", raising=False)
     plan = _completion_plan(1)

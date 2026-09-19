@@ -95,6 +95,12 @@ use `create_app(..., watchdog=False)` when embedding it without supervision.
 Set `NMESH_QUEUE_TIMEOUT` to control how long chat requests wait for a backend
 concurrency slot before receiving a retryable 503 response.
 
+Browser frontends are supported: the gateway answers CORS preflights on
+`/v1/*` with the requesting `Origin` reflected, and attaches
+`Access-Control-Allow-Origin` to real responses. `OPTIONS` requests skip the
+`NMESH_API_KEY` check (preflights carry no credentials); real requests still
+require the key when set. The gateway only binds `127.0.0.1`.
+
 Runtime state is persisted atomically in `~/.nmesh/state.json`; `status` checks
 PID liveness and `down` can terminate services owned by another process.
 Supervisor `atexit` cleanup is armed only after a child is actually launched,

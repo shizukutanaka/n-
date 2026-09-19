@@ -7,6 +7,9 @@
 ### Added
 - README に Upgrade/Backup/Uninstall の手順を追加 — `NMESH_HOME` 以下に全状態が集約されていること、autostart の解除手順（systemd/launchd/schtasks 別）を明記
 
+### Added
+- ゲートウェイに CORS 対応を追加 — `/v1/*` へのブラウザ preflight（OPTIONS）を 204 + Origin 反映で応答し、実レスポンスに `Access-Control-Allow-Origin` を付与。ブラウザ製 UI（Open WebUI 等）から直接利用可能に。preflight は認証チェックをバイパス（credential 非含有のため）、実リクエストは `NMESH_API_KEY` があれば引き続き必須。バインドは 127.0.0.1 のみ。
+
 ### Fixed
 - **`NMESH_API_KEY` を設定すると CLI 自身がゲートウェイに 401 で拒否されていた問題を修正**: `run`/`jobs`/`unload`/`reload`/`status` のジョブ集計が `Authorization: Bearer` を送らず、認証を有効化したユーザーは CLI から一切操作できなくなっていました。ゲートウェイ向けの全リクエストが環境変数をヘッダに載せます（`run`/`jobs`/`unload`/`reload`/`status` の jobs 集計）。`/health` は従来どおり認証不要です。
 - `nmesh run` が上流サービスの HTTP エラー（例: embed ロールへの chat 要求）を「gateway unavailable」と誤表示していた — HTTP エラー時は上流の error.message を表示するように
