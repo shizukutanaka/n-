@@ -51,8 +51,8 @@ catalog の `hf_mlx` ソース（MLX 形式リポジトリ）を優先使用し�
 
 ## CI workflow
 
-GitHub の権限がある利用者は `ci/github-workflow-ci.yml` を
-`.github/workflows/ci.yml` にコピーして使用してください。ローカルで同じ
+push / pull request ごとに `.github/workflows/ci.yml` が Python 3.10 /
+3.12 のマトリクスで ruff・mypy・pytest を実行します。ローカルで同じ
 3 つのゲートを実行するには次の通りです（`tests/conftest.py` が gateway を、
 `tests/test_acquisition.py` が `huggingface_hub` を import するため、
 `gateway` と `download` の extras が無いとテストは収集自体に失敗します）:
@@ -64,9 +64,7 @@ mypy nmesh
 pytest -q
 ```
 
-`mypy nmesh` は `pyproject.toml` に列挙した既知負債のモジュール
-（`nmesh.cli`・`nmesh.gateway`・`nmesh.planner`・`nmesh.runtime.engine`・
-`nmesh.runtime.supervisor`）以外の全モジュールを検査します。
+`mypy nmesh` は `nmesh` パッケージの全モジュールを検査します。
 
 ## Gateway service
 
