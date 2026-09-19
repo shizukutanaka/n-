@@ -6,7 +6,13 @@ from types import SimpleNamespace
 import huggingface_hub
 import pytest
 
+from nmesh import artifacts
 from nmesh.runtime import acquisition
+
+
+@pytest.fixture(autouse=True)
+def _isolated_artifact_cache(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(artifacts, "CACHE_PATH", tmp_path / "artifacts.json")
 
 
 def _ollama_service() -> SimpleNamespace:
@@ -387,3 +393,56 @@ def test_size_mismatch_warning_is_absent_at_parity(tmp_path, monkeypatch) -> Non
     )
     acquired = acquisition.acquire(service)
     assert acquired.warning is None
+
+
+def test_truncated_cached_gguf_is_reacquired(tmp_path, monkeypatch) -> None:
+    """A cached file whose bytes differ from the recorded download size is
+    corrupt — acquire must re-download instead of launching against it."""
+    target = tmp_path / "model-Q4_K_M.gguf"
+    target.write_bytes(b"short")
+    service = _llamacpp_service(tmp_path)
+    service.model_ref = str(target)
+    service.download_repo = "org/repo"
+
+    from nmesh.artifacts import artifact_key
+
+    monkeypatch.setattr(
+        acquisition,
+        "load_cache",
+        lambda *a, **k: {artifact_key("org/repo", "q4_k_m"): 2000},
+    )
+    calls: list[str] = []
+
+    def fake_download(**kwargs: object) -> str:
+        filename = str(kwargs["filename"])
+        calls.append(filename)
+        path = tmp_path / filename
+        path.write_bytes(b"x" * 2000)
+        return str(path)
+
+    monkeypatch.setattr(
+        acquisition,
+        "_resolve_gguf",
+        lambda _repo, _quant: ("q4_k_m", ["model-Q4_K_M.gguf"], 2000),
+    )
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+
+    acquired = acquisition.acquire(service)
+
+    assert calls == ["model-Q4_K_M.gguf"]
+    assert acquired.path == target
+    assert acquired.warning is not None and "corrupt" in acquired.warning
+
+
+def test_unrecorded_cached_gguf_still_adopted(tmp_path, monkeypatch) -> None:
+    """Hand-placed files have no recorded size — adopt as before."""
+    target = tmp_path / "model-Q4_K_M.gguf"
+    target.write_bytes(b"artifact")
+    service = _llamacpp_service(tmp_path)
+    service.model_ref = str(target)
+
+    monkeypatch.setattr(acquisition, "load_cache", lambda *a, **k: {})
+
+    acquired = acquisition.acquire(service)
+
+    assert acquired.path == target

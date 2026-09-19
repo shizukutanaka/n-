@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from nmesh import i18n
-from nmesh.artifacts import record
+from nmesh.artifacts import artifact_key, load_cache, record
 from nmesh.paths import nmesh_home
 from nmesh.planner import PlannedService
 
@@ -215,6 +215,20 @@ def _resolve_gguf(repo_id: str, quant: str) -> tuple[str, list[str], int]:
     return eligible[0]
 
 
+def _recorded_artifact_bytes(
+    service: PlannedService, actual_label: str | None
+) -> int | None:
+    """Bytes recorded by a prior successful download for this artifact.
+
+    Returns None when nothing was recorded (e.g. a hand-placed file) — in
+    that case there is no reference to validate the cache against.
+    """
+    repo_id = service.download_repo
+    if repo_id is None:
+        return None
+    return load_cache().get(artifact_key(repo_id, actual_label or service.quant))
+
+
 def _artifact_warning(
     service: PlannedService,
     label: str | None,
@@ -290,15 +304,34 @@ def acquire(service: PlannedService) -> Acquired:
     if service.backend == "llamacpp":
         target = Path(service.model_ref)
         parts = _split_gguf_parts(target)
+        corrupt_note: str | None = None
         if all(part.exists() for part in parts):
             artifact_bytes = sum(part.stat().st_size for part in parts)
             actual_label = parse_label(target.name)
-            quant = actual_label or service.quant
-            warning = _artifact_warning(service, actual_label, target.name, artifact_bytes)
-            return Acquired(
-                target, quant, quant != service.quant, warning=warning,
-                artifact_bytes=artifact_bytes,
-            )
+            expected = _recorded_artifact_bytes(service, actual_label)
+            if expected is not None and artifact_bytes != expected:
+                # Bytes differ from what a successful acquisition recorded —
+                # the cached artifact is corrupt/truncated; re-acquire it
+                # instead of handing llama-server a file it will crash on.
+                corrupt_note = i18n.t(
+                    "warn.gguf_corrupt",
+                    i18n.lang(),
+                    service=service.name,
+                    filename=target.name,
+                    actual=artifact_bytes,
+                    expected=expected,
+                )
+                for part in parts:
+                    part.unlink(missing_ok=True)
+            else:
+                quant = actual_label or service.quant
+                warning = _artifact_warning(
+                    service, actual_label, target.name, artifact_bytes
+                )
+                return Acquired(
+                    target, quant, quant != service.quant, warning=warning,
+                    artifact_bytes=artifact_bytes,
+                )
         repo_id = service.download_repo
         if repo_id is None:
             raise RuntimeError("No Hugging Face GGUF repository configured")
@@ -314,6 +347,8 @@ def acquire(service: PlannedService) -> Acquired:
             for filename in files
         ]
         warning = _artifact_warning(service, chosen, files[0], total_bytes)
+        if corrupt_note is not None:
+            warning = f"{corrupt_note} {warning}" if warning else corrupt_note
         try:
             record(repo_id, chosen, total_bytes)
         except OSError:
