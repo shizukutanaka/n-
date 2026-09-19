@@ -463,6 +463,37 @@ def test_run_returns_failure_when_gateway_is_unavailable(monkeypatch) -> None:
     assert result == 1
 
 
+def test_run_sends_nmesh_api_key_when_set(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        def read(self):
+            return json.dumps(
+                {"choices": [{"message": {"content": "ok"}}]}
+            ).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, *args, **kwargs):
+        captured["authorization"] = request.headers.get("Authorization")
+        return Response()
+
+    monkeypatch.setenv("NMESH_API_KEY", "test-key-1")
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    result = cli._run_prompt(SimpleNamespace(prompt="hi", role="chat", json=False))
+    assert result == 0
+    assert captured["authorization"] == "Bearer test-key-1"
+
+
+def test_gateway_headers_empty_without_api_key(monkeypatch) -> None:
+    monkeypatch.delenv("NMESH_API_KEY", raising=False)
+    assert cli._gateway_headers() == {}
+
+
 def test_serve_returns_nonzero_for_failed_gateway(monkeypatch) -> None:
     process = SimpleNamespace(pid=123, wait=lambda: 1)
     monkeypatch.setattr(cli, "_launch_gateway", lambda _port, detach: (process, None))
