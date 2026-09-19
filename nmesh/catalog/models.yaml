@@ -178,6 +178,105 @@
     hf_gguf: "Qwen/Qwen2.5-Coder-14B-Instruct-GGUF"
     hf: "Qwen/Qwen2.5-Coder-14B-Instruct"
     hf_mlx: "mlx-community/Qwen2.5-Coder-14B-Instruct-4bit"
+- id: qwen3-0.6b
+  family: qwen3
+  params: 600000000
+  n_layers: 28
+  n_heads: 16
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 1024
+  vocab_size: 151936
+  head_layout: shared
+  max_context: 32768
+  roles: [chat, code, tool]
+  quality: 48
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    ollama: "qwen3:0.6b"
+    hf_gguf: "bartowski/Qwen_Qwen3-0.6B-GGUF"
+    hf: "Qwen/Qwen3-0.6B"
+    hf_mlx: "mlx-community/Qwen3-0.6B-4bit"
+- id: qwen3-1.7b
+  family: qwen3
+  params: 1700000000
+  n_layers: 28
+  n_heads: 16
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 2048
+  vocab_size: 151936
+  head_layout: shared
+  max_context: 32768
+  roles: [chat, code, tool]
+  quality: 56
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    ollama: "qwen3:1.7b"
+    hf_gguf: "bartowski/Qwen_Qwen3-1.7B-GGUF"
+    hf: "Qwen/Qwen3-1.7B"
+    hf_mlx: "mlx-community/Qwen3-1.7B-4bit"
+- id: qwen3-4b
+  family: qwen3
+  params: 4020000000
+  n_layers: 36
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 2560
+  vocab_size: 151936
+  head_layout: shared
+  max_context: 32768
+  roles: [chat, code, tool]
+  quality: 66
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    ollama: "qwen3:4b"
+    hf_gguf: "Qwen/Qwen3-4B-GGUF"
+    hf: "Qwen/Qwen3-4B"
+    hf_mlx: "mlx-community/Qwen3-4B-4bit"
+- id: qwen3-8b
+  family: qwen3
+  params: 8190000000
+  n_layers: 36
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 151936
+  head_layout: separate
+  max_context: 32768
+  roles: [chat, code, tool]
+  quality: 72
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    ollama: "qwen3:8b"
+    hf_gguf: "Qwen/Qwen3-8B-GGUF"
+    hf: "Qwen/Qwen3-8B"
+    hf_mlx: "mlx-community/Qwen3-8B-4bit"
+- id: smollm3-3b
+  family: smollm3
+  params: 3080000000
+  n_layers: 36
+  n_heads: 16
+  n_kv_heads: 4
+  head_dim: 128
+  hidden_size: 2048
+  vocab_size: 128256
+  head_layout: shared
+  max_context: 65536
+  roles: [chat, tool]
+  quality: 56
+  license: apache-2.0
+  languages: [en, fr, de, es, it, pt]
+  sources:
+    hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
+    hf: "HuggingFaceTB/SmolLM3-3B"
+    hf_mlx: "mlx-community/SmolLM3-3B-4bit"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
@@ -338,3 +437,23 @@
     hf_gguf: "gpustack/bge-m3-GGUF"
     hf: "BAAI/bge-m3"
   pooling: cls
+- id: qwen3-embedding-0.6b
+  family: qwen3-embedding
+  params: 600000000
+  n_layers: 28
+  n_heads: 16
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 1024
+  vocab_size: 151669
+  head_layout: shared
+  max_context: 32768
+  roles: [embed]
+  quality: 88
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    ollama: "qwen3-embedding"
+    hf_gguf: "Qwen/Qwen3-Embedding-0.6B-GGUF"
+    hf: "Qwen/Qwen3-Embedding-0.6B"
+  pooling: last

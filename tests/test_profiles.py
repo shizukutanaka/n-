@@ -142,7 +142,7 @@ def test_speed_selection_regression_for_gpu_and_cpu_profiles(tmp_path) -> None:
     )
 
     assert gpu.services[0].model_id == "qwen2.5-32b-instruct"
-    assert cpu.services[0].model_id == "qwen2.5-1.5b-instruct"
+    assert cpu.services[0].model_id == "qwen3-1.7b"
 
 
 def test_speed_saturation_warning_requires_a_faster_candidate(tmp_path) -> None:
