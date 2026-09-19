@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -133,6 +134,51 @@ def test_autotune_rejects_embedding_service_before_runtime(monkeypatch, capsys) 
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "embedding service" in captured.err
+
+
+def test_autotune_pauses_detached_gateway_watchdog(monkeypatch, capsys) -> None:
+    """The detached gateway's watchdog respawns killed services between
+    autotune cells and steals the port mid-restart — the gateway must be
+    stopped before the first down/up cycle and restarted afterwards."""
+    plan = _plan()
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "save_plan", lambda *_a, **_k: None)
+    runtime = SimpleNamespace(
+        services=[
+            {"service": "chat", "running": True, "port": 18010},
+            {"service": "gateway", "running": True, "port": 18000},
+        ]
+    )
+    monkeypatch.setattr(cli, "runtime_status", lambda: runtime)
+    monkeypatch.setattr(cli, "_service_running", lambda *_a: True)
+    events: list[str] = []
+    monkeypatch.setattr(
+        cli, "stop_gateway", lambda foreign=False: events.append("stop") or True
+    )
+    monkeypatch.setattr(
+        cli, "runtime_down", lambda: events.append("down") or SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        cli,
+        "runtime_up",
+        lambda *_a, **_k: events.append("up") or SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        cli, "measure", lambda *_a: SimpleNamespace(decode_tps=1.0)
+    )
+    monkeypatch.setattr(
+        cli,
+        "_launch_gateway",
+        lambda _port, detach: (
+            events.append("relaunch") or SimpleNamespace(poll=lambda: None),
+            None,
+        ),
+    )
+    monkeypatch.setattr(cli, "_wait_gateway", lambda *_a: True)
+
+    assert cli.main(["autotune"]) == 0
+    assert events[0] == "stop"
+    assert events[-1] == "relaunch"
 
 
 def test_bench_http_failure_returns_error_without_saving(monkeypatch, capsys) -> None:
