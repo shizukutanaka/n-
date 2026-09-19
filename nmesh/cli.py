@@ -1129,7 +1129,10 @@ def _runtime(args: argparse.Namespace) -> int:
                     gateway["running"] = True
             try:
                 with urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}/v1/jobs?limit=20", timeout=2
+                    urllib.request.Request(
+                        f"http://127.0.0.1:{port}/v1/jobs?limit=20",
+                        headers=_gateway_headers(),
+                    ), timeout=2
                 ) as jobs_response:
                     jobs_data = json.loads(jobs_response.read().decode())
                 if isinstance(jobs_data, dict) and jobs_data.get("counts"):
@@ -1250,6 +1253,11 @@ def _logs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _gateway_headers() -> dict[str, str]:
+    api_key = os.environ.get("NMESH_API_KEY")
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
 def _unload(args: argparse.Namespace) -> int:
     path = "/admin/unload"
     if args.service is not None:
@@ -1257,6 +1265,7 @@ def _unload(args: argparse.Namespace) -> int:
     request = urllib.request.Request(
         f"http://127.0.0.1:{args.port}{path}",
         method="POST",
+        headers=_gateway_headers(),
     )
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -1331,7 +1340,10 @@ def _jobs(args: argparse.Namespace) -> int:
         return 0
     try:
         with urllib.request.urlopen(
-            f"http://127.0.0.1:{args.port}/v1/jobs?limit={args.limit}",
+            urllib.request.Request(
+                f"http://127.0.0.1:{args.port}/v1/jobs?limit={args.limit}",
+                headers=_gateway_headers(),
+            ),
             timeout=10,
         ) as response:
             data = json.loads(response.read().decode())
@@ -1471,6 +1483,7 @@ def _reload(args: argparse.Namespace) -> int:
     request = urllib.request.Request(
         f"http://127.0.0.1:{args.port}/admin/reload",
         method="POST",
+        headers=_gateway_headers(),
     )
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
@@ -3911,8 +3924,9 @@ def _watch(args: argparse.Namespace) -> int:
 def _run_prompt(args: argparse.Namespace) -> int:
     payload = json.dumps({"model": f"nmesh-{args.role}",
                           "messages": [{"role": "user", "content": args.prompt}]}).encode()
+    headers = {"Content-Type": "application/json", **_gateway_headers()}
     request = urllib.request.Request("http://127.0.0.1:18000/v1/chat/completions", payload,
-                                     {"Content-Type": "application/json"})
+                                     headers)
     try:
         with urllib.request.urlopen(request, timeout=300) as response:
             payload = json.loads(response.read().decode())
