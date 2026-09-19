@@ -640,7 +640,7 @@ def test_launch_gateway_restarts_stale_version(
 
     assert terminated == [4242]
     assert spawned and "nmesh.gateway.server" in " ".join(spawned[0])
-    assert getattr(process, "pid") == 5555
+    assert process.pid == 5555
 
 
 def test_adopt_keeps_foreign_healthy_listener_as_external_shared(
