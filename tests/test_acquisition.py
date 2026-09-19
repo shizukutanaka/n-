@@ -159,6 +159,18 @@ def test_resolve_downgrades_to_highest_safe_quant(monkeypatch) -> None:
     )
 
 
+def test_resolve_accepts_mxfp4_under_q4_k_m_plan(monkeypatch) -> None:
+    # gpt-oss-* GGUFs ship MXFP4 only; a default q4_k_m plan must resolve them.
+    monkeypatch.setattr(
+        acquisition, "_gguf_files", lambda _repo: {"gpt-oss-20b-MXFP4.gguf": 10}
+    )
+    assert acquisition._resolve_gguf("repo", "q4_k_m") == (
+        "mxfp4",
+        ["gpt-oss-20b-MXFP4.gguf"],
+        10,
+    )
+
+
 def test_resolve_reports_published_quants_when_none_fit(monkeypatch) -> None:
     monkeypatch.setattr(
         acquisition, "_gguf_files", lambda _repo: {"model-fp16.gguf": 10}

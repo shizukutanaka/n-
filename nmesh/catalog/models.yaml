@@ -457,3 +457,61 @@
     hf_gguf: "Qwen/Qwen3-Embedding-0.6B-GGUF"
     hf: "Qwen/Qwen3-Embedding-0.6B"
   pooling: last
+- id: gpt-oss-20b
+  family: gpt-oss
+  params: 21000000000
+  n_layers: 24
+  n_heads: 64
+  n_kv_heads: 8
+  head_dim: 64
+  hidden_size: 2880
+  vocab_size: 201088
+  head_layout: separate
+  max_context: 131072
+  roles: [chat, code, tool]
+  quality: 78
+  license: apache-2.0
+  languages: [en]
+  sources:
+    ollama: "gpt-oss:20b"
+    hf_gguf: "ggml-org/gpt-oss-20b-GGUF"
+    hf: "openai/gpt-oss-20b"
+- id: gpt-oss-120b
+  family: gpt-oss
+  params: 117000000000
+  n_layers: 36
+  n_heads: 64
+  n_kv_heads: 8
+  head_dim: 64
+  hidden_size: 2880
+  vocab_size: 201088
+  head_layout: separate
+  max_context: 131072
+  roles: [chat, code, tool]
+  quality: 88
+  license: apache-2.0
+  languages: [en]
+  sources:
+    ollama: "gpt-oss:120b"
+    hf_gguf: "ggml-org/gpt-oss-120b-GGUF"
+    hf: "openai/gpt-oss-120b"
+- id: nemotron-3.5-lightning-30b
+  family: nemotron-h
+  params: 30000000000
+  n_layers: 52
+  n_heads: 32
+  n_kv_heads: 2
+  head_dim: 128
+  hidden_size: 2688
+  vocab_size: 131072
+  head_layout: separate
+  kv_layers: 6
+  max_context: 262144
+  roles: [chat, code, tool]
+  quality: 76
+  license: nvidia-open-model-license
+  languages: [en]
+  sources:
+    ollama: "nemotron-3.5-lightning"
+    hf_gguf: "unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF"
+    hf: "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
