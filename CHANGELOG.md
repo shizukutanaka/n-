@@ -1,6 +1,9 @@
 # 変更履歴
 
 ## 未リリース
+### Added
+- ゲートウェイに CORS 対応を追加 — `/v1/*` へのブラウザ preflight（OPTIONS）を 204 + Origin 反映で応答し、実レスポンスに `Access-Control-Allow-Origin` を付与。ブラウザ製 UI（Open WebUI 等）から直接利用可能に。preflight は認証チェックをバイパス（credential 非含有のため）、実リクエストは `NMESH_API_KEY` があれば引き続き必須。バインドは 127.0.0.1 のみ。
+
 ### Fixed
 - **embed/rerank の同居回帰を修正**: #172 で embed サービスに `--reranking` を追加したところ、llama.cpp は1インスタンス=1つの pooling モードしか持てず `/v1/embeddings` がゼロベクトルを返すようになっていました（実機で確認）。rerank は専用サービスに分離 — `nmesh plan --roles chat,code,embed,rerank` で同一モデルの2プロセス目（`--reranking` のみ、llamacpp 限定）が計画され、`/v1/embeddings` は従来どおり embed サービスが応答します。rerank サービスがないプランでの `/v1/rerank` は「`nmesh plan --roles ...,rerank`」を案内する正直な 501 を返します。同一モデルのダウンロード量は二重計上しません（`launch_revision` 2 → 旧プランで `up` すると再計画を促します）。
 - `test_down_cli_no_services_message` が実稼働中のゲートウェイを巻き込んで失敗する（さらに実サービスを止める副作用）問題を、空きポートを掃除対象にすることで密閉化。

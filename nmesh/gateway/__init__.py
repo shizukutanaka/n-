@@ -1029,6 +1029,29 @@ def create_app(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         path = request.url.path
+        origin = request.headers.get("origin")
+        # Browser frontends (Open WebUI-style) preflight with OPTIONS before
+        # sending Authorization; answer CORS before the key check, which would
+        # otherwise reject every preflight. The gateway binds 127.0.0.1 and the
+        # bearer key still guards real requests, so reflecting the origin is safe.
+        if (
+            origin
+            and path.startswith("/v1/")
+            and request.method == "OPTIONS"
+        ):
+            requested_headers = request.headers.get(
+                "access-control-request-headers", "authorization,content-type"
+            )
+            return Response(
+                status_code=204,
+                headers={
+                    "Access-Control-Allow-Origin": origin,
+                    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+                    "Access-Control-Allow-Headers": requested_headers,
+                    "Access-Control-Max-Age": "600",
+                    "Vary": "Origin",
+                },
+            )
         if api_key_bytes is not None and path.startswith(
             ("/v1/", "/metrics", "/admin/", "/logs")
         ):
@@ -1048,7 +1071,11 @@ def create_app(
                     media_type="application/json",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-        return await call_next(request)
+        response = await call_next(request)
+        if origin and path.startswith("/v1/"):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+        return response
 
     async def proxy(request: dict[str, object], service: PlannedService,
                     plan_snapshot: Plan, telemetry_keys: Mapping[str, str],
