@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
-from typing import ClassVar, Self
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from typing import Self
 
 from nmesh.bench import BenchRecord, merge_measurement, runner
 from nmesh.bench.runner import BenchResult, measure, measure_controlled
