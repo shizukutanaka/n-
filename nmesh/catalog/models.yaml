@@ -569,7 +569,7 @@
   license: apache-2.0
   languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
-    hf_gguf: "mradermacher/Qwen3-Reranker-0.6B-GGUF"
+    hf_gguf: "Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp"
     hf: "Qwen/Qwen3-Reranker-0.6B"
 - id: qwen3-reranker-4b
   family: qwen3-reranker
@@ -587,7 +587,7 @@
   license: apache-2.0
   languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
-    hf_gguf: "mradermacher/Qwen3-Reranker-4B-GGUF"
+    hf_gguf: "Voodisss/Qwen3-Reranker-4B-GGUF-llama_cpp"
     hf: "Qwen/Qwen3-Reranker-4B"
 - id: qwen3-reranker-8b
   family: qwen3-reranker
@@ -605,5 +605,5 @@
   license: apache-2.0
   languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
   sources:
-    hf_gguf: "mradermacher/Qwen3-Reranker-8B-GGUF"
+    hf_gguf: "Voodisss/Qwen3-Reranker-8B-GGUF-llama_cpp"
     hf: "Qwen/Qwen3-Reranker-8B"
