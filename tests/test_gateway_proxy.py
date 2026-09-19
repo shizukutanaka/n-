@@ -8,6 +8,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -947,6 +948,38 @@ def test_gateway_retries_once_after_connect_error(monkeypatch) -> None:
     assert response.json()["error"]["code"] == 502
     assert len(calls) == 1
     assert calls[0] == (service.name, isolated_plan)
+
+
+def test_gateway_retries_once_after_connect_timeout(monkeypatch) -> None:
+    """ConnectTimeout is a TransportError sibling of ConnectError, not a
+    subclass — a filtered or saturated port surfaces it instead of a clean
+    refusal, and the revive+retry path must still run."""
+    model = ModelSpec("retry-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        memory=replace(plan.services[0].memory, parallel_slots=1),
+    )
+    plan = replace(plan, services=[service])
+    calls: list[tuple[str, Plan]] = []
+
+    def fake_ensure(name: str, snapshot: Plan) -> None:
+        calls.append((name, snapshot))
+
+    async def fake_post(*args: object, **kwargs: object) -> httpx.Response:
+        raise httpx.ConnectTimeout("timed out")
+
+    monkeypatch.setattr(gateway_module, "ensure_running", fake_ensure)
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    with TestClient(create_app(plan)) as client:
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+    assert response.status_code == 502
+    assert len(calls) == 1
+    assert calls[0] == (service.name, plan)
 
 
 def test_gateway_revive_failure_returns_503(monkeypatch) -> None:
