@@ -45,7 +45,7 @@ from nmesh.telemetry import record as record_telemetry
 from nmesh.telemetry import summary as telemetry_summary
 
 from .gate import SwapGate
-from .jobs import JobRegistry
+from .jobs import Job, JobRegistry
 from .limit import SlotLimiter
 from .tokens import (
     Sums,
@@ -921,6 +921,69 @@ class _PlanState:
 
     def force_reload(self) -> bool | None:
         return self._reload_from_disk(force=True)
+
+
+async def _slot_progress(
+    services: Sequence[PlannedService], entries: list[Job]
+) -> dict[str, dict[str, int]]:
+    """Decode progress for running jobs, from llama.cpp's /slots endpoint.
+
+    A job is annotated only when the mapping is unambiguous: its service has
+    exactly one running job here and the backend reports exactly one
+    processing slot. Every failure mode (non-llamacpp backend, /slots
+    disabled, timeout, count drift) leaves the field absent rather than
+    reporting a wrong value.
+    """
+    running: dict[str, list[Job]] = {}
+    for job in entries:
+        if job.state == "running":
+            running.setdefault(job.service, []).append(job)
+    if not running or httpx is None:
+        return {}
+    out: dict[str, dict[str, int]] = {}
+    for service_name, service_jobs in running.items():
+        if len(service_jobs) != 1:
+            continue
+        service = next(
+            (item for item in services if item.name == service_name), None
+        )
+        if service is None or not _service_is_running_llamacpp(service):
+            continue
+        try:
+            async with httpx.AsyncClient(
+                base_url=_base_url(service), timeout=0.8
+            ) as client:
+                response = await client.get("/slots")
+            if response.status_code != 200:
+                continue
+            slots = response.json()
+        except (httpx.HTTPError, ValueError):
+            continue
+        if not isinstance(slots, list):
+            continue
+        processing = [
+            slot for slot in slots
+            if isinstance(slot, dict) and slot.get("is_processing") is True
+        ]
+        if len(processing) != 1:
+            continue
+        next_token = processing[0].get("next_token")
+        # /slots reports next_token as a one-element list.
+        if isinstance(next_token, list) and next_token:
+            token_info = next_token[0]
+        else:
+            token_info = next_token
+        progress: dict[str, int] = {}
+        if isinstance(token_info, dict):
+            decoded = _upstream_int(token_info.get("n_decoded"))
+            if decoded is not None:
+                progress["decoded"] = decoded
+            remaining = _upstream_int(token_info.get("n_remain"))
+            if remaining is not None:
+                progress["remaining"] = remaining
+        if progress:
+            out[service_jobs[0].id] = progress
+    return out
 
 
 def create_app(
@@ -1927,8 +1990,13 @@ def create_app(
 
     @app.get("/v1/jobs")
     async def list_jobs(limit: int = 50) -> dict[str, object]:
+        entries = jobs.list(limit)
+        progress = await _slot_progress(plan_state.snapshot()[0].services, entries)
         return {
-            "jobs": [job.as_dict() for job in jobs.list(limit)],
+            "jobs": [
+                {**job.as_dict(), **({"progress": p} if (p := progress.get(job.id)) else {})}
+                for job in entries
+            ],
             "counts": jobs.counts(),
         }
 
@@ -1937,7 +2005,11 @@ def create_app(
         job = jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
-        return job.as_dict()
+        progress = await _slot_progress(plan_state.snapshot()[0].services, [job])
+        data = job.as_dict()
+        if job_id in progress:
+            data["progress"] = progress[job_id]
+        return data
 
     @app.delete("/v1/jobs/{job_id}")
     async def cancel_job(job_id: str) -> dict[str, object]:

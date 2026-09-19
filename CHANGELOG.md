@@ -10,6 +10,9 @@
 ### Added
 - ゲートウェイに CORS 対応を追加 — `/v1/*` へのブラウザ preflight（OPTIONS）を 204 + Origin 反映で応答し、実レスポンスに `Access-Control-Allow-Origin` を付与。ブラウザ製 UI（Open WebUI 等）から直接利用可能に。preflight は認証チェックをバイパス（credential 非含有のため）、実リクエストは `NMESH_API_KEY` があれば引き続き必須。バインドは 127.0.0.1 のみ。
 
+### Added
+- **実行中ジョブのデコード進捗**: `GET /v1/jobs`・`GET /v1/jobs/{id}` が llama.cpp の `/slots` から `progress: {decoded, remaining}` を付与し、`nmesh jobs` は実行中ジョブを `running 85/900` のように表示します。マッピングが一意でない場合（同一サービスに複数 running job、複数スロット処理中、非 llamacpp、/slots 無効）はフィールドを省略 — 誤った進捗を見せません。
+
 ### Fixed
 - **`NMESH_API_KEY` を設定すると CLI 自身がゲートウェイに 401 で拒否されていた問題を修正**: `run`/`jobs`/`unload`/`reload`/`status` のジョブ集計が `Authorization: Bearer` を送らず、認証を有効化したユーザーは CLI から一切操作できなくなっていました。ゲートウェイ向けの全リクエストが環境変数をヘッダに載せます（`run`/`jobs`/`unload`/`reload`/`status` の jobs 集計）。`/health` は従来どおり認証不要です。
 - `nmesh run` が上流サービスの HTTP エラー（例: embed ロールへの chat 要求）を「gateway unavailable」と誤表示していた — HTTP エラー時は上流の error.message を表示するように
