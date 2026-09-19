@@ -4418,13 +4418,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             stop_gateway(foreign=True)
 
         def restart_gateway() -> None:
+            # Whatever the grid leaves running must survive process exit —
+            # the supervisor's atexit teardown would otherwise down it.
+            disarm_atexit()
             if gateway_port is None:
                 return
             try:
-                process, _log_path = _launch_gateway(gateway_port, detach=True)
-            except OSError:
+                process, log_path = _launch_gateway(gateway_port, detach=True)
+            except OSError as error:
+                print(
+                    i18n.t("err.gateway_start", i18n.lang(), error=error),
+                    file=sys.stderr,
+                )
                 return
-            _wait_gateway(gateway_port, process)
+            if not _wait_gateway(gateway_port, process):
+                clear_gateway(process.pid)
+                process.terminate()
+                print(
+                    i18n.t(
+                        "err.gateway_not_ready",
+                        i18n.lang(),
+                        path=log_path,
+                    ),
+                    file=sys.stderr,
+                )
 
         base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
             f"http://127.0.0.1:{service.port}"
@@ -4449,7 +4466,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ])
                 runtime_down()
                 try:
-                    runtime_up(tuned_plan, no_download=True)
+                    # admit=False: artifact-replanning would rebuild the
+                    # service from the policy and discard the tuned
+                    # context/layers — the grid must launch them verbatim.
+                    runtime_up(tuned_plan, no_download=True, admit=False)
                     tuned_result = measure(tuned, base_url)
                 except (OSError, RuntimeError) as error:
                     print(i18n.t("err.autotune_measure", i18n.lang(), error=error),
@@ -4480,7 +4500,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         assert best_plan is not None
         save_plan(best_plan)
         try:
-            runtime_up(best_plan, no_download=True)
+            runtime_up(best_plan, no_download=True, admit=False)
         except (OSError, RuntimeError) as error:
             save_plan(saved_plan)
             runtime_down()

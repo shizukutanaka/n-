@@ -158,10 +158,13 @@ def test_autotune_pauses_detached_gateway_watchdog(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
         cli, "runtime_down", lambda: events.append("down") or SimpleNamespace()
     )
+    ups: list[bool] = []
     monkeypatch.setattr(
         cli,
         "runtime_up",
-        lambda *_a, **_k: events.append("up") or SimpleNamespace(),
+        lambda *_a, admit=True, **_k: (
+            events.append("up") or ups.append(admit) or SimpleNamespace()
+        ),
     )
     monkeypatch.setattr(
         cli, "measure", lambda *_a: SimpleNamespace(decode_tps=1.0)
@@ -179,6 +182,9 @@ def test_autotune_pauses_detached_gateway_watchdog(monkeypatch, capsys) -> None:
     assert cli.main(["autotune"]) == 0
     assert events[0] == "stop"
     assert events[-1] == "relaunch"
+    # Every launch is a tuned variant — admission replanning must stay off
+    # or the winning context/layers would be rebuilt away to defaults.
+    assert ups and all(admit is False for admit in ups)
 
 
 def test_bench_http_failure_returns_error_without_saving(monkeypatch, capsys) -> None:
