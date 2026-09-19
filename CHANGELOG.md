@@ -21,6 +21,8 @@
 - `nmesh status` がゲートウェイの待機/実行中ジョブ数をサービス別に表示します（ゲートウェイ未達・旧ビルド時は表示なし）
 - 複数 GPU 環境で `gpu_indices` に配置済みのサービスを起動時に実際に GPU へピン留め — これまで割当は計算されるだけで launch に反映されず、全サービスが全 GPU に分散していました。nvidia → `CUDA_VISIBLE_DEVICES`、amd → `HIP_VISIBLE_DEVICES` を launch env に付与（全 GPU 使用・共有 daemon・未対応ベンダーでは付与しません）。多 GPU 実機未検証のため「estimated placement」と注記します
 
+- `nmesh run --stream` を追加 — チャット応答をトークン逐次表示（SSE ストリーミング、--json 併用時は従来どおり一括）
+
 - `pip install nmesh`（base）で `nmesh` が起動不能だった — httpx が `gateway` extra に隔離されていたのを core deps へ移動。`serve` は extras 未導入時に raw traceback ではなく `pip install nmesh[gateway]` を案内
 
 
@@ -41,6 +43,7 @@
 
 - `nmesh status` / `nmesh down` / `nmesh up` の非 JSON 出力が `RuntimeStatus(...)` の dataclass repr をそのまま表示していました。サービス一覧をテーブル（Service / State / Port / Model / Backend）で表示するようにし、稼働サービスが無い場合は「no services running」と表示します（en/ja）。
 
+- `nmesh run` に `--port` を追加し、エラーを stderr に出して次の一手を示すようにしました。これまではポート 18000 固定でカスタムポートの gateway に届かず、接続失敗も stdout に raw エラーだけが出ていました。
 - サービス起動失敗時に、計画ポートが別プロセスで占有されている場合はその旨を明示するようにしました（`port N is still in use by another process`）。これまでは上流の生ログ（`couldn't bind HTTP server socket`）だけが出ていました。判定は connect ではなく bind 試行で行います — connect だと外部リスナーの accept バックログを消費してリトライ時に誤判定するため。
 - 実行可能な保存済み `plan.json` がある状態で `nmesh up` に計画系オプション（`--roles`/`--kv-quant`/`--spec*`/`--sleep-idle-seconds`/`--cache-reuse`/`--context-shift`）を渡しても、保存済みプランがそのまま使われオプションが無警告で無視されていました。無視されるオプションを stderr に警告するようにしました。
 - `--context-shift`（`plan`/`up`）を追加しました。対応する llama.cpp ビルドの生成系サービスに `--context-shift` を渡し、生成中に出力がコンテキスト窓を超えてもウィンドウをずらして生成を継続します（従来は窓の終端で打ち切り）。**最古のトークンは静かに捨てられる**ため、有効時は計画に警告を必ず出します。なお窓を超える**入力プロンプト自体**は従来どおり llama-server が拒否します（context-shift は生成中のシフトであり、窓を超える入力の受理ではありません）。埋め込みサービスには付けません（埋め込みの静かな切り詰めは回答を破損させるため）。既定はオフ。ビルド非対応時は警告のみ。
