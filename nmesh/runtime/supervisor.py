@@ -103,6 +103,33 @@ def gateway_listener_pid(port: int) -> int | None:
     return None
 
 
+def engine_listener_pid(port: int) -> int | None:
+    """Return the pid of an nmesh-managed engine listening on *port*, if any.
+
+    Ownership is proven by the executable living under NMESH_HOME — a foreign
+    process that merely bound the port is never returned.
+    """
+    root = str(nmesh_home())
+    try:
+        connections = psutil.net_connections(kind="tcp")
+    except (psutil.Error, OSError):
+        return None
+    for connection in connections:
+        if (
+            connection.laddr
+            and connection.laddr.port == port
+            and connection.status == "LISTEN"
+            and connection.pid is not None
+        ):
+            try:
+                exe = psutil.Process(connection.pid).exe()
+            except (psutil.Error, OSError):
+                continue
+            if exe.startswith(root):
+                return connection.pid
+    return None
+
+
 def _port_in_use(port: int) -> bool:
     """True when *port* cannot be bound — i.e. a live listener owns it.
 
@@ -1037,6 +1064,27 @@ class Supervisor:
             # (recorded or orphaned) before touching service processes.
             if foreign and self._sweep_gateway(gateway_port, swept) is not None:
                 report("gateway", {"port": gateway_port})
+            # state.json may be lost while plan.json survives — reclaim
+            # service orphans still bound to their planned ports.
+            plan = self.active_plan if self.active_plan is not None else load_plan()
+            if plan is not None:
+                for service in plan.services:
+                    if (
+                        service.name in seen_stopped
+                        or service.name in self.processes
+                        or service.name in self.adopted
+                        or service.port is None
+                    ):
+                        continue
+                    pid = engine_listener_pid(service.port)
+                    if pid is not None:
+                        self._terminator(pid)
+                        report(service.name, {
+                            "pid": pid,
+                            "port": service.port,
+                            "model_ref": service.model_ref,
+                            "backend": service.backend,
+                        })
             adopted_names = set(self.adopted)
             for name, record in self.adopted.items():
                 pid = record.get("pid")
