@@ -17,7 +17,7 @@ from typing import Protocol
 
 import psutil
 
-from nmesh import i18n
+from nmesh import __version__, i18n
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.paths import is_windows, nmesh_home
@@ -101,6 +101,58 @@ def gateway_listener_pid(port: int) -> int | None:
             if any("nmesh.gateway" in part for part in cmdline):
                 return connection.pid
     return None
+
+
+def engine_listener_pid(port: int) -> int | None:
+    """Return the pid of an nmesh-managed engine listening on *port*, if any.
+
+    Ownership is proven by the executable living under NMESH_HOME — a foreign
+    process that merely bound the port is never returned.
+    """
+    root = str(nmesh_home())
+    try:
+        connections = psutil.net_connections(kind="tcp")
+    except (psutil.Error, OSError):
+        return None
+    for connection in connections:
+        if (
+            connection.laddr
+            and connection.laddr.port == port
+            and connection.status == "LISTEN"
+            and connection.pid is not None
+        ):
+            try:
+                exe = psutil.Process(connection.pid).exe()
+            except (psutil.Error, OSError):
+                continue
+            if exe.startswith(root):
+                return connection.pid
+    return None
+
+
+def _entry_exe(process: ProcessLike) -> str | None:
+    """The executable the process was launched with — recorded in state.json
+    so adoption can verify a surviving pid is still the same binary."""
+    if not isinstance(process, subprocess.Popen):
+        return None
+    args = process.args
+    if isinstance(args, str):
+        return args
+    if isinstance(args, (list, tuple)) and args:
+        return str(args[0])
+    return None
+
+
+def _pid_serves_model(pid: int, model_ref: object) -> bool:
+    """True when *pid*'s command line names *model_ref* — e.g. llama-server's
+    ``-m`` argument. Used to distinguish a stale engine serving a different
+    model from one actually running the planned artifact."""
+    try:
+        cmdline = psutil.Process(pid).cmdline()
+    except (psutil.Error, OSError):
+        return False
+    needle = str(model_ref)
+    return any(needle in part for part in cmdline)
 
 
 def _port_in_use(port: int) -> bool:
@@ -260,6 +312,7 @@ class Supervisor:
                 "create_time": self._create_time(pid),
                 "port": port,
                 "owner_pid": os.getpid(),
+                "nmesh": __version__,
             }
             self._write_state(state)
 
@@ -362,6 +415,25 @@ class Supervisor:
             and self._entry_alive(entry)
             and self._healthy(service)
         ):
+            recorded_model = entry.get("model_ref")
+            if recorded_model is not None and recorded_model != service.model_ref:
+                # Stale process still bound to the port after a replan —
+                # do not adopt it; reclaim only if provably nmesh-managed.
+                if engine_listener_pid(service.port) == pid:
+                    self._terminator(int(pid))
+                return False
+            recorded_exe = entry.get("exe")
+            if isinstance(recorded_exe, str) and recorded_exe:
+                try:
+                    running_exe = psutil.Process(int(pid)).exe()
+                except (psutil.Error, OSError):
+                    running_exe = ""
+                if running_exe != recorded_exe:
+                    # Engine binary changed since the entry was recorded —
+                    # the surviving pid is not what the plan would launch.
+                    if engine_listener_pid(service.port) == pid:
+                        self._terminator(int(pid))
+                    return False
             create_time = entry.get("create_time")
             port = entry.get("port")
             self.adopted[service.name] = {
@@ -382,6 +454,14 @@ class Supervisor:
             return True
         self.adopted.pop(service.name, None)
         if self._healthy(service):
+            orphan_pid = engine_listener_pid(service.port)
+            if orphan_pid is not None and not _pid_serves_model(
+                orphan_pid, service.model_ref
+            ):
+                # Our engine but serving a different model — reclaim the
+                # port instead of silently proxying to the wrong model.
+                self._terminator(orphan_pid)
+                return False
             self.external_shared.add(service.name)
             return True
         self.external_shared.discard(service.name)
@@ -691,6 +771,7 @@ class Supervisor:
                 "port": _port(plan, name, 0),
                 "started_at": time.time(),
                 "create_time": self._create_time(process.pid),
+                "exe": _entry_exe(process),
                 "shared": False,
                 "external": False,
                 "parallel_slots": _slots(plan, name),
@@ -719,6 +800,7 @@ class Supervisor:
                 "port": record.get("port") or _port(plan, name, 0),
                 "started_at": time.time(),
                 "create_time": record.get("create_time"),
+                "exe": record.get("exe"),
                 "shared": False,
                 "external": True,
                 "adopted": True,
@@ -1037,6 +1119,27 @@ class Supervisor:
             # (recorded or orphaned) before touching service processes.
             if foreign and self._sweep_gateway(gateway_port, swept) is not None:
                 report("gateway", {"port": gateway_port})
+            # state.json may be lost while plan.json survives — reclaim
+            # service orphans still bound to their planned ports.
+            plan = self.active_plan if self.active_plan is not None else load_plan()
+            if plan is not None:
+                for service in plan.services:
+                    if (
+                        service.name in seen_stopped
+                        or service.name in self.processes
+                        or service.name in self.adopted
+                        or service.port is None
+                    ):
+                        continue
+                    orphan_pid = engine_listener_pid(service.port)
+                    if orphan_pid is not None:
+                        self._terminator(orphan_pid)
+                        report(service.name, {
+                            "pid": orphan_pid,
+                            "port": service.port,
+                            "model_ref": service.model_ref,
+                            "backend": service.backend,
+                        })
             adopted_names = set(self.adopted)
             for name, record in self.adopted.items():
                 pid = record.get("pid")

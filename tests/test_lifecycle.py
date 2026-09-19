@@ -435,6 +435,235 @@ def test_ensure_running_breaks_circuit_after_repeated_unhealthy_launches(
     supervisor.disarm_atexit()
 
 
+def test_down_reclaims_orphans_when_state_lost(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A lost/corrupt state.json must not leak service processes — plan.json
+    survives power loss and lets down() find orphans by their planned ports."""
+    chat = _up_service("chat")
+    plan = SimpleNamespace(
+        services=[chat], warnings=[], swap_group=set(), policy=None,
+    )
+    killed: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json",
+        terminator=killed.append,
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.load_plan", lambda *a, **k: plan
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.gateway_listener_pid", lambda _port: None
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid",
+        lambda port: 424242 if port == chat.port else None,
+    )
+
+    result = supervisor.down(foreign=True, gateway_port=18000)
+
+    assert killed == [424242]
+    stopped = {item["service"] for item in result.services}
+    assert "chat" in stopped
+
+
+def test_down_does_not_sweep_foreign_port_listeners(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A process that merely bound a planned port but is not an nmesh-managed
+    engine must be left alone."""
+    chat = _up_service("chat")
+    plan = SimpleNamespace(
+        services=[chat], warnings=[], swap_group=set(), policy=None,
+    )
+    killed: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json",
+        terminator=killed.append,
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.load_plan", lambda *a, **k: plan
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.gateway_listener_pid", lambda _port: None
+    )
+    # foreign listener — engine_listener_pid returns None for it
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid", lambda _port: None
+    )
+
+    result = supervisor.down(foreign=True, gateway_port=18000)
+
+    assert killed == []
+    assert result.services == [] or all(
+        item["service"] != "chat" for item in result.services
+    )
+
+
+
+def test_adopt_rejects_stale_model_process(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A replanned service must not adopt a stale process still bound to the
+    port — state may record a different model_ref than the plan wants."""
+    chat = _up_service("chat")
+    chat.model_ref = "/models/new.gguf"
+    chat.launch.health_url = "http://127.0.0.1:18010/health"
+    state = {
+        "services": [{
+            "service": "chat", "pid": 31337, "port": 18010,
+            "health_url": "http://127.0.0.1:18010/health",
+            "model_ref": "/models/old.gguf", "running": True,
+        }]
+    }
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    killed: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json", terminator=killed.append
+    )
+    monkeypatch.setattr(supervisor, "_entry_alive", lambda _e: True)
+    monkeypatch.setattr(supervisor, "_healthy", lambda _s: True)
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid", lambda _p: 31337
+    )
+
+    assert supervisor._adopt(chat) is False
+    assert killed == [31337]
+    assert "chat" not in supervisor.adopted
+
+
+def test_adopt_reclaims_our_engine_serving_wrong_model(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """No state entry (lost state.json) but an nmesh engine on the planned
+    port serving a different model — terminate it so the plan can launch."""
+    chat = _up_service("chat")
+    chat.model_ref = "/models/new.gguf"
+    chat.launch.health_url = "http://127.0.0.1:18010/health"
+    killed: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json", terminator=killed.append
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _s: True)
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid", lambda _p: 31337
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor._pid_serves_model", lambda _pid, _m: False
+    )
+
+    assert supervisor._adopt(chat) is False
+    assert killed == [31337]
+    assert "chat" not in supervisor.external_shared
+
+
+def test_adopt_rejects_recorded_exe_mismatch(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Engine upgrade: the recorded executable differs from the surviving
+    process's binary — the pid is not what the plan would launch."""
+    chat = _up_service("chat")
+    chat.launch.health_url = "http://127.0.0.1:18010/health"
+    state = {
+        "services": [{
+            "service": "chat", "pid": 31337, "port": 18010,
+            "health_url": "http://127.0.0.1:18010/health",
+            "model_ref": chat.model_ref, "running": True,
+            "exe": "/home/u/.nmesh/engines/llamacpp/b100/llama-server",
+        }]
+    }
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    killed: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json", terminator=killed.append
+    )
+    monkeypatch.setattr(supervisor, "_entry_alive", lambda _e: True)
+    monkeypatch.setattr(supervisor, "_healthy", lambda _s: True)
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid", lambda _p: 31337
+    )
+
+    class FakeProc:
+        def __init__(self, _pid: int) -> None:
+            pass
+
+        def exe(self) -> str:
+            return "/home/u/.nmesh/engines/llamacpp/b200/llama-server"
+
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.psutil.Process", FakeProc
+    )
+
+    assert supervisor._adopt(chat) is False
+    assert killed == [31337]
+
+
+def test_launch_gateway_restarts_stale_version(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    state = {
+        "gateway": {
+            "pid": 4242, "port": 19000, "create_time": 1.0,
+            "owner_pid": 999, "nmesh": "0.0.0-old",
+        },
+        "services": [],
+    }
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    spawned: list[list[str]] = []
+    terminated: list[int] = []
+
+    class FakeStale:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def terminate(self) -> None:
+            terminated.append(self.pid)
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    def popen(args: list[str], **_kwargs: object) -> object:
+        spawned.append(list(args))
+        return SimpleNamespace(pid=5555)
+
+    monkeypatch.setattr(cli.subprocess, "Popen", popen)
+    monkeypatch.setattr(cli.psutil, "Process", FakeStale)
+    monkeypatch.setattr(cli, "gateway_health", lambda _port: True)
+    monkeypatch.setattr(cli, "gateway_listener_pid", lambda _port: 4242)
+    monkeypatch.setattr(cli, "record_gateway", lambda _pid, _port: None)
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+
+    process, _log_path = cli._launch_gateway(19000, detach=True)
+
+    assert terminated == [4242]
+    assert spawned and "nmesh.gateway.server" in " ".join(spawned[0])
+    assert process.pid == 5555
+
+
+def test_adopt_keeps_foreign_healthy_listener_as_external_shared(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A healthy listener that is not an nmesh engine stays external_shared —
+    we never kill what we do not own."""
+    chat = _up_service("chat")
+    chat.launch.health_url = "http://127.0.0.1:18010/health"
+    killed: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json", terminator=killed.append
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _s: True)
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid", lambda _p: None
+    )
+
+    assert supervisor._adopt(chat) is True
+    assert killed == []
+    assert "chat" in supervisor.external_shared
+
+
 def test_runtime_log_rotation_and_tail(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
     monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "4")
