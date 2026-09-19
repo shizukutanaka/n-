@@ -446,3 +446,65 @@ def test_unrecorded_cached_gguf_still_adopted(tmp_path, monkeypatch) -> None:
     acquired = acquisition.acquire(service)
 
     assert acquired.path == target
+
+
+def test_local_only_adopts_matching_gguf(tmp_path, monkeypatch) -> None:
+    """Planned names ({id}-{quant}.gguf) differ from downloaded filenames,
+    so a no-download acquire must resolve the real on-disk artifact by
+    model id + quant instead of pointing llama-server at a missing file."""
+    service = _llamacpp_service(tmp_path)
+    service.model_id = "qwen3-0.6b"
+    real = tmp_path / "Qwen_Qwen3-0.6B-Q4_K_M.gguf"
+    real.write_bytes(b"artifact")
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda **_kwargs: pytest.fail("network touched"),
+    )
+
+    acquired = acquisition.acquire(service, local_only=True)
+
+    assert acquired.path == real
+    assert acquired.quant == "q4_k_m"
+    assert acquired.substituted is False
+
+
+def test_local_only_falls_back_to_nearest_quant(tmp_path) -> None:
+    """The exact quant may be absent while a lower one is on disk — adopt
+    it as a substitution, mirroring _resolve_gguf's ranking."""
+    service = _llamacpp_service(tmp_path, quant="q8_0")
+    service.model_id = "qwen3-0.6b"
+    real = tmp_path / "Qwen_Qwen3-0.6B-Q4_K_M.gguf"
+    real.write_bytes(b"artifact")
+
+    acquired = acquisition.acquire(service, local_only=True)
+
+    assert acquired.path == real
+    assert acquired.quant == "q4_k_m"
+    assert acquired.substituted is True
+
+
+def test_local_only_without_match_raises(tmp_path) -> None:
+    """Nothing usable on disk → fail loudly; silently launching the planned
+    name would crash the engine."""
+    service = _llamacpp_service(tmp_path)
+    service.model_id = "qwen3-0.6b"
+
+    with pytest.raises(RuntimeError, match="downloads are disabled"):
+        acquisition.acquire(service, local_only=True)
+
+
+def test_local_only_ollama_skips_pull(tmp_path, monkeypatch) -> None:
+    """pull is the network step; create is local and must still run so the
+    derived context model exists."""
+    calls: list[list[str]] = []
+
+    def run(argv, check):
+        calls.append(argv)
+
+    monkeypatch.setattr(acquisition, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(acquisition.subprocess, "run", run)
+
+    acquisition.acquire(_ollama_service(), local_only=True)
+
+    assert [argv[1] for argv in calls] == ["create"]

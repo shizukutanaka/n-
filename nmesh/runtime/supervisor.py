@@ -1006,61 +1006,50 @@ class Supervisor:
                                            service=service.name)
                                 )
                             self._record_restart(service.name)
-                        if not no_download:
-                            acquired = acquire(service)
-                            current, service, changed, artifact_replanned = self._apply_acquired(
+                        # Acquisition resolves the real on-disk artifact;
+                        # no_download only skips the network, never the
+                        # resolution — launch.argv would otherwise keep a
+                        # planned name ({id}-{quant}.gguf) that need not exist.
+                        acquired = acquire(service, local_only=no_download)
+                        current, service, changed, artifact_replanned = self._apply_acquired(
+                            current, service, acquired
+                        )
+                        actualized = actualized or changed
+                        if (
+                            artifact_replanned
+                            and admit
+                            and not replan_done
+                        ):
+                            current = self._admit(
+                                current,
+                                bench_cache,
+                                drop_unaffordable=True,
+                            )
+                            replan_done = True
+                            refreshed = next(
+                                (
+                                    item for item in current.services
+                                    if item.name == service.name
+                                ),
+                                None,
+                            )
+                            if refreshed is None:
+                                self.active_plan = current
+                                continue
+                            service = refreshed
+                            # The replanned service still references its
+                            # planned model name ({id}-{quant}.gguf), not
+                            # the file actually on disk — acquire it again
+                            # so argv points at the real artifact instead
+                            # of crashing llama-server on a missing file.
+                            acquired = acquire(service, local_only=no_download)
+                            (
+                                current, service, refreshed_changed, _
+                            ) = self._apply_acquired(
                                 current, service, acquired
                             )
-                            actualized = actualized or changed
-                            if (
-                                artifact_replanned
-                                and admit
-                                and not replan_done
-                            ):
-                                current = self._admit(
-                                    current,
-                                    bench_cache,
-                                    drop_unaffordable=True,
-                                )
-                                replan_done = True
-                                refreshed = next(
-                                    (
-                                        item for item in current.services
-                                        if item.name == service.name
-                                    ),
-                                    None,
-                                )
-                                if refreshed is None:
-                                    self.active_plan = current
-                                    continue
-                                service = refreshed
-                                # The replanned service still references its
-                                # planned model name ({id}-{quant}.gguf), not
-                                # the file actually on disk — acquire it again
-                                # so argv points at the real artifact instead
-                                # of crashing llama-server on a missing file.
-                                acquired = acquire(service)
-                                (
-                                    current, service, refreshed_changed, _
-                                ) = self._apply_acquired(
-                                    current, service, acquired
-                                )
-                                actualized = actualized or refreshed_changed
-                            self.active_plan = current
-                        elif service.backend == "ollama":
-                            warning = i18n.t(
-                                "warn.ollama_context_default",
-                                i18n.lang(),
-                                service=service.name,
-                                context=service.context,
-                            )
-                            if warning not in current.warnings:
-                                current = replace(
-                                    current,
-                                    warnings=[*current.warnings, warning],
-                                )
-                                self.active_plan = current
-                            self.notes[service.name] = warning
+                            actualized = actualized or refreshed_changed
+                        self.active_plan = current
                         service, heal_warning = self._resolve_launch_exe(service)
                         if heal_warning is not None:
                             current = replace(
