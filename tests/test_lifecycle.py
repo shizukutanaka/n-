@@ -981,3 +981,40 @@ def test_jobs_cli_old_gateway_404(monkeypatch, tmp_path: Path, capsys) -> None:
     captured = capsys.readouterr()
     assert "older build" in captured.err or "古いビルド" in captured.err
     assert "nmesh down" in captured.err
+
+
+def test_jobs_cli_cancel(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    seen: list[object] = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"id": "job-2", "state": "cancelled"}
+            ).encode()
+
+    def _open(request, *_a, **_k):
+        seen.append(getattr(request, "method", "GET"))
+        return _Response()
+
+    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _open)
+    assert cli.main(["jobs", "--cancel", "job-2"]) == 0
+    assert seen == ["DELETE"]
+    assert "job-2" in capsys.readouterr().out
+
+
+def test_jobs_cli_cancel_conflict(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    def _raise(*_a, **_k):
+        raise HTTPError("http://x", 409, "conflict", {}, None)
+
+    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    assert cli.main(["jobs", "--cancel", "job-1"]) == 1
+    assert "queued" in capsys.readouterr().err

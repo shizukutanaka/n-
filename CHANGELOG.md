@@ -9,6 +9,8 @@
 - GitHub 公開用ファイル一式: `install.sh`（POSIX）/`install.ps1`（Windows）インストーラー、`.github/ISSUE_TEMPLATE/`（bug/feature）、`.github/PULL_REQUEST_TEMPLATE.md`、`SECURITY.md`、README の Quickstart にインストーラー経路を追加
 
 - ゲートウェイにジョブキューの可視化を追加 — 推論リクエストに `job-N` を採番し、スロット待ちは `queued`、実行中は `running`、完了/失敗を記録します。`GET /v1/jobs`（一覧＋サービス別 counts）と `GET /v1/jobs/{id}`、応答ヘッダ `X-Nmesh-Job-Id`、CLI `nmesh jobs [--port N] [--json]` を追加。スロット上限で 503 になる場合、ジョブ id と待ち位置を返します
+- 待機中ジョブのキャンセル: `DELETE /v1/jobs/{id}` と `nmesh jobs --cancel <id>` — スロット待ちは約0.5s以内に応答を返し、ジョブは `cancelled` になります。実行中ジョブは中断できないため 409 を返します（llama.cpp に per-request abort API がないため）
+- `nmesh status` がゲートウェイの待機/実行中ジョブ数をサービス別に表示します（ゲートウェイ未達・旧ビルド時は表示なし）
 - 複数 GPU 環境で `gpu_indices` に配置済みのサービスを起動時に実際に GPU へピン留め — これまで割当は計算されるだけで launch に反映されず、全サービスが全 GPU に分散していました。nvidia → `CUDA_VISIBLE_DEVICES`、amd → `HIP_VISIBLE_DEVICES` を launch env に付与（全 GPU 使用・共有 daemon・未対応ベンダーでは付与しません）。多 GPU 実機未検証のため「estimated placement」と注記します
 
 - `pip install nmesh`（base）で `nmesh` が起動不能だった — httpx が `gateway` extra に隔離されていたのを core deps へ移動。`serve` は extras 未導入時に raw traceback ではなく `pip install nmesh[gateway]` を案内
