@@ -13,6 +13,7 @@
 - README に Upgrade/Backup/Uninstall の手順を追加 — `NMESH_HOME` 以下に全状態が集約されていること、autostart の解除手順（systemd/launchd/schtasks 別）を明記
 - MIT LICENSE・CONTRIBUTING.md を追加（配布・コントリビューション用の不足分）
 - README に類似ツール比較と nmesh の独自性を明記（llama-swap/Ollama/LM Studio との差分: メモリ admission・証拠ベースのモデル選択・オフライン動作）
+- `NMESH_CONNECT_TIMEOUT` で上流サービスへの接続タイムアウトを調整可能に（既定 10 秒、従来どおり）。低速ネットワークでは延長、テスト等では短縮できます
 - **カタログを現行世代に更新**: Qwen3-0.6B/1.7B/4B/8B（Apache-2.0、GGUF は bartowski/公式ミラー — 公式の Qwen3-0.6B/1.7B GGUF は Q8_0 のみ公開のため Q4_K_M は bartowski 経由）、SmolLM3-3B、Qwen3-Embedding-0.6B（embed ロール、last-token pooling）を追加。CPU プロファイルでは `plan` の chat 既定が qwen2.5-1.5b から qwen3-1.7b へ更新されます（品質スコア 56 > 50、同一メモリ内）。Gemma-3 は HF がゲート済み（要ライセンス承諾ログイン）のため未収録。
 
 ### Fixed

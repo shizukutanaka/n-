@@ -70,6 +70,11 @@ try:
 except ValueError:
     KEEP_ALIVE = 0.0
 
+try:
+    CONNECT_TIMEOUT = float(os.environ.get("NMESH_CONNECT_TIMEOUT", "10.0"))
+except ValueError:
+    CONNECT_TIMEOUT = 10.0
+
 if TYPE_CHECKING:
     import httpx
     from fastapi import FastAPI, HTTPException
@@ -664,7 +669,7 @@ async def _confirm_embedding_truncation(
     assert httpx is not None
     try:
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(300.0, connect=10.0)
+            timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
         ) as client:
             response = await client.post(url, json=probe)
     except httpx.HTTPError:
@@ -1222,7 +1227,7 @@ def create_app(
             else None
         )
         assert httpx is not None
-        client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0))
+        client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT))
         ticket = in_flight.enter(service.name)
         if request.get("stream"):
             stream_options = request.get("stream_options")
@@ -1780,7 +1785,7 @@ def create_app(
             def run() -> Delegation:
                 assert httpx is not None
                 with httpx.Client(
-                    timeout=httpx.Timeout(300.0, connect=10.0)
+                    timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
                 ) as client:
                     return delegate(
                         client,

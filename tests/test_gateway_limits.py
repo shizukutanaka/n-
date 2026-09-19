@@ -181,6 +181,8 @@ def test_embeddings_skip_slot_limiter(monkeypatch) -> None:
         raise AssertionError("embeddings must not acquire a slot")
 
     monkeypatch.setattr(gateway_module.SlotLimiter, "acquire", fail_acquire)
+    # Bound-but-not-listening ports wait out CONNECT_TIMEOUT before failing.
+    monkeypatch.setattr(gateway_module, "CONNECT_TIMEOUT", 0.2)
     with _reserved_port() as reserved:
         service = replace(plan.services[0], port=reserved.getsockname()[1])
         isolated_plan = replace(plan, services=[service])

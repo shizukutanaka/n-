@@ -934,6 +934,9 @@ def test_gateway_retries_once_after_connect_error(monkeypatch) -> None:
         calls.append((name, snapshot))
 
     monkeypatch.setattr(gateway_module, "ensure_running", fake_ensure)
+    # Bound-but-not-listening ports time out at CONNECT_TIMEOUT — keep the
+    # retry path real but small enough for the suite.
+    monkeypatch.setattr(gateway_module, "CONNECT_TIMEOUT", 0.2)
     with _reserved_port() as reserved:
         service = replace(service, port=reserved.getsockname()[1])
         isolated_plan = replace(plan, services=[service])
