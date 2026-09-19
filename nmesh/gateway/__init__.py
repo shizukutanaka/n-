@@ -1240,7 +1240,7 @@ def create_app(
                 upstream_request = client.build_request("POST", url, json=body)
                 try:
                     upstream = await client.send(upstream_request, stream=True)
-                except httpx.ConnectError:
+                except (httpx.ConnectError, httpx.ConnectTimeout):
                     try:
                         await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
                     except Exception as error:
@@ -1449,7 +1449,7 @@ def create_app(
             async def post_upstream(payload: Mapping[str, object]) -> httpx.Response:
                 try:
                     return await client.post(url, json=payload)
-                except httpx.ConnectError:
+                except (httpx.ConnectError, httpx.ConnectTimeout):
                     try:
                         await asyncio.to_thread(
                             ensure_running, service.name, plan_snapshot

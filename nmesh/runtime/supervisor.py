@@ -1022,6 +1022,18 @@ class Supervisor:
                                     self.active_plan = current
                                     continue
                                 service = refreshed
+                                # The replanned service still references its
+                                # planned model name ({id}-{quant}.gguf), not
+                                # the file actually on disk — acquire it again
+                                # so argv points at the real artifact instead
+                                # of crashing llama-server on a missing file.
+                                acquired = acquire(service)
+                                (
+                                    current, service, refreshed_changed, _
+                                ) = self._apply_acquired(
+                                    current, service, acquired
+                                )
+                                actualized = actualized or refreshed_changed
                             self.active_plan = current
                         elif service.backend == "ollama":
                             warning = i18n.t(

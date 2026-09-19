@@ -133,6 +133,9 @@ def test_generic_detection_is_skipped_when_specialized_detection_succeeds(monkey
 
 def test_low_vram_generic_gpu_remains_visible_with_explanation(monkeypatch) -> None:
     monkeypatch.setattr(detector.platform, "machine", lambda: "x86_64")
+    # _mark_display derives the first GPU's driving flag from DISPLAY /
+    # WAYLAND_DISPLAY on Linux; pin it so the test is host-independent.
+    monkeypatch.setenv("DISPLAY", ":0")
     gpu = GPUInfo(0, "Intel UHD", "intel", GIB, GIB, None, True)
     monkeypatch.setattr(
         detector, "_detect_nvidia", lambda warnings, warning_params=None: []
