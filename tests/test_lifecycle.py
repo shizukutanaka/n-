@@ -398,6 +398,83 @@ def test_down_does_not_sweep_foreign_port_listeners(
 
 
 
+def test_adopt_rejects_stale_model_process(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A replanned service must not adopt a stale process still bound to the
+    port — state may record a different model_ref than the plan wants."""
+    chat = _up_service("chat")
+    chat.model_ref = "/models/new.gguf"
+    chat.launch.health_url = "http://127.0.0.1:18010/health"
+    state = {
+        "services": [{
+            "service": "chat", "pid": 31337, "port": 18010,
+            "health_url": "http://127.0.0.1:18010/health",
+            "model_ref": "/models/old.gguf", "running": True,
+        }]
+    }
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    killed: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json", terminator=killed.append
+    )
+    monkeypatch.setattr(supervisor, "_entry_alive", lambda _e: True)
+    monkeypatch.setattr(supervisor, "_healthy", lambda _s: True)
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid", lambda _p: 31337
+    )
+
+    assert supervisor._adopt(chat) is False
+    assert killed == [31337]
+    assert "chat" not in supervisor.adopted
+
+
+def test_adopt_reclaims_our_engine_serving_wrong_model(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """No state entry (lost state.json) but an nmesh engine on the planned
+    port serving a different model — terminate it so the plan can launch."""
+    chat = _up_service("chat")
+    chat.model_ref = "/models/new.gguf"
+    chat.launch.health_url = "http://127.0.0.1:18010/health"
+    killed: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json", terminator=killed.append
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _s: True)
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid", lambda _p: 31337
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor._pid_serves_model", lambda _pid, _m: False
+    )
+
+    assert supervisor._adopt(chat) is False
+    assert killed == [31337]
+    assert "chat" not in supervisor.external_shared
+
+
+def test_adopt_keeps_foreign_healthy_listener_as_external_shared(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A healthy listener that is not an nmesh engine stays external_shared —
+    we never kill what we do not own."""
+    chat = _up_service("chat")
+    chat.launch.health_url = "http://127.0.0.1:18010/health"
+    killed: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json", terminator=killed.append
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _s: True)
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid", lambda _p: None
+    )
+
+    assert supervisor._adopt(chat) is True
+    assert killed == []
+    assert "chat" in supervisor.external_shared
+
+
 def test_runtime_log_rotation_and_tail(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
     monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "4")

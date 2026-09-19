@@ -15,6 +15,7 @@
 - **カタログを現行世代に更新**: Qwen3-0.6B/1.7B/4B/8B（Apache-2.0、GGUF は bartowski/公式ミラー — 公式の Qwen3-0.6B/1.7B GGUF は Q8_0 のみ公開のため Q4_K_M は bartowski 経由）、SmolLM3-3B、Qwen3-Embedding-0.6B（embed ロール、last-token pooling）を追加。CPU プロファイルでは `plan` の chat 既定が qwen2.5-1.5b から qwen3-1.7b へ更新されます（品質スコア 56 > 50、同一メモリ内）。Gemma-3 は HF がゲート済み（要ライセンス承諾ログイン）のため未収録。
 
 ### Fixed
+- **再計画後の `nmesh up` が旧モデルのプロセスを採用してしまう問題を修正**: state.json の稼働記録（pid 生存+health 応答）だけで採用していたため、`plan --model` でモデルを変えても `up` の表は新モデルを表示しながら実際には旧モデルが応答し続けていました（実機で確認: 計画 qwen2.5-1.5b 表示・実応答 qwen3-1.7b）。記録の `model_ref` と計画の `model_ref` を照合し、不一致かつ実行ファイルが `NMESH_HOME` 配下のエンジンの場合のみ停止して再配置。外部プロセスがポートを占有している場合は殺さず、正直な port-in-use エラーになります
 - **state.json が失われ/破損した状態での `nmesh down` がサービス孤児を残していた問題を修正**: 電源断などで state.json のみ消えた場合、`down` は「停止した」と報告しつつ llama-server プロセスがポートと RAM を握り続けていました（実機で確認）。plan.json が残る限り、`down` は計画済みポートを走査し、実行ファイルが `NMESH_HOME` 配下のエンジンのみを停止します（ポートを占有しているだけの外部プロセスは触れません）。実機で破損 state.json + `down` → 3孤児サービス全停止を確認
 - `nmesh run` が上流サービスの HTTP エラー（例: embed ロールへの chat 要求）を「gateway unavailable」と誤表示していた — HTTP エラー時は上流の error.message を表示するように
 - **`NMESH_API_KEY` を設定すると CLI 自身がゲートウェイに 401 で拒否されていた問題を修正**: `run`/`jobs`/`unload`/`reload`/`status` のジョブ集計が `Authorization: Bearer` を送らず、認証を有効化したユーザーは CLI から一切操作できなくなっていました。ゲートウェイ向けの全リクエストが環境変数をヘッダに載せます（`run`/`jobs`/`unload`/`reload`/`status` の jobs 集計）。`/health` は従来どおり認証不要です。

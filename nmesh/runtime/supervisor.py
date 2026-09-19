@@ -130,6 +130,18 @@ def engine_listener_pid(port: int) -> int | None:
     return None
 
 
+def _pid_serves_model(pid: int, model_ref: object) -> bool:
+    """True when *pid*'s command line names *model_ref* — e.g. llama-server's
+    ``-m`` argument. Used to distinguish a stale engine serving a different
+    model from one actually running the planned artifact."""
+    try:
+        cmdline = psutil.Process(pid).cmdline()
+    except (psutil.Error, OSError):
+        return False
+    needle = str(model_ref)
+    return any(needle in part for part in cmdline)
+
+
 def _port_in_use(port: int) -> bool:
     """True when *port* cannot be bound — i.e. a live listener owns it.
 
@@ -389,6 +401,13 @@ class Supervisor:
             and self._entry_alive(entry)
             and self._healthy(service)
         ):
+            recorded_model = entry.get("model_ref")
+            if recorded_model is not None and recorded_model != service.model_ref:
+                # Stale process still bound to the port after a replan —
+                # do not adopt it; reclaim only if provably nmesh-managed.
+                if engine_listener_pid(service.port) == pid:
+                    self._terminator(int(pid))
+                return False
             create_time = entry.get("create_time")
             port = entry.get("port")
             self.adopted[service.name] = {
@@ -409,6 +428,14 @@ class Supervisor:
             return True
         self.adopted.pop(service.name, None)
         if self._healthy(service):
+            orphan_pid = engine_listener_pid(service.port)
+            if orphan_pid is not None and not _pid_serves_model(
+                orphan_pid, service.model_ref
+            ):
+                # Our engine but serving a different model — reclaim the
+                # port instead of silently proxying to the wrong model.
+                self._terminator(orphan_pid)
+                return False
             self.external_shared.add(service.name)
             return True
         self.external_shared.discard(service.name)
