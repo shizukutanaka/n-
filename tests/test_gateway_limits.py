@@ -37,9 +37,22 @@ class _LimitHandler(BaseHTTPRequestHandler):
     status = 200
     block = False
     stream = False
+    slots: ClassVar[list[object] | None] = None
     started: ClassVar[threading.Event] = threading.Event()
     second_started: ClassVar[threading.Event] = threading.Event()
     release: ClassVar[threading.Event] = threading.Event()
+
+    def do_GET(self) -> None:
+        if self.path == "/slots" and type(self).slots is not None:
+            payload = json.dumps(type(self).slots).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        self.send_response(404)
+        self.end_headers()
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -75,6 +88,7 @@ def _limit_upstream() -> ThreadingHTTPServer:
     _LimitHandler.status = 200
     _LimitHandler.block = False
     _LimitHandler.stream = False
+    _LimitHandler.slots = None
     _LimitHandler.started.clear()
     _LimitHandler.second_started.clear()
     _LimitHandler.release.clear()
@@ -279,6 +293,80 @@ def test_jobs_endpoint_tracks_request_lifecycle() -> None:
             listing = client.get("/v1/jobs").json()
             assert any(item["id"] == job_id for item in listing["jobs"])
             assert client.get("/v1/jobs/job-nope").status_code == 404
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_jobs_report_decode_progress_from_llamacpp_slots(monkeypatch) -> None:
+    upstream = _limit_upstream()
+    try:
+        plan = _llama_plan(1)
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        # /slots reports next_token as a one-element list.
+        _LimitHandler.slots = [
+            {"is_processing": True,
+             "next_token": [{"n_decoded": 12, "n_remain": 88}]},
+        ]
+        monkeypatch.setattr(
+            gateway_module, "_service_is_running_llamacpp", lambda _s: True
+        )
+        with TestClient(create_app(plan)) as client:
+            _LimitHandler.block = True
+            thread = threading.Thread(
+                target=lambda: client.post(
+                    "/v1/chat/completions", json={"messages": []}
+                )
+            )
+            thread.start()
+            assert _LimitHandler.started.wait(timeout=2)
+            try:
+                jobs = client.get("/v1/jobs").json()["jobs"]
+                running = next(j for j in jobs if j["state"] == "running")
+                assert running["progress"] == {"decoded": 12, "remaining": 88}
+                single = client.get(f"/v1/jobs/{running['id']}").json()
+                assert single["progress"]["decoded"] == 12
+            finally:
+                _LimitHandler.release.set()
+                thread.join(timeout=5)
+                _LimitHandler.block = False
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_jobs_omit_progress_when_slot_mapping_is_ambiguous(monkeypatch) -> None:
+    upstream = _limit_upstream()
+    try:
+        plan = _llama_plan(1)
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        # Two processing slots cannot be mapped to a single running job.
+        _LimitHandler.slots = [
+            {"is_processing": True, "next_token": [{"n_decoded": 1}]},
+            {"is_processing": True, "next_token": [{"n_decoded": 2}]},
+        ]
+        monkeypatch.setattr(
+            gateway_module, "_service_is_running_llamacpp", lambda _s: True
+        )
+        with TestClient(create_app(plan)) as client:
+            _LimitHandler.block = True
+            thread = threading.Thread(
+                target=lambda: client.post(
+                    "/v1/chat/completions", json={"messages": []}
+                )
+            )
+            thread.start()
+            assert _LimitHandler.started.wait(timeout=2)
+            try:
+                jobs = client.get("/v1/jobs").json()["jobs"]
+                running = next(j for j in jobs if j["state"] == "running")
+                assert "progress" not in running
+            finally:
+                _LimitHandler.release.set()
+                thread.join(timeout=5)
+                _LimitHandler.block = False
     finally:
         upstream.shutdown()
         upstream.server_close()

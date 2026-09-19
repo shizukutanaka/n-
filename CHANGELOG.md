@@ -1,6 +1,9 @@
 # 変更履歴
 
 ## 未リリース
+### Added
+- **実行中ジョブのデコード進捗**: `GET /v1/jobs`・`GET /v1/jobs/{id}` が llama.cpp の `/slots` から `progress: {decoded, remaining}` を付与し、`nmesh jobs` は実行中ジョブを `running 85/900` のように表示します。マッピングが一意でない場合（同一サービスに複数 running job、複数スロット処理中、非 llamacpp、/slots 無効）はフィールドを省略 — 誤った進捗を見せません。
+
 ### Fixed
 - **embed/rerank の同居回帰を修正**: #172 で embed サービスに `--reranking` を追加したところ、llama.cpp は1インスタンス=1つの pooling モードしか持てず `/v1/embeddings` がゼロベクトルを返すようになっていました（実機で確認）。rerank は専用サービスに分離 — `nmesh plan --roles chat,code,embed,rerank` で同一モデルの2プロセス目（`--reranking` のみ、llamacpp 限定）が計画され、`/v1/embeddings` は従来どおり embed サービスが応答します。rerank サービスがないプランでの `/v1/rerank` は「`nmesh plan --roles ...,rerank`」を案内する正直な 501 を返します。同一モデルのダウンロード量は二重計上しません（`launch_revision` 2 → 旧プランで `up` すると再計画を促します）。
 - `test_down_cli_no_services_message` が実稼働中のゲートウェイを巻き込んで失敗する（さらに実サービスを止める副作用）問題を、空きポートを掃除対象にすることで密閉化。
