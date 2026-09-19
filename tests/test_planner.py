@@ -1919,3 +1919,29 @@ def test_full_gpu_spread_does_not_pin() -> None:
     service = result.services[0]
     assert sorted(service.gpu_indices) == [0, 1]
     assert "CUDA_VISIBLE_DEVICES" not in service.launch.env
+
+
+def test_download_budget_warning_reports_actual_totals(
+    catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(
+        profile(64, (96,)),
+        catalog,
+        Policy(roles=["chat"], min_decode_tps=0, allow_download_gb=0.001),
+    )
+    warnings = [
+        warning for warning in result.warnings if "download budget" in warning
+    ]
+    assert warnings, result.warnings
+    assert "GiB" in warnings[0] and "0.0" in warnings[0]
+
+
+def test_download_budget_warning_silent_within_limit(
+    catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(
+        profile(64, (96,)),
+        catalog,
+        Policy(roles=["chat"], min_decode_tps=0, allow_download_gb=4096.0),
+    )
+    assert not any("download budget" in w for w in result.warnings)

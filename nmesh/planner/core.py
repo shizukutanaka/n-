@@ -2792,7 +2792,11 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                                 **note_params,
                             ))
     if total_download > selected.allow_download_gb * GIB:
-        warnings.append(t("warn.download_budget", selected.lang))
+        warnings.append(t(
+            "warn.download_budget", selected.lang,
+            total_gb=total_download / GIB,
+            limit_gb=selected.allow_download_gb,
+        ))
     if selected.languages:
         requested = set(selected.languages)
         for service in services:
