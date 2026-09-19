@@ -23,6 +23,11 @@
 
 - MIT LICENSE・CONTRIBUTING.md を追加（配布・コントリビューション用の不足分）
 
+
+
+
+- README に類似ツール比較節を追加 — nmesh の独自性（HWプローブ→計画・証拠ゲート・正直な縮退）を明記
+
 - `nmesh down` が停止したサービスを表示する — 以前は常に「実行中のサービスはありません」とだけ返し、何を止めたか確認できなかった（Supervisor.down() が常に空の結果を返していた）
 - `nmesh orchestrate measure --worker-url` の案内文は「外部 worker を渡せ」と言うのに、プラン内に2つ目の生成サービスが無いと拒否されていました。`--worker-url` 指定時はプラン内 worker 解決をスキップし、外部エンドポイントで委譲測定が実行できます。
 
