@@ -38,14 +38,20 @@ from nmesh.spec import (
 
 BPW = {
     "f16": 16.0, "q8_0": 8.5, "q6_k": 6.6, "q5_k_m": 5.7,
-    "q4_k_m": 4.85, "q4_0": 4.55, "q3_k_m": 3.9, "q2_k": 3.35,
+    "q4_k_m": 4.85, "q4_0": 4.55, "mxfp4": 4.25,
+    "q3_k_m": 3.9, "q2_k": 3.35,
 }
 EMB_BPW_FLOOR = 5.5
 QUANT_PENALTY = {
     "f16": 0.0, "q8_0": 0.5, "q6_k": 1.0, "q5_k_m": 2.0,
-    "q4_k_m": 3.5, "q4_0": 5.0, "q3_k_m": 9.0, "q2_k": 16.0,
+    "q4_k_m": 3.5, "mxfp4": 3.0, "q4_0": 5.0, "q3_k_m": 9.0, "q2_k": 16.0,
 }
 SPEED_REFERENCE_TPS = 30.0
+# Quants resolvable at acquisition time but never offered to the planner's
+# candidate loop: they exist only for select models (e.g. MXFP4 is published
+# for gpt-oss only), so planning every model at mxfp4 would silently downgrade
+# the artifact actually downloaded.
+UNPLANNED_QUANTS = frozenset({"mxfp4"})
 GIB = 1024**3
 PLAN_PATH = nmesh_home() / "plan.json"
 INSTALL_HINTS = {
@@ -243,6 +249,15 @@ def _is_embed_only(value: ModelSpec | PlannedService) -> bool:
     return value.roles == ["embed"]
 
 
+def _is_non_generative(value: ModelSpec | PlannedService) -> bool:
+    # Services that only embed or rerank never decode tokens, so decode-rate
+    # measurements and KV-cache provisioning do not apply. Worker counts as
+    # generative: it maps to the chat catalog role.
+    return all(
+        _catalog_role(role) in {"embed", "rerank"} for role in value.roles
+    )
+
+
 @dataclass(frozen=True)
 class RoutingRules:
     mode: str
@@ -342,7 +357,9 @@ def estimate_memory(
         weight_bytes = structural_weight_bytes(model, quant)
     per_layer_bytes = weight_bytes / model.n_layers
     kv_elem_bytes = {"f16": 2, "q8_0": 1}[kv_quant]
-    kv_bytes_per_tok = 2 * model.n_layers * model.n_kv_heads * model.head_dim * kv_elem_bytes
+    # Hybrid (Mamba/SSM+attention) models carry KV on attention layers only.
+    kv_layers = model.kv_layers or model.n_layers
+    kv_bytes_per_tok = 2 * kv_layers * model.n_kv_heads * model.head_dim * kv_elem_bytes
     kv_cache_bytes = kv_bytes_per_tok * context * parallel_slots
     compute_overhead = 0.06 * weight_bytes + 320 * 1024**2
     vram_budget, ram_budget = _profile_budgets(profile, budget_source)
@@ -756,6 +773,8 @@ def _candidate_for(
     contexts = list(dict.fromkeys(context for context in (initial, 4096, 2048) if context <= initial))
     candidates: list[_Candidate] = []
     for quant, bpw in BPW.items():
+        if quant in UNPLANNED_QUANTS:
+            continue
         for context in contexts:
             def estimate_candidate(
                 kv_quant: str,
@@ -777,7 +796,7 @@ def _candidate_for(
                         if measured_bytes is not None else None
                     ),
                 )
-                if model.roles == ["embed"]:
+                if _is_non_generative(model):
                     activation = min(
                         0.02 * estimate.weight_bytes * math.ceil(context_value / 512),
                         512 * 1024**2,
@@ -855,7 +874,7 @@ def _candidate_for(
             if not _has_source(backend, model):
                 continue
             gpu_name = profile.gpus[0].name if profile.gpus else "cpu"
-            decode_applicable = not _is_embed_only(model)
+            decode_applicable = not _is_non_generative(model)
             bench = (
                 _bench_value(
                     cache, model, quant, backend, gpu_name, layers, accounted_kv_quant,
@@ -953,6 +972,14 @@ def _catalog_role(role: str) -> str:
     if role == "rerank":
         return "embed"
     return role
+
+
+def _serves_role(model: ModelSpec, role: str) -> bool:
+    # Dedicated rerankers (roles=["rerank"]) exist alongside dual-use embed
+    # models; both can serve the rerank role, and quality ranks them.
+    if role == "rerank":
+        return "rerank" in model.roles or "embed" in model.roles
+    return _catalog_role(role) in model.roles
 
 
 def split_memory(memory: MemoryEstimate, model_layers: int, layers: int) -> tuple[float, float]:
@@ -2001,7 +2028,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         model.id
         for model in catalog
         if model.quality is None
-        and any(_catalog_role(role) in model.roles for role in roles)
+        and any(_serves_role(model, role) for role in roles)
         and model.id.casefold() not in requested_model_ids
     )
     if unmeasured:
@@ -2027,7 +2054,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     missing_backends: list[str] = []
     for model in catalog_models:
         if (
-            any(_catalog_role(role) in model.roles for role in roles)
+            any(_serves_role(model, role) for role in roles)
             and not any(source in model.sources for source in ("hf", "hf_gguf", "ollama"))
         ):
             warnings.append(
@@ -2052,7 +2079,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         reserved_vram, reserved_ram = _reserved_memory(services, swap_group)
         pools = {role: sorted(
             (candidate for model in catalog_models
-             if _catalog_role(role) in model.roles
+             if _serves_role(model, role)
              for candidate in _candidate_for(
                  model, profile, selected, bench_cache, artifact_cache,
                  reserved_vram_bytes=reserved_vram,
@@ -2071,7 +2098,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         if reserved_vram or reserved_ram:
             empty_pools = {role: sorted(
                 (candidate for model in catalog_models
-                 if _catalog_role(role) in model.roles
+                 if _serves_role(model, role)
                  for candidate in _candidate_for(
                      model,
                      profile,
@@ -2453,7 +2480,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         for service in services:
             if not _is_embed_only(service):
                 continue
-            key = (
+            key = (  # embed caps stay embed-only; rerankers have no embed cap
                 service.model_id.casefold(),
                 service.quant.casefold(),
                 service.backend.casefold(),
@@ -2480,7 +2507,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     command=f"nmesh bench --service {service.name}",
                 ))
     decode_services = [
-        service for service in services if not _is_embed_only(service)
+        service for service in services if not _is_non_generative(service)
     ]
     service_rates = {
         service.name: measured.get((

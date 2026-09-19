@@ -55,6 +55,7 @@ NOMINAL_GGUF_BPW = {
     "q4_0_4_4": 4.55,
     "q4_0_4_8": 4.55,
     "q4_0_8_8": 4.55,
+    "mxfp4": 4.25,
 }
 _BARE_QUANT_TOKENS = ("q8", "q4", "q5", "q6", "q3", "q2")
 _UNRANKED_QUANT_TOKENS = ("q3_k", "q4_k", "q5_k")
