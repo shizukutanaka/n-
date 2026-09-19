@@ -579,7 +579,7 @@ MESSAGES = {
         "err.gateway_reload": "ゲートウェイの再読み込みに失敗しました: {error}",
         "err.gateway_unavailable": "ゲートウェイを利用できません: {error}",
         "err.gateway_http": "ゲートウェイ要求が失敗しました（HTTP {code}）: {detail}",
-        "err.gateway_unavailable.hint": "先に `nmesh up` でサービスを起動するか、`nmesh status` でポートを確認してください。"
+        "err.gateway_unavailable.hint": "先に `nmesh up` でサービスを起動するか、`nmesh status` でポートを確認してください。",
         "err.bench_up": "サービスが起動していません。先にnmesh upを実行してください。",
         "err.bench_measure": "ベンチマークに失敗しました: {error}",
         "err.bench_embedding": "ベンチマークはデコード速度を測定しますが、{service}は埋め込みサービスでデコード経路がありません。--service chatなどデコード可能なサービスを指定してください。",
