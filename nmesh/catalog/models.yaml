@@ -515,3 +515,95 @@
     ollama: "nemotron-3.5-lightning"
     hf_gguf: "unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF"
     hf: "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+- id: qwen3-embedding-4b
+  family: qwen3-embedding
+  params: 4020000000
+  n_layers: 36
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 80
+  hidden_size: 2560
+  vocab_size: 151665
+  head_layout: shared
+  max_context: 32768
+  roles: [embed]
+  quality: 92
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    hf_gguf: "Qwen/Qwen3-Embedding-4B-GGUF"
+    hf: "Qwen/Qwen3-Embedding-4B"
+  pooling: last
+- id: qwen3-embedding-8b
+  family: qwen3-embedding
+  params: 8190000000
+  n_layers: 36
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 151665
+  head_layout: separate
+  max_context: 32768
+  roles: [embed]
+  quality: 93
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    hf_gguf: "Qwen/Qwen3-Embedding-8B-GGUF"
+    hf: "Qwen/Qwen3-Embedding-8B"
+  pooling: last
+- id: qwen3-reranker-0.6b
+  family: qwen3-reranker
+  params: 600000000
+  n_layers: 28
+  n_heads: 16
+  n_kv_heads: 8
+  head_dim: 64
+  hidden_size: 1024
+  vocab_size: 151669
+  head_layout: shared
+  max_context: 32768
+  roles: [rerank]
+  quality: 85
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    hf_gguf: "mradermacher/Qwen3-Reranker-0.6B-GGUF"
+    hf: "Qwen/Qwen3-Reranker-0.6B"
+- id: qwen3-reranker-4b
+  family: qwen3-reranker
+  params: 4020000000
+  n_layers: 36
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 80
+  hidden_size: 2560
+  vocab_size: 151669
+  head_layout: shared
+  max_context: 32768
+  roles: [rerank]
+  quality: 88
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    hf_gguf: "mradermacher/Qwen3-Reranker-4B-GGUF"
+    hf: "Qwen/Qwen3-Reranker-4B"
+- id: qwen3-reranker-8b
+  family: qwen3-reranker
+  params: 8190000000
+  n_layers: 36
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 151669
+  head_layout: separate
+  max_context: 32768
+  roles: [rerank]
+  quality: 91
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    hf_gguf: "mradermacher/Qwen3-Reranker-8B-GGUF"
+    hf: "Qwen/Qwen3-Reranker-8B"

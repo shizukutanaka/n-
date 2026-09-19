@@ -920,6 +920,22 @@ def test_rerank_gets_dedicated_service_with_reranking_flag(
     assert result.routing.role_to_service["rerank"] == "rerank"
 
 
+def test_rerank_prefers_dedicated_reranker_model(catalog: list[ModelSpec]) -> None:
+    # A roles=["rerank"] model should beat dual-use embed models for the
+    # rerank role; dual-use models stay available as fallback.
+    dedicated = next(
+        item for item in catalog if item.id == "qwen3-reranker-0.6b"
+    )
+    result = build_plan(
+        profile(64, (24,)), [dedicated], Policy(roles=["rerank"]),
+    )
+    rerank = next(
+        service for service in result.services if service.name == "rerank"
+    )
+    assert rerank.model_id == "qwen3-reranker-0.6b"
+    assert "--reranking" in rerank.launch.argv
+
+
 def test_rerank_service_omitted_when_flag_unsupported(
     catalog: list[ModelSpec],
 ) -> None:
@@ -1040,7 +1056,7 @@ def test_unsupported_kv_quantization_cannot_false_fit() -> None:
 
 def test_embedding_has_activation_memory_not_kv(catalog: list[ModelSpec]) -> None:
     model = next(item for item in catalog if item.id == "bge-m3")
-    result = build_plan(profile(32), catalog, Policy(roles=["embed"]))
+    result = build_plan(profile(32), [model], Policy(roles=["embed"]))
     service = result.services[0]
     assert service.model_id == model.id
     assert service.context == min(model.max_context, 8192)
@@ -1599,9 +1615,12 @@ def test_llamacpp_layers_are_resolved_against_assigned_card() -> None:
 def test_embedding_launch_flags_are_role_aware(catalog: list[ModelSpec]) -> None:
     assert next(item for item in catalog if item.id == "bge-m3").pooling == "cls"
     assert next(item for item in catalog if item.id == "nomic-embed-text-v1.5").pooling == "mean"
+    models = [
+        item for item in catalog if item.id in {"bge-m3", "qwen3-1.7b"}
+    ]
     result = build_plan(
         profile(64, (24,)),
-        catalog,
+        models,
         Policy(roles=["chat", "embed"], min_decode_tps=0),
     )
     embed = next(service for service in result.services if service.roles == ["embed"])
