@@ -1133,7 +1133,7 @@ def create_app(
                 isinstance(stream_options, Mapping)
                 and bool(stream_options.get("include_usage"))
             )
-            if service.backend == "llamacpp":
+            if service.backend == "llamacpp" and not path.startswith("/v1/messages"):
                 upstream_stream_options = (
                     dict(stream_options) if isinstance(stream_options, Mapping) else {}
                 )
@@ -1256,8 +1256,15 @@ def create_app(
                         tokens += 1
                         first_line_time = first_line_time or now
                         last_line_time = now
-                    if "model" in payload:
-                        payload["model"] = request.get("model", service.model_id)
+                    nested_message = payload.get("message")
+                    if "model" in payload or (
+                        isinstance(nested_message, dict) and "model" in nested_message
+                    ):
+                        client_model = request.get("model", service.model_id)
+                        if "model" in payload:
+                            payload["model"] = client_model
+                        if isinstance(nested_message, dict) and "model" in nested_message:
+                            nested_message["model"] = client_model
                         content = (
                             b"data: "
                             + json.dumps(payload, separators=(",", ":")).encode()
@@ -1942,6 +1949,28 @@ def create_app(
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/completions",
             limit_slots=True,
+        )
+
+    @app.post("/v1/messages")
+    async def anthropic_messages(request: dict[str, object]) -> object:
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
+        token_hint = await _routing_token_hint(request, selected)
+        service = _service(selected, route(request, selected, token_hint=token_hint))
+        return await proxy(
+            request, service, selected, telemetry_keys, "/v1/messages",
+            limit_slots=True,
+        )
+
+    @app.post("/v1/messages/count_tokens")
+    async def anthropic_count_tokens(request: dict[str, object]) -> object:
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
+        token_hint = await _routing_token_hint(request, selected)
+        service = _service(selected, route(request, selected, token_hint=token_hint))
+        return await proxy(
+            request, service, selected, telemetry_keys,
+            "/v1/messages/count_tokens", instrument=False,
         )
 
     @app.post("/v1/embeddings")
