@@ -836,8 +836,14 @@ def test_status_cli_renders_table_not_repr(monkeypatch, tmp_path: Path, capsys) 
 
 def test_down_cli_no_services_message(monkeypatch, tmp_path: Path, capsys) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    # down sweeps the gateway port even for foreign homes — point it at an
+    # unused port so a developer's live stack doesn't leak into the test.
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    free_port = sock.getsockname()[1]
+    sock.close()
 
-    assert cli.main(["down"]) == 0
+    assert cli.main(["down", "--port", str(free_port)]) == 0
     out = capsys.readouterr().out
     assert "RuntimeStatus(" not in out
     assert "no services running" in out

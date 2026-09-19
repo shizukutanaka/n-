@@ -1845,7 +1845,18 @@ def create_app(
     async def rerank(request: dict[str, object]) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
-        service = _service(selected, selected.routing.role_to_service.get("embed", ""))
+        # llama.cpp serves rerank OR embeddings per instance (single pooling
+        # mode), so rerank needs its own service in the plan.
+        name = selected.routing.role_to_service.get("rerank")
+        if not name:
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "this plan has no rerank service; re-run "
+                    "`nmesh plan --roles chat,code,embed,rerank`"
+                ),
+            )
+        service = _service(selected, name)
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/rerank", instrument=False
         )

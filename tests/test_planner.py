@@ -881,19 +881,29 @@ def test_context_shift_warns_when_unsupported(
     assert any("context-shift" in warning for warning in result.warnings)
 
 
-def test_reranking_is_launched_after_pooling_for_embed(
+def test_rerank_gets_dedicated_service_with_reranking_flag(
     catalog: list[ModelSpec],
 ) -> None:
     model = next(item for item in catalog if item.id == "bge-m3")
     result = build_plan(
-        profile(64, (24,)), [model], Policy(roles=["embed"]),
+        profile(64, (24,)), [model], Policy(roles=["embed", "rerank"]),
     )
-    argv = result.services[0].launch.argv
-    assert "--reranking" in argv
-    assert argv.index("--reranking") > argv.index("--pooling")
+    rerank = next(
+        service for service in result.services if service.name == "rerank"
+    )
+    embed = next(
+        service for service in result.services if service.name == "embed"
+    )
+    # llama.cpp serves rerank OR embeddings per instance (single pooling
+    # mode); --reranking on the embed service zeroed embeddings (b11037).
+    assert "--reranking" in rerank.launch.argv
+    assert "--embeddings" not in rerank.launch.argv
+    assert "--reranking" not in embed.launch.argv
+    assert "--embeddings" in embed.launch.argv
+    assert result.routing.role_to_service["rerank"] == "rerank"
 
 
-def test_reranking_omitted_when_embed_flag_unsupported(
+def test_rerank_service_omitted_when_flag_unsupported(
     catalog: list[ModelSpec],
 ) -> None:
     model = next(item for item in catalog if item.id == "bge-m3")
@@ -902,9 +912,24 @@ def test_reranking_omitted_when_embed_flag_unsupported(
         backend_flags={"llamacpp": ("--parallel", "-ngl")},
     )
     result = build_plan(
-        machine, [model], Policy(roles=["embed"]),
+        machine, [model], Policy(roles=["embed", "rerank"]),
     )
-    assert "--reranking" not in result.services[0].launch.argv
+    rerank = next(
+        service for service in result.services if service.name == "rerank"
+    )
+    assert "--reranking" not in rerank.launch.argv
+    assert any("rerank" in w for w in result.warnings)
+
+
+def test_embed_and_rerank_share_model_download_once(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "bge-m3")
+    result = build_plan(
+        profile(64, (24,)), [model], Policy(roles=["embed", "rerank"]),
+    )
+    embed = next(s for s in result.services if s.name == "embed")
+    assert result.total_download_bytes <= int(embed.memory.disk_needed) + 1
 
 
 def test_unsupported_llamacpp_kv_quantization_downgrades_accounting(

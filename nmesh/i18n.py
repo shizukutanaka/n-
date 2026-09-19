@@ -12,6 +12,7 @@ MESSAGES = {
     "en": {
         "warn.embeddings_unsupported": "{model}: llama.cpp embedding flags are unsupported; /v1/embeddings may be unavailable.",
         "warn.embeddings_pooling_unknown": "{model}: pooling metadata is unknown to nmesh or unsupported by this llama.cpp build; publisher/vendor may use pooling type 'none', which the OpenAI-compatible embedding endpoint rejects.",
+        "warn.rerank_unsupported": "{model}: this llama.cpp build lacks --reranking; the rerank service will not be able to answer /v1/rerank.",
         "warn.embeddings_batch_limit": "{model}: embedding inputs above 512 tokens may be rejected because the physical batch-size flags are unavailable (planned context {context}).",
         "warn.embeddings_backend_unsupported": "{model}: mlx_lm.server does not provide an embedding endpoint.",
         "warn.embeddings_backend_unverified": "{model}: vLLM embedding and pooling behavior is not verified by nmesh; nmesh does not guess or inject settings.",
@@ -471,6 +472,7 @@ MESSAGES = {
         "warn.backend_binary_missing": "{backend}: \u6307\u5b9a\u3055\u308c\u305f\u30d0\u30a4\u30ca\u30ea {path} \u306f\u5b9f\u884c\u53ef\u80fd\u3067\u306f\u306a\u3044\u305f\u3081\u3001PATH \u306b\u30d5\u30a9\u30fc\u30eb\u30d0\u30c3\u30af\u305b\u305a\u30d0\u30c3\u30af\u30a8\u30f3\u30c9\u3092\u5229\u7528\u4e0d\u53ef\u3068\u3057\u307e\u3059\u3002",
         "warn.embeddings_unsupported": "{model}: llama.cpp は埋め込みフラグに対応していないため、/v1/embeddings は利用できない可能性があります。",
         "warn.embeddings_pooling_unknown": "{model}: pooling のメタデータが nmesh に不明、またはこの llama.cpp ビルドで未対応です。publisher/vendor が pooling type 'none' を使うと、OpenAI 互換の埋め込みエンドポイントは拒否する可能性があります。",
+        "warn.rerank_unsupported": "{model}: この llama.cpp ビルドは --reranking に対応していないため、rerank サービスは /v1/rerank に答えられません。",
         "warn.embeddings_batch_limit": "{model}: 物理バッチサイズのフラグに対応していないため、512 トークンを超える入力は拒否される可能性があります（計画コンテキスト {context}）。",
         "warn.embeddings_backend_unsupported": "{model}: mlx_lm.server には埋め込みエンドポイントがありません。",
         "warn.embeddings_backend_unverified": "{model}: vLLM の埋め込みと pooling の挙動は nmesh で未検証です。nmesh は設定を推測して注入しません。",

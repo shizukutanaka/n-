@@ -252,7 +252,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 1
+LAUNCH_REVISION = 2
 
 
 @dataclass(frozen=True)
@@ -470,6 +470,7 @@ def _launch(
     binary: str | None = None,
 ) -> LaunchSpec:
     embed_only = list(roles) == ["embed"]
+    rerank_only = list(roles) == ["rerank"]
     ref = _source_for(backend, model, quant)
     if backend == "ollama":
         return LaunchSpec(
@@ -567,7 +568,10 @@ def _launch(
                 warnings.append(
                     t("warn.cache_reuse_unsupported", language, model=model.id)
                 )
-        if backend == "llamacpp" and context_shift and not embed_only:
+        if (
+            backend == "llamacpp" and context_shift
+            and not embed_only and not rerank_only
+        ):
             if not known or "--context-shift" in flags:
                 argv.append("--context-shift")
                 if warnings is not None:
@@ -598,17 +602,6 @@ def _launch(
                 warnings.append(
                     t("warn.embeddings_pooling_unknown", language, model=model.id)
                 )
-            if (
-                embedding_flag is not None
-                and (
-                    not known
-                    or "--reranking" in flags
-                    or "--rerank" in flags
-                )
-            ):
-                # b10970: --reranking is silently disabled when it precedes
-                # --pooling; always emit it after.
-                argv.append("--reranking")
             if context > 512:
                 if not known:
                     logical_batch_flag = "-b"
@@ -648,6 +641,15 @@ def _launch(
                             context=context,
                         )
                     )
+        if backend == "llamacpp" and rerank_only:
+            # llama.cpp serves rerank OR embeddings per instance (single
+            # pooling mode); rerank needs a dedicated service.
+            if not known or "--reranking" in flags or "--rerank" in flags:
+                argv.append("--reranking")
+            elif warnings is not None:
+                warnings.append(
+                    t("warn.rerank_unsupported", language, model=model.id)
+                )
     health_path = "/health" if backend == "llamacpp" else "/v1/models"
     return LaunchSpec(argv, {}, f"http://127.0.0.1:{port}{health_path}")
 
@@ -919,7 +921,11 @@ def _candidate_for(
 
 
 def _catalog_role(role: str) -> str:
-    return "chat" if role == "worker" else role
+    if role == "worker":
+        return "chat"
+    if role == "rerank":
+        return "embed"
+    return role
 
 
 def split_memory(memory: MemoryEstimate, model_layers: int, layers: int) -> tuple[float, float]:
@@ -1986,7 +1992,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             )
     if profile.tier in {Tier.T0_CPU, Tier.T1_LOW, Tier.T2_MID, Tier.T3_HIGH}:
         groups = [[role for role in roles if role in {"chat", "code"}]]
-        groups += [[role] for role in roles if role == "embed"]
+        groups += [[role] for role in roles if role in {"embed", "rerank"}]
     else:
         groups = [[role] for role in roles if role != "worker"]
     if "worker" in roles:
@@ -1997,6 +2003,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     bench_excluded: list[dict[str, str]] = []
     bench_unconfirmed: list[dict[str, str]] = []
     total_download = 0
+    seen_downloads: set[str] = set()
     incomparable_pairs: set[tuple[str, str]] = set()
     for group in [item for item in groups if item]:
         reserved_vram, reserved_ram = _reserved_memory(services, swap_group)
@@ -2013,7 +2020,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                  unconfirmed=bench_unconfirmed,
                  embed_input_caps=embed_input_caps,
                  embed_retrieval_limits=embed_retrieval_limits,
-             )),
+             )
+             if role != "rerank" or candidate.backend == "llamacpp"),
             key=lambda item: item.score, reverse=True,
         ) for role in group}
         empty_pools = None
@@ -2032,7 +2040,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                      unconfirmed=bench_unconfirmed,
                      embed_input_caps=embed_input_caps,
                      embed_retrieval_limits=embed_retrieval_limits,
-                 )),
+                 )
+                 if role != "rerank" or candidate.backend == "llamacpp"),
                 key=lambda item: item.score, reverse=True,
             ) for role in group}
 
@@ -2259,7 +2268,10 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         t("warn.worker_not_coresident", selected.lang)
                     )
                 else:
-                    total_download += int(candidate.memory.disk_needed)
+                    download_key = f"{candidate.model.id}|{candidate.quant}"
+                    if download_key not in seen_downloads:
+                        seen_downloads.add(download_key)
+                        total_download += int(candidate.memory.disk_needed)
             else:
                 warnings.append(t("warn.worker_not_coresident", selected.lang))
             continue
@@ -2285,7 +2297,10 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         selected.budget_source, warnings,
                         selected.lang, spec_policy=selected,
                     )
-                    total_download += int(role_candidate.memory.disk_needed)
+                    download_key = f"{role_candidate.model.id}|{role_candidate.quant}"
+                    if download_key not in seen_downloads:
+                        seen_downloads.add(download_key)
+                        total_download += int(role_candidate.memory.disk_needed)
                 else:
                     warnings.append(t("warn.no_candidate", selected.lang, role=role))
             continue
@@ -2307,7 +2322,10 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             hints, missing_backends, selected.budget_source, warnings,
             selected.lang, spec_policy=selected,
         )
-        total_download += int(group_candidate.memory.disk_needed)
+        download_key = f"{group_candidate.model.id}|{group_candidate.quant}"
+        if download_key not in seen_downloads:
+            seen_downloads.add(download_key)
+            total_download += int(group_candidate.memory.disk_needed)
     seen_unconfirmed: set[str] = set()
     for measurement in bench_unconfirmed:
         identity = f"{measurement['model']}|{measurement['quant']}"
@@ -2832,7 +2850,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
         _string_list(data["warnings"]), _string_list(data["install_hints"]),
         int(total_download_value), bool(data.get("runnable", True)),
         _string_list(data.get("missing_backends", [])),
-        int(data.get("launch_revision", 0)),
+        int(str(data.get("launch_revision", 0)) or 0),
     )
 
 

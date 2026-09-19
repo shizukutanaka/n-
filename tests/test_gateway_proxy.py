@@ -173,7 +173,7 @@ class _RerankHandler(BaseHTTPRequestHandler):
         return
 
 
-def test_gateway_rerank_proxies_to_embed_service() -> None:
+def test_gateway_rerank_proxies_to_rerank_service() -> None:
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), _RerankHandler)
     thread = threading.Thread(target=upstream.serve_forever, daemon=True)
     thread.start()
@@ -181,7 +181,9 @@ def test_gateway_rerank_proxies_to_embed_service() -> None:
         model = ModelSpec("embed-model", "test", 500_000_000, 24, 16, 2, 64,
                           1024, 4096, ["embed"], 80.0, "test",
                           {"hf_gguf": "test/repo"})
-        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["embed"]))
+        plan = build_plan(
+            profile(64, (24,)), [model], Policy(roles=["rerank"]),
+        )
         service = replace(plan.services[0], port=upstream.server_address[1])
         plan = replace(plan, services=[service])
         client = TestClient(create_app(plan))
@@ -196,6 +198,19 @@ def test_gateway_rerank_proxies_to_embed_service() -> None:
     finally:
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_gateway_rerank_501_without_rerank_service() -> None:
+    model = ModelSpec("embed-model", "test", 500_000_000, 24, 16, 2, 64,
+                      1024, 4096, ["embed"], 80.0, "test",
+                      {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["embed"]))
+    client = TestClient(create_app(plan))
+    response = client.post("/v1/rerank", json={
+        "model": "nmesh-auto", "query": "q", "documents": ["a", "b"],
+    })
+    assert response.status_code == 501
+    assert "rerank" in response.text
 
 
 def test_gateway_proxy_rewrites_model_and_forwards_sse() -> None:
