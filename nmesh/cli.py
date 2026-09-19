@@ -1001,6 +1001,7 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
 
 def _runtime(args: argparse.Namespace) -> int:
     exit_code = 0
+    status_data_jobs: dict[str, dict[str, int]] | None = None
     if args.command == "serve":
         try:
             process, _ = _launch_gateway(args.port, detach=False)
@@ -1120,6 +1121,15 @@ def _runtime(args: argparse.Namespace) -> int:
                     )
                 else:
                     gateway["running"] = True
+            try:
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/v1/jobs?limit=20", timeout=2
+                ) as jobs_response:
+                    jobs_data = json.loads(jobs_response.read().decode())
+                if isinstance(jobs_data, dict) and jobs_data.get("counts"):
+                    status_data_jobs = jobs_data["counts"]
+            except (OSError, HTTPError, json.JSONDecodeError):
+                pass
         except OSError:
             if gateway is None:
                 result.services.append(
@@ -1131,6 +1141,8 @@ def _runtime(args: argparse.Namespace) -> int:
                 gateway["running"] = False
         result.running = any(bool(item.get("running")) for item in result.services)
     status_data = asdict(result)
+    if status_data_jobs:
+        status_data["jobs"] = status_data_jobs
     if args.command == "up" and args.detach and gateway_log is not None:
         status_data["gateway_log"] = str(gateway_log)
     language = i18n.lang()
@@ -1149,6 +1161,15 @@ def _runtime(args: argparse.Namespace) -> int:
             )
     else:
         _print_runtime_status(result, language)
+        if status_data_jobs:
+            for service, counts in status_data_jobs.items():
+                _console().print(
+                    i18n.t(
+                        "jobs.counts", language, service=service,
+                        running=counts.get("running", 0),
+                        queued=counts.get("queued", 0),
+                    )
+                )
         for warning in result.warnings:
             _console().print(warning)
         if args.command == "status":
@@ -1269,6 +1290,53 @@ def _unload(args: argparse.Namespace) -> int:
         print(i18n.t("label.unloaded", i18n.lang(),
                      services=", ".join(unloaded) if unloaded else
                      i18n.t("label.none", i18n.lang())))
+    return 0
+
+
+def _jobs(args: argparse.Namespace) -> int:
+    language = i18n.lang()
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{args.port}/v1/jobs?limit={args.limit}",
+            timeout=10,
+        ) as response:
+            data = json.loads(response.read().decode())
+    except HTTPError as error:
+        if error.code == 404:
+            print(i18n.t("err.jobs_old_gateway", language, port=args.port),
+                  file=sys.stderr)
+        else:
+            print(i18n.t("err.jobs_gateway", language, port=args.port),
+                  file=sys.stderr)
+        return 1
+    except (OSError, json.JSONDecodeError):
+        print(i18n.t("err.jobs_gateway", language, port=args.port),
+              file=sys.stderr)
+        return 1
+    if args.json:
+        _print_json(data)
+        return 0
+    job_list = data.get("jobs", [])
+    if not job_list:
+        _console().print(i18n.t("jobs.empty", language))
+        return 0
+    table = Table(title=i18n.t("jobs.title", language))
+    table.add_column(i18n.t("label.job", language))
+    table.add_column(i18n.t("label.state", language))
+    table.add_column(i18n.t("label.service", language))
+    table.add_column(i18n.t("label.endpoint", language))
+    table.add_column(i18n.t("label.age_s", language), justify="right")
+    now = time.time()
+    for job in job_list:
+        age = now - float(job.get("queued_at") or now)
+        table.add_row(
+            str(job.get("id") or ""),
+            str(job.get("state") or ""),
+            str(job.get("service") or ""),
+            str(job.get("endpoint") or ""),
+            f"{age:.0f}",
+        )
+    _console().print(table)
     return 0
 
 
@@ -4076,6 +4144,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     logs_parser.add_argument("service", nargs="?")
     logs_parser.add_argument("--lines", type=_positive_int, default=50)
     logs_parser.add_argument("--json", action="store_true")
+    jobs_parser = sub.add_parser("jobs", help="list queued and running gateway jobs")
+    jobs_parser.add_argument("--port", type=int, default=18000)
+    jobs_parser.add_argument("--limit", type=_positive_int, default=50)
+    jobs_parser.add_argument("--json", action="store_true")
     watch_parser = sub.add_parser("watch")
     watch_parser.add_argument("--sources", default="zenn,qiita")
     watch_parser.add_argument(
@@ -4147,6 +4219,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _bench(args)
     if args.command == "logs":
         return _logs(args)
+    if args.command == "jobs":
+        return _jobs(args)
     if args.command == "eval":
         return _eval(args)
     if args.command == "evidence":

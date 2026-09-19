@@ -7,6 +7,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
 
 import psutil
 
@@ -912,3 +913,65 @@ def test_down_reports_stopped_services(
     services = {item["service"]: item for item in result.services}
     assert services["chat"]["running"] is False
     assert services["chat"]["port"] == 18010
+
+
+def test_jobs_cli_lists_gateway_jobs(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    payload = {
+        "jobs": [
+            {
+                "id": "job-1",
+                "service": "chat",
+                "endpoint": "/v1/chat/completions",
+                "state": "running",
+                "queued_at": 1.0,
+                "started_at": 2.0,
+                "finished_at": None,
+                "detail": None,
+            }
+        ],
+        "counts": {"chat": {"queued": 0, "running": 1}},
+    }
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode()
+
+    monkeypatch.setattr(
+        "nmesh.cli.urllib.request.urlopen", lambda *_a, **_k: _Response()
+    )
+    assert cli.main(["jobs", "--json"]) == 0
+    out = capsys.readouterr().out
+    assert '"job-1"' in out
+    assert cli.main(["jobs"]) == 0
+    assert "job-1" in capsys.readouterr().out
+
+
+def test_jobs_cli_gateway_unreachable(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    def _raise(*_a, **_k):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    assert cli.main(["jobs"]) == 1
+    captured = capsys.readouterr()
+    assert "18000" in captured.err
+    assert "nmesh up" in captured.err
+def test_jobs_cli_old_gateway_404(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    def _raise(*_a, **_k):
+        raise HTTPError("http://x", 404, "not found", {}, None)
+
+    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    assert cli.main(["jobs"]) == 1
+    captured = capsys.readouterr()
+    assert "older build" in captured.err or "古いビルド" in captured.err
+    assert "nmesh down" in captured.err
