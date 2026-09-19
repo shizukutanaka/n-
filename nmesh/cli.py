@@ -144,6 +144,7 @@ from nmesh.orchestrate import (
 )
 from nmesh.paths import is_windows, nmesh_home
 from nmesh.planner import (
+    LAUNCH_REVISION,
     Plan,
     PlannedService,
     Policy,
@@ -937,6 +938,11 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
                     i18n.lang(),
                     flags=", ".join(ignored),
                 ),
+                file=sys.stderr,
+            )
+        if plan.launch_revision < LAUNCH_REVISION:
+            print(
+                i18n.t("warn.plan_stale", i18n.lang()),
                 file=sys.stderr,
             )
         return plan

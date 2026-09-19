@@ -250,6 +250,11 @@ class RoutingRules:
     aliases: dict[str, str]
 
 
+# Bump when service launch argv semantics change; stored in plan.json so
+# `up` can flag saved plans that predate launch-flag improvements.
+LAUNCH_REVISION = 1
+
+
 @dataclass(frozen=True)
 class Plan:
     created_at: str
@@ -265,6 +270,7 @@ class Plan:
     total_download_bytes: int
     runnable: bool = True
     missing_backends: list[str] = field(default_factory=list)
+    launch_revision: int = LAUNCH_REVISION
 
 
 def _profile_budgets(profile: HardwareProfile | None, source: str = "total") -> tuple[float, float]:
@@ -2826,6 +2832,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
         _string_list(data["warnings"]), _string_list(data["install_hints"]),
         int(total_download_value), bool(data.get("runnable", True)),
         _string_list(data.get("missing_backends", [])),
+        int(data.get("launch_revision", 0)),
     )
 
 

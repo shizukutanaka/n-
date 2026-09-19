@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from io import StringIO
 from types import SimpleNamespace
 
@@ -7,6 +8,12 @@ import pytest
 from rich.console import Console
 
 from nmesh import cli
+from nmesh.planner import (
+    LAUNCH_REVISION,
+    build_plan,
+    load_plan,
+    save_plan,
+)
 from nmesh.runtime import RuntimeStatus
 from nmesh.telemetry import OverlayReport
 
@@ -256,7 +263,49 @@ def test_ignored_up_plan_flags_lists_nondefaults() -> None:
 
 
 def test_saved_plan_warns_when_up_flags_ignored(monkeypatch, capsys) -> None:
-    saved = SimpleNamespace(services=[object()], runnable=True)
+    saved = SimpleNamespace(
+        services=[object()], runnable=True,
+        launch_revision=LAUNCH_REVISION,
+    )
     monkeypatch.setattr(cli, "load_plan", lambda: saved)
     assert cli._ensure_runnable_plan(_up_args(context_shift=True)) is saved
     assert "--context-shift" in capsys.readouterr().err
+
+
+def test_saved_plan_warns_when_launch_revision_stale(monkeypatch, capsys) -> None:
+    saved = SimpleNamespace(
+        services=[object()], runnable=True, launch_revision=0,
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: saved)
+    assert cli._ensure_runnable_plan(_up_args()) is saved
+    err = capsys.readouterr().err
+    assert "older nmesh" in err
+    assert "nmesh plan" in err
+
+
+def test_saved_plan_at_current_revision_stays_silent(monkeypatch, capsys) -> None:
+    saved = SimpleNamespace(
+        services=[object()], runnable=True,
+        launch_revision=LAUNCH_REVISION,
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: saved)
+    assert cli._ensure_runnable_plan(_up_args()) is saved
+    assert "older nmesh" not in capsys.readouterr().err
+
+
+def test_plan_roundtrip_preserves_launch_revision(
+    tmp_path, monkeypatch,
+) -> None:
+    from tests.test_planner import load_catalog, profile
+
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    plan = build_plan(profile(64, (24,)), load_catalog())
+    save_plan(plan)
+    loaded = load_plan()
+    assert loaded is not None and loaded.launch_revision == LAUNCH_REVISION
+    raw = json.loads((tmp_path / "plan.json").read_text())
+    assert raw["launch_revision"] == LAUNCH_REVISION
+    del raw["launch_revision"]
+    (tmp_path / "plan.json").write_text(json.dumps(raw))
+    legacy = load_plan()
+    assert legacy is not None and legacy.launch_revision == 0
