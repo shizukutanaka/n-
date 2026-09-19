@@ -322,6 +322,57 @@ def test_existing_local_gguf_reports_parsed_identity_and_size(tmp_path) -> None:
     assert acquired.artifact_bytes == len(b"artifact")
 
 
+def test_interrupted_split_gguf_resumes_missing_parts(tmp_path, monkeypatch) -> None:
+    """part 1 on disk + part 2 still incomplete must not count as present —
+    acquire should fall through to the download path instead of adopting the
+    partial artifact."""
+    target = tmp_path / "model-00001-of-00002.gguf"
+    target.write_bytes(b"part1")
+    service = _llamacpp_service(tmp_path)
+    service.model_ref = str(target)
+    service.download_repo = "org/repo"
+
+    calls: list[str] = []
+
+    def fake_download(**kwargs: object) -> str:
+        filename = str(kwargs["filename"])
+        calls.append(filename)
+        path = tmp_path / filename
+        if not path.exists():
+            path.write_bytes(b"part")
+        return str(path)
+
+    monkeypatch.setattr(
+        acquisition,
+        "_resolve_gguf",
+        lambda _repo, _quant: (
+            "q4_k_m",
+            ["model-00001-of-00002.gguf", "model-00002-of-00002.gguf"],
+            200,
+        ),
+    )
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+
+    acquired = acquisition.acquire(service)
+
+    assert calls == [
+        "model-00001-of-00002.gguf", "model-00002-of-00002.gguf"
+    ]
+    assert acquired.path == tmp_path / "model-00001-of-00002.gguf"
+
+
+def test_complete_split_gguf_skips_download(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "model-00001-of-00002.gguf"
+    target.write_bytes(b"part1")
+    (tmp_path / "model-00002-of-00002.gguf").write_bytes(b"part2")
+    service = _llamacpp_service(tmp_path)
+    service.model_ref = str(target)
+
+    acquired = acquisition.acquire(service)
+
+    assert acquired.path == target
+
+
 def test_size_mismatch_warning_is_absent_at_parity(tmp_path, monkeypatch) -> None:
     service = _llamacpp_service(tmp_path)
     monkeypatch.setattr(
