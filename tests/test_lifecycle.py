@@ -454,6 +454,92 @@ def test_adopt_reclaims_our_engine_serving_wrong_model(
     assert "chat" not in supervisor.external_shared
 
 
+def test_adopt_rejects_recorded_exe_mismatch(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Engine upgrade: the recorded executable differs from the surviving
+    process's binary — the pid is not what the plan would launch."""
+    chat = _up_service("chat")
+    chat.launch.health_url = "http://127.0.0.1:18010/health"
+    state = {
+        "services": [{
+            "service": "chat", "pid": 31337, "port": 18010,
+            "health_url": "http://127.0.0.1:18010/health",
+            "model_ref": chat.model_ref, "running": True,
+            "exe": "/home/u/.nmesh/engines/llamacpp/b100/llama-server",
+        }]
+    }
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    killed: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json", terminator=killed.append
+    )
+    monkeypatch.setattr(supervisor, "_entry_alive", lambda _e: True)
+    monkeypatch.setattr(supervisor, "_healthy", lambda _s: True)
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid", lambda _p: 31337
+    )
+
+    class FakeProc:
+        def __init__(self, _pid: int) -> None:
+            pass
+
+        def exe(self) -> str:
+            return "/home/u/.nmesh/engines/llamacpp/b200/llama-server"
+
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.psutil.Process", FakeProc
+    )
+
+    assert supervisor._adopt(chat) is False
+    assert killed == [31337]
+
+
+def test_launch_gateway_restarts_stale_version(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    state = {
+        "gateway": {
+            "pid": 4242, "port": 19000, "create_time": 1.0,
+            "owner_pid": 999, "nmesh": "0.0.0-old",
+        },
+        "services": [],
+    }
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    spawned: list[list[str]] = []
+    terminated: list[int] = []
+
+    class FakeStale:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def terminate(self) -> None:
+            terminated.append(self.pid)
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    def popen(args: list[str], **_kwargs: object) -> object:
+        spawned.append(list(args))
+        return SimpleNamespace(pid=5555)
+
+    monkeypatch.setattr(cli.subprocess, "Popen", popen)
+    monkeypatch.setattr(cli.psutil, "Process", FakeStale)
+    monkeypatch.setattr(cli, "gateway_health", lambda _port: True)
+    monkeypatch.setattr(cli, "gateway_listener_pid", lambda _port: 4242)
+    monkeypatch.setattr(cli, "record_gateway", lambda _pid, _port: None)
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+
+    process, _log_path = cli._launch_gateway(19000, detach=True)
+
+    assert terminated == [4242]
+    assert spawned and "nmesh.gateway.server" in " ".join(spawned[0])
+    assert getattr(process, "pid") == 5555
+
+
 def test_adopt_keeps_foreign_healthy_listener_as_external_shared(
     monkeypatch, tmp_path: Path,
 ) -> None:
