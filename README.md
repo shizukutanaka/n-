@@ -784,7 +784,8 @@ unknowns are vLLM flags:
 not this backend's flag, not that the feature is missing.
 
 41 distinct Hugging Face repo ids were mentioned across Zenn+Qiita; 0 of them
-appear among the 51 repo ids in the bundled catalog. The catalog is Qwen2.5-era
+appear among the 51 repo ids in the bundled catalog at the time of that survey
+(Qwen3 entries have since been added). The catalog was Qwen2.5-era
 while current discussion includes Qwen3.x, gemma-4, MiniMax-H3, llm-jp-4, and
 Nemotron. Mention counts indicate popularity, not quality — quality still
 requires `nmesh eval`, so drafts carry `quality: null`.
