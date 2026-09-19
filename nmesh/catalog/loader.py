@@ -27,6 +27,7 @@ class ModelSpec:
     pooling: str = ""
     vocab_size: int = 0
     head_layout: str = "separate"
+    kv_layers: int = 0
 
 
 def _model_from_mapping(item: object) -> ModelSpec | None:
@@ -82,6 +83,7 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
             pooling=str(item.get("pooling", "")),
             vocab_size=int(item.get("vocab_size", 0)),
             head_layout=str(item.get("head_layout", "separate")),
+            kv_layers=int(item.get("kv_layers", 0)),
         )
     except (TypeError, ValueError):
         return None

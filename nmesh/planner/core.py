@@ -38,14 +38,20 @@ from nmesh.spec import (
 
 BPW = {
     "f16": 16.0, "q8_0": 8.5, "q6_k": 6.6, "q5_k_m": 5.7,
-    "q4_k_m": 4.85, "q4_0": 4.55, "q3_k_m": 3.9, "q2_k": 3.35,
+    "q4_k_m": 4.85, "q4_0": 4.55, "mxfp4": 4.25,
+    "q3_k_m": 3.9, "q2_k": 3.35,
 }
 EMB_BPW_FLOOR = 5.5
 QUANT_PENALTY = {
     "f16": 0.0, "q8_0": 0.5, "q6_k": 1.0, "q5_k_m": 2.0,
-    "q4_k_m": 3.5, "q4_0": 5.0, "q3_k_m": 9.0, "q2_k": 16.0,
+    "q4_k_m": 3.5, "mxfp4": 3.0, "q4_0": 5.0, "q3_k_m": 9.0, "q2_k": 16.0,
 }
 SPEED_REFERENCE_TPS = 30.0
+# Quants resolvable at acquisition time but never offered to the planner's
+# candidate loop: they exist only for select models (e.g. MXFP4 is published
+# for gpt-oss only), so planning every model at mxfp4 would silently downgrade
+# the artifact actually downloaded.
+UNPLANNED_QUANTS = frozenset({"mxfp4"})
 GIB = 1024**3
 PLAN_PATH = nmesh_home() / "plan.json"
 INSTALL_HINTS = {
@@ -342,7 +348,9 @@ def estimate_memory(
         weight_bytes = structural_weight_bytes(model, quant)
     per_layer_bytes = weight_bytes / model.n_layers
     kv_elem_bytes = {"f16": 2, "q8_0": 1}[kv_quant]
-    kv_bytes_per_tok = 2 * model.n_layers * model.n_kv_heads * model.head_dim * kv_elem_bytes
+    # Hybrid (Mamba/SSM+attention) models carry KV on attention layers only.
+    kv_layers = model.kv_layers or model.n_layers
+    kv_bytes_per_tok = 2 * kv_layers * model.n_kv_heads * model.head_dim * kv_elem_bytes
     kv_cache_bytes = kv_bytes_per_tok * context * parallel_slots
     compute_overhead = 0.06 * weight_bytes + 320 * 1024**2
     vram_budget, ram_budget = _profile_budgets(profile, budget_source)
@@ -756,6 +764,8 @@ def _candidate_for(
     contexts = list(dict.fromkeys(context for context in (initial, 4096, 2048) if context <= initial))
     candidates: list[_Candidate] = []
     for quant, bpw in BPW.items():
+        if quant in UNPLANNED_QUANTS:
+            continue
         for context in contexts:
             def estimate_candidate(
                 kv_quant: str,

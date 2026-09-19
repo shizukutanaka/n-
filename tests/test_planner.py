@@ -724,6 +724,23 @@ def test_kv_quantization_is_independent(catalog: list[ModelSpec]) -> None:
     assert q8.weight_bytes == f16.weight_bytes
 
 
+def test_kv_layers_scales_kv_cache_for_hybrid_models() -> None:
+    hybrid = ModelSpec(
+        "hybrid", "nemotron-h", 30_000_000_000, 52, 32, 2, 128, 2688,
+        262144, ["chat"], 76.0, "nvidia-open-model-license",
+        {"hf_gguf": "test/repo"}, kv_layers=6,
+    )
+    dense = ModelSpec(
+        "dense", "nemotron-h", 30_000_000_000, 52, 32, 2, 128, 2688,
+        262144, ["chat"], 76.0, "nvidia-open-model-license",
+        {"hf_gguf": "test/repo"},
+    )
+    est_h = estimate_memory(hybrid, "q4_k_m", 8192)
+    est_d = estimate_memory(dense, "q4_k_m", 8192)
+    assert est_h.kv_bytes_per_tok == pytest.approx(est_d.kv_bytes_per_tok * 6 / 52)
+    assert est_h.weight_bytes == est_d.weight_bytes
+
+
 def test_bench_lookup_isolated_by_kv_precision() -> None:
     model = ModelSpec(
         "bench-kv", "test", 500_000_000, 24, 16, 2, 64, 1024,
