@@ -124,6 +124,22 @@ def _gguf_files(repo_id: str) -> dict[str, int | None]:
     return result
 
 
+def _split_gguf_parts(target: Path) -> list[Path]:
+    """Every numbered part of a split GGUF — or just *target* for a
+    single-file model. An interrupted download leaves only the first parts
+    on disk; treating part 1 alone as complete would skip the resume and
+    leave llama-server unable to open the model."""
+    match = _SPLIT_RE.match(target.name)
+    if match is None:
+        return [target]
+    total = int(match.group("total"))
+    head = target.name[: match.start("part")]
+    return [
+        target.parent / f"{head}{part:05d}-of-{total:05d}.gguf"
+        for part in range(1, total + 1)
+    ]
+
+
 def _split_files(files: list[str], selected: str) -> list[str] | None:
     match = _SPLIT_RE.match(Path(selected).name)
     if match is None:
@@ -273,8 +289,9 @@ def acquire(service: PlannedService) -> Acquired:
         )
     if service.backend == "llamacpp":
         target = Path(service.model_ref)
-        if target.exists():
-            artifact_bytes = target.stat().st_size
+        parts = _split_gguf_parts(target)
+        if all(part.exists() for part in parts):
+            artifact_bytes = sum(part.stat().st_size for part in parts)
             actual_label = parse_label(target.name)
             quant = actual_label or service.quant
             warning = _artifact_warning(service, actual_label, target.name, artifact_bytes)

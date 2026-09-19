@@ -15,6 +15,7 @@
 - **カタログを現行世代に更新**: Qwen3-0.6B/1.7B/4B/8B（Apache-2.0、GGUF は bartowski/公式ミラー — 公式の Qwen3-0.6B/1.7B GGUF は Q8_0 のみ公開のため Q4_K_M は bartowski 経由）、SmolLM3-3B、Qwen3-Embedding-0.6B（embed ロール、last-token pooling）を追加。CPU プロファイルでは `plan` の chat 既定が qwen2.5-1.5b から qwen3-1.7b へ更新されます（品質スコア 56 > 50、同一メモリ内）。Gemma-3 は HF がゲート済み（要ライセンス承諾ログイン）のため未収録。
 
 ### Fixed
+- **分割 GGUF のダウンロード中断後に `up` が部分アーティファクトを採用していた問題を修正**: `*-00001-of-0000N.gguf` 形式のモデルで part 1 のみが残ると `target.exists()` で取得済みと誤認し、欠落パートを再取得せず llama-server が起動失敗ループに入っていました。全パート完備時のみ既存ファイルを採用し、未完なら `hf_hub_download` の再開経路へ落とします。サイズ不一致警告の実測値も全パート合計に修正
 - **再起動予算のサーキットブレーカがリクエスト経路で無効化されていた問題を修正**: watchdog が再起動予算（300秒に3回）を使い果たしたサービスを `failed` にしても、リクエスト時の `ensure_running` がその印を見ずに毎回再起動していました（クラッシュループするサービスがリクエストのたびに RAM/CPU を消費して復活）。`ensure_running` は `failed` を尊重して理由を返し、予算窓が経過すれば1回だけ再試行します。起動後にヘルスにならない失敗も予算に計上。リクエストには理由つきのエラー（503/502）を返し、明示的な `nmesh up` で回復できます（実機で kill -9 連打→予算発動→`Restart budget exhausted: chat` を確認）
 - `nmesh run` が上流サービスの HTTP エラー（例: embed ロールへの chat 要求）を「gateway unavailable」と誤表示していた — HTTP エラー時は上流の error.message を表示するように
 - **`NMESH_API_KEY` を設定すると CLI 自身がゲートウェイに 401 で拒否されていた問題を修正**: `run`/`jobs`/`unload`/`reload`/`status` のジョブ集計が `Authorization: Bearer` を送らず、認証を有効化したユーザーは CLI から一切操作できなくなっていました。ゲートウェイ向けの全リクエストが環境変数をヘッダに載せます（`run`/`jobs`/`unload`/`reload`/`status` の jobs 集計）。`/health` は従来どおり認証不要です。
