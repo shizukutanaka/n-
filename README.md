@@ -1,17 +1,3 @@
-# Multilingual output and model language preference
-
-Set `NMESH_LANG=ja` (or `en`) to localize nmesh's runtime, planner, and CLI
-output. Argparse help text remains English and is intentionally outside this
-translation layer.
-
-Use `nmesh plan --lang ja,en` or `nmesh up --lang ja,en` to softly prioritize
-models that claim those languages. This is not a hard filter: nmesh still
-selects a runnable model when no candidate claims every requested language.
-Catalog language lists are publisher/vendor claims, not measured benchmarks.
-
-`nmesh plan --roles chat,embed` and `nmesh up --roles chat,embed` make the
-requested roles strict. Without `--roles`, a role with no local candidate is
-reported as a warning and the remaining runnable services can still start.
 # nmesh
 
 ## Quickstart（3 コマンド）
@@ -244,6 +230,21 @@ idle service is revived before the next request reaches it.
 Use `nmesh unload` to unload planned services manually. The gateway also exposes
 `POST /admin/unload`, `POST /admin/unload/{service}`, and
 `GET /admin/running`.
+
+## Multilingual output and model language preference
+
+Set `NMESH_LANG=ja` (or `en`) to localize nmesh's runtime, planner, and CLI
+output. Argparse help text remains English and is intentionally outside this
+translation layer.
+
+Use `nmesh plan --lang ja,en` or `nmesh up --lang ja,en` to softly prioritize
+models that claim those languages. This is not a hard filter: nmesh still
+selects a runnable model when no candidate claims every requested language.
+Catalog language lists are publisher/vendor claims, not measured benchmarks.
+
+`nmesh plan --roles chat,embed` and `nmesh up --roles chat,embed` make the
+requested roles strict. Without `--roles`, a role with no local candidate is
+reported as a warning and the remaining runnable services can still start.
 
 ## Hardware profile simulation
 
