@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import statistics
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -193,10 +194,12 @@ def load_records(path: Path | None = None) -> dict[str, BenchRecord]:
 def save_records(records: dict[str, BenchRecord], path: Path | None = None) -> Path:
     target = path or CACHE_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    temporary.write_text(
         json.dumps({key: asdict(value) for key, value in records.items()}, indent=2),
         encoding="utf-8",
     )
+    os.replace(temporary, target)
     return target
 
 
