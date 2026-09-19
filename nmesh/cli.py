@@ -3922,25 +3922,17 @@ def _watch(args: argparse.Namespace) -> int:
 
 
 def _run_prompt(args: argparse.Namespace) -> int:
-    payload = json.dumps({"model": f"nmesh-{args.role}",
-                          "messages": [{"role": "user", "content": args.prompt}]}).encode()
-    headers = {"Content-Type": "application/json", **_gateway_headers()}
-    request = urllib.request.Request("http://127.0.0.1:18000/v1/chat/completions", payload,
-                                     headers)
-    request = urllib.request.Request("http://127.0.0.1:18000/v1/chat/completions", payload,
-                                     {"Content-Type": "application/json"})
-    payload = json.dumps({"model": f"nmesh-{args.role}",
-                          "messages": [{"role": "user", "content": args.prompt}]}).encode()
     stream = bool(getattr(args, "stream", False)) and not args.json
     payload = json.dumps({
         "model": f"nmesh-{args.role}",
         "messages": [{"role": "user", "content": args.prompt}],
         "stream": stream,
     }).encode()
+    headers = {"Content-Type": "application/json", **_gateway_headers()}
     request = urllib.request.Request(
-        f"http://127.0.0.1:{args.port}/v1/chat/completions",
+        f"http://127.0.0.1:{getattr(args, 'port', 18000)}/v1/chat/completions",
         payload,
-        {"Content-Type": "application/json"},
+        headers,
     )
     try:
         with urllib.request.urlopen(request, timeout=300) as response:
