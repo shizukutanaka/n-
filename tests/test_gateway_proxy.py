@@ -947,3 +947,27 @@ def test_gateway_retries_once_after_connect_error(monkeypatch) -> None:
     assert response.json()["error"]["code"] == 502
     assert len(calls) == 1
     assert calls[0] == (service.name, isolated_plan)
+
+
+def test_gateway_revive_failure_returns_503(monkeypatch) -> None:
+    """A service whose restart budget is exhausted must surface the reason as
+    503 — the request path may not resurrect it behind the circuit breaker."""
+    model = ModelSpec("revive-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = plan.services[0]
+
+    def fake_ensure(name: str, snapshot: Plan) -> None:
+        raise RuntimeError(f"restart budget exhausted for {name}")
+
+    monkeypatch.setattr(gateway_module, "ensure_running", fake_ensure)
+    monkeypatch.setattr(
+        gateway_module, "idle_services", lambda: {service.name}
+    )
+    client = TestClient(create_app(plan))
+    response = client.post("/v1/chat/completions", json={
+        "model": "nmesh-auto",
+        "messages": [{"role": "user", "content": "hello"}],
+    })
+    assert response.status_code == 503
+    assert "restart budget" in response.json()["error"]["message"]

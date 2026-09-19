@@ -1162,6 +1162,13 @@ class Supervisor:
                 if target.launch.shared_daemon:
                     self.shared_services.add(service_name)
             else:
+                reason = self.failed.get(service_name)
+                if reason is not None:
+                    if self._restart_budget(service_name):
+                        # Restart window elapsed — allow one retry.
+                        self.failed.pop(service_name, None)
+                    else:
+                        raise RuntimeError(reason)
                 if dead:
                     if not self._restart_budget(service_name):
                         self.failed[service_name] = i18n.t(
@@ -1181,9 +1188,10 @@ class Supervisor:
                 self._arm_atexit()
                 if not self._wait_health(target):
                     self._stop_process(service_name)
-                    raise RuntimeError(
-                        self._unhealthy_message(service_name, target.port)
-                    )
+                    self._record_restart(service_name)
+                    message = self._unhealthy_message(service_name, target.port)
+                    self.failed[service_name] = message
+                    raise RuntimeError(message)
                 self.failed.pop(service_name, None)
             if actualized:
                 save_plan(selected, self.plan_path)
