@@ -962,8 +962,13 @@ def test_supervisor_boot_heartbeat_without_plan_returns_status(
 
 
 def test_supervisor_admission_replans_against_free_memory(
-    tmp_path, catalog: list[ModelSpec]
+    tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
     base = profile(32, (24,))
     plan = build_plan(base, catalog, Policy(roles=["chat"]))
     starved = replace(
@@ -993,8 +998,13 @@ def test_supervisor_admission_replans_against_free_memory(
 
 
 def test_supervisor_admission_can_be_skipped_or_fail_open(
-    tmp_path, catalog: list[ModelSpec]
+    tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
     base = profile(32, (24,))
     plan = build_plan(base, catalog, Policy(roles=["chat"]))
     calls = 0
@@ -1033,8 +1043,13 @@ def test_supervisor_admission_can_be_skipped_or_fail_open(
 
 
 def test_supervisor_admission_leaves_roomy_plan_unchanged(
-    tmp_path, catalog: list[ModelSpec]
+    tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
     roomy = profile(32, (24,))
     plan = build_plan(roomy, catalog, Policy(roles=["chat"]))
     supervisor = Supervisor(
