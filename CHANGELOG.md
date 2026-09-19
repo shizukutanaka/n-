@@ -16,6 +16,7 @@
 - **カタログを現行世代に更新**: Qwen3-0.6B/1.7B/4B/8B（Apache-2.0、GGUF は bartowski/公式ミラー — 公式の Qwen3-0.6B/1.7B GGUF は Q8_0 のみ公開のため Q4_K_M は bartowski 経由）、SmolLM3-3B、Qwen3-Embedding-0.6B（embed ロール、last-token pooling）を追加。CPU プロファイルでは `plan` の chat 既定が qwen2.5-1.5b から qwen3-1.7b へ更新されます（品質スコア 56 > 50、同一メモリ内）。Gemma-3 は HF がゲート済み（要ライセンス承諾ログイン）のため未収録。
 
 ### Fixed
+- `artifacts.json`/`bench.json`/`epoch.json` の書き込みが非アトミックで、電源断・強制終了で半書き込み破損する可能性があった — 他の状態ファイルと同じ tmp+rename の原子書き込みに統一
 - 破損/切り詰められたキャッシュ GGUF が存在するだけで採用され、llama-server が起動クラッシュを繰り返していた問題を修正 — 取得時に記録した正確なサイズ（artifacts.json）と照合し、不一致なら破棄して再取得します。記録のないファイルは従来どおり採用します
 - `bench --retrieval` の所要時間推定がパイプ/リダイレクト時にバッファされ数時間無言に見えた — `flush=True` でラダー開始前に必ず表示
 - **分割 GGUF のダウンロード中断後に `up` が部分アーティファクトを採用していた問題を修正**: `*-00001-of-0000N.gguf` 形式のモデルで part 1 のみが残ると `target.exists()` で取得済みと誤認し、欠落パートを再取得せず llama-server が起動失敗ループに入っていました。全パート完備時のみ既存ファイルを採用し、未完なら `hf_hub_download` の再開経路へ落とします。サイズ不一致警告の実測値も全パート合計に修正

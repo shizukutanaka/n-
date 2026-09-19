@@ -7,6 +7,7 @@ measurements remain observed values and are never rescaled.
 from __future__ import annotations
 
 import json
+import os
 import statistics
 import subprocess
 from dataclasses import asdict, dataclass
@@ -141,7 +142,9 @@ def save_history(
         key: [asdict(sample) for sample in samples[:EPOCH_HISTORY]]
         for key, samples in history.items()
     }
-    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(temporary, target)
     return target
 
 

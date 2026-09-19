@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
@@ -31,7 +32,9 @@ def load_cache(path: Path | None = None) -> ArtifactCache:
 def save_cache(cache: ArtifactCache, path: Path | None = None) -> Path:
     target = path or CACHE_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    os.replace(temporary, target)
     return target
 
 
