@@ -17,7 +17,7 @@ from typing import Protocol
 
 import psutil
 
-from nmesh import i18n
+from nmesh import __version__, i18n
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.paths import is_windows, nmesh_home
@@ -127,6 +127,19 @@ def engine_listener_pid(port: int) -> int | None:
                 continue
             if exe.startswith(root):
                 return connection.pid
+    return None
+
+
+def _entry_exe(process: ProcessLike) -> str | None:
+    """The executable the process was launched with — recorded in state.json
+    so adoption can verify a surviving pid is still the same binary."""
+    if not isinstance(process, subprocess.Popen):
+        return None
+    args = process.args
+    if isinstance(args, str):
+        return args
+    if isinstance(args, (list, tuple)) and args:
+        return str(args[0])
     return None
 
 
@@ -299,6 +312,7 @@ class Supervisor:
                 "create_time": self._create_time(pid),
                 "port": port,
                 "owner_pid": os.getpid(),
+                "nmesh": __version__,
             }
             self._write_state(state)
 
@@ -408,6 +422,18 @@ class Supervisor:
                 if engine_listener_pid(service.port) == pid:
                     self._terminator(int(pid))
                 return False
+            recorded_exe = entry.get("exe")
+            if isinstance(recorded_exe, str) and recorded_exe:
+                try:
+                    running_exe = psutil.Process(int(pid)).exe()
+                except (psutil.Error, OSError):
+                    running_exe = ""
+                if running_exe != recorded_exe:
+                    # Engine binary changed since the entry was recorded —
+                    # the surviving pid is not what the plan would launch.
+                    if engine_listener_pid(service.port) == pid:
+                        self._terminator(int(pid))
+                    return False
             create_time = entry.get("create_time")
             port = entry.get("port")
             self.adopted[service.name] = {
@@ -745,6 +771,7 @@ class Supervisor:
                 "port": _port(plan, name, 0),
                 "started_at": time.time(),
                 "create_time": self._create_time(process.pid),
+                "exe": _entry_exe(process),
                 "shared": False,
                 "external": False,
                 "parallel_slots": _slots(plan, name),
@@ -773,6 +800,7 @@ class Supervisor:
                 "port": record.get("port") or _port(plan, name, 0),
                 "started_at": time.time(),
                 "create_time": record.get("create_time"),
+                "exe": record.get("exe"),
                 "shared": False,
                 "external": True,
                 "adopted": True,

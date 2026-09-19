@@ -1436,6 +1436,22 @@ class _AdoptedGateway:
             pass
 
 
+def _gateway_recorded_version(pid: int) -> str | None:
+    """The nmesh version recorded for the gateway process *pid*, if the
+    state entry matches it — None when unknown or a different pid."""
+    try:
+        state = json.loads(
+            (nmesh_home() / "state.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+    gateway = state.get("gateway") if isinstance(state, dict) else None
+    if not isinstance(gateway, dict) or gateway.get("pid") != pid:
+        return None
+    recorded = gateway.get("nmesh")
+    return recorded if isinstance(recorded, str) else None
+
+
 def _launch_gateway(
     port: int, detach: bool,
 ) -> tuple[subprocess.Popen[bytes] | _AdoptedGateway, Path | None]:
@@ -1446,8 +1462,23 @@ def _launch_gateway(
             raise OSError(
                 f"port {port} already answers /health but no nmesh gateway owns it"
             )
-        record_gateway(adopted, port)
-        return _AdoptedGateway(adopted), None
+        recorded = _gateway_recorded_version(adopted)
+        if recorded is not None and recorded != __version__:
+            # The surviving gateway runs an older nmesh — adopting it would
+            # keep serving stale code after an upgrade.
+            try:
+                stale = psutil.Process(adopted)
+                stale.terminate()
+                try:
+                    stale.wait(timeout=10)
+                except psutil.TimeoutExpired:
+                    stale.kill()
+                    stale.wait(timeout=10)
+            except (psutil.Error, OSError):
+                pass
+        else:
+            record_gateway(adopted, port)
+            return _AdoptedGateway(adopted), None
     command = [sys.executable, "-m", "nmesh.gateway.server", "--port", str(port)]
     if importlib.util.find_spec("uvicorn") is None or importlib.util.find_spec("fastapi") is None:
         raise OSError(i18n.t("err.gateway_extras", i18n.lang()))
