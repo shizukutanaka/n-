@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from dataclasses import replace
 
@@ -1108,4 +1109,44 @@ def test_supervisor_admission_excludes_already_up_services(
     )
     supervisor.processes[plan.services[0].name] = _AdmissionProcess()
     assert supervisor._admit(plan) is plan
+    supervisor.down()
+
+
+def test_supervisor_heartbeat_restarts_process_when_plan_spec_drifted(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    """A plan swap that changes launch argv must converge the running
+    engine — otherwise the old model keeps serving while status reports
+    the new model_ref."""
+    plan = _recovery_plan(catalog)
+    launched: list[subprocess.Popen] = []
+    supervisor = Supervisor(
+        lambda _service: launched.append(
+            subprocess.Popen(["sleep", "30"])
+        ) or launched[-1],
+        tmp_path / "drift.json",
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    supervisor.up(plan, no_download=True, admit=False)
+    assert len(launched) == 1
+
+    # Simulate a plan swap that changed the launch spec while the engine
+    # kept running (e.g. `nmesh plan` chose a different model/quant).
+    changed = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, argv=["swapped-model"]),
+    )
+    supervisor.active_plan = replace(plan, services=[changed])
+
+    supervisor.heartbeat()
+
+    assert len(launched) == 2
+    assert launched[0].poll() is not None
+    assert supervisor.processes["chat"].pid == launched[1].pid
     supervisor.down()
