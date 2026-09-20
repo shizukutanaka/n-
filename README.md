@@ -103,6 +103,14 @@ real filename. Split GGUF files are downloaded as a complete set; if only a
 lower quantization is published, the runtime records that safe substitution in
 `status` and the persisted state.
 
+`nmesh run "<prompt>"` sends a one-shot chat request through the running
+gateway: the request's `model` is set to `nmesh-<role>`, so `--role` selects
+which planned service answers (default `chat`). `--stream` prints tokens as
+they are generated and `--json` prints the raw response object.
+`nmesh jobs` lists the gateway's queued and running jobs (running jobs show
+live decode progress when the backend exposes it), and
+`nmesh jobs --cancel <id>` withdraws a queued job.
+
 ### Managed llama.cpp engine
 
 If no llama.cpp, Ollama, or LM Studio installation is available, a single
@@ -135,6 +143,14 @@ The llama.cpp release assets used here do not publish checksum files. The
 manifest SHA-256 is therefore the hash nmesh observed while downloading the
 archive. It detects later local corruption, but it does **not** verify
 publisher provenance.
+
+### Launch argument tuning
+
+`nmesh autotune` measures the first planned service across a small
+context × GPU-layer grid (half and full of the planned values) and writes
+the winning cell's launch arguments back to the saved plan, so later
+`nmesh up` starts with the tuned flags. The service must be running; a
+resident gateway is paused for the sweep and restarted afterwards.
 
 ### KV-cache precision measurement
 
@@ -642,6 +658,20 @@ answered `猫は sleeping です。` for `multilingual.ja_translate`, so that
 task's earlier divergence is not an artifact effect and remains unexplained at
 the chat layer. This remains one model on one CPU machine and does not
 generalize; eval records now carry an artifact fingerprint.
+
+### Delegation measurement
+
+`nmesh orchestrate measure` runs an A/B suite (`--suite core|extended|hard`)
+comparing the planned lead service answering alone against routing parts of
+each task to a cheaper worker. `--lead` and `--worker` select planned
+services by role, service name, or model id (defaults: `chat` and the first
+other generative service); `--lead-url`/`--worker-url` can point at external
+OpenAI-compatible endpoints instead. Planned services must be running.
+Measurements are
+persisted as delegation records — they are what the `nmesh-delegate` virtual
+model consults when deciding whether a request may be delegated.
+`nmesh orchestrate show` lists the stored records together with each gate
+decision and cost reasoning.
 
 ### Evaluation uncertainty and resolving power
 
