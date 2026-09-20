@@ -20,6 +20,7 @@
 - **カタログを現行世代に更新**: Qwen3-0.6B/1.7B/4B/8B（Apache-2.0、GGUF は bartowski/公式ミラー — 公式の Qwen3-0.6B/1.7B GGUF は Q8_0 のみ公開のため Q4_K_M は bartowski 経由）、SmolLM3-3B、Qwen3-Embedding-0.6B（embed ロール、last-token pooling）を追加。CPU プロファイルでは `plan` の chat 既定が qwen2.5-1.5b から qwen3-1.7b へ更新されます（品質スコア 56 > 50、同一メモリ内）。Gemma-3 は HF がゲート済み（要ライセンス承諾ログイン）のため未収録。
 
 ### Fixed
+- **プラン差替え後も旧起動 spec のプロセスが残り続ける問題を修正**: supervisor が spawn したサービスは生死のみ確認していたため、plan.json でモデル/quant/フラグが変わっても旧モデルを serve したまま残り、status が新 `model_ref` を表示する嘘になっていました（採用プロセスは `_adopt` で model_ref 検査済み）。spawn 時の argv を記録し、heartbeat・`up`・リクエスト経路の3箇所で spec 差異を検出して新 spec で再起動します
 - **`nmesh status` がゲートウェイ側で記録された失敗理由を表示しない問題を修正**: watchdog がサービスを `failed` にしても、その理由はゲートウェイのメモリ内（`/status` エンドポイント）のみで、state.json には出ないため CLI では「stopped」としか見えませんでした。`status` はゲートウェイの `/status` をマージし、失敗したサービスを `failed` 状態＋理由つきで表示します
 - **誰も読まない死に環境変数 `NMESH_HF_REPO` を削除**: planner が llamacpp サービスの `launch.env` に書き込んでいましたが、取得は `download_repo` フィールド経由で行われ、起動された llama-server も nmesh 側も参照していませんでした。併せて README に未記載だった `NMESH_CONNECT_TIMEOUT`・`NMESH_MODEL_ROOTS` を追記
 - **detached ゲートウェイが古い `plan.json` のままサービスを管理し続けていた問題を修正**: watchdog の `heartbeat` は初回ロードしたプランを保持したままだったため、`plan`/`up` で `plan.json` が更新されてもリロードされず、新プランのエンジンを「別モデルの孤児」として kill → 旧プランのサービスを respawn する不整合に陥っていました（実機で再現: 新プランの 1.7B を kill して旧 0.6B を復活）。`heartbeat` は plan.json の mtime 変更を検出してリロードし、変更時は旧プランの失敗/restart budget を引き継がないよう `failed`/`restarts` をクリアします
