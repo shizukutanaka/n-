@@ -2,6 +2,7 @@
 
 ## 未リリース
 ### Added
+- `nmesh plan` の tok/s 欄で推定値を `~` 接頭辞で区別表示し、脚注を追加 — plan.json の `estimated` フィールドは従来 `--json` 経由でのみ見え、表形式では実測値と推定値が区別できませんでした。実測値への置き換えには `nmesh bench` を実行してください
 - README に未記載だったゲートウェイ HTTP エンドポイントを追記 — `GET /v1/models`（`nmesh-auto`/`nmesh-<service>`/`nmesh-delegate` の OpenAI 互換リスト）、`GET /status`（スーパーバイザのライブ状態スナップショット）、`GET /v1/jobs`・`GET /v1/jobs/{id}`（ジョブレジストリ）
 - README に未記載だった4コマンドを追記 — `run`（ゲートウェイ経由のワンショットプロンプト）、`jobs`（ジョブ一覧/キャンセル）、`autotune`（起動引数グリッド計測→plan 永続化）、`orchestrate`（lead/worker の委譲 A/B 計測と `nmesh-delegate` 仮想モデルの判定レコード）
 - `nmesh plan`/`up` に `--allow-download-gb` を追加 — Policy の `allow_download_gb` が CLI から到達不能だった（警告のみの半機能状態）。超過警告に実測 GiB と予算値を表示するように改善
