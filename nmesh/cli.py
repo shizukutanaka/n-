@@ -338,7 +338,9 @@ def _print_runtime_status(result: RuntimeStatus, language: str) -> None:
         table.add_row(
             str(item.get("service") or ""),
             i18n.t(
-                "status.running" if item.get("running") else "status.stopped",
+                "status.failed" if item.get("failed")
+                else "status.running" if item.get("running")
+                else "status.stopped",
                 language,
             ),
             str(item.get("port") or ""),
@@ -1149,6 +1151,33 @@ def _runtime(args: argparse.Namespace) -> int:
                     status_data_jobs = jobs_data["counts"]
             except (OSError, HTTPError, json.JSONDecodeError):
                 pass
+            try:
+                with urllib.request.urlopen(
+                    urllib.request.Request(
+                        f"http://127.0.0.1:{port}/status",
+                        headers=_gateway_headers(),
+                    ), timeout=2
+                ) as gw_response:
+                    gw_data = json.loads(gw_response.read().decode())
+                if isinstance(gw_data, dict):
+                    local_by_name = {
+                        item.get("service"): item
+                        for item in result.services
+                        if isinstance(item, dict)
+                    }
+                    for gw_item in gw_data.get("services") or []:
+                        if not isinstance(gw_item, dict):
+                            continue
+                        name = gw_item.get("service")
+                        if gw_item.get("failed") is None:
+                            continue
+                        local = local_by_name.get(name)
+                        if local is None:
+                            result.services.append(gw_item)
+                        else:
+                            local["failed"] = gw_item["failed"]
+            except (OSError, HTTPError, json.JSONDecodeError):
+                pass
         except OSError:
             if gateway is None:
                 result.services.append(
@@ -1192,6 +1221,13 @@ def _runtime(args: argparse.Namespace) -> int:
         for warning in result.warnings:
             _console().print(warning)
         if args.command == "status":
+            for item in result.services:
+                if item.get("failed"):
+                    _console().print(
+                        i18n.t("label.service_failed", language,
+                               service=item.get("service"),
+                               reason=item["failed"])
+                    )
             for item in result.services:
                 if item.get("idle"):
                     _console().print(
