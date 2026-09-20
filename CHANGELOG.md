@@ -20,7 +20,7 @@
 ### Fixed
 - **`status` が消えたプロセスを永遠に stopped 表示していた問題を修正**: supervisor が一部サービスを管理下に持つ経路では state.json の死んだエントリがプルーニングされず、プロセス消失後も `stopped` 行が残り続けていました（自サービスを持たない経路では掃討済み）。生きたエントリのみを残すよう統一しました
 - **プラン差替え後も旧起動 spec のプロセスが残り続ける問題を修正**: supervisor が spawn したサービスは生死のみ確認していたため、plan.json でモデル/quant/フラグが変わっても旧モデルを serve したまま残り、status が新 `model_ref` を表示する嘘になっていました（採用プロセスは `_adopt` で model_ref 検査済み）。spawn 時の argv を記録し、heartbeat・`up`・リクエスト経路の3箇所で spec 差異を検出して新 spec で再起動します
-- **`nmesh status` がゲートウェイ側で記録された失敗理由を表示しない問題を修正**: watchdog がサービスを `failed` にしても、その理由はゲートウェイのメモリ内（`/status` エンドポイント）のみで、state.json には出ないため CLI では「stopped」としか見えませんでした。`status` はゲートウェイの `/status` をマージし、失敗したサービスを `failed` 状態＋理由つきで表示します
+- **`nmesh status` がゲートウェイ側で記録された失敗理由・idle 状態を表示しない問題を修正**: watchdog がサービスを `failed` にしても、その理由はゲートウェイのメモリ内（`/status` エンドポイント）のみで、state.json には出ないため CLI では「stopped」としか見えませんでした。同様に `unload` で idle 化したサービスは行ごと消えていました。`status` はゲートウェイの `/status` をマージし、失敗したサービスを `failed` 状態＋理由、unload 済みを `idle` 注記つきで表示します
 - **誰も読まない死に環境変数 `NMESH_HF_REPO` を削除**: planner が llamacpp サービスの `launch.env` に書き込んでいましたが、取得は `download_repo` フィールド経由で行われ、起動された llama-server も nmesh 側も参照していませんでした。併せて README に未記載だった `NMESH_CONNECT_TIMEOUT`・`NMESH_MODEL_ROOTS` を追記
 - **Windows で llama.cpp サービスの起動失敗時に VC++ 再頒布パッケージを疑うヒントを追加**: Windows では llama-server が MSVCP140.dll 等の VC++ ランタイム不在/旧版で起動即 0xC0000005 クラッシュすることがあり（Windows 実機検証で確認）、従来は unhealthy の汎用メッセージのみでした。`is_windows()` かつ llamacpp バックエンドの起動失敗時に「最新 vc_redist.x64.exe のインストールを試す」旨をエラーに付記します
 - **`nmesh eval` が低速環境で数十分無言だった問題を改善**: タスク完了ごとに `eval i/n: <task>` を stderr へ表示（--json 出力は汚染しない）。--depth は内部で4パス実行するため特に長時間になり得る
