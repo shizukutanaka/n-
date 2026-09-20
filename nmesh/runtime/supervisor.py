@@ -222,6 +222,7 @@ class Supervisor:
         self.idle: set[str] = set()
         self.restarts: dict[str, list[float]] = {}
         self.failed: dict[str, str] = {}
+        self.launched_argv: dict[str, list[str]] = {}
         self.active_plan: Plan | None = None
         self._loaded_plan_stamp: tuple[float, int] | None = None
         self._boot_recovery = False
@@ -527,6 +528,16 @@ class Supervisor:
 
     def _record_restart(self, name: str) -> None:
         self.restarts.setdefault(name, []).append(time.monotonic())
+
+    def _spec_drift(self, service: PlannedService) -> bool:
+        """True when a process we spawned still runs but the plan's launch
+        spec changed under it (plan swap edited model, quant or flags).
+        Adopted processes are checked via the recorded state entry in
+        _adopt instead — they carry no recorded argv here."""
+        if service.name not in self.processes:
+            return False
+        recorded = self.launched_argv.get(service.name)
+        return recorded is not None and recorded != list(service.launch.argv)
 
     def _apply_acquired(
         self, plan: Plan, service: PlannedService, acquired: Acquired
@@ -1037,7 +1048,9 @@ class Supervisor:
                         if service.name not in self.processes and self._adopt(service):
                             self.idle.discard(service.name)
                             continue
-                        if self._already_up(service):
+                        if self._spec_drift(service):
+                            self._stop_process(service.name)
+                        elif self._already_up(service):
                             self.idle.discard(service.name)
                             if service.launch.shared_daemon:
                                 self.shared_services.add(service.name)
@@ -1109,6 +1122,7 @@ class Supervisor:
                             self.active_plan = current
                             self.notes[service.name] = heal_warning
                         self.processes[service.name] = self.launcher(service)
+                        self.launched_argv[service.name] = list(service.launch.argv)
                         self.idle.discard(service.name)
                         self._arm_atexit()
                         self.failed.pop(service.name, None)
@@ -1281,6 +1295,8 @@ class Supervisor:
                     except FileNotFoundError:
                         pass
             self.processes.clear()
+            self.launched_argv.clear()
+            self.notes.clear()
             self.shared_services.clear()
             self.external_shared.clear()
             self.adopted.clear()
@@ -1320,6 +1336,8 @@ class Supervisor:
             dead = service_name in self.processes and not self._alive(service_name)
             if dead:
                 self.processes.pop(service_name, None)
+            if self._spec_drift(target):
+                self._stop_process(service_name)
             if service_name not in self.processes and self._adopt(target):
                 pass
             elif self._already_up(target):
@@ -1349,6 +1367,7 @@ class Supervisor:
                     )
                     self.active_plan = selected
                 self.processes[service_name] = self.launcher(target)
+                self.launched_argv[service_name] = list(target.launch.argv)
                 self._arm_atexit()
                 if not self._wait_health(target):
                     self._stop_process(service_name)
@@ -1416,6 +1435,7 @@ class Supervisor:
                     return False
                 self._terminator(pid)
                 self.adopted.pop(service_name, None)
+                self.notes.pop(service_name, None)
             elif service_name not in self.processes:
                 return False
             else:
@@ -1433,6 +1453,8 @@ class Supervisor:
 
     def _stop_process(self, service_name: str) -> None:
         process = self.processes.pop(service_name, None)
+        self.launched_argv.pop(service_name, None)
+        self.notes.pop(service_name, None)
         if process is None:
             return
         if process.poll() is None:
@@ -1572,16 +1594,29 @@ class Supervisor:
             # the services `nmesh up` did), so merge what it does not know.
             seen = {str(item.get("service")) for item in entries}
             persisted = payload.get("services")
+            survivors: list[dict] = []
             if isinstance(persisted, list):
                 for item in persisted:
-                    if (
-                        isinstance(item, dict)
-                        and str(item.get("service")) not in seen
-                    ):
-                        merged = dict(item)
-                        merged["running"] = self._entry_alive(item)
+                    if not isinstance(item, dict):
+                        continue
+                    merged = dict(item)
+                    tracked = self.processes.get(str(item.get("service")))
+                    merged["running"] = (
+                        self._entry_alive(item)
+                        or tracked is not None and tracked.poll() is None
+                    )
+                    if not merged["running"]:
+                        continue
+                    if str(item.get("service")) not in seen:
                         entries.append(merged)
                         seen.add(str(item.get("service")))
+                    survivors.append(item)
+                if len(survivors) != len(persisted):
+                    # Drop dead entries rather than listing them as
+                    # stopped forever — a process that is gone is not
+                    # a service nmesh still manages.
+                    payload["services"] = survivors
+                    self._write_state(payload)
             if gateway_entry is not None:
                 entries.append(gateway_entry)
                 if not gateway_running:
@@ -1674,6 +1709,9 @@ class Supervisor:
                     self.failed.pop(service.name, None)
                     changed = True
                     continue
+                if self._spec_drift(service):
+                    self._stop_process(service.name)
+                    changed = True
                 if self._already_up(service):
                     continue
                 if boot_recovery and (
@@ -1710,6 +1748,7 @@ class Supervisor:
                 changed = True
                 try:
                     self.processes[service.name] = self.launcher(service)
+                    self.launched_argv[service.name] = list(service.launch.argv)
                     self._arm_atexit()
                     if not self._wait_health(service, timeout=min(self.health_timeout, 30.0)):
                         self._stop_process(service.name)

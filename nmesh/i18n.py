@@ -304,10 +304,12 @@ MESSAGES = {
         "label.reloaded": "Reloaded: {services} (created_at={created_at})",
         "label.unloaded": "Unloaded: {services}",
         "label.service_idle": "{service}: idle",
+        "label.service_failed": "{service}: failed — {reason}",
         "label.services": "Services",
         "label.state": "State",
         "label.port": "Port",
         "status.running": "running",
+        "status.failed": "failed",
         "status.stopped": "stopped",
         "status.none": "no services running",
         "jobs.title": "Jobs",
@@ -621,6 +623,7 @@ MESSAGES = {
         "label.state": "状態",
         "label.port": "ポート",
         "status.running": "稼働中",
+        "status.failed": "失敗",
         "status.stopped": "停止",
         "status.none": "稼働中のサービスはありません",
         "jobs.title": "ジョブ",
@@ -741,6 +744,7 @@ MESSAGES["ja"].update({
     "err.gateway_unload": "\u30b2\u30fc\u30c8\u30a6\u30a7\u30a4\u306e\u30a2\u30f3\u30ed\u30fc\u30c9\u306b\u5931\u6557\u3057\u307e\u3057\u305f: {error}",
     "label.unloaded": "\u30a2\u30f3\u30ed\u30fc\u30c9\u5b8c\u4e86: {services}",
     "label.service_idle": "{service}: \u30a2\u30a4\u30c9\u30eb",
+    "label.service_failed": "{service}: \u5931\u6557 \u2014 {reason}",
 })
 
 MESSAGES["ja"].update({
