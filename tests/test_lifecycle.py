@@ -1212,9 +1212,9 @@ def test_service_units_are_pure_and_platform_specific(monkeypatch, tmp_path: Pat
     assert "nmesh-gateway-launcher.sh" in text
     assert command.startswith("systemctl --user")
 
-    monkeypatch.setattr(service_unit_module.os, "name", "posix")
-    monkeypatch.setattr(service_unit_module.sys, "platform", "darwin")
-    filename, text, command = service_unit(19001)
+    # os_name="darwin" simulates macOS without patching os.name — on Windows
+    # hosts the patched name would make pathlib try to instantiate PosixPath.
+    filename, text, command = service_unit(19001, "darwin")
     assert filename.endswith(".plist")
     assert "nmesh-gateway-launcher.sh" in text
     assert "<key>KeepAlive</key><true/>" in text
