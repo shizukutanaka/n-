@@ -1296,6 +1296,7 @@ class Supervisor:
                         pass
             self.processes.clear()
             self.launched_argv.clear()
+            self.notes.clear()
             self.shared_services.clear()
             self.external_shared.clear()
             self.adopted.clear()
@@ -1434,6 +1435,7 @@ class Supervisor:
                     return False
                 self._terminator(pid)
                 self.adopted.pop(service_name, None)
+                self.notes.pop(service_name, None)
             elif service_name not in self.processes:
                 return False
             else:
@@ -1452,6 +1454,7 @@ class Supervisor:
     def _stop_process(self, service_name: str) -> None:
         process = self.processes.pop(service_name, None)
         self.launched_argv.pop(service_name, None)
+        self.notes.pop(service_name, None)
         if process is None:
             return
         if process.poll() is None:
