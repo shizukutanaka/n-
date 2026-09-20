@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nmesh"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hardware-aware local LLM planner and runtime manager with an OpenAI-compatible gateway"
 readme = "README.md"
 license = {text = "MIT"}

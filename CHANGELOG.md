@@ -1,6 +1,8 @@
 # 変更履歴
 
 ## 未リリース
+
+## 0.2.0 — 2026-09-20
 ### Added
 - `nmesh plan` の tok/s 欄で推定値を `~` 接頭辞で区別表示し、脚注を追加 — plan.json の `estimated` フィールドは従来 `--json` 経由でのみ見え、表形式では実測値と推定値が区別できませんでした。実測値への置き換えには `nmesh bench` を実行してください
 - `nmesh plan`/`up` に `--min-decode-tps` を追加 — Policy の `min_decode_tps`（admission の最低デコード速度閾値、既定 8.0）は plan.json に永続化される一方、CLI から到達不能だった半機能状態を解消。低速マシンで全モデルが閾値を割って plan が空になる場合の回避策としても使えます
