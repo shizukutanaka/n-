@@ -489,6 +489,7 @@ def _make_plan(args: argparse.Namespace) -> Plan:
         cache_reuse=getattr(args, "cache_reuse", 0),
         context_shift=getattr(args, "context_shift", False),
         allow_download_gb=getattr(args, "allow_download_gb", 60.0),
+        min_decode_tps=getattr(args, "min_decode_tps", 8.0),
     )
     # Throughput and capacity measurements describe the machine that ran them:
     # their cache key carries the GPU name and layer count but not the CPU, so
@@ -890,6 +891,7 @@ def _up_plan_args(args: argparse.Namespace) -> argparse.Namespace:
         cache_reuse=getattr(args, "cache_reuse", 0),
         context_shift=getattr(args, "context_shift", False),
         allow_download_gb=getattr(args, "allow_download_gb", 60.0),
+        min_decode_tps=getattr(args, "min_decode_tps", 8.0),
         profile=getattr(args, "profile", None),
     )
 
@@ -920,6 +922,7 @@ _UP_PLAN_FLAG_DEFAULTS: tuple[tuple[str, object, str], ...] = (
     ("sleep_idle_seconds", 0, "--sleep-idle-seconds"),
     ("cache_reuse", 0, "--cache-reuse"),
     ("context_shift", False, "--context-shift"),
+    ("min_decode_tps", 8.0, "--min-decode-tps"),
 )
 
 
@@ -4180,6 +4183,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--ignore-spec-evidence", action="store_true")
     plan.add_argument("--allow-download-gb", type=float, default=60.0,
                       help="warn when planned downloads exceed this many GiB")
+    plan.add_argument("--min-decode-tps", type=float, default=8.0,
+                      help="minimum decode throughput (tok/s) a service must sustain")
     plan.add_argument("--lang")
     plan.add_argument("--profile")
     up_parser = sub.add_parser("up")
@@ -4203,6 +4208,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--ignore-spec-evidence", action="store_true")
     up_parser.add_argument("--allow-download-gb", type=float, default=60.0,
                            help="warn when planned downloads exceed this many GiB")
+    up_parser.add_argument("--min-decode-tps", type=float, default=8.0,
+                           help="minimum decode throughput (tok/s) a service must sustain")
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=18000)
     serve_parser.add_argument("--roles", default=None)
