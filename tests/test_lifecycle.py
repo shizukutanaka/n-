@@ -1567,3 +1567,55 @@ def test_doctor_profile_json_offline(
     data = json.loads(capsys.readouterr().out)
     assert data["simulated"] is True
     assert data["cpu_name"] == "Test CPU"
+
+
+def test_status_surfaces_gateway_failed_services(
+    monkeypatch, tmp_path: Path, capsys,
+) -> None:
+    """`nmesh status` must show failures the detached gateway recorded —
+    state.json never carries them, so without merging /status the reason
+    is invisible to CLI users."""
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    (tmp_path / "state.json").write_text(
+        json.dumps({
+            "version": 2,
+            "owner_pid": os.getpid(),
+            "services": [],
+            "gateway": {"pid": os.getpid(), "port": 18000,
+                        "create_time": 1.0, "owner_pid": os.getpid()},
+        }),
+        encoding="utf-8",
+    )
+
+    class _Response:
+        status = 200
+
+        def __init__(self, payload: dict) -> None:
+            self._payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(self._payload).encode()
+
+    def _open(request, timeout=0):
+        url = getattr(request, "full_url", str(request))
+        if url.endswith("/status"):
+            return _Response({"services": [{
+                "service": "chat", "running": False,
+                "failed": "artifact missing",
+            }]})
+        return _Response({})
+
+    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _open)
+    assert cli.main(["status", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    chat = next(
+        item for item in payload["services"] if item.get("service") == "chat"
+    )
+    assert chat["failed"] == "artifact missing"
+>>>>>>> 4e29a9d (nmesh status がゲートウェイ側の失敗理由を表示しない問題を修正)
