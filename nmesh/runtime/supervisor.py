@@ -725,13 +725,18 @@ class Supervisor:
         )
 
     def _unhealthy_message(
-        self, service_name: str, port: int | None = None
+        self,
+        service_name: str,
+        port: int | None = None,
+        backend: str | None = None,
     ) -> str:
         message = i18n.t(
             "err.service_unhealthy", i18n.lang(), service=service_name
         )
         if port is not None and _port_in_use(port):
             message = f"{message} {i18n.t('err.service_port_in_use', i18n.lang(), port=port)}"
+        if backend == "llamacpp" and is_windows():
+            message = f"{message} {i18n.t('err.service_vcredist', i18n.lang())}"
         return self._with_log_tail(service_name, message)
 
     def _healthy(self, service: PlannedService) -> bool:
@@ -1068,7 +1073,9 @@ class Supervisor:
                         self.failed.pop(service.name, None)
                         if not self._wait_health(service):
                             raise RuntimeError(
-                                self._unhealthy_message(service.name, service.port)
+                                self._unhealthy_message(
+                                    service.name, service.port, service.backend
+                                )
                             )
                     if (current is plan or actualized) and {
                         item.name for item in current.services
@@ -1305,7 +1312,9 @@ class Supervisor:
                 if not self._wait_health(target):
                     self._stop_process(service_name)
                     self._record_restart(service_name)
-                    message = self._unhealthy_message(service_name, target.port)
+                    message = self._unhealthy_message(
+                        service_name, target.port, target.backend
+                    )
                     self.failed[service_name] = message
                     raise RuntimeError(message)
                 self.failed.pop(service_name, None)
