@@ -511,7 +511,12 @@ class Supervisor:
             if isinstance(pid, int) and not isinstance(pid, bool):
                 self._terminator(pid)
             self.adopted.pop(name, None)
+            self.idle.discard(name)
             dropped = True
+        if dropped:
+            for name in [name for name in self.failed if name not in planned]:
+                self.failed.pop(name, None)
+                self.restarts.pop(name, None)
         return dropped
 
     def _restart_budget(self, name: str) -> bool:
