@@ -1684,6 +1684,22 @@ class Supervisor:
                     continue
                 if service.name in self.processes:
                     self.processes.pop(service.name, None)
+                try:
+                    self.active_plan, service, _, _ = self._apply_acquired(
+                        self.active_plan,
+                        service,
+                        acquire(service, local_only=True),
+                    )
+                except Exception as error:  # noqa: BLE001
+                    # The watchdog never downloads — a plan can name an
+                    # artifact that was never fetched. Record why instead
+                    # of crash-looping the engine on a missing file.
+                    self.failed[service.name] = i18n.t(
+                        "err.artifact_missing", i18n.lang(),
+                        service=service.name, error=error,
+                    )
+                    changed = True
+                    continue
                 if not self._restart_budget(service.name):
                     self.failed[service.name] = i18n.t(
                         "err.restart_budget", i18n.lang(), service=service.name

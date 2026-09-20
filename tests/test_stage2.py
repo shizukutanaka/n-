@@ -669,6 +669,11 @@ def test_supervisor_heartbeat_relaunches_dead_adopted_service(
     )
     monkeypatch.setattr(supervisor_module, "_pid_alive", pid_alive)
     monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
     supervisor.ensure_running("chat", plan)
     alive = False
 
@@ -926,6 +931,11 @@ def test_supervisor_boot_heartbeat_recovers_resident_and_persisted_services(
         health_timeout=0.01,
     )
     supervisor._wait_health = lambda _service, timeout=None: True
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
 
     supervisor.heartbeat()
 
