@@ -1150,3 +1150,46 @@ def test_supervisor_heartbeat_restarts_process_when_plan_spec_drifted(
     assert launched[0].poll() is not None
     assert supervisor.processes["chat"].pid == launched[1].pid
     supervisor.down()
+
+
+def test_supervisor_status_prunes_dead_persisted_entries(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    """A state.json entry whose process is gone must not linger as a
+    forever-'stopped' row when this supervisor already tracks services."""
+    plan = _recovery_plan(catalog)
+    processes: list[_RecoverProcess] = []
+    supervisor = Supervisor(
+        lambda _service: processes.append(_RecoverProcess()) or processes[-1],
+        tmp_path / "state.json",
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    supervisor.up(plan, no_download=True, admit=False)
+    chat_pid = processes[0].pid
+
+    monkeypatch.setattr(
+        supervisor_module, "_pid_alive",
+        lambda pid, create_time=None: pid == chat_pid,
+    )
+    supervisor.state_path.write_text(json.dumps({
+        "version": 2,
+        "services": [
+            {"service": "chat", "pid": chat_pid, "port": 18010},
+            {"service": "worker", "pid": 4242, "port": 18020},
+        ],
+    }), encoding="utf-8")
+
+    result = supervisor.status()
+
+    names = {item.get("service") for item in result.services}
+    assert "chat" in names
+    assert "worker" not in names
+    persisted = json.loads(supervisor.state_path.read_text())
+    assert [s["service"] for s in persisted["services"]] == ["chat"]
+    supervisor.down()

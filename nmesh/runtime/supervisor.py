@@ -1591,16 +1591,29 @@ class Supervisor:
             # the services `nmesh up` did), so merge what it does not know.
             seen = {str(item.get("service")) for item in entries}
             persisted = payload.get("services")
+            survivors: list[dict] = []
             if isinstance(persisted, list):
                 for item in persisted:
-                    if (
-                        isinstance(item, dict)
-                        and str(item.get("service")) not in seen
-                    ):
-                        merged = dict(item)
-                        merged["running"] = self._entry_alive(item)
+                    if not isinstance(item, dict):
+                        continue
+                    merged = dict(item)
+                    tracked = self.processes.get(str(item.get("service")))
+                    merged["running"] = (
+                        self._entry_alive(item)
+                        or tracked is not None and tracked.poll() is None
+                    )
+                    if not merged["running"]:
+                        continue
+                    if str(item.get("service")) not in seen:
                         entries.append(merged)
                         seen.add(str(item.get("service")))
+                    survivors.append(item)
+                if len(survivors) != len(persisted):
+                    # Drop dead entries rather than listing them as
+                    # stopped forever — a process that is gone is not
+                    # a service nmesh still manages.
+                    payload["services"] = survivors
+                    self._write_state(payload)
             if gateway_entry is not None:
                 entries.append(gateway_entry)
                 if not gateway_running:
