@@ -108,10 +108,17 @@ def test_benchmark_key_preserves_f16_and_separates_q8() -> None:
     assert q8_key != f16_key
 
 
-def test_supervisor_fallback_with_fake_launcher(tmp_path, catalog: list[object]) -> None:
+def test_supervisor_fallback_with_fake_launcher(
+    tmp_path, catalog: list[object], monkeypatch
+) -> None:
     plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
     service = replace(plan.services[0], launch=replace(plan.services[0].launch, health_url=None))
     plan = replace(plan, services=[service])
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
     calls: list[str] = []
 
     class FakeProcess:
@@ -208,7 +215,7 @@ def test_supervisor_rewrites_acquired_model_and_records_note(
     monkeypatch.setattr(
         supervisor_module,
         "acquire",
-        lambda _service: Acquired(acquired_path, "q2_k", True),
+        lambda _service, local_only=False: Acquired(acquired_path, "q2_k", True),
     )
     supervisor = Supervisor(
         lambda _service: _AdmissionProcess(),
@@ -287,7 +294,7 @@ def test_supervisor_applies_ollama_derived_model_ref(
     monkeypatch.setattr(
         supervisor_module,
         "acquire",
-        lambda _service: Acquired(
+        lambda _service, local_only=False: Acquired(
             None, None, False, model_ref="nmesh-chat-c8192"
         ),
     )
@@ -321,7 +328,7 @@ def test_supervisor_ollama_create_failure_keeps_base_and_warns(
     monkeypatch.setattr(
         supervisor_module,
         "acquire",
-        lambda _service: Acquired(
+        lambda _service, local_only=False: Acquired(
             None,
             None,
             False,
@@ -412,13 +419,20 @@ def _recovery_plan(catalog: list[ModelSpec]):
     return replace(plan, services=[service])
 
 
-def test_supervisor_heartbeat_revives_dead_process(tmp_path, catalog: list[ModelSpec]) -> None:
+def test_supervisor_heartbeat_revives_dead_process(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
     plan = _recovery_plan(catalog)
     processes: list[_RecoverProcess] = []
     supervisor = Supervisor(
         lambda _service: processes.append(_RecoverProcess()) or processes[-1],
         tmp_path / "heartbeat.json",
         health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
     )
     supervisor._wait_health = lambda _service, timeout=None: True
     supervisor.up(plan, no_download=True, admit=False)
@@ -430,7 +444,7 @@ def test_supervisor_heartbeat_revives_dead_process(tmp_path, catalog: list[Model
 
 
 def test_supervisor_heartbeat_restart_budget_marks_failure(
-    tmp_path, catalog: list[ModelSpec]
+    tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
     plan = _recovery_plan(catalog)
     processes: list[_RecoverProcess] = []
@@ -438,6 +452,11 @@ def test_supervisor_heartbeat_restart_budget_marks_failure(
         lambda _service: processes.append(_RecoverProcess()) or processes[-1],
         tmp_path / "budget.json",
         health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
     )
     supervisor._wait_health = lambda _service, timeout=None: True
     supervisor.up(plan, no_download=True, admit=False)
@@ -469,7 +488,7 @@ def test_supervisor_heartbeat_skips_unloaded_swap_member(
 
 
 def test_supervisor_idle_unload_does_not_restart_and_revives(
-    tmp_path, catalog: list[ModelSpec]
+    tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
     plan = _recovery_plan(catalog)
     processes: list[_RecoverProcess] = []
@@ -477,6 +496,11 @@ def test_supervisor_idle_unload_does_not_restart_and_revives(
         lambda _service: processes.append(_RecoverProcess()) or processes[-1],
         tmp_path / "idle.json",
         health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
     )
     supervisor._wait_health = lambda _service, timeout=None: True
     supervisor.up(plan, no_download=True, admit=False)
@@ -509,7 +533,7 @@ def test_supervisor_idle_unload_does_not_restart_and_revives(
 
 
 def test_supervisor_ensure_running_revives_dead_process(
-    tmp_path, catalog: list[ModelSpec]
+    tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
     plan = _recovery_plan(catalog)
     processes: list[_RecoverProcess] = []
@@ -517,6 +541,11 @@ def test_supervisor_ensure_running_revives_dead_process(
         lambda _service: processes.append(_RecoverProcess()) or processes[-1],
         tmp_path / "ensure.json",
         health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
     )
     supervisor._wait_health = lambda _service, timeout=None: True
     supervisor.up(plan, no_download=True, admit=False)
@@ -717,10 +746,15 @@ class _StateProcess:
 
 
 def test_supervisor_state_is_shared_between_processes(
-    tmp_path, catalog: list[ModelSpec]
+    tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
     plan = _recovery_plan(catalog)
     state_path = tmp_path / "shared-state.json"
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
     first = Supervisor(lambda _service: _StateProcess(), state_path, health_timeout=0.01)
     first.up(plan, no_download=True, admit=False)
     second = Supervisor(state_path=state_path)
@@ -928,8 +962,13 @@ def test_supervisor_boot_heartbeat_without_plan_returns_status(
 
 
 def test_supervisor_admission_replans_against_free_memory(
-    tmp_path, catalog: list[ModelSpec]
+    tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
     base = profile(32, (24,))
     plan = build_plan(base, catalog, Policy(roles=["chat"]))
     starved = replace(
@@ -959,8 +998,13 @@ def test_supervisor_admission_replans_against_free_memory(
 
 
 def test_supervisor_admission_can_be_skipped_or_fail_open(
-    tmp_path, catalog: list[ModelSpec]
+    tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
     base = profile(32, (24,))
     plan = build_plan(base, catalog, Policy(roles=["chat"]))
     calls = 0
@@ -999,8 +1043,13 @@ def test_supervisor_admission_can_be_skipped_or_fail_open(
 
 
 def test_supervisor_admission_leaves_roomy_plan_unchanged(
-    tmp_path, catalog: list[ModelSpec]
+    tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
     roomy = profile(32, (24,))
     plan = build_plan(roomy, catalog, Policy(roles=["chat"]))
     supervisor = Supervisor(

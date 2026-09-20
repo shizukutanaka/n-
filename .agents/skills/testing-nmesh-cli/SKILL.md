@@ -43,3 +43,12 @@ nmesh is a user-facing CLI — the terminal IS its UI. Run commands in a visible
 - `NMESH_LANG=ja` or `LANG=ja_JP.UTF-8` switches messages; this box has NO CJK fonts → terminal shows boxes; capture `> file` and check UTF-8 content with python to prove real Japanese.
 - `nmesh bench` without services exercises the `err.bench_up` i18n path.
 - Keep artifacts in /tmp/nmesh-test/; screenshots auto-save under /home/ubuntu/screenshots/; recordings /home/ubuntu/screencasts/.
+
+## macOS session notes (Apple Silicon VM, repo `/Users/devin/repos/n-`)
+- Use `.venv/bin/nmesh` (py3.12); system `python3` is 3.9.6 — too old. `.venv310` is a 3.10 check env.
+- Smoke home: `NMESH_HOME=/Users/devin/repos/n-/.nmesh-smoke` (llama.cpp b11056 + qwen3-0.6b Q8_0/bf16 already installed; NOT git-tracked).
+- No `/proc`, no `ss`. Listeners: `lsof -nP -iTCP:18010 -sTCP:LISTEN`. Proc argv: `ps -p <pid> -o command=` or `ps aux | grep llama-server`.
+- `psutil.net_connections()` raises `AccessDenied` when unprivileged — nmesh falls back to `lsof`; the product path works either way.
+- **Reasoning models think by default**: qwen3-0.6b (the default chat on this profile) spends the whole output budget on `<think>` — `nmesh run` looks stuck ~50s; use `/no_think` in the prompt (Qwen template magic word) or `chat_template_kwargs: {"enable_thinking": false}` in API calls for fast checks. `nmesh eval` needs `--reasoning-allowance 1024` or all 16 tasks score "unscorable" (finish_reason=length, empty content) — by design those runs are excluded from planner evidence (`planner_eval_records` drops records with unscorable/transport_errors/depth>0).
+- `nmesh autostart --install` writes `~/Library/LaunchAgents/com.nmesh.gateway.plist` + `$NMESH_HOME/nmesh-gateway-launcher.sh`/`gateway.env` (0600); it does NOT `launchctl load` — remove the plist after testing.
+- Decode ~5-7 tok/s for 0.6B is this shared VM's limit (CPU-bound even with `-ngl 14` Metal offload), not a product bug.

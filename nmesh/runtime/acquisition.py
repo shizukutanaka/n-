@@ -229,6 +229,57 @@ def _recorded_artifact_bytes(
     return load_cache().get(artifact_key(repo_id, actual_label or service.quant))
 
 
+def _local_gguf(
+    target: Path, service: PlannedService
+) -> tuple[Path, str, int] | None:
+    """Best on-disk GGUF for *service*, without touching the network.
+
+    Planned names ({id}-{quant}.gguf) differ from upstream filenames, so
+    a no-download launch still has to resolve the real file. Mirrors
+    _resolve_gguf's rule: exact quant label first, else the nearest
+    label at or below the planned bits-per-weight.
+    """
+    first_label = service.quant.split("+", 1)[0]
+    planned_bpw = NOMINAL_GGUF_BPW.get(first_label)
+    if planned_bpw is None:
+        return None
+    model_token = service.model_id.casefold()
+    candidates: list[tuple[str, Path, int]] = []
+    for path in sorted(target.parent.glob("*.gguf")):
+        label = parse_label(path.name)
+        if label is None or label in _REPACK_LABELS:
+            continue
+        match = _SPLIT_RE.match(path.name)
+        if match is not None and int(match.group("part")) != 1:
+            continue
+        if model_token and model_token not in path.name.casefold().replace("_", "-"):
+            continue
+        parts = _split_gguf_parts(path)
+        if not all(part.exists() for part in parts):
+            continue
+        candidates.append(
+            (label, path, sum(part.stat().st_size for part in parts))
+        )
+    exact = [item for item in candidates if item[0] == service.quant]
+    eligible = exact if exact else [
+        item
+        for item in candidates
+        if (bpw := NOMINAL_GGUF_BPW.get(item[0].split("+", 1)[0])) is not None
+        and bpw <= planned_bpw
+    ]
+    if not eligible:
+        return None
+    if not exact:
+        eligible.sort(key=lambda item: (
+            -NOMINAL_GGUF_BPW[item[0].split("+", 1)[0]],
+            "+" in item[0],
+            item[2],
+            item[0],
+        ))
+    label, path, size = eligible[0]
+    return path, label, size
+
+
 def _artifact_warning(
     service: PlannedService,
     label: str | None,
@@ -263,9 +314,16 @@ def _artifact_warning(
     return " ".join(warnings) or None
 
 
-def acquire(service: PlannedService) -> Acquired:
+def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
+    """Resolve *service*'s artifact to a real path.
+
+    With ``local_only`` no network is touched: existing files under the
+    models directory are matched by quant label and model id instead of
+    downloading (planned names like {id}-{quant}.gguf differ from
+    upstream filenames)."""
     if service.backend == "ollama":
-        subprocess.run(["ollama", "pull", service.model_ref], check=True)
+        if not local_only:
+            subprocess.run(["ollama", "pull", service.model_ref], check=True)
         name = f"nmesh-{service.model_id}-c{service.context}"
         modelfile = nmesh_home() / "ollama" / f"{name}.Modelfile"
         modelfile.parent.mkdir(parents=True, exist_ok=True)
@@ -297,7 +355,10 @@ def acquire(service: PlannedService) -> Acquired:
         from huggingface_hub import snapshot_download
 
         return Acquired(
-            Path(snapshot_download(repo_id=service.download_repo or service.model_ref)),
+            Path(snapshot_download(
+                repo_id=service.download_repo or service.model_ref,
+                local_files_only=local_only,
+            )),
             None,
             False,
         )
@@ -332,6 +393,21 @@ def acquire(service: PlannedService) -> Acquired:
                     target, quant, quant != service.quant, warning=warning,
                     artifact_bytes=artifact_bytes,
                 )
+        if local_only:
+            local = _local_gguf(target, service)
+            if local is None:
+                raise RuntimeError(
+                    f"Model file for {service.model_id} ({service.quant}) is "
+                    "not downloaded and downloads are disabled"
+                )
+            local_path, chosen, total_bytes = local
+            warning = _artifact_warning(
+                service, chosen, local_path.name, total_bytes
+            )
+            return Acquired(
+                local_path, chosen, chosen != service.quant,
+                warning=warning, artifact_bytes=total_bytes,
+            )
         repo_id = service.download_repo
         if repo_id is None:
             raise RuntimeError("No Hugging Face GGUF repository configured")

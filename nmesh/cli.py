@@ -161,6 +161,7 @@ from nmesh.runtime import (
     gateway_health,
     gateway_listener_pid,
     record_gateway,
+    stop_gateway,
 )
 from nmesh.runtime import down as runtime_down
 from nmesh.runtime import engine as engine_runtime
@@ -4399,6 +4400,49 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not _service_running(service, running):
             print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
             return 1
+        gateway_port = next(
+            (
+                item.get("port") for item in running.services
+                if item.get("service") == "gateway" and item.get("running")
+            ),
+            None,
+        )
+        if not (
+            isinstance(gateway_port, int) and not isinstance(gateway_port, bool)
+        ):
+            gateway_port = None
+        if gateway_port is not None:
+            # A detached gateway's watchdog respawns services as we tear
+            # them down between cells, stealing the port mid-restart —
+            # pause it for the grid and bring it back afterwards.
+            stop_gateway(foreign=True)
+
+        def restart_gateway() -> None:
+            # Whatever the grid leaves running must survive process exit —
+            # the supervisor's atexit teardown would otherwise down it.
+            disarm_atexit()
+            if gateway_port is None:
+                return
+            try:
+                process, log_path = _launch_gateway(gateway_port, detach=True)
+            except OSError as error:
+                print(
+                    i18n.t("err.gateway_start", i18n.lang(), error=error),
+                    file=sys.stderr,
+                )
+                return
+            if not _wait_gateway(gateway_port, process):
+                clear_gateway(process.pid)
+                process.terminate()
+                print(
+                    i18n.t(
+                        "err.gateway_not_ready",
+                        i18n.lang(),
+                        path=log_path,
+                    ),
+                    file=sys.stderr,
+                )
+
         base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
             f"http://127.0.0.1:{service.port}"
         )
@@ -4422,7 +4466,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ])
                 runtime_down()
                 try:
-                    runtime_up(tuned_plan, no_download=True)
+                    # admit=False: artifact-replanning would rebuild the
+                    # service from the policy and discard the tuned
+                    # context/layers — the grid must launch them verbatim.
+                    runtime_up(tuned_plan, no_download=True, admit=False)
                     tuned_result = measure(tuned, base_url)
                 except (OSError, RuntimeError) as error:
                     print(i18n.t("err.autotune_measure", i18n.lang(), error=error),
@@ -4435,6 +4482,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             i18n.t("err.autotune_restore", i18n.lang(), error=restore_error),
                             file=sys.stderr,
                         )
+                    restart_gateway()
                     return 1
                 save_plan(saved_plan)
                 if best is None or tuned_result.decode_tps > best[2]:
@@ -4446,12 +4494,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 runtime_up(saved_plan, no_download=True)
             except (OSError, RuntimeError):
                 pass
+            restart_gateway()
             return 1
         runtime_down()
         assert best_plan is not None
         save_plan(best_plan)
         try:
-            runtime_up(best_plan, no_download=True)
+            runtime_up(best_plan, no_download=True, admit=False)
         except (OSError, RuntimeError) as error:
             save_plan(saved_plan)
             runtime_down()
@@ -4466,10 +4515,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 i18n.t("err.autotune_winning", i18n.lang(), error=error),
                 file=sys.stderr,
             )
+            restart_gateway()
             return 1
         summary = {"service": service.name, "context": best[0], "n_gpu_layers": best[1],
                    "decode_tps": best[2]}
         _print_json(summary) if args.json else _console().print(summary)
+        restart_gateway()
         return 0
     if args.command == "autostart":
         if is_windows():

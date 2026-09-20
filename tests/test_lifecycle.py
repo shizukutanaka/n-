@@ -18,6 +18,7 @@ from nmesh.catalog import load_catalog
 from nmesh.planner import Policy, build_plan
 from nmesh.runtime import service_unit as service_unit_module
 from nmesh.runtime import supervisor as supervisor_module
+from nmesh.runtime.acquisition import Acquired
 from nmesh.runtime.logs import log_path, open_log, tail
 from nmesh.runtime.service_unit import launcher_script, service_unit
 from nmesh.runtime.supervisor import Supervisor
@@ -239,6 +240,10 @@ def test_up_does_not_persist_admission_dropped_plan(
     )
     saved: list[SimpleNamespace] = []
     monkeypatch.setattr("nmesh.runtime.supervisor.save_plan", saved.append)
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
     supervisor = Supervisor(state_path=tmp_path / "state.json")
     monkeypatch.setattr(supervisor, "_admit", lambda _plan, _cache: reduced)
     monkeypatch.setattr(supervisor, "_adopt", lambda _service: False)
@@ -278,6 +283,10 @@ def test_up_surfaces_admission_warnings(
     monkeypatch.setattr(
         "nmesh.runtime.supervisor.save_plan", lambda _plan: None
     )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
     supervisor = Supervisor(state_path=tmp_path / "state.json")
     monkeypatch.setattr(supervisor, "_admit", lambda _plan, _cache: reduced)
     monkeypatch.setattr(supervisor, "_adopt", lambda _service: False)
@@ -313,6 +322,10 @@ def test_up_writes_plan_to_configured_plan_path(
     monkeypatch.setattr(
         "nmesh.runtime.supervisor.save_plan",
         lambda _plan, path=None: saved.append((_plan, path)),
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
     )
     plan_path = tmp_path / "plan.json"
     supervisor = Supervisor(
@@ -368,7 +381,7 @@ def test_up_reacquires_service_after_artifact_replan(
     monkeypatch.setattr(supervisor, "_wait_health", lambda _service: True)
     acquisitions: list[str] = []
 
-    def fake_acquire(service):
+    def fake_acquire(service, local_only=False):
         acquisitions.append(service.model_ref)
         return SimpleNamespace()
 
@@ -453,7 +466,8 @@ def test_engine_listener_pid_does_not_shell_out_when_psutil_works(
 
 def _stub_acquires(monkeypatch, supervisor: Supervisor) -> None:
     monkeypatch.setattr(
-        "nmesh.runtime.supervisor.acquire", lambda _service: SimpleNamespace()
+        "nmesh.runtime.supervisor.acquire",
+        lambda _service, local_only=False: SimpleNamespace(),
     )
     monkeypatch.setattr(
         supervisor,
@@ -1310,6 +1324,10 @@ def test_up_status_entries_include_port(
     )
     monkeypatch.setattr(
         "nmesh.runtime.supervisor.save_plan", lambda *_a: None
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
     )
     supervisor = Supervisor(state_path=tmp_path / "state.json")
     monkeypatch.setattr(supervisor, "_admit", lambda _plan, _cache: _plan)
