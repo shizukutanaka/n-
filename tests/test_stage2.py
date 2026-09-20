@@ -1137,12 +1137,13 @@ def test_supervisor_heartbeat_restarts_process_when_plan_spec_drifted(
     assert len(launched) == 1
 
     # Simulate a plan swap that changed the launch spec while the engine
-    # kept running (e.g. `nmesh plan` chose a different model/quant).
+    # kept running (e.g. `nmesh plan` chose a different model/quant) —
+    # heartbeat reloads plan.json, so the swap must land on disk.
     changed = replace(
         plan.services[0],
         launch=replace(plan.services[0].launch, argv=["swapped-model"]),
     )
-    supervisor.active_plan = replace(plan, services=[changed])
+    planner_save_plan(replace(plan, services=[changed]))
 
     supervisor.heartbeat()
 
