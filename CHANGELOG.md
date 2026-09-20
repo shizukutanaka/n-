@@ -20,6 +20,7 @@
 
 ### Fixed
 - **誰も読まない死に環境変数 `NMESH_HF_REPO` を削除**: planner が llamacpp サービスの `launch.env` に書き込んでいましたが、取得は `download_repo` フィールド経由で行われ、起動された llama-server も nmesh 側も参照していませんでした。併せて README に未記載だった `NMESH_CONNECT_TIMEOUT`・`NMESH_MODEL_ROOTS` を追記
+- **detached ゲートウェイが古い `plan.json` のままサービスを管理し続けていた問題を修正**: watchdog の `heartbeat` は初回ロードしたプランを保持したままだったため、`plan`/`up` で `plan.json` が更新されてもリロードされず、新プランのエンジンを「別モデルの孤児」として kill → 旧プランのサービスを respawn する不整合に陥っていました（実機で再現: 新プランの 1.7B を kill して旧 0.6B を復活）。`heartbeat` は plan.json の mtime 変更を検出してリロードし、変更時は旧プランの失敗/restart budget を引き継がないよう `failed`/`restarts` をクリアします
 - **`NMESH_HOME` を相対パスで指定すると孤児エンジンの所有判定が全滅していた問題を修正**: `engine_listener_pid` はエンジン exe が NMESH_HOME 配下にあることで nmesh 管理を証明しますが、exe は常に絶対パス・home は verbatim だったため、相対 NMESH_HOME では `startswith` が常に不一致 → リプラン後の旧モデル孤児がポートを保持したまま新サービスが bind 失敗していました（実機で `up --detach` 時に再現: 0.6B 残留 + 1.7B 起動失敗）。`nmesh_home()` は相対パスを cwd 基点で絶対化し、`engine_listener_pid` は両側を realpath 比較（シンボリンク home も吸収）するよう修正
 - **保存済みプラン利用時の `up` で `--model`/`--ignore-eval-evidence`/`--allow-download-gb` が警告なく無視されていた問題を修正**: 「プラン影響フラグの無視警告」機構（`warn.up_flags_saved_plan`）への登録漏れ — 新フラグ追加時に `_UP_PLAN_FLAG_DEFAULTS` への登録が行われていませんでした
 - **Windows で llama.cpp サービスの起動失敗時に VC++ 再頒布パッケージを疑うヒントを追加**: Windows では llama-server が MSVCP140.dll 等の VC++ ランタイム不在/旧版で起動即 0xC0000005 クラッシュすることがあり（Windows 実機検証で確認）、従来は unhealthy の汎用メッセージのみでした。`is_windows()` かつ llamacpp バックエンドの起動失敗時に「最新 vc_redist.x64.exe のインストールを試す」旨をエラーに付記します

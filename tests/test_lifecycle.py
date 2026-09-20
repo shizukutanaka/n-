@@ -466,6 +466,39 @@ def test_engine_listener_pid_matches_with_relative_nmesh_home(
     assert supervisor_module.engine_listener_pid(18010) == 4321
 
 
+def test_heartbeat_reloads_plan_after_disk_change(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """The watchdog must notice a replaced plan.json — otherwise a detached
+    gateway keeps respawning the STALE plan's services and kills the new
+    plan's engines as wrong-model orphans."""
+    old_plan = SimpleNamespace(services=[])
+    new_plan = SimpleNamespace(services=[], marker="new")
+    (tmp_path / "plan.json").write_text("{}", encoding="utf-8")
+    calls = 0
+
+    def _load(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return new_plan
+
+    monkeypatch.setattr("nmesh.runtime.supervisor.load_plan", _load)
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json", terminator=lambda _pid: None
+    )
+    supervisor.active_plan = old_plan
+    supervisor.failed["chat"] = "burned by old plan"
+    supervisor.restarts["chat"] = [1.0, 2.0, 3.0]
+    supervisor.heartbeat()
+    assert supervisor.active_plan is new_plan
+    assert not supervisor.failed
+    assert not supervisor.restarts
+    assert calls == 1
+    # Second beat: unchanged plan.json must not re-parse.
+    supervisor.heartbeat()
+    assert calls == 1
+
+
 def test_engine_listener_pid_does_not_shell_out_when_psutil_works(
     monkeypatch, tmp_path: Path,
 ) -> None:
