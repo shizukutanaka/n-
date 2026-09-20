@@ -223,11 +223,20 @@ class Supervisor:
         self.restarts: dict[str, list[float]] = {}
         self.failed: dict[str, str] = {}
         self.active_plan: Plan | None = None
+        self._loaded_plan_stamp: tuple[float, int] | None = None
         self._boot_recovery = False
         self.notes: dict[str, str] = {}
         self._lock = RLock()
         self._atexit_armed = False
         self._terminator = terminator or self._terminate_pid
+
+    @staticmethod
+    def _plan_stamp() -> tuple[float, int] | None:
+        try:
+            stat = (nmesh_home() / "plan.json").stat()
+            return stat.st_mtime, stat.st_mtime_ns
+        except OSError:
+            return None
 
     def _arm_atexit(self) -> None:
         if not self._atexit_armed:
@@ -1578,8 +1587,26 @@ class Supervisor:
                 if loaded is None:
                     return self.status()
                 self.active_plan = loaded
+                self._loaded_plan_stamp = self._plan_stamp()
                 self._boot_recovery = True
                 boot_recovery = True
+            else:
+                # plan.json may have been replaced since this process loaded
+                # it — refresh so the watchdog manages the current plan. A
+                # stale plan actively fights it: adopt sees the new service's
+                # model_ref differ and kills it as a wrong-model orphan.
+                stamp = self._plan_stamp()
+                if stamp is not None and stamp != self._loaded_plan_stamp:
+                    loaded = load_plan()
+                    if loaded is not None:
+                        self._loaded_plan_stamp = stamp
+                        if loaded != self.active_plan:
+                            self.active_plan = loaded
+                            # A new plan is a new intent — restart budgets and
+                            # failures burned by the OLD plan must not wedge
+                            # its services.
+                            self.restarts.clear()
+                            self.failed.clear()
             persisted_names: set[str] = set()
             if boot_recovery:
                 state = self._load_state()
