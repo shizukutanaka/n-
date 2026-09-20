@@ -389,6 +389,14 @@ Claude Code can point at the gateway directly. Streaming Anthropic SSE frames
 (`event:`/`data:` pairs) pass through unmodified; OpenAI-only fields such as
 `stream_options` are not injected into Anthropic requests.
 
+`GET /v1/models` returns the OpenAI-compatible model list — `nmesh-auto`
+(router-selected), one `nmesh-<service>` ID per planned service, and
+`nmesh-delegate` when the lead/worker gate allows it — so OpenAI client
+libraries work against the gateway unmodified. `GET /status` returns the
+supervisor's live runtime snapshot (per-service state, port, PID, model),
+and `GET /v1/jobs` / `GET /v1/jobs/{id}` expose the job registry behind
+`nmesh jobs`.
+
 Set `NMESH_API_KEY` before starting the gateway to require
 `Authorization: Bearer <key>` on `/v1/*` and `/metrics*`. `/health` remains
 unauthenticated for readiness probes. When the variable is unset, authentication

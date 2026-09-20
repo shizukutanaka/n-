@@ -2,6 +2,7 @@
 
 ## 未リリース
 ### Added
+- README に未記載だったゲートウェイ HTTP エンドポイントを追記 — `GET /v1/models`（`nmesh-auto`/`nmesh-<service>`/`nmesh-delegate` の OpenAI 互換リスト）、`GET /status`（スーパーバイザのライブ状態スナップショット）、`GET /v1/jobs`・`GET /v1/jobs/{id}`（ジョブレジストリ）
 - README に未記載だった4コマンドを追記 — `run`（ゲートウェイ経由のワンショットプロンプト）、`jobs`（ジョブ一覧/キャンセル）、`autotune`（起動引数グリッド計測→plan 永続化）、`orchestrate`（lead/worker の委譲 A/B 計測と `nmesh-delegate` 仮想モデルの判定レコード）
 - `nmesh plan`/`up` に `--allow-download-gb` を追加 — Policy の `allow_download_gb` が CLI から到達不能だった（警告のみの半機能状態）。超過警告に実測 GiB と予算値を表示するように改善
 - **gpt-oss-20b / gpt-oss-120b をカタログに追加**: OpenAI の open-weight MoE モデル（Apache-2.0、21B/117B 総パラメータ・3.6B/5.1B active）。`ggml-org/gpt-oss-{20,120}b-GGUF` の MXFP4 を取得対象にし、`NOMINAL_GGUF_BPW` に `mxfp4`（4.25 bpw）を追加 — 既定の q4_k_m 計画でもフォールバック解決されます（20b = 12.1GB）。同一リポジトリの `eagle3-gpt-oss-*` を `--spec-draft` の draft として測定可能。多言語ポリシー指定のプランでは英語専用モデルのため候補外になります（意図どおり）。mxfp4 は planner の候補量子化からは除外（gpt-oss のみが公開するため、全モデルで選ぶと実ダウンロードが黙って下位量子化に落ちるのを防ぐ）— 取得済みサービス・明示指定の見積もりは引き続き有効。
