@@ -492,6 +492,28 @@ class Supervisor:
         self.external_shared.discard(service.name)
         return False
 
+    def _drop_unplanned(self, plan: Plan) -> bool:
+        """Stop owned services the plan no longer includes.
+
+        A leftover engine still holds the RAM and port the planner counted
+        as free when it sized the new stack. Foreign and shared daemons are
+        not ours to stop — only self.processes and adopted entries."""
+        planned = {service.name for service in plan.services}
+        dropped = False
+        for name in [name for name in self.processes if name not in planned]:
+            self._stop_process(name)
+            self.idle.discard(name)
+            dropped = True
+        for name, record in list(self.adopted.items()):
+            if name in planned or name in self.external_shared:
+                continue
+            pid = record.get("pid")
+            if isinstance(pid, int) and not isinstance(pid, bool):
+                self._terminator(pid)
+            self.adopted.pop(name, None)
+            dropped = True
+        return dropped
+
     def _restart_budget(self, name: str) -> bool:
         cutoff = time.monotonic() - RESTART_WINDOW
         timestamps = [stamp for stamp in self.restarts.get(name, []) if stamp >= cutoff]
@@ -999,6 +1021,7 @@ class Supervisor:
                                    i18n.t("warn.admission_skipped", i18n.lang(), error=error)],
                     )
             self.active_plan = current
+            self._drop_unplanned(current)
             for attempt in range(1, 4):
                 try:
                     for index in range(len(current.services)):
@@ -1584,6 +1607,7 @@ class Supervisor:
     def heartbeat(self) -> RuntimeStatus:
         with self._lock:
             boot_recovery = self._boot_recovery
+            changed = False
             if self.active_plan is None:
                 loaded = load_plan()
                 if loaded is None:
@@ -1609,6 +1633,8 @@ class Supervisor:
                             # its services.
                             self.restarts.clear()
                             self.failed.clear()
+                            if self._drop_unplanned(loaded):
+                                changed = True
             persisted_names: set[str] = set()
             if boot_recovery:
                 state = self._load_state()
@@ -1624,7 +1650,6 @@ class Supervisor:
                         if isinstance(persisted, list)
                         else set()
                     )
-            changed = False
             for service in self.active_plan.services:
                 if service.name in self.idle:
                     continue

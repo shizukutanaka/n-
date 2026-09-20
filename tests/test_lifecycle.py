@@ -1576,3 +1576,87 @@ def test_run_cli_unreachable_gateway_hint(monkeypatch, tmp_path: Path, capsys) -
     assert captured.out == ""
     assert "gateway unavailable" in captured.err
     assert "nmesh up" in captured.err
+
+
+class _KillableProcess:
+    def __init__(self, pid: int = 99_900_777) -> None:
+        self.pid = pid
+        self.code: int | None = None
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return self.code
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.code = 0
+
+    def kill(self) -> None:
+        self.code = -9
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.code or 0
+
+
+def test_up_stops_services_dropped_from_plan(
+    tmp_path, monkeypatch,
+) -> None:
+    """`up` must converge the stack to the plan: an owned engine left over
+    from a wider plan still holds the RAM/port the planner budgeted free."""
+    plan = build_plan(profile(8), load_catalog(), Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url=None),
+    )
+    plan = replace(plan, services=[service])
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    leftover = _KillableProcess()
+    supervisor = Supervisor(
+        lambda _item: _KillableProcess(),
+        tmp_path / "state.json",
+        health_timeout=0.01,
+    )
+    supervisor.processes["embed"] = leftover
+    supervisor.idle.add("embed")
+
+    supervisor.up(plan, no_download=True, admit=False)
+
+    assert leftover.terminated
+    assert "embed" not in supervisor.processes
+    assert "embed" not in supervisor.idle
+
+
+def test_heartbeat_stops_services_dropped_by_plan_swap(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A detached gateway that reloads plan.json must also retire engines
+    the new plan dropped — otherwise they run unmanaged forever."""
+    old_plan = SimpleNamespace(services=[])
+    new_plan = SimpleNamespace(services=[], marker="new")
+    (tmp_path / "plan.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.load_plan", lambda *_a, **_k: new_plan
+    )
+    terminated: list[int] = []
+    leftover = _KillableProcess()
+    adopted_pid = os.getpid() + 1
+    supervisor = Supervisor(
+        lambda _item: _KillableProcess(),
+        tmp_path / "state.json",
+        terminator=terminated.append,
+    )
+    supervisor.active_plan = old_plan
+    supervisor.processes["embed"] = leftover
+    supervisor.adopted["rerank"] = {"pid": adopted_pid}
+
+    supervisor.heartbeat()
+
+    assert supervisor.active_plan is new_plan
+    assert leftover.terminated
+    assert terminated == [adopted_pid]
+    assert not supervisor.processes
+    assert not supervisor.adopted
