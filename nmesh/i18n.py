@@ -248,6 +248,8 @@ MESSAGES = {
         "err.bench_save": "benchmark failed to save: {error}",
         "err.eval_up": "Service is not running; run nmesh up first.",
         "err.eval_run": "Evaluation failed: {error}",
+        "label.eval_progress": "eval {index}/{total}: {task}",
+
         "err.eval_save": "evaluation failed to save: {error}",
         "err.eval_categories": "No evaluation tasks match the requested categories.",
         "err.autotune_measure": "Autotune failed: {error}",
@@ -582,6 +584,7 @@ MESSAGES = {
         "err.gateway_unavailable": "ゲートウェイを利用できません: {error}",
         "err.gateway_http": "ゲートウェイ要求が失敗しました（HTTP {code}）: {detail}",
         "err.gateway_unavailable.hint": "先に `nmesh up` でサービスを起動するか、`nmesh status` でポートを確認してください。",
+        "label.eval_progress": "評価 {index}/{total}: {task}",
         "err.bench_up": "サービスが起動していません。先にnmesh upを実行してください。",
         "err.bench_measure": "ベンチマークに失敗しました: {error}",
         "err.bench_embedding": "ベンチマークはデコード速度を測定しますが、{service}は埋め込みサービスでデコード経路がありません。--service chatなどデコード可能なサービスを指定してください。",
