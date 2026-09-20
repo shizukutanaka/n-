@@ -18,6 +18,7 @@
 - **カタログを現行世代に更新**: Qwen3-0.6B/1.7B/4B/8B（Apache-2.0、GGUF は bartowski/公式ミラー — 公式の Qwen3-0.6B/1.7B GGUF は Q8_0 のみ公開のため Q4_K_M は bartowski 経由）、SmolLM3-3B、Qwen3-Embedding-0.6B（embed ロール、last-token pooling）を追加。CPU プロファイルでは `plan` の chat 既定が qwen2.5-1.5b から qwen3-1.7b へ更新されます（品質スコア 56 > 50、同一メモリ内）。Gemma-3 は HF がゲート済み（要ライセンス承諾ログイン）のため未収録。
 
 ### Fixed
+- **`NMESH_HOME` を相対パスで指定すると孤児エンジンの所有判定が全滅していた問題を修正**: `engine_listener_pid` はエンジン exe が NMESH_HOME 配下にあることで nmesh 管理を証明しますが、exe は常に絶対パス・home は verbatim だったため、相対 NMESH_HOME では `startswith` が常に不一致 → リプラン後の旧モデル孤児がポートを保持したまま新サービスが bind 失敗していました（実機で `up --detach` 時に再現: 0.6B 残留 + 1.7B 起動失敗）。`nmesh_home()` は相対パスを cwd 基点で絶対化し、`engine_listener_pid` は両側を realpath 比較（シンボリンク home も吸収）するよう修正
 - **Windows で llama.cpp サービスの起動失敗時に VC++ 再頒布パッケージを疑うヒントを追加**: Windows では llama-server が MSVCP140.dll 等の VC++ ランタイム不在/旧版で起動即 0xC0000005 クラッシュすることがあり（Windows 実機検証で確認）、従来は unhealthy の汎用メッセージのみでした。`is_windows()` かつ llamacpp バックエンドの起動失敗時に「最新 vc_redist.x64.exe のインストールを試す」旨をエラーに付記します
 - **`nmesh eval` が低速環境で数十分無言だった問題を改善**: タスク完了ごとに `eval i/n: <task>` を stderr へ表示（--json 出力は汚染しない）。--depth は内部で4パス実行するため特に長時間になり得る
 - **`up --detach`・`autotune` 終了時のゲートウェイ再起動がコールドスタートで誤失敗していた問題を修正**: `_wait_gateway` の health 待機が固定 20 秒のため、再起動直後など初回 import が遅い環境（uvicorn+FastAPI のコールドロード）でタイムアウト→ゲートウェイ kill→`runtime_down()` でサービスごと teardown していました。実機（VM 再起動直後の `up --detach` で再現）。待機上限を 60 秒に延長 — プロセス死亡時は従来どおり即座に失敗を返すため正常系のコストはありません

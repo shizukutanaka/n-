@@ -131,13 +131,15 @@ def engine_listener_pid(port: int) -> int | None:
     Ownership is proven by the executable living under NMESH_HOME — a foreign
     process that merely bound the port is never returned.
     """
-    root = str(nmesh_home())
+    root = os.path.realpath(nmesh_home()) + os.sep
     for pid in _listener_pids(port):
         try:
             exe = psutil.Process(pid).exe()
         except (psutil.Error, OSError):
             continue
-        if exe.startswith(root):
+        # realpath both sides: a symlinked NMESH_HOME or a relative one must
+        # still match the kernel-reported executable path.
+        if os.path.realpath(exe).startswith(root):
             return pid
     return None
 
