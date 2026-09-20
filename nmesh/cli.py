@@ -1508,7 +1508,7 @@ def _launch_gateway(
     return process, log_path
 
 
-def _wait_gateway(port: int, process: _GatewayProcess, timeout: float = 20.0) -> bool:
+def _wait_gateway(port: int, process: _GatewayProcess, timeout: float = 60.0) -> bool:
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if process.poll() is not None:
