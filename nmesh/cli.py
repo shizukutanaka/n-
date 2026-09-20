@@ -868,8 +868,13 @@ def _render_plan(result: Plan) -> None:
                       str(service.context), str(service.memory.parallel_slots),
                       "-" if service.n_gpu_layers is None else str(service.n_gpu_layers),
                       ",".join(service.languages),
-                      "—" if service.decode_tps is None else f"{service.decode_tps:.1f}")
+                      "—" if service.decode_tps is None
+                      else (f"~{service.decode_tps:.1f}" if service.estimated
+                            else f"{service.decode_tps:.1f}"))
     _console().print(table)
+    if any(service.estimated and service.decode_tps is not None
+           for service in result.services):
+        _console().print(i18n.t("note.tps_estimate", language))
 
 
 def _up_plan_args(args: argparse.Namespace) -> argparse.Namespace:
