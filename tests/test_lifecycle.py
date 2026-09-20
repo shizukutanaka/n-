@@ -437,6 +437,35 @@ def test_engine_listener_pid_falls_back_to_lsof(
     assert supervisor_module.engine_listener_pid(18010) == 4321
 
 
+def test_engine_listener_pid_matches_with_relative_nmesh_home(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A relative NMESH_HOME must still match absolute engine exe paths —
+    otherwise orphan reclaim is silently disabled and stale engines keep
+    their ports through replans."""
+    monkeypatch.chdir(tmp_path)
+    relative_home = tmp_path / "relhome"
+    (relative_home / "engines").mkdir(parents=True)
+    exe = relative_home / "engines" / "llamacpp" / "x" / "llama-server"
+
+    def denied(*_args, **_kwargs):
+        raise psutil.AccessDenied(1, "net_connections")
+
+    monkeypatch.setattr(supervisor_module.psutil, "net_connections", denied)
+    monkeypatch.setattr(
+        supervisor_module, "nmesh_home", lambda: Path("relhome"),
+    )
+    monkeypatch.setattr(
+        supervisor_module.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(stdout="4321\n"),
+    )
+    monkeypatch.setattr(
+        supervisor_module.psutil, "Process",
+        lambda _pid: SimpleNamespace(exe=lambda: str(exe)),
+    )
+    assert supervisor_module.engine_listener_pid(18010) == 4321
+
+
 def test_engine_listener_pid_does_not_shell_out_when_psutil_works(
     monkeypatch, tmp_path: Path,
 ) -> None:

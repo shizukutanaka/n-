@@ -10,4 +10,10 @@ def is_windows() -> bool:
 
 def nmesh_home() -> Path:
     configured = os.environ.get("NMESH_HOME")
-    return Path(configured).expanduser() if configured else Path.home() / ".nmesh"
+    if not configured:
+        return Path.home() / ".nmesh"
+    path = Path(configured).expanduser()
+    # A relative NMESH_HOME would silently break every path-identity check
+    # (engine exes are absolute; recorded state is absolute) — anchor it at
+    # the caller's cwd instead of comparing `relative` vs `absolute` paths.
+    return path if path.is_absolute() else Path.cwd() / path
