@@ -19,6 +19,7 @@
 
 ### Fixed
 - **誰も読まない死に環境変数 `NMESH_HF_REPO` を削除**: planner が llamacpp サービスの `launch.env` に書き込んでいましたが、取得は `download_repo` フィールド経由で行われ、起動された llama-server も nmesh 側も参照していませんでした。併せて README に未記載だった `NMESH_CONNECT_TIMEOUT`・`NMESH_MODEL_ROOTS` を追記
+- **保存済みプラン利用時の `up` で `--model`/`--ignore-eval-evidence`/`--allow-download-gb` が警告なく無視されていた問題を修正**: 「プラン影響フラグの無視警告」機構（`warn.up_flags_saved_plan`）への登録漏れ — 新フラグ追加時に `_UP_PLAN_FLAG_DEFAULTS` への登録が行われていませんでした
 - **Windows で llama.cpp サービスの起動失敗時に VC++ 再頒布パッケージを疑うヒントを追加**: Windows では llama-server が MSVCP140.dll 等の VC++ ランタイム不在/旧版で起動即 0xC0000005 クラッシュすることがあり（Windows 実機検証で確認）、従来は unhealthy の汎用メッセージのみでした。`is_windows()` かつ llamacpp バックエンドの起動失敗時に「最新 vc_redist.x64.exe のインストールを試す」旨をエラーに付記します
 - **`nmesh eval` が低速環境で数十分無言だった問題を改善**: タスク完了ごとに `eval i/n: <task>` を stderr へ表示（--json 出力は汚染しない）。--depth は内部で4パス実行するため特に長時間になり得る
 - **`up --detach`・`autotune` 終了時のゲートウェイ再起動がコールドスタートで誤失敗していた問題を修正**: `_wait_gateway` の health 待機が固定 20 秒のため、再起動直後など初回 import が遅い環境（uvicorn+FastAPI のコールドロード）でタイムアウト→ゲートウェイ kill→`runtime_down()` でサービスごと teardown していました。実機（VM 再起動直後の `up --detach` で再現）。待機上限を 60 秒に延長 — プロセス死亡時は従来どおり即座に失敗を返すため正常系のコストはありません
