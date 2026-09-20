@@ -232,6 +232,8 @@ class Supervisor:
 
     @staticmethod
     def _plan_stamp() -> tuple[float, int] | None:
+        # Same path load_plan() uses by default — plan_path is only the
+        # supervisor's *save* target, so reads must match the read side.
         try:
             stat = (nmesh_home() / "plan.json").stat()
             return stat.st_mtime, stat.st_mtime_ns
