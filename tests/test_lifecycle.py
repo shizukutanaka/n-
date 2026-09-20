@@ -1660,3 +1660,42 @@ def test_heartbeat_stops_services_dropped_by_plan_swap(
     assert terminated == [adopted_pid]
     assert not supervisor.processes
     assert not supervisor.adopted
+
+
+def test_heartbeat_reports_missing_artifact_without_crash_loop(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A plan naming a never-downloaded artifact must surface an honest
+    failure — launching the planned argv would crash-loop llama-server
+    on a missing file."""
+    service = SimpleNamespace(
+        name="chat",
+        resident=False,
+        port=18010,
+        launch=SimpleNamespace(health_url=None, shared_daemon=False),
+        memory=SimpleNamespace(parallel_slots=1),
+        model_ref="m.gguf",
+        quant="f16",
+        backend="llamacpp",
+    )
+    plan = SimpleNamespace(services=[service], swap_group=set())
+    launched: list[str] = []
+    supervisor = Supervisor(
+        lambda item: launched.append(item.name),
+        tmp_path / "state.json",
+        terminator=lambda _pid: None,
+        health_timeout=0.01,
+    )
+    supervisor.active_plan = plan
+
+    def _missing(*_args, **_kwargs):
+        raise RuntimeError("not downloaded")
+
+    monkeypatch.setattr(supervisor_module, "acquire", _missing)
+    supervisor.heartbeat()
+    supervisor.heartbeat()
+
+    assert launched == []
+    assert "chat" in supervisor.failed
+    assert "nmesh up" in supervisor.failed["chat"]
+    assert "chat" not in supervisor.processes
