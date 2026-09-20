@@ -2,6 +2,7 @@
 
 ## 未リリース
 ### Added
+- README に未記載だった4コマンドを追記 — `run`（ゲートウェイ経由のワンショットプロンプト）、`jobs`（ジョブ一覧/キャンセル）、`autotune`（起動引数グリッド計測→plan 永続化）、`orchestrate`（lead/worker の委譲 A/B 計測と `nmesh-delegate` 仮想モデルの判定レコード）
 - `nmesh plan`/`up` に `--allow-download-gb` を追加 — Policy の `allow_download_gb` が CLI から到達不能だった（警告のみの半機能状態）。超過警告に実測 GiB と予算値を表示するように改善
 - **gpt-oss-20b / gpt-oss-120b をカタログに追加**: OpenAI の open-weight MoE モデル（Apache-2.0、21B/117B 総パラメータ・3.6B/5.1B active）。`ggml-org/gpt-oss-{20,120}b-GGUF` の MXFP4 を取得対象にし、`NOMINAL_GGUF_BPW` に `mxfp4`（4.25 bpw）を追加 — 既定の q4_k_m 計画でもフォールバック解決されます（20b = 12.1GB）。同一リポジトリの `eagle3-gpt-oss-*` を `--spec-draft` の draft として測定可能。多言語ポリシー指定のプランでは英語専用モデルのため候補外になります（意図どおり）。mxfp4 は planner の候補量子化からは除外（gpt-oss のみが公開するため、全モデルで選ぶと実ダウンロードが黙って下位量子化に落ちるのを防ぐ）— 取得済みサービス・明示指定の見積もりは引き続き有効。
 - **nemotron-3.5-lightning-30b をカタログに追加 + ハイブリッド arch の KV 推定を修正**: NVIDIA の常駐エージェント向け MoE モデル（Mamba-2+MoE+Attention ハイブリッド、30B 総・3B active、52 層中 attention は 6 層のみ — GGUF テンソル名で実測確認）。従来は KV を全 52 層で見積もり ~9 倍の過大評価でした。カタログに任意フィールド `kv_layers`（attention 層数）を追加し、`estimate_memory` は KV を `kv_layers`（未指定時 = n_layers）で計算します。GGUF は unsloth リポジトリの UD-Q4_K_M 等を使用。
