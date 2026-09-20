@@ -5,7 +5,7 @@ import os
 import socket
 import sys
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -1514,3 +1514,56 @@ def test_run_cli_unreachable_gateway_hint(monkeypatch, tmp_path: Path, capsys) -
     assert captured.out == ""
     assert "gateway unavailable" in captured.err
     assert "nmesh up" in captured.err
+
+
+def test_reload_posts_admin_reload(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    seen: list[str] = []
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {"reloaded": True, "services": ["chat"], "created_at": "t"}
+            ).encode()
+
+    def _open(request, timeout=0):
+        seen.append(f"{request.get_method()} {request.full_url}")
+        return _Response()
+
+    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _open)
+    assert cli.main(["reload", "--port", "18000"]) == 0
+    assert seen == ["POST http://127.0.0.1:18000/admin/reload"]
+    assert "chat" in capsys.readouterr().out
+
+
+def test_reload_unreachable_gateway_returns_1(
+    monkeypatch, tmp_path: Path, capsys,
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    def _raise(*_args, **_kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    assert cli.main(["reload"]) == 1
+    assert "connection refused" in capsys.readouterr().err
+
+
+def test_doctor_profile_json_offline(
+    tmp_path: Path, capsys,
+) -> None:
+    """doctor --profile renders a saved hardware profile without probing."""
+    saved = tmp_path / "profile.json"
+    saved.write_text(json.dumps(asdict(profile(64, (24,)))), encoding="utf-8")
+    assert cli.main(["doctor", "--profile", str(saved), "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["simulated"] is True
+    assert data["cpu_name"] == "Test CPU"
