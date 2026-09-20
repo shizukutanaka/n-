@@ -1329,8 +1329,6 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         ),
         binary=profile.backend_paths.get(candidate.backend),
     )
-    if candidate.backend == "llamacpp" and "hf_gguf" in candidate.model.sources:
-        launch = replace(launch, env={"NMESH_HF_REPO": candidate.model.sources["hf_gguf"]})
     service = PlannedService(
         name, group, candidate.model.id, _source_for(candidate.backend, candidate.model, candidate.quant),
         _download_repo_for(candidate.backend, candidate.model),

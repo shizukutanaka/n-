@@ -228,6 +228,14 @@ services. The default is `18010`; nmesh assigns subsequent service ports from
 that base. Use a free base (as the E2E harness does) and ensure the gateway
 port selected for `nmesh up --port` does not conflict with it.
 
+`NMESH_CONNECT_TIMEOUT` controls how long the gateway waits for a connection
+to a backend service before treating it as down (default `10.0` seconds).
+Increase it on slow networks, or lower it in tests.
+
+`NMESH_MODEL_ROOTS` adds extra directories to the model inventory scan —
+an `os.pathsep`-separated list of roots consulted in addition to
+`$NMESH_HOME/models`, Ollama and LM Studio stores, and the Hugging Face cache.
+
 ## Runtime logs
 
 Backend output is captured per service in
