@@ -169,6 +169,29 @@ def test_runner_sends_cache_prompt_when_configured() -> None:
     assert result.cache_prompt is False
 
 
+def test_runner_reports_each_outcome_via_callback() -> None:
+    tasks = (
+        Task("one", "instruction", "one", 8, lambda text: text == "yes"),
+        Task("two", "format", "two", 8, lambda text: text == "yes"),
+    )
+    _EvalHandler.responses = {"one": (200, "yes"), "two": (200, "yes")}
+    _EvalHandler.bodies = []
+    seen: list[str] = []
+    server = _serve()
+    try:
+        result = run(
+            tasks,
+            f"http://127.0.0.1:{server.server_address[1]}",
+            "model",
+            on_outcome=lambda outcome: seen.append(outcome.id),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert seen == ["one", "two"]
+    assert len(result.outcomes) == 2
+
+
 def test_runner_marks_transport_failures_and_derives_timeout(monkeypatch) -> None:
     calls: list[float] = []
     value_checks: list[str] = []

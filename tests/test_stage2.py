@@ -377,7 +377,10 @@ def test_supervisor_no_download_ollama_warns_and_keeps_base(
 
 
 class _AdmissionProcess:
-    pid = 456
+    # Fake pids must never collide with a real process group: _stop_process
+    # feeds them to os.killpg, which signals a real group if one exists
+    # (observed: pgid 1000 was an iOS simulator daemon on a dev machine).
+    pid = 99_999_991
 
     def poll(self) -> None:
         return None
@@ -393,7 +396,7 @@ class _AdmissionProcess:
 
 
 class _RecoverProcess:
-    _next_pid = 1000
+    _next_pid = 99_900_000
 
     def __init__(self) -> None:
         self.pid = self._next_pid
@@ -756,6 +759,12 @@ def test_supervisor_state_is_shared_between_processes(
         lambda _service, local_only=False: Acquired(None, None, False),
     )
     first = Supervisor(lambda _service: _StateProcess(), state_path, health_timeout=0.01)
+    # _StateProcess carries the test process's own pid so the state entry
+    # reads as alive; keep down()'s process-group signal from leaving the fake.
+    def _missing_group(*_args: object) -> None:
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(supervisor_module.os, "killpg", _missing_group)
     first.up(plan, no_download=True, admit=False)
     second = Supervisor(state_path=state_path)
     result = second.status()

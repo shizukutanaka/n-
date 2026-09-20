@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import httpx
@@ -77,6 +77,7 @@ def run(
     reasoning_allowance: int = 0,
     cache_prompt: bool | None = None,
     depth: int = 0,
+    on_outcome: Callable[[TaskOutcome], None] | None = None,
 ) -> EvalRun:
     """Ask each task and grade the answer text.
 
@@ -160,19 +161,20 @@ def run(
                 if transport or unscorable or task.value_check is None
                 else bool(task.value_check(text))
             )
-            outcomes.append(
-                TaskOutcome(
-                    task.id,
-                    task.category,
-                    passed,
-                    text[:200],
-                    unscorable,
-                    value_passed,
-                    "transport"
-                    if transport
-                    else _failure_kind(task, passed, unscorable, value_passed),
-                )
+            outcome = TaskOutcome(
+                task.id,
+                task.category,
+                passed,
+                text[:200],
+                unscorable,
+                value_passed,
+                "transport"
+                if transport
+                else _failure_kind(task, passed, unscorable, value_passed),
             )
+            outcomes.append(outcome)
+            if on_outcome is not None:
+                on_outcome(outcome)
     if outcomes and transport_errors == len(outcomes):
         raise RuntimeError("all evaluation tasks failed at transport level")
     passed_count: int = sum(outcome.passed for outcome in outcomes)
