@@ -880,6 +880,26 @@ def test_unhealthy_message_omits_port_hint_when_free(monkeypatch, tmp_path: Path
     assert "port" not in message.lower()
 
 
+def test_unhealthy_message_hints_vcredist_on_windows_llamacpp(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setattr(supervisor_module, "is_windows", lambda: True)
+
+    message = Supervisor()._unhealthy_message("chat", backend="llamacpp")
+
+    assert "Visual C++ Redistributable" in message
+
+    monkeypatch.setattr(supervisor_module, "is_windows", lambda: False)
+    assert "Visual C++" not in Supervisor()._unhealthy_message(
+        "chat", backend="llamacpp"
+    )
+    monkeypatch.setattr(supervisor_module, "is_windows", lambda: True)
+    assert "Visual C++" not in Supervisor()._unhealthy_message(
+        "chat", backend="ollama"
+    )
+
+
 def test_logs_cli(monkeypatch, tmp_path: Path, capsys) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
     handle = open_log("chat")
