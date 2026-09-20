@@ -764,7 +764,11 @@ def test_supervisor_state_is_shared_between_processes(
     def _missing_group(*_args: object) -> None:
         raise ProcessLookupError()
 
-    monkeypatch.setattr(supervisor_module.os, "killpg", _missing_group)
+    # os.killpg does not exist on Windows; raising=False lets the fake be
+    # installed anyway (down() never calls it there — is_windows() guards it).
+    monkeypatch.setattr(
+        supervisor_module.os, "killpg", _missing_group, raising=False
+    )
     first.up(plan, no_download=True, admit=False)
     second = Supervisor(state_path=state_path)
     result = second.status()
