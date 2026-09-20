@@ -232,7 +232,8 @@ port selected for `nmesh up --port` does not conflict with it.
 to a backend service before treating it as down (default `10.0` seconds).
 Increase it on slow networks, or lower it in tests.
 
-`NMESH_MODEL_ROOTS` adds extra directories to the model inventory scan —
+`NMESH_MODEL_ROOTS` adds extra directories to the model inventory scan
+(`nmesh models scan`; per-run roots can also be passed with `--root`) —
 an `os.pathsep`-separated list of roots consulted in addition to
 `$NMESH_HOME/models`, Ollama and LM Studio stores, and the Hugging Face cache.
 
