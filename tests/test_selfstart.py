@@ -95,6 +95,7 @@ def _runnable_plan() -> SimpleNamespace:
         n_gpu_layers=0,
         languages=["en"],
         decode_tps=12.0,
+        estimated=False,
     )]
     return result
 

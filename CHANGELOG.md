@@ -2,6 +2,7 @@
 
 ## 未リリース
 ### Added
+- `nmesh plan` の tok/s 欄で推定値を `~` 接頭辞で区別表示し、脚注を追加 — plan.json の `estimated` フィールドは従来 `--json` 経由でのみ見え、表形式では実測値と推定値が区別できませんでした。実測値への置き換えには `nmesh bench` を実行してください
 - `nmesh plan`/`up` に `--min-decode-tps` を追加 — Policy の `min_decode_tps`（admission の最低デコード速度閾値、既定 8.0）は plan.json に永続化される一方、CLI から到達不能だった半機能状態を解消。低速マシンで全モデルが閾値を割って plan が空になる場合の回避策としても使えます
 - README に未記載だったゲートウェイ HTTP エンドポイントを追記 — `GET /v1/models`（`nmesh-auto`/`nmesh-<service>`/`nmesh-delegate` の OpenAI 互換リスト）、`GET /status`（スーパーバイザのライブ状態スナップショット）、`GET /v1/jobs`・`GET /v1/jobs/{id}`（ジョブレジストリ）
 - README に未記載だった4コマンドを追記 — `run`（ゲートウェイ経由のワンショットプロンプト）、`jobs`（ジョブ一覧/キャンセル）、`autotune`（起動引数グリッド計測→plan 永続化）、`orchestrate`（lead/worker の委譲 A/B 計測と `nmesh-delegate` 仮想モデルの判定レコード）
