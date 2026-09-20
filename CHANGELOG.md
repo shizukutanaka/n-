@@ -2,6 +2,7 @@
 
 ## 未リリース
 ### Added
+- `nmesh plan`/`up` に `--min-decode-tps` を追加 — Policy の `min_decode_tps`（admission の最低デコード速度閾値、既定 8.0）は plan.json に永続化される一方、CLI から到達不能だった半機能状態を解消。低速マシンで全モデルが閾値を割って plan が空になる場合の回避策としても使えます
 - README に未記載だったゲートウェイ HTTP エンドポイントを追記 — `GET /v1/models`（`nmesh-auto`/`nmesh-<service>`/`nmesh-delegate` の OpenAI 互換リスト）、`GET /status`（スーパーバイザのライブ状態スナップショット）、`GET /v1/jobs`・`GET /v1/jobs/{id}`（ジョブレジストリ）
 - README に未記載だった4コマンドを追記 — `run`（ゲートウェイ経由のワンショットプロンプト）、`jobs`（ジョブ一覧/キャンセル）、`autotune`（起動引数グリッド計測→plan 永続化）、`orchestrate`（lead/worker の委譲 A/B 計測と `nmesh-delegate` 仮想モデルの判定レコード）
 - `nmesh plan`/`up` に `--allow-download-gb` を追加 — Policy の `allow_download_gb` が CLI から到達不能だった（警告のみの半機能状態）。超過警告に実測 GiB と予算値を表示するように改善
