@@ -232,7 +232,8 @@ port selected for `nmesh up --port` does not conflict with it.
 to a backend service before treating it as down (default `10.0` seconds).
 Increase it on slow networks, or lower it in tests.
 
-`NMESH_MODEL_ROOTS` adds extra directories to the model inventory scan —
+`NMESH_MODEL_ROOTS` adds extra directories to the model inventory scan
+(`nmesh models scan`; per-run roots can also be passed with `--root`) —
 an `os.pathsep`-separated list of roots consulted in addition to
 `$NMESH_HOME/models`, Ollama and LM Studio stores, and the Hugging Face cache.
 
@@ -388,6 +389,14 @@ slot limits, and swap ordering all apply — so Anthropic-shaped clients such as
 Claude Code can point at the gateway directly. Streaming Anthropic SSE frames
 (`event:`/`data:` pairs) pass through unmodified; OpenAI-only fields such as
 `stream_options` are not injected into Anthropic requests.
+
+`GET /v1/models` returns the OpenAI-compatible model list — `nmesh-auto`
+(router-selected), one `nmesh-<service>` ID per planned service, and
+`nmesh-delegate` when the lead/worker gate allows it — so OpenAI client
+libraries work against the gateway unmodified. `GET /status` returns the
+supervisor's live runtime snapshot (per-service state, port, PID, model),
+and `GET /v1/jobs` / `GET /v1/jobs/{id}` expose the job registry behind
+`nmesh jobs`.
 
 Set `NMESH_API_KEY` before starting the gateway to require
 `Authorization: Bearer <key>` on `/v1/*` and `/metrics*`. `/health` remains
