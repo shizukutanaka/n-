@@ -1790,10 +1790,13 @@ def test_status_surfaces_gateway_failed_services(
     def _open(request, timeout=0):
         url = getattr(request, "full_url", str(request))
         if url.endswith("/status"):
-            return _Response({"services": [{
-                "service": "chat", "running": False,
-                "failed": "artifact missing",
-            }]})
+            return _Response({"services": [
+                {
+                    "service": "chat", "running": False,
+                    "failed": "artifact missing",
+                },
+                {"service": "embed", "running": False, "idle": True},
+            ]})
         return _Response({})
 
     monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _open)
@@ -1803,3 +1806,7 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "chat"
     )
     assert chat["failed"] == "artifact missing"
+    embed = next(
+        item for item in payload["services"] if item.get("service") == "embed"
+    )
+    assert embed["idle"] is True

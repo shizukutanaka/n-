@@ -1169,13 +1169,19 @@ def _runtime(args: argparse.Namespace) -> int:
                         if not isinstance(gw_item, dict):
                             continue
                         name = gw_item.get("service")
-                        if gw_item.get("failed") is None:
+                        # Failed and idle (unloaded) services only exist in
+                        # the gateway's memory — state.json never records
+                        # them, so merge them into the CLI view.
+                        if gw_item.get("failed") is None and not gw_item.get("idle"):
                             continue
                         local = local_by_name.get(name)
                         if local is None:
                             result.services.append(gw_item)
                         else:
-                            local["failed"] = gw_item["failed"]
+                            if gw_item.get("failed") is not None:
+                                local["failed"] = gw_item["failed"]
+                            if gw_item.get("idle"):
+                                local["idle"] = True
             except (OSError, HTTPError, json.JSONDecodeError):
                 pass
         except OSError:
