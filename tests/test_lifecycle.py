@@ -437,6 +437,68 @@ def test_engine_listener_pid_falls_back_to_lsof(
     assert supervisor_module.engine_listener_pid(18010) == 4321
 
 
+def test_engine_listener_pid_matches_with_relative_nmesh_home(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A relative NMESH_HOME must still match absolute engine exe paths —
+    otherwise orphan reclaim is silently disabled and stale engines keep
+    their ports through replans."""
+    monkeypatch.chdir(tmp_path)
+    relative_home = tmp_path / "relhome"
+    (relative_home / "engines").mkdir(parents=True)
+    exe = relative_home / "engines" / "llamacpp" / "x" / "llama-server"
+
+    def denied(*_args, **_kwargs):
+        raise psutil.AccessDenied(1, "net_connections")
+
+    monkeypatch.setattr(supervisor_module.psutil, "net_connections", denied)
+    monkeypatch.setattr(
+        supervisor_module, "nmesh_home", lambda: Path("relhome"),
+    )
+    monkeypatch.setattr(
+        supervisor_module.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(stdout="4321\n"),
+    )
+    monkeypatch.setattr(
+        supervisor_module.psutil, "Process",
+        lambda _pid: SimpleNamespace(exe=lambda: str(exe)),
+    )
+    assert supervisor_module.engine_listener_pid(18010) == 4321
+
+
+def test_heartbeat_reloads_plan_after_disk_change(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """The watchdog must notice a replaced plan.json — otherwise a detached
+    gateway keeps respawning the STALE plan's services and kills the new
+    plan's engines as wrong-model orphans."""
+    old_plan = SimpleNamespace(services=[])
+    new_plan = SimpleNamespace(services=[], marker="new")
+    (tmp_path / "plan.json").write_text("{}", encoding="utf-8")
+    calls = 0
+
+    def _load(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return new_plan
+
+    monkeypatch.setattr("nmesh.runtime.supervisor.load_plan", _load)
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json", terminator=lambda _pid: None
+    )
+    supervisor.active_plan = old_plan
+    supervisor.failed["chat"] = "burned by old plan"
+    supervisor.restarts["chat"] = [1.0, 2.0, 3.0]
+    supervisor.heartbeat()
+    assert supervisor.active_plan is new_plan
+    assert not supervisor.failed
+    assert not supervisor.restarts
+    assert calls == 1
+    # Second beat: unchanged plan.json must not re-parse.
+    supervisor.heartbeat()
+    assert calls == 1
+
+
 def test_engine_listener_pid_does_not_shell_out_when_psutil_works(
     monkeypatch, tmp_path: Path,
 ) -> None:
@@ -1567,3 +1629,126 @@ def test_doctor_profile_json_offline(
     data = json.loads(capsys.readouterr().out)
     assert data["simulated"] is True
     assert data["cpu_name"] == "Test CPU"
+
+
+class _KillableProcess:
+    def __init__(self, pid: int = 99_900_777) -> None:
+        self.pid = pid
+        self.code: int | None = None
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return self.code
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.code = 0
+
+    def kill(self) -> None:
+        self.code = -9
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.code or 0
+
+
+def test_up_stops_services_dropped_from_plan(
+    tmp_path, monkeypatch,
+) -> None:
+    """`up` must converge the stack to the plan: an owned engine left over
+    from a wider plan still holds the RAM/port the planner budgeted free."""
+    plan = build_plan(profile(8), load_catalog(), Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url=None),
+    )
+    plan = replace(plan, services=[service])
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    leftover = _KillableProcess()
+    supervisor = Supervisor(
+        lambda _item: _KillableProcess(),
+        tmp_path / "state.json",
+        health_timeout=0.01,
+    )
+    supervisor.processes["embed"] = leftover
+    supervisor.idle.add("embed")
+
+    supervisor.up(plan, no_download=True, admit=False)
+
+    assert leftover.terminated
+    assert "embed" not in supervisor.processes
+    assert "embed" not in supervisor.idle
+
+
+def test_heartbeat_stops_services_dropped_by_plan_swap(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A detached gateway that reloads plan.json must also retire engines
+    the new plan dropped — otherwise they run unmanaged forever."""
+    old_plan = SimpleNamespace(services=[])
+    new_plan = SimpleNamespace(services=[], marker="new")
+    (tmp_path / "plan.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.load_plan", lambda *_a, **_k: new_plan
+    )
+    terminated: list[int] = []
+    leftover = _KillableProcess()
+    adopted_pid = os.getpid() + 1
+    supervisor = Supervisor(
+        lambda _item: _KillableProcess(),
+        tmp_path / "state.json",
+        terminator=terminated.append,
+    )
+    supervisor.active_plan = old_plan
+    supervisor.processes["embed"] = leftover
+    supervisor.adopted["rerank"] = {"pid": adopted_pid}
+
+    supervisor.heartbeat()
+
+    assert supervisor.active_plan is new_plan
+    assert leftover.terminated
+    assert terminated == [adopted_pid]
+    assert not supervisor.processes
+    assert not supervisor.adopted
+
+
+def test_heartbeat_reports_missing_artifact_without_crash_loop(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A plan naming a never-downloaded artifact must surface an honest
+    failure — launching the planned argv would crash-loop llama-server
+    on a missing file."""
+    service = SimpleNamespace(
+        name="chat",
+        resident=False,
+        port=18010,
+        launch=SimpleNamespace(health_url=None, shared_daemon=False),
+        memory=SimpleNamespace(parallel_slots=1),
+        model_ref="m.gguf",
+        quant="f16",
+        backend="llamacpp",
+    )
+    plan = SimpleNamespace(services=[service], swap_group=set())
+    launched: list[str] = []
+    supervisor = Supervisor(
+        lambda item: launched.append(item.name),
+        tmp_path / "state.json",
+        terminator=lambda _pid: None,
+        health_timeout=0.01,
+    )
+    supervisor.active_plan = plan
+
+    def _missing(*_args, **_kwargs):
+        raise RuntimeError("not downloaded")
+
+    monkeypatch.setattr(supervisor_module, "acquire", _missing)
+    supervisor.heartbeat()
+    supervisor.heartbeat()
+
+    assert launched == []
+    assert "chat" in supervisor.failed
+    assert "nmesh up" in supervisor.failed["chat"]
+    assert "chat" not in supervisor.processes

@@ -80,8 +80,11 @@ foreground when backend services are already running. The gateway exposes
 including sample count, median decode throughput, TTFT, and total latency.
 `nmesh reload --port 18000` asks a running gateway to reload the latest
 `~/.nmesh/plan.json` without restarting it.
-The gateway server enables a 15-second watchdog that revives failed services;
-use `create_app(..., watchdog=False)` when embedding it without supervision.
+The gateway server enables a 15-second watchdog that revives failed services —
+it also detects `plan.json` changes on its own and adopts the new plan (reclaiming
+engines that no longer match it), so a `reload` is only needed for an immediate
+apply; use `create_app(..., watchdog=False)` when embedding it without
+supervision.
 Set `NMESH_QUEUE_TIMEOUT` to control how long chat requests wait for a backend
 concurrency slot before receiving a retryable 503 response.
 

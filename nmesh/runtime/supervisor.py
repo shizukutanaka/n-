@@ -131,13 +131,15 @@ def engine_listener_pid(port: int) -> int | None:
     Ownership is proven by the executable living under NMESH_HOME — a foreign
     process that merely bound the port is never returned.
     """
-    root = str(nmesh_home())
+    root = os.path.realpath(nmesh_home()) + os.sep
     for pid in _listener_pids(port):
         try:
             exe = psutil.Process(pid).exe()
         except (psutil.Error, OSError):
             continue
-        if exe.startswith(root):
+        # realpath both sides: a symlinked NMESH_HOME or a relative one must
+        # still match the kernel-reported executable path.
+        if os.path.realpath(exe).startswith(root):
             return pid
     return None
 
@@ -221,11 +223,22 @@ class Supervisor:
         self.restarts: dict[str, list[float]] = {}
         self.failed: dict[str, str] = {}
         self.active_plan: Plan | None = None
+        self._loaded_plan_stamp: tuple[float, int] | None = None
         self._boot_recovery = False
         self.notes: dict[str, str] = {}
         self._lock = RLock()
         self._atexit_armed = False
         self._terminator = terminator or self._terminate_pid
+
+    @staticmethod
+    def _plan_stamp() -> tuple[float, int] | None:
+        # Same path load_plan() uses by default — plan_path is only the
+        # supervisor's *save* target, so reads must match the read side.
+        try:
+            stat = (nmesh_home() / "plan.json").stat()
+            return stat.st_mtime, stat.st_mtime_ns
+        except OSError:
+            return None
 
     def _arm_atexit(self) -> None:
         if not self._atexit_armed:
@@ -478,6 +491,33 @@ class Supervisor:
             return True
         self.external_shared.discard(service.name)
         return False
+
+    def _drop_unplanned(self, plan: Plan) -> bool:
+        """Stop owned services the plan no longer includes.
+
+        A leftover engine still holds the RAM and port the planner counted
+        as free when it sized the new stack. Foreign and shared daemons are
+        not ours to stop — only self.processes and adopted entries."""
+        planned = {service.name for service in plan.services}
+        dropped = False
+        for name in [name for name in self.processes if name not in planned]:
+            self._stop_process(name)
+            self.idle.discard(name)
+            dropped = True
+        for name, record in list(self.adopted.items()):
+            if name in planned or name in self.external_shared:
+                continue
+            pid = record.get("pid")
+            if isinstance(pid, int) and not isinstance(pid, bool):
+                self._terminator(pid)
+            self.adopted.pop(name, None)
+            self.idle.discard(name)
+            dropped = True
+        if dropped:
+            for name in [name for name in self.failed if name not in planned]:
+                self.failed.pop(name, None)
+                self.restarts.pop(name, None)
+        return dropped
 
     def _restart_budget(self, name: str) -> bool:
         cutoff = time.monotonic() - RESTART_WINDOW
@@ -986,6 +1026,7 @@ class Supervisor:
                                    i18n.t("warn.admission_skipped", i18n.lang(), error=error)],
                     )
             self.active_plan = current
+            self._drop_unplanned(current)
             for attempt in range(1, 4):
                 try:
                     for index in range(len(current.services)):
@@ -1571,13 +1612,34 @@ class Supervisor:
     def heartbeat(self) -> RuntimeStatus:
         with self._lock:
             boot_recovery = self._boot_recovery
+            changed = False
             if self.active_plan is None:
                 loaded = load_plan()
                 if loaded is None:
                     return self.status()
                 self.active_plan = loaded
+                self._loaded_plan_stamp = self._plan_stamp()
                 self._boot_recovery = True
                 boot_recovery = True
+            else:
+                # plan.json may have been replaced since this process loaded
+                # it — refresh so the watchdog manages the current plan. A
+                # stale plan actively fights it: adopt sees the new service's
+                # model_ref differ and kills it as a wrong-model orphan.
+                stamp = self._plan_stamp()
+                if stamp is not None and stamp != self._loaded_plan_stamp:
+                    loaded = load_plan()
+                    if loaded is not None:
+                        self._loaded_plan_stamp = stamp
+                        if loaded != self.active_plan:
+                            self.active_plan = loaded
+                            # A new plan is a new intent — restart budgets and
+                            # failures burned by the OLD plan must not wedge
+                            # its services.
+                            self.restarts.clear()
+                            self.failed.clear()
+                            if self._drop_unplanned(loaded):
+                                changed = True
             persisted_names: set[str] = set()
             if boot_recovery:
                 state = self._load_state()
@@ -1593,7 +1655,6 @@ class Supervisor:
                         if isinstance(persisted, list)
                         else set()
                     )
-            changed = False
             for service in self.active_plan.services:
                 if service.name in self.idle:
                     continue
@@ -1623,6 +1684,22 @@ class Supervisor:
                     continue
                 if service.name in self.processes:
                     self.processes.pop(service.name, None)
+                try:
+                    self.active_plan, service, _, _ = self._apply_acquired(
+                        self.active_plan,
+                        service,
+                        acquire(service, local_only=True),
+                    )
+                except Exception as error:  # noqa: BLE001
+                    # The watchdog never downloads — a plan can name an
+                    # artifact that was never fetched. Record why instead
+                    # of crash-looping the engine on a missing file.
+                    self.failed[service.name] = i18n.t(
+                        "err.artifact_missing", i18n.lang(),
+                        service=service.name, error=error,
+                    )
+                    changed = True
+                    continue
                 if not self._restart_budget(service.name):
                     self.failed[service.name] = i18n.t(
                         "err.restart_budget", i18n.lang(), service=service.name
