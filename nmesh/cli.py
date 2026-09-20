@@ -915,6 +915,9 @@ def _print_plan_failure(plan: Plan, *, json_output: bool = False) -> None:
 _UP_PLAN_FLAG_DEFAULTS: tuple[tuple[str, object, str], ...] = (
     ("roles", None, "--roles"),
     ("kv_quant", "f16", "--kv-quant"),
+    ("model", None, "--model"),
+    ("ignore_eval_evidence", False, "--ignore-eval-evidence"),
+    ("allow_download_gb", 60.0, "--allow-download-gb"),
     ("spec", "none", "--spec"),
     ("spec_draft", "", "--spec-draft"),
     ("spec_n_max", 3, "--spec-n-max"),
