@@ -513,6 +513,18 @@ def install(
             (line for line in version_lines if "version" in line.lower()),
             version_lines[0] if version_lines else None,
         )
+        if result.returncode != 0:
+            warning = (
+                f"llama.cpp binary failed to launch (--version exited "
+                f"{result.returncode}); the installed engine cannot run"
+            )
+            if system.lower() == "windows":
+                warning += (
+                    " — on Windows this is usually a missing or outdated Microsoft "
+                    "Visual C++ Redistributable; install the latest "
+                    "vc_redist.x64.exe and run nmesh engine install again"
+                )
+            warnings.append(warning)
         from nmesh.probe.caps import llamacpp_caps
 
         caps = llamacpp_caps(str(exe))
