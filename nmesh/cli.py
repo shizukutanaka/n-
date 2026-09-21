@@ -4413,6 +4413,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     engine_list.add_argument("--available", action="store_true")
     engine_list.add_argument("--json", action="store_true")
     engine_install = engine_commands.add_parser("install")
+    engine_install.add_argument("backend", nargs="?", default="llamacpp",
+                                choices=["llamacpp"])
     engine_install.add_argument("--version")
     engine_install.add_argument("--variant", default="auto")
     engine_install.add_argument("--json", action="store_true")

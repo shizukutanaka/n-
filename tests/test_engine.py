@@ -232,6 +232,62 @@ def test_install_manifest_and_active_round_trip(monkeypatch, tmp_path: Path) -> 
     assert engine.installed()[0].exe.name == "llama-server.exe"
 
 
+def _install_with_exit_code(
+    monkeypatch, tmp_path: Path, system: str, returncode: int
+) -> list[str]:
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    exe_name = "llama-server.exe" if system == "windows" else "llama-server"
+    archive = io.BytesIO()
+    if system == "windows":
+        with zipfile.ZipFile(archive, "w") as source:
+            source.writestr(exe_name, "fake")
+    else:
+        with tarfile.open(fileobj=archive, mode="w:gz") as source:
+            info = tarfile.TarInfo(exe_name)
+            info.size = 4
+            source.addfile(info, io.BytesIO(b"fake"))
+    payload = archive.getvalue()
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: type(
+            "Result", (), {"stdout": "", "stderr": "", "returncode": returncode}
+        )(),
+    )
+    monkeypatch.setattr("nmesh.probe.caps.llamacpp_caps", lambda _: None)
+    _, warnings = engine.install(
+        "b10830",
+        dest=tmp_path,
+        fetch=lambda _: ASSETS,
+        download=lambda _url, path: path.write_bytes(payload),
+        system=system,
+        machine="AMD64",
+        accelerator=None,
+    )
+    return warnings
+
+
+def test_install_warns_when_binary_fails_to_launch(monkeypatch, tmp_path: Path) -> None:
+    # Real-world case: llama.cpp win binaries exit 0xC0000005 when the
+    # Microsoft Visual C++ Redistributable is missing/outdated
+    # (ggml-org/llama.cpp#11479, #10944, #13767) — the warning must name it.
+    warnings = _install_with_exit_code(
+        monkeypatch, tmp_path, system="windows", returncode=3221225477
+    )
+    launch_warning = next(w for w in warnings if "failed to launch" in w)
+    assert "3221225477" in launch_warning
+    assert "Visual C++ Redistributable" in launch_warning
+
+
+def test_install_launch_warning_has_no_vcredist_hint_off_windows(
+    monkeypatch, tmp_path: Path
+) -> None:
+    warnings = _install_with_exit_code(
+        monkeypatch, tmp_path, system="linux", returncode=1
+    )
+    launch_warning = next(w for w in warnings if "failed to launch" in w)
+    assert "Visual C++" not in launch_warning
+
+
 def test_tar_member_path_traversal_is_rejected(tmp_path: Path) -> None:
     archive = tmp_path / "bad.tar.gz"
     with tarfile.open(archive, "w:gz") as source:
@@ -397,3 +453,29 @@ def test_unload_404_preserves_unknown_service(monkeypatch, capsys) -> None:
 
     assert cli._unload(args) == 1
     assert capsys.readouterr().err.strip() == "Unknown service: chat"
+
+
+def test_engine_install_accepts_backend_positional(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    item = engine.InstalledEngine(
+        "llamacpp", "b10830", "cpu", tmp_path / "llama-server.exe",
+        None, "sha", "asset.zip", 0.0, (),
+    )
+    seen: dict[str, object] = {}
+
+    def fake_install(**kwargs: object) -> tuple[engine.InstalledEngine, list[str]]:
+        seen.update(kwargs)
+        return item, []
+
+    monkeypatch.setattr(engine, "install", fake_install)
+
+    assert cli.main(["engine", "install", "llamacpp", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["installed"]["tag"] == "b10830"
+    assert seen == {"tag": None, "variant": "auto"}
+
+
+def test_engine_install_rejects_unknown_backend(capsys) -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.main(["engine", "install", "vllm"])
+    assert error.value.code == 2
