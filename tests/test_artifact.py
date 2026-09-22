@@ -47,6 +47,88 @@ def test_gguf_fingerprint_reads_a_stable_header_only(tmp_path: Path) -> None:
     assert artifact.gguf_fingerprint(path) is None
 
 
+def _kv_string(key: str, value: str) -> bytes:
+    return _string(key) + struct.pack("<I", 8) + _string(value)
+
+
+def _kv_u32(key: str, value: int) -> bytes:
+    return _string(key) + struct.pack("<I", 4) + struct.pack("<I", value)
+
+
+def _kv_u32_array(key: str, values: tuple[int, ...]) -> bytes:
+    return (
+        _string(key)
+        + struct.pack("<I", 9)
+        + struct.pack("<IQ", 4, len(values))
+        + b"".join(struct.pack("<I", item) for item in values)
+    )
+
+
+def _kv_bool_array(key: str, values: tuple[bool, ...]) -> bytes:
+    return (
+        _string(key)
+        + struct.pack("<I", 9)
+        + struct.pack("<IQ", 7, len(values))
+        + b"".join(b"\x01" if item else b"\x00" for item in values)
+    )
+
+
+def _attention_gguf(*, pattern_array: bool) -> bytes:
+    return b"".join((
+        b"GGUF",
+        struct.pack("<IQQ", 3, 0, 8),
+        _kv_string("general.architecture", "gptoss"),
+        _kv_u32("gptoss.block_count", 24),
+        _kv_u32_array("gptoss.attention.head_count_kv", (8,) * 24),
+        _kv_u32("gptoss.attention.key_length", 128),
+        _kv_u32("gptoss.embedding_length", 2880),
+        _kv_u32("gptoss.attention.sliding_window", 128),
+        (
+            _kv_bool_array(
+                "gptoss.attention.sliding_window_pattern",
+                tuple(index % 2 == 0 for index in range(24)),
+            )
+            if pattern_array
+            else _kv_u32("gptoss.attention.sliding_window_pattern", 2)
+        ),
+        _string("unrelated.key"),
+        struct.pack("<I", 8),
+        _string("skipped"),
+    ))
+
+
+def test_gguf_info_collects_attention_layout(tmp_path: Path) -> None:
+    path = tmp_path / "model.gguf"
+    path.write_bytes(_attention_gguf(pattern_array=True))
+    info = artifact.gguf_info(path)
+    assert info is not None
+    assert info.block_count == 24
+    assert info.head_count_kv == 8
+    assert info.key_length == 128
+    assert info.embedding_length == 2880
+    assert info.sliding_window == 128
+    # Per-layer bool pattern: every other layer slides, 12 of 24.
+    assert info.swa_layers == 12
+
+
+def test_gguf_info_scalar_pattern_counts_sliding_layers(tmp_path: Path) -> None:
+    path = tmp_path / "model.gguf"
+    path.write_bytes(_attention_gguf(pattern_array=False))
+    info = artifact.gguf_info(path)
+    assert info is not None
+    # Scalar pattern 2: every second layer is full attention.
+    assert info.swa_layers == 12
+
+
+def test_gguf_info_without_attention_keys_defaults_to_zero(tmp_path: Path) -> None:
+    path = tmp_path / "model.gguf"
+    path.write_bytes(_synthetic_gguf())
+    info = artifact.gguf_info(path)
+    assert info is not None
+    assert info.block_count == 0
+    assert info.swa_layers == 0
+
+
 class _TagsResponse:
     def __init__(self, payload: object) -> None:
         self.payload = payload

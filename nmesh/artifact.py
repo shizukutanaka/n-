@@ -21,6 +21,41 @@ class GgufInfo:
     name: str
     file_type: int | None
     digest: str
+    block_count: int = 0
+    head_count_kv: int = 0
+    head_count: int = 0
+    key_length: int = 0
+    embedding_length: int = 0
+    sliding_window: int = 0
+    swa_layers: int = 0
+
+
+# Arch-scoped metadata needed to size a model's KV cache from its GGUF header
+# alone (draft models for speculative decoding are the consumer). Keys are
+# matched by their suffix after `{arch}.` so the architecture need not be
+# known in advance.
+_KV_SCALAR_KEYS = frozenset({
+    "block_count",
+    "attention.key_length",
+    "attention.sliding_window",
+    "embedding_length",
+})
+# head counts may be stored per-layer (array) or once (scalar); sizing uses
+# the maximum so hybrid layouts over-budget rather than under-budget.
+_KV_MAX_KEYS = frozenset({"attention.head_count", "attention.head_count_kv"})
+_KV_PATTERN_KEY = "attention.sliding_window_pattern"
+
+
+def _meta_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    return value if isinstance(value, int) else 0
+
+
+def _meta_max(value: object) -> int:
+    if isinstance(value, list):
+        return max((_meta_int(item) for item in value), default=0)
+    return _meta_int(value)
 
 
 class _HeaderReader:
@@ -115,12 +150,18 @@ def gguf_info(path: Path) -> GgufInfo | None:
             arch = ""
             name = ""
             file_type: int | None = None
+            kv_meta: dict[str, object] = {}
             for _ in range(n_kv):
                 key = reader.string()
                 kind = reader.u32()
-                if key in {"general.architecture", "general.name", "general.file_type"}:
+                suffix = key.split(".", 1)[1] if "." in key else ""
+                if key in {
+                    "general.architecture", "general.name", "general.file_type",
+                } or suffix in _KV_SCALAR_KEYS or suffix in _KV_MAX_KEYS or suffix == _KV_PATTERN_KEY:
                     value = reader.value(kind)
-                    if key == "general.architecture" and isinstance(value, str):
+                    if suffix in _KV_SCALAR_KEYS or suffix in _KV_MAX_KEYS or suffix == _KV_PATTERN_KEY:
+                        kv_meta[suffix] = value
+                    elif key == "general.architecture" and isinstance(value, str):
                         arch = value
                     elif key == "general.name" and isinstance(value, str):
                         name = value
@@ -141,6 +182,16 @@ def gguf_info(path: Path) -> GgufInfo | None:
                 tensor_types[tensor_type] = tensor_types.get(tensor_type, 0) + 1
                 reader.u64()
             digest = hashlib.sha256(reader.header).hexdigest()[:16]
+            block_count = _meta_int(kv_meta.get("block_count"))
+            pattern = kv_meta.get(_KV_PATTERN_KEY)
+            if isinstance(pattern, list):
+                # Per-layer bools: True marks a sliding layer.
+                swa_layers = sum(1 for item in pattern if _meta_int(item))
+            elif isinstance(pattern, int) and pattern > 0 and block_count > 0:
+                # Scalar pattern: every nth layer is full attention.
+                swa_layers = block_count - block_count // pattern
+            else:
+                swa_layers = 0
             return GgufInfo(
                 size=size,
                 tensors=n_tensors,
@@ -150,6 +201,13 @@ def gguf_info(path: Path) -> GgufInfo | None:
                 name=name,
                 file_type=file_type,
                 digest=digest,
+                block_count=block_count,
+                head_count_kv=_meta_max(kv_meta.get("attention.head_count_kv")),
+                head_count=_meta_max(kv_meta.get("attention.head_count")),
+                key_length=_meta_int(kv_meta.get("attention.key_length")),
+                embedding_length=_meta_int(kv_meta.get("embedding_length")),
+                sliding_window=_meta_int(kv_meta.get("attention.sliding_window")),
+                swa_layers=swa_layers,
             )
     except (OSError, MemoryError, OverflowError, struct.error, UnicodeError, ValueError):
         return None

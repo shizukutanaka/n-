@@ -171,6 +171,13 @@ target artifact, draft identity, and llama.cpp engine, and its decision is
 `allow`. Use `nmesh plan --spec ngram` or `--spec draft` to request a
 configuration; missing or losing evidence leaves speculation disabled.
 
+A draft model allocates its own full-context KV cache in llama.cpp
+(`common/speculative.cpp` sizes the draft context at the target's `n_ctx`),
+so `--spec draft` budgets draft weights plus a draft KV stream per slot —
+the rate comes from the draft GGUF header (`block_count`, `attention.*`).
+A draft whose header lacks attention layout metadata is planned with its
+KV honestly unbudgeted and a warning, rather than a fabricated estimate.
+
 KV-cache precision is part of benchmark identity. On one Windows CPU x64
 machine, one llama.cpp build, one model, and one context, the controlled
 measurement used engine `b10831` (`0.4.0-dev`, commit `8fe90e1fb`), Qwen2.5

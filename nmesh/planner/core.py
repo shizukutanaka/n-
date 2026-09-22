@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from nmesh import __version__
-from nmesh.artifact import service_fingerprint
+from nmesh.artifact import gguf_info, service_fingerprint
 from nmesh.artifacts import artifact_key
 from nmesh.bench.cache import BENCH_HARNESS_VERSION, BenchRecord, benchmark_key
 from nmesh.bench.retrieval import RetrievalLimit
@@ -1134,6 +1134,40 @@ def _spec_draft_path(value: str) -> Path | None:
     )
 
 
+def _draft_kv_per_tok(
+    path: Path, kv_quant: str, context: int
+) -> float | None:
+    """Effective per-token KV rate of a draft model from its GGUF header.
+
+    llama.cpp sizes the draft context at llama_n_ctx(ctx_tgt) — the draft
+    allocates one full-size KV stream per slot, so its rate folds into
+    kv_bytes_per_tok exactly like the target's. Returns None when the header
+    lacks the attention layout needed to size it.
+    """
+    info = gguf_info(path)
+    if info is None or info.block_count <= 0:
+        return None
+    head_dim = info.key_length or (
+        info.embedding_length // info.head_count if info.head_count > 0 else 0
+    )
+    kv_heads = info.head_count_kv or info.head_count
+    if head_dim <= 0 or kv_heads <= 0:
+        return None
+    elem_bytes = {"f16": 2, "q8_0": 1}[kv_quant]
+    tok_layer_bytes = 2 * kv_heads * head_dim * elem_bytes
+    swa_layers = (
+        min(info.swa_layers, info.block_count)
+        if info.sliding_window > 0 else 0
+    )
+    if swa_layers:
+        swa_tokens = min(context, info.sliding_window + SWA_UBATCH_TOKENS)
+        return tok_layer_bytes * (
+            (info.block_count - swa_layers)
+            + swa_layers * (swa_tokens / context)
+        )
+    return tok_layer_bytes * info.block_count
+
+
 def _spec_identity(path: Path) -> RoleIdentity:
     return RoleIdentity(
         model_id=path.stem,
@@ -1161,6 +1195,7 @@ def _spec_for_service(
         warnings.append(t("warn.spec_unsupported", language, service=candidate.model.id))
         return "none", "", memory
     draft_path: Path | None = None
+    draft_kv_per_tok = 0.0
     if policy.spec == "draft":
         draft_path = _spec_draft_path(policy.spec_draft)
         if draft_path is None:
@@ -1175,14 +1210,28 @@ def _spec_for_service(
                   service=candidate.model.id)
             )
             return "none", "", memory
+        kv_rate = _draft_kv_per_tok(
+            draft_path, candidate.kv_quant, candidate.context
+        )
+        if kv_rate is None:
+            warnings.append(
+                t(
+                    "warn.spec_draft_kv_unmodeled",
+                    language,
+                    service=candidate.model.id,
+                )
+            )
+        else:
+            draft_kv_per_tok = kv_rate
         draft_bytes = draft_path.stat().st_size
-        if memory.cpu_bytes + draft_bytes > memory.ram_budget + 1:
+        draft_kv = draft_kv_per_tok * candidate.context * memory.parallel_slots
+        if memory.cpu_bytes + draft_bytes + draft_kv > memory.ram_budget + 1:
             warnings.append(
                 t(
                     "warn.spec_draft_no_fit",
                     language,
                     service=candidate.model.id,
-                    bytes=draft_bytes,
+                    bytes=int(draft_bytes + draft_kv),
                 )
             )
             return "none", "", memory
@@ -1231,11 +1280,16 @@ def _spec_for_service(
         warnings.append(t("warn.spec_override", language, service=candidate.model.id))
     if draft_path is not None:
         draft_bytes = draft_path.stat().st_size
+        draft_kv = draft_kv_per_tok * candidate.context * memory.parallel_slots
         memory = replace(
             memory,
             weight_bytes=memory.weight_bytes + draft_bytes,
-            total_bytes=memory.total_bytes + draft_bytes,
-            cpu_bytes=memory.cpu_bytes + draft_bytes,
+            # The draft's rate folds into kv_bytes_per_tok so the slot-rescale
+            # in _assign_slots budgets one draft KV stream per added slot.
+            kv_bytes_per_tok=memory.kv_bytes_per_tok + draft_kv_per_tok,
+            kv_cache_bytes=memory.kv_cache_bytes + draft_kv,
+            total_bytes=memory.total_bytes + draft_bytes + draft_kv,
+            cpu_bytes=memory.cpu_bytes + draft_bytes + draft_kv,
         )
     return policy.spec, str(draft_path or ""), memory
 
