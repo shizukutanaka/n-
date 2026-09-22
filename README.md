@@ -923,7 +923,11 @@ repositories commonly return 404 for `config.json`, including
 from the base repository recorded in `config_repo`. `--sources github,arxiv`
 also watches release notes for `ggml-org/llama.cpp`, `vllm-project/vllm`, and
 `ollama/ollama` through the GitHub REST API, plus arXiv cs.CL abstracts on
-local-inference topics. GitHub's anonymous API quota (60/h per IP) is
+local-inference topics. `--sources hf` lists the newest `gguf`-tagged
+Hugging Face models and feeds their card READMEs into extraction — new
+community quants surface as `catalog_gap` candidates with verified metadata;
+`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN` authenticates the calls. GitHub's
+anonymous API quota (60/h per IP) is
 sometimes spent on shared-egress boxes — `GITHUB_TOKEN` or `GH_TOKEN`
 authenticates the calls; arXiv throttles bursts. Either way a rate-limited
 source is honestly reported as unreachable rather than silently empty. X is

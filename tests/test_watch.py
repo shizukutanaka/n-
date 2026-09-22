@@ -16,6 +16,7 @@ from nmesh.watch.sources import (
     SourceStatus,
     fetch_arxiv,
     fetch_github,
+    fetch_hf,
     fetch_qiita,
     fetch_x,
     fetch_zenn,
@@ -165,6 +166,37 @@ def test_arxiv_throttled_reports_unreachable() -> None:
 
 def test_github_source_constant_is_verified_engine_repos() -> None:
     assert "ggml-org/llama.cpp" in _GITHUB_REPOS
+
+
+def test_hf_fetches_newest_gguf_models_and_cards() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/models":
+            assert request.url.params["filter"] == "gguf"
+            assert request.url.params["sort"] == "lastModified"
+            assert request.url.params["direction"] == "-1"
+            return httpx.Response(200, json=[
+                {"id": "acme/NewModel-GGUF", "lastModified": "2026-01-02T00:00:00Z"},
+                {"id": "acme/NoCard-GGUF", "lastModified": "2026-01-01T00:00:00Z"},
+            ])
+        if request.url.path == "/acme/NewModel-GGUF/raw/main/README.md":
+            return httpx.Response(200, text="quantized to Q4_K_M by acme")
+        return httpx.Response(404)
+
+    status, items = fetch_hf("gguf", 5, _client(handler))
+    assert status.reachable and status.items == 2 and status.body_available
+    assert status.detail == "2 models; 1 cards"
+    assert items[0].source == "hf"
+    assert items[0].url == "https://huggingface.co/acme/NewModel-GGUF"
+    assert "Q4_K_M" in items[0].body
+    assert items[1].body == ""
+
+
+def test_hf_unreachable_is_reported_honestly() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429)
+
+    status, items = fetch_hf("gguf", 5, _client(handler))
+    assert not status.reachable and items == ()
 
 
 def test_x_without_token_reports_auth_required(monkeypatch) -> None:

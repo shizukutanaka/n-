@@ -2,6 +2,7 @@
 
 ## 未リリース
 ### Added
+- **`nmesh watch` に `hf` ソースを追加**: `--sources hf` で HF Hub API の `gguf` タグ付き新着モデル（`lastModified` 降順）を取得し、各モデルカードの README を抽出→検証パイプラインへ投入します。新しいコミュニティ量子化や GGUF 化がいち早く `catalog_gap` 候補として浮上します。`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN` で認証可能、取得失敗時は到達不能として正直に報告します
 - **`nmesh watch` に `github` / `arxiv` ソースを追加**: `--sources github,arxiv` で llama.cpp / vLLM / Ollama の GitHub リリースノート（GitHub REST API・リリース本文）と arXiv cs.CL のローカル推論関連アブストラクトを取得し、既存の抽出→検証パイプラインへ投入します。GitHub の匿名レート制限（IPあたり60回/時、共有 egress では枯渇しがち）は `GITHUB_TOKEN`/`GH_TOKEN` で回避可能。レート制限到達時は空結果ではなく到達不能として正直に報告します（arXiv のバースト規制も同様）。既定ソースは従来どおり `zenn,qiita` です
 
 ### Fixed

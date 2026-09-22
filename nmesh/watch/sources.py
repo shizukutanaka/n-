@@ -315,6 +315,84 @@ def fetch_arxiv(
             session.close()
 
 
+_HF_TAG = "gguf"
+# Model-card reads are capped: cards can exceed a megabyte and only their
+# head carries the metadata extraction needs (quants, repos, commands).
+_HF_CARD_BYTES = 49152
+
+
+def fetch_hf(
+    tag: str = _HF_TAG,
+    limit: int = 8,
+    client: httpx.Client | None = None,
+) -> tuple[SourceStatus, tuple[SourceItem, ...]]:
+    """Fetch the newest GGUF-tagged Hugging Face models plus their cards.
+
+    The Hub API allows anonymous reads (a shared quota); HF_TOKEN or
+    HUGGING_FACE_HUB_TOKEN raises the rate ceiling. A model without a
+    README.md still lists with an empty body rather than being skipped.
+    """
+    own_client = client is None
+    session = client or httpx.Client(timeout=15.0, follow_redirects=True)
+    try:
+        headers = {"Accept": "application/json"}
+        token = (
+            os.environ.get("HF_TOKEN")
+            or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        )
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        response = session.get(
+            "https://huggingface.co/api/models",
+            params={
+                "filter": tag,
+                "sort": "lastModified",
+                "direction": "-1",
+                "limit": min(max(limit, 1), 50),
+            },
+            headers=headers,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise TypeError("Hugging Face response was not a list")
+        items: list[SourceItem] = []
+        cards = 0
+        for raw in payload:
+            entry = _mapping(raw)
+            if entry is None:
+                continue
+            model_id = _text(entry.get("id") or entry.get("modelId"))
+            if not model_id:
+                continue
+            url = f"https://huggingface.co/{model_id}"
+            card = session.get(f"{url}/raw/main/README.md", headers=headers)
+            body = card.text[:_HF_CARD_BYTES] if card.status_code == 200 else ""
+            if body:
+                cards += 1
+            items.append(SourceItem(
+                "hf",
+                url,
+                model_id,
+                body,
+                _text(entry.get("lastModified") or entry.get("last_modified")),
+            ))
+        selected = _unique_items(items)
+        return SourceStatus(
+            "hf",
+            True,
+            len(selected),
+            cards > 0,
+            False,
+            f"{len(selected)} models; {cards} cards",
+        ), selected
+    except (httpx.HTTPError, ValueError, TypeError) as error:
+        return _failure("hf", error)
+    finally:
+        if own_client:
+            session.close()
+
+
 def fetch_x(
     query: str,
     limit: int = 20,
@@ -369,6 +447,7 @@ __all__ = [
     "SourceStatus",
     "fetch_arxiv",
     "fetch_github",
+    "fetch_hf",
     "fetch_qiita",
     "fetch_x",
     "fetch_zenn",

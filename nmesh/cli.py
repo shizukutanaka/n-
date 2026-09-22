@@ -204,6 +204,7 @@ from nmesh.watch import extract as extract_mentions
 from nmesh.watch import (
     fetch_arxiv,
     fetch_github,
+    fetch_hf,
     fetch_qiita,
     fetch_x,
     fetch_zenn,
@@ -3862,6 +3863,8 @@ def _watch(args: argparse.Namespace) -> int:
                         results[source] = fetch_github(limit=args.limit, client=client)
                     elif source == "arxiv":
                         results[source] = fetch_arxiv(limit=args.limit, client=client)
+                    elif source == "hf":
+                        results[source] = fetch_hf(limit=args.limit, client=client)
                     elif source == "x":
                         results[source] = fetch_x(
                             "llm OR ollama OR llama.cpp OR vllm OR gguf",
@@ -4388,7 +4391,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     watch_parser.add_argument(
         "--sources",
         default="zenn,qiita",
-        help="comma-separated sources: zenn,qiita,github,arxiv,x",
+        help="comma-separated sources: zenn,qiita,github,arxiv,hf,x",
     )
     watch_parser.add_argument(
         "--limit",
