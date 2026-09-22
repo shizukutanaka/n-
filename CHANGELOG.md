@@ -1,6 +1,9 @@
 # 変更履歴
 
 ## 未リリース
+### Added
+- **`nmesh watch` に `github` / `arxiv` ソースを追加**: `--sources github,arxiv` で llama.cpp / vLLM / Ollama の GitHub リリースノート（GitHub REST API・リリース本文）と arXiv cs.CL のローカル推論関連アブストラクトを取得し、既存の抽出→検証パイプラインへ投入します。GitHub の匿名レート制限（IPあたり60回/時、共有 egress では枯渇しがち）は `GITHUB_TOKEN`/`GH_TOKEN` で回避可能。レート制限到達時は空結果ではなく到達不能として正直に報告します（arXiv のバースト規制も同様）。既定ソースは従来どおり `zenn,qiita` です
+
 ### Fixed
 - **スライディングウィンドウアテンション（SWA）モデルの KV キャッシュを過大見積もりしていた問題を修正**: llama.cpp は iSWA キャッシュを配列 `min(ctx_per_seq, n_swa + n_ubatch)` セル/シーケンスで確保しますが、見積もりは全 KV レイヤーをコンテキスト全長で計上していました。カタログに `sliding_window`/`sliding_window_pattern`（GGUF/HF メタデータと同一の意味）を追加し、gemma2-2b/9b（window 4096・2層ごと）と gpt-oss-20b/120b（window 128・交互）に設定 — ctx 8k で gemma2-9b は約22%、gpt-oss は約半分の KV 見積もりに減少。フィールド未設定のモデルは従来どおりの保守的見積もり（`--swa-full` は llama.cpp 側でフルサイズ化するため、nmesh は付けない前提）
 - `nmesh plan` の tok/s 欄で推定値を `~` 接頭辞で区別表示し、脚注を追加 — plan.json の `estimated` フィールドは従来 `--json` 経由でのみ見え、表形式では実測値と推定値が区別できませんでした。実測値への置き換えには `nmesh bench` を実行してください

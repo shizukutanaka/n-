@@ -10,8 +10,10 @@ from __future__ import annotations
 import html
 import os
 import re
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from urllib.parse import urlencode
 
 import httpx
 
@@ -36,6 +38,12 @@ class SourceStatus:
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_GITHUB_REPOS = ("ggml-org/llama.cpp", "vllm-project/vllm", "ollama/ollama")
+_ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
+_ARXIV_QUERY = (
+    'cat:cs.CL AND (all:"kv cache" OR all:"speculative decoding" '
+    'OR all:"llm inference" OR all:gguf OR all:"llama.cpp")'
+)
 _ZENN_TOPICS = ("llm", "ollama", "llamacpp", "vllm", "gguf", "localllm")
 _QIITA_TAGS = (
     "llm",
@@ -179,6 +187,134 @@ def fetch_zenn(
             session.close()
 
 
+def fetch_github(
+    repos: Sequence[str] = _GITHUB_REPOS,
+    limit: int = 10,
+    client: httpx.Client | None = None,
+) -> tuple[SourceStatus, tuple[SourceItem, ...]]:
+    """Fetch release notes for the watched engines via the GitHub REST API.
+
+    The unauthenticated API is rate-limited per IP (60/h); GITHUB_TOKEN or
+    GH_TOKEN raises that ceiling and also fixes shared-egress boxes where
+    the anonymous quota is already spent.
+    """
+    own_client = client is None
+    session = client or httpx.Client(timeout=10.0, follow_redirects=True)
+    try:
+        headers = {"Accept": "application/vnd.github+json"}
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        items: list[SourceItem] = []
+        yields: list[str] = []
+        for repo in repos:
+            response = session.get(
+                f"https://api.github.com/repos/{repo}/releases",
+                params={"per_page": min(max(limit, 1), 100)},
+                headers=headers,
+            )
+            if response.status_code == 403 and not token:
+                return _failure(
+                    "github",
+                    f"GitHub API 403 {response.headers.get('x-ratelimit-remaining', '')}; "
+                    "set GITHUB_TOKEN to authenticate",
+                )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise TypeError("GitHub response was not a list")
+            fetched = 0
+            for raw in payload:
+                release = _mapping(raw)
+                if release is None or release.get("draft"):
+                    continue
+                url = _text(release.get("html_url"))
+                if not url:
+                    continue
+                items.append(SourceItem(
+                    "github",
+                    url,
+                    _text(release.get("name") or release.get("tag_name")),
+                    _text(release.get("body")),
+                    _text(release.get("published_at")),
+                ))
+                fetched += 1
+            yields.append(f"{repo}={fetched}")
+        selected = _unique_items(items)
+        return SourceStatus(
+            "github",
+            True,
+            len(selected),
+            any(item.body for item in selected),
+            False,
+            "; ".join(yields),
+        ), selected
+    except (httpx.HTTPError, ValueError, TypeError) as error:
+        return _failure("github", error)
+    finally:
+        if own_client:
+            session.close()
+
+
+def fetch_arxiv(
+    query: str = _ARXIV_QUERY,
+    limit: int = 20,
+    client: httpx.Client | None = None,
+) -> tuple[SourceStatus, tuple[SourceItem, ...]]:
+    """Fetch recent arXiv cs.CL abstracts on local-inference topics.
+
+    arXiv's Atom API expects `+`-joined search terms and throttles bursts;
+    failures are reported as unreachable rather than retried.
+    """
+    own_client = client is None
+    session = client or httpx.Client(timeout=20.0, follow_redirects=True)
+    try:
+        # arXiv wants '+'-joined search terms with ':' left readable, so the
+        # request URL is encoded by hand rather than through httpx params.
+        params = urlencode(
+            {
+                "search_query": query,
+                "start": 0,
+                "max_results": min(max(limit, 1), 50),
+                "sortBy": "submittedDate",
+                "sortOrder": "descending",
+            },
+            safe=":",
+        )
+        response = session.get(f"https://export.arxiv.org/api/query?{params}")
+        response.raise_for_status()
+        root = ET.fromstring(response.text)
+        items: list[SourceItem] = []
+        for entry in root.findall("atom:entry", _ARXIV_NS):
+            url = ""
+            for link in entry.findall("atom:link", _ARXIV_NS):
+                if link.get("href"):
+                    url = link.get("href", "")
+                    break
+            if not url:
+                url = _text(entry.findtext("atom:id", default="", namespaces=_ARXIV_NS))
+            if not url:
+                continue
+            title = _text(entry.findtext("atom:title", default="", namespaces=_ARXIV_NS))
+            summary = _text(entry.findtext("atom:summary", default="", namespaces=_ARXIV_NS))
+            published = _text(entry.findtext("atom:published", default="", namespaces=_ARXIV_NS))
+            items.append(SourceItem(
+                "arxiv",
+                url,
+                " ".join(title.split()),
+                " ".join(summary.split()),
+                published,
+            ))
+        return SourceStatus(
+            "arxiv", True, len(items), bool(items), False, ""
+        ), tuple(items)
+    except (httpx.HTTPError, ValueError, TypeError, ET.ParseError) as error:
+        return _failure("arxiv", error)
+    finally:
+        if own_client:
+            session.close()
+
+
 def fetch_x(
     query: str,
     limit: int = 20,
@@ -231,6 +367,8 @@ def fetch_x(
 __all__ = [
     "SourceItem",
     "SourceStatus",
+    "fetch_arxiv",
+    "fetch_github",
     "fetch_qiita",
     "fetch_x",
     "fetch_zenn",

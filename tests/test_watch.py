@@ -9,10 +9,13 @@ from nmesh.cli import _candidate_fit, main
 from nmesh.watch.draft import write_draft
 from nmesh.watch.extract import Mention, extract
 from nmesh.watch.sources import (
+    _GITHUB_REPOS,
     _QIITA_TAGS,
     _ZENN_TOPICS,
     SourceItem,
     SourceStatus,
+    fetch_arxiv,
+    fetch_github,
     fetch_qiita,
     fetch_x,
     fetch_zenn,
@@ -98,6 +101,70 @@ def test_qiita_limit_is_per_tag() -> None:
     assert tags == ["llama.cpp", "llamacpp", "localllm"]
     assert status.items == 3
     assert len(items) == 3
+
+
+def test_github_fetches_release_bodies() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "api.github.com"
+        return httpx.Response(200, json=[{
+            "html_url": "https://github.com/o/r/releases/tag/b1",
+            "name": "b1",
+            "tag_name": "b1",
+            "body": "server : add --cpu-moe flag for MoE offload",
+            "published_at": "2026-01-01T00:00:00Z",
+            "draft": False,
+        }])
+    status, items = fetch_github(("o/r",), 5, _client(handler))
+    assert status.reachable and status.items == 1 and status.body_available
+    assert items[0].source == "github"
+    assert "--cpu-moe" in items[0].body
+
+
+def test_github_rate_limit_reports_unreachable_with_hint(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403, json={"message": "API rate limit exceeded"},
+            headers={"x-ratelimit-remaining": "0"},
+        )
+    status, items = fetch_github(("o/r",), 5, _client(handler))
+    assert not status.reachable and items == ()
+    assert "GITHUB_TOKEN" in status.detail
+
+
+def test_arxiv_parses_atom_entries() -> None:
+    feed = """<?xml version="1.0" encoding="UTF-8"?>
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <id>http://arxiv.org/abs/2601.00001v1</id>
+        <title>  Efficient\nKV Cache Compression </title>
+        <summary> We study speculative\n decoding for LLM inference. </summary>
+        <published>2026-01-02T00:00:00Z</published>
+        <link href="http://arxiv.org/abs/2601.00001v1"/>
+      </entry>
+    </feed>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "export.arxiv.org"
+        return httpx.Response(200, text=feed)
+    status, items = fetch_arxiv('cat:cs.CL AND all:"kv cache"', 5, _client(handler))
+    assert status.reachable and len(items) == 1
+    assert items[0].source == "arxiv"
+    assert items[0].title == "Efficient KV Cache Compression"
+    assert "speculative decoding" in items[0].body
+
+
+def test_arxiv_throttled_reports_unreachable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429)
+    status, items = fetch_arxiv("all:x", 1, _client(handler))
+    assert not status.reachable and items == ()
+
+
+def test_github_source_constant_is_verified_engine_repos() -> None:
+    assert "ggml-org/llama.cpp" in _GITHUB_REPOS
 
 
 def test_x_without_token_reports_auth_required(monkeypatch) -> None:

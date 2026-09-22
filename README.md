@@ -913,11 +913,17 @@ Noise IDs such as `docs/hub`, `papers/2504.13181`, `datasets/leemeng`, and
 `blog/nvidia` are filtered by the Hugging Face 401/404 gate. GGUF mirror
 repositories commonly return 404 for `config.json`, including
 `Qwen/Qwen3-14B-GGUF` and `ggml-org/...-GGUF`; architecture numbers then come
-from the base repository recorded in `config_repo`. GitHub's API returned 403
-from this box, so there is deliberately no releases source. X is unavailable
-without `NMESH_X_BEARER_TOKEN`. `--offline` accepts saved source items for
-reproducible extraction and verification, and bounded state prevents repeated
-findings from growing without limit. No finding is auto-applied to the product.
+from the base repository recorded in `config_repo`. `--sources github,arxiv`
+also watches release notes for `ggml-org/llama.cpp`, `vllm-project/vllm`, and
+`ollama/ollama` through the GitHub REST API, plus arXiv cs.CL abstracts on
+local-inference topics. GitHub's anonymous API quota (60/h per IP) is
+sometimes spent on shared-egress boxes — `GITHUB_TOKEN` or `GH_TOKEN`
+authenticates the calls; arXiv throttles bursts. Either way a rate-limited
+source is honestly reported as unreachable rather than silently empty. X is
+unavailable without `NMESH_X_BEARER_TOKEN`. `--offline` accepts saved source
+items for reproducible extraction and verification, and bounded state
+prevents repeated findings from growing without limit. No finding is
+auto-applied to the product.
 
 ### Answerless truncation is not a failure
 

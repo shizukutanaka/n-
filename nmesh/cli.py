@@ -201,7 +201,13 @@ from nmesh.telemetry import (
 )
 from nmesh.telemetry import summary as telemetry_summary
 from nmesh.watch import extract as extract_mentions
-from nmesh.watch import fetch_qiita, fetch_x, fetch_zenn
+from nmesh.watch import (
+    fetch_arxiv,
+    fetch_github,
+    fetch_qiita,
+    fetch_x,
+    fetch_zenn,
+)
 from nmesh.watch.draft import write_draft
 from nmesh.watch.sources import SourceItem, SourceStatus
 from nmesh.watch.state import WatchState, load_state, now_iso, save_state
@@ -3852,6 +3858,10 @@ def _watch(args: argparse.Namespace) -> int:
                         results[source] = fetch_zenn(limit=args.limit, client=client)
                     elif source == "qiita":
                         results[source] = fetch_qiita(limit=args.limit, client=client)
+                    elif source == "github":
+                        results[source] = fetch_github(limit=args.limit, client=client)
+                    elif source == "arxiv":
+                        results[source] = fetch_arxiv(limit=args.limit, client=client)
                     elif source == "x":
                         results[source] = fetch_x(
                             "llm OR ollama OR llama.cpp OR vllm OR gguf",
@@ -4375,7 +4385,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                              help="cancel a queued job (running jobs cannot be interrupted)")
     jobs_parser.add_argument("--json", action="store_true")
     watch_parser = sub.add_parser("watch")
-    watch_parser.add_argument("--sources", default="zenn,qiita")
+    watch_parser.add_argument(
+        "--sources",
+        default="zenn,qiita",
+        help="comma-separated sources: zenn,qiita,github,arxiv,x",
+    )
     watch_parser.add_argument(
         "--limit",
         type=_positive_int,
