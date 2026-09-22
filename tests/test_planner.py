@@ -796,6 +796,68 @@ def test_catalog_sliding_window_models(catalog: list[ModelSpec]) -> None:
     }
 
 
+def _draft_gguf(
+    *,
+    layers: int = 24,
+    kv_heads: int = 8,
+    key_length: int = 128,
+    sliding_window: int = 0,
+    pattern: tuple[bool, ...] = (),
+) -> bytes:
+    import struct
+
+    from tests.test_artifact import _kv_bool_array, _kv_string, _kv_u32
+
+    entries = [
+        _kv_string("general.architecture", "draftarch"),
+        _kv_u32("draftarch.block_count", layers),
+        _kv_u32("draftarch.attention.head_count_kv", kv_heads),
+        _kv_u32("draftarch.attention.key_length", key_length),
+    ]
+    if sliding_window:
+        entries.append(
+            _kv_u32("draftarch.attention.sliding_window", sliding_window)
+        )
+    if pattern:
+        entries.append(
+            _kv_bool_array("draftarch.attention.sliding_window_pattern", pattern)
+        )
+    return b"".join((
+        b"GGUF",
+        struct.pack("<IQQ", 3, 0, len(entries)),
+        *entries,
+    ))
+
+
+def test_draft_kv_per_tok_reads_gguf_attention_layout(tmp_path: Path) -> None:
+    path = tmp_path / "draft.gguf"
+    path.write_bytes(_draft_gguf())
+    rate = planner_core._draft_kv_per_tok(path, "f16", 8192)
+    assert rate == pytest.approx(2 * 8 * 128 * 2 * 24)
+
+
+def test_draft_kv_per_tok_applies_gguf_sliding_window(tmp_path: Path) -> None:
+    path = tmp_path / "draft.gguf"
+    path.write_bytes(_draft_gguf(
+        sliding_window=128,
+        pattern=tuple(index % 2 == 0 for index in range(24)),
+    ))
+    rate = planner_core._draft_kv_per_tok(path, "f16", 8192)
+    # 12 sliding layers hold window + ubatch cells; 12 full layers hold ctx.
+    expected = 2 * 8 * 128 * 2 * (12 + 12 * ((128 + 512) / 8192))
+    assert rate == pytest.approx(expected)
+
+
+def test_draft_kv_per_tok_requires_layout_metadata(tmp_path: Path) -> None:
+    import struct
+
+    path = tmp_path / "draft.gguf"
+    path.write_bytes(b"not a gguf")
+    assert planner_core._draft_kv_per_tok(path, "f16", 8192) is None
+    path.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, 0))
+    assert planner_core._draft_kv_per_tok(path, "f16", 8192) is None
+
+
 def test_bench_lookup_isolated_by_kv_precision() -> None:
     model = ModelSpec(
         "bench-kv", "test", 500_000_000, 24, 16, 2, 64, 1024,

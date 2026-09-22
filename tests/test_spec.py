@@ -715,6 +715,78 @@ def test_draft_path_requires_exact_stem(
     assert planner_core._spec_draft_path("DRAFT-MODEL") == exact.resolve()
 
 
+def test_draft_kv_is_budgeted_from_gguf_layout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.test_planner import _draft_gguf
+
+    draft = tmp_path / "models" / "draft.gguf"
+    draft.parent.mkdir()
+    draft.write_bytes(_draft_gguf())
+    draft_bytes = draft.stat().st_size
+    monkeypatch.setattr(
+        "nmesh.planner.core._spec_draft_path", lambda _value: draft
+    )
+    flags = ("--spec-type", "--spec-draft-model", "--spec-draft-n-max")
+    baseline = _planned_spec(
+        tmp_path,
+        monkeypatch,
+        decision=None,
+        flags=flags,
+        policy=Policy(
+            roles=["chat"], min_decode_tps=0, eval_evidence=False,
+            parallel_slots=1,
+        ),
+    )
+    result = _planned_spec(
+        tmp_path,
+        monkeypatch,
+        decision=None,
+        flags=flags,
+        policy=Policy(
+            roles=["chat"], min_decode_tps=0, eval_evidence=False,
+            spec="draft", spec_draft="draft", ignore_spec_evidence=True,
+            parallel_slots=1,
+        ),
+    )
+    service = result.services[0]
+    assert "--spec-draft-model" in service.launch.argv
+    # llama.cpp sizes the draft context at the target's n_ctx: the draft
+    # folds one full KV stream's effective rate into kv_bytes_per_tok.
+    context = service.context
+    draft_rate = 2 * 8 * 128 * 2 * 24
+    base = baseline.services[0].memory
+    assert service.memory.kv_bytes_per_tok == pytest.approx(
+        base.kv_bytes_per_tok + draft_rate
+    )
+    draft_kv = draft_rate * context * service.memory.parallel_slots
+    assert service.memory.cpu_bytes == pytest.approx(
+        base.cpu_bytes + draft_bytes + draft_kv
+    )
+
+
+def test_draft_without_layout_metadata_warns_unbudgeted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    draft = tmp_path / "models" / "draft.gguf"
+    draft.parent.mkdir()
+    draft.write_bytes(b"not a gguf")
+    monkeypatch.setattr(
+        "nmesh.planner.core._spec_draft_path", lambda _value: draft
+    )
+    result = _planned_spec(
+        tmp_path,
+        monkeypatch,
+        decision=None,
+        flags=("--spec-type", "--spec-draft-model", "--spec-draft-n-max"),
+        policy=Policy(
+            roles=["chat"], min_decode_tps=0, eval_evidence=False,
+            spec="draft", spec_draft="draft", ignore_spec_evidence=True,
+        ),
+    )
+    assert any("unbudgeted" in warning for warning in result.warnings)
+
+
 def test_spec_cli_validates_draft_and_kind(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

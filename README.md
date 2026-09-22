@@ -171,6 +171,13 @@ target artifact, draft identity, and llama.cpp engine, and its decision is
 `allow`. Use `nmesh plan --spec ngram` or `--spec draft` to request a
 configuration; missing or losing evidence leaves speculation disabled.
 
+A draft model allocates its own full-context KV cache in llama.cpp
+(`common/speculative.cpp` sizes the draft context at the target's `n_ctx`),
+so `--spec draft` budgets draft weights plus a draft KV stream per slot —
+the rate comes from the draft GGUF header (`block_count`, `attention.*`).
+A draft whose header lacks attention layout metadata is planned with its
+KV honestly unbudgeted and a warning, rather than a fabricated estimate.
+
 KV-cache precision is part of benchmark identity. On one Windows CPU x64
 machine, one llama.cpp build, one model, and one context, the controlled
 measurement used engine `b10831` (`0.4.0-dev`, commit `8fe90e1fb`), Qwen2.5
@@ -916,7 +923,11 @@ repositories commonly return 404 for `config.json`, including
 from the base repository recorded in `config_repo`. `--sources github,arxiv`
 also watches release notes for `ggml-org/llama.cpp`, `vllm-project/vllm`, and
 `ollama/ollama` through the GitHub REST API, plus arXiv cs.CL abstracts on
-local-inference topics. GitHub's anonymous API quota (60/h per IP) is
+local-inference topics. `--sources hf` lists the newest `gguf`-tagged
+Hugging Face models and feeds their card READMEs into extraction — new
+community quants surface as `catalog_gap` candidates with verified metadata;
+`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN` authenticates the calls. GitHub's
+anonymous API quota (60/h per IP) is
 sometimes spent on shared-egress boxes — `GITHUB_TOKEN` or `GH_TOKEN`
 authenticates the calls; arXiv throttles bursts. Either way a rate-limited
 source is honestly reported as unreachable rather than silently empty. X is
