@@ -42,6 +42,10 @@ BPW = {
     "q3_k_m": 3.9, "q2_k": 3.35,
 }
 EMB_BPW_FLOOR = 5.5
+# llama.cpp sizes each sliding-window (iSWA) KV cache at
+# min(n_ctx_seq, n_swa + n_ubatch) cells per sequence stream; the u-batch
+# default is 512 and nmesh never overrides it for generative services.
+SWA_UBATCH_TOKENS = 512
 QUANT_PENALTY = {
     "f16": 0.0, "q8_0": 0.5, "q6_k": 1.0, "q5_k_m": 2.0,
     "q4_k_m": 3.5, "mxfp4": 3.0, "q4_0": 5.0, "q3_k_m": 9.0, "q2_k": 16.0,
@@ -344,6 +348,18 @@ def _gpu_pin_env(
     return {variable: ",".join(str(index) for index in assigned)}
 
 
+def _swa_layer_count(model: ModelSpec, kv_layers: int) -> int:
+    """KV layers whose cache llama.cpp bounds by the sliding window."""
+    if model.sliding_window <= 0:
+        return 0
+    pattern = model.sliding_window_pattern
+    if pattern <= 1:
+        return kv_layers
+    # llama.cpp's set_swa_pattern(n, dense_first=False) marks every nth
+    # layer (il % n == n - 1) as full attention; the rest are sliding.
+    return kv_layers - kv_layers // pattern
+
+
 def estimate_memory(
     model: ModelSpec, quant: str, context: int, parallel_slots: int = 1,
     profile: HardwareProfile | None = None, kv_quant: str = "f16",
@@ -359,7 +375,19 @@ def estimate_memory(
     kv_elem_bytes = {"f16": 2, "q8_0": 1}[kv_quant]
     # Hybrid (Mamba/SSM+attention) models carry KV on attention layers only.
     kv_layers = model.kv_layers or model.n_layers
-    kv_bytes_per_tok = 2 * kv_layers * model.n_kv_heads * model.head_dim * kv_elem_bytes
+    tok_layer_bytes = 2 * model.n_kv_heads * model.head_dim * kv_elem_bytes
+    swa_layers = _swa_layer_count(model, kv_layers)
+    if swa_layers:
+        # Sliding-window layers are capped at min(context, window + ubatch)
+        # cells per sequence; kv_bytes_per_tok stays the effective per-token
+        # cost at this context so kv_cache = rate * context * slots holds.
+        swa_tokens = min(context, model.sliding_window + SWA_UBATCH_TOKENS)
+        kv_bytes_per_tok = tok_layer_bytes * (
+            (kv_layers - swa_layers)
+            + swa_layers * (swa_tokens / context)
+        )
+    else:
+        kv_bytes_per_tok = tok_layer_bytes * kv_layers
     kv_cache_bytes = kv_bytes_per_tok * context * parallel_slots
     compute_overhead = 0.06 * weight_bytes + 320 * 1024**2
     vram_budget, ram_budget = _profile_budgets(profile, budget_source)
