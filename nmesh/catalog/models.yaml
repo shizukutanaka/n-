@@ -347,6 +347,8 @@
   hidden_size: 2304
   vocab_size: 256000
   head_layout: shared
+  sliding_window: 4096
+  sliding_window_pattern: 2
   max_context: 8192
   roles: [chat]
   quality: 55
@@ -367,6 +369,8 @@
   hidden_size: 3584
   vocab_size: 256000
   head_layout: shared
+  sliding_window: 4096
+  sliding_window_pattern: 2
   max_context: 8192
   roles: [chat]
   quality: 73
@@ -467,6 +471,8 @@
   hidden_size: 2880
   vocab_size: 201088
   head_layout: separate
+  sliding_window: 128
+  sliding_window_pattern: 2
   max_context: 131072
   roles: [chat, code, tool]
   quality: 78
@@ -486,6 +492,8 @@
   hidden_size: 2880
   vocab_size: 201088
   head_layout: separate
+  sliding_window: 128
+  sliding_window_pattern: 2
   max_context: 131072
   roles: [chat, code, tool]
   quality: 88

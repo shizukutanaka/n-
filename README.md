@@ -913,11 +913,17 @@ Noise IDs such as `docs/hub`, `papers/2504.13181`, `datasets/leemeng`, and
 `blog/nvidia` are filtered by the Hugging Face 401/404 gate. GGUF mirror
 repositories commonly return 404 for `config.json`, including
 `Qwen/Qwen3-14B-GGUF` and `ggml-org/...-GGUF`; architecture numbers then come
-from the base repository recorded in `config_repo`. GitHub's API returned 403
-from this box, so there is deliberately no releases source. X is unavailable
-without `NMESH_X_BEARER_TOKEN`. `--offline` accepts saved source items for
-reproducible extraction and verification, and bounded state prevents repeated
-findings from growing without limit. No finding is auto-applied to the product.
+from the base repository recorded in `config_repo`. `--sources github,arxiv`
+also watches release notes for `ggml-org/llama.cpp`, `vllm-project/vllm`, and
+`ollama/ollama` through the GitHub REST API, plus arXiv cs.CL abstracts on
+local-inference topics. GitHub's anonymous API quota (60/h per IP) is
+sometimes spent on shared-egress boxes — `GITHUB_TOKEN` or `GH_TOKEN`
+authenticates the calls; arXiv throttles bursts. Either way a rate-limited
+source is honestly reported as unreachable rather than silently empty. X is
+unavailable without `NMESH_X_BEARER_TOKEN`. `--offline` accepts saved source
+items for reproducible extraction and verification, and bounded state
+prevents repeated findings from growing without limit. No finding is
+auto-applied to the product.
 
 ### Answerless truncation is not a failure
 
@@ -1137,6 +1143,16 @@ available, and acquisition records those totals for later plans. The estimate
 remains an estimate: the measured 0.5B `q4_k_m` and `q2_k` ratios above were
 1.641 and 2.007, while the structural estimate brings the corresponding
 planner ratios into the observed 0.79–1.30 envelope.
+
+The KV estimate also follows how llama.cpp actually sizes sliding-window
+(iSWA) caches: catalog entries declaring `sliding_window` and
+`sliding_window_pattern` charge each sliding layer only
+`min(ctx, window + ubatch)` cells per sequence instead of the full context.
+For gemma2 (4096-token window, every other layer sliding) that removes ~22%
+of the KV estimate at 8k context; gpt-oss's 128-token window roughly halves
+it. Models without the fields keep the conservative full-context estimate,
+and `--swa-full` would restore the old behavior upstream — nmesh never
+passes it.
 
 ### An installed backend the probe cannot see
 

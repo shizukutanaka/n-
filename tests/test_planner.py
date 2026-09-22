@@ -741,6 +741,61 @@ def test_kv_layers_scales_kv_cache_for_hybrid_models() -> None:
     assert est_h.weight_bytes == est_d.weight_bytes
 
 
+def test_sliding_window_bounds_swa_layer_cache() -> None:
+    model = ModelSpec(
+        "swa", "test", 9_000_000_000, 42, 16, 8, 256, 3584,
+        8192, ["chat"], 90.0, "apache", {"hf_gguf": "test/repo"},
+        sliding_window=4096, sliding_window_pattern=2,
+    )
+    dense = ModelSpec(
+        "dense", "test", 9_000_000_000, 42, 16, 8, 256, 3584,
+        8192, ["chat"], 90.0, "apache", {"hf_gguf": "test/repo"},
+    )
+    estimate = estimate_memory(model, "q4_k_m", 8192)
+    baseline = estimate_memory(dense, "q4_k_m", 8192)
+    # 21 full-attention layers at 8192 cells + 21 sliding layers capped at
+    # min(8192, 4096 + ubatch 512) cells, matching llama.cpp's iSWA sizing.
+    expected = 2 * 8 * 256 * 2 * (21 * 8192 + 21 * (4096 + 512))
+    assert estimate.kv_cache_bytes == pytest.approx(expected)
+    assert estimate.kv_cache_bytes < baseline.kv_cache_bytes
+
+
+def test_sliding_window_within_window_keeps_full_estimate() -> None:
+    model = ModelSpec(
+        "swa", "test", 9_000_000_000, 42, 16, 8, 256, 3584,
+        8192, ["chat"], 90.0, "apache", {"hf_gguf": "test/repo"},
+        sliding_window=4096, sliding_window_pattern=2,
+    )
+    estimate = estimate_memory(model, "q4_k_m", 2048)
+    expected = 2 * 42 * 8 * 256 * 2 * 2048
+    assert estimate.kv_cache_bytes == pytest.approx(expected)
+
+
+def test_sliding_window_without_pattern_slides_every_layer() -> None:
+    model = ModelSpec(
+        "swa", "test", 7_000_000_000, 32, 32, 8, 128, 4096,
+        32768, ["chat"], 90.0, "apache", {"hf_gguf": "test/repo"},
+        sliding_window=2048,
+    )
+    estimate = estimate_memory(model, "q4_k_m", 8192, parallel_slots=2)
+    expected = 2 * 32 * 8 * 128 * 2 * (2048 + 512) * 2
+    assert estimate.kv_cache_bytes == pytest.approx(expected)
+
+
+def test_catalog_sliding_window_models(catalog: list[ModelSpec]) -> None:
+    fields = {
+        model.id: (model.sliding_window, model.sliding_window_pattern)
+        for model in catalog
+        if model.sliding_window
+    }
+    assert fields == {
+        "gemma2-2b": (4096, 2),
+        "gemma2-9b": (4096, 2),
+        "gpt-oss-20b": (128, 2),
+        "gpt-oss-120b": (128, 2),
+    }
+
+
 def test_bench_lookup_isolated_by_kv_precision() -> None:
     model = ModelSpec(
         "bench-kv", "test", 500_000_000, 24, 16, 2, 64, 1024,
