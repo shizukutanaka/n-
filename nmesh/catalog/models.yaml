@@ -659,3 +659,33 @@
   sources:
     hf_gguf: "Voodisss/Qwen3-Reranker-8B-GGUF-llama_cpp"
     hf: "Qwen/Qwen3-Reranker-8B"
+- id: lfm2-24b-a2b
+  family: lfm2-moe
+  params: 24000000000
+  n_layers: 40
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 64
+  hidden_size: 2048
+  vocab_size: 65536
+  head_layout: separate
+  # Hybrid conv/attention backbone: layer_types lists 10 full_attention
+  # layers out of 40 (LiquidAI/LFM2-24B-A2B config.json), so only those
+  # carry a KV cache; the 30 conv blocks' small recurrent state is not
+  # yet accounted.
+  kv_layers: 10
+  # MoE on the last 38 of 40 layers (num_dense_layers=2): 64 routed
+  # experts (3x2048x1536 params each), top-4 routed — 2.3B active of
+  # 24B total per the vendor, so dense tensors fit small GPUs while
+  # ~23B of experts stream from RAM under --n-cpu-moe.
+  active_params: 2300000000
+  moe_expert_params: 22951231488
+  n_moe_layers: 38
+  max_context: 32768
+  roles: [chat, code, tool]
+  quality: 80
+  license: lfm1.0
+  languages: [en, ar, zh, fr, de, ja, ko, es, pt]
+  sources:
+    hf_gguf: "LiquidAI/LFM2-24B-A2B-GGUF"
+    hf: "LiquidAI/LFM2-24B-A2B"
