@@ -2085,6 +2085,35 @@ def create_app(
         selected, telemetry_keys = plan_state.snapshot()
         token_hint = await _routing_token_hint(request, selected)
         service = _service(selected, route(request, selected, token_hint=token_hint))
+        if service.backend != "llamacpp":
+            # Backends without a native Anthropic endpoint can't count
+            # either; answer from the calibrated local estimator over the
+            # prompt text plus any tool schemas.
+            texts: list[str] = []
+            system = request.get("system")
+            if isinstance(system, str):
+                texts.append(system)
+            elif isinstance(system, list):
+                texts.extend(
+                    str(block.get("text", ""))
+                    for block in system
+                    if isinstance(block, Mapping) and block.get("type") == "text"
+                )
+            texts.append(_content(request))
+            tools = request.get("tools")
+            if isinstance(tools, list) and tools:
+                texts.append(json.dumps(tools, separators=(",", ":")))
+            return {
+                "input_tokens": estimate_tokens(
+                    " ".join(part for part in texts if part),
+                    calibration_for(
+                        calibration_key(
+                            service.model_id,
+                            _is_chat_request(request),
+                        )
+                    ),
+                ),
+            }
         return await proxy(
             request, service, selected, telemetry_keys,
             "/v1/messages/count_tokens", instrument=False,

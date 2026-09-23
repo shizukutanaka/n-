@@ -1007,3 +1007,88 @@ def test_gateway_revive_failure_returns_503(monkeypatch) -> None:
     })
     assert response.status_code == 503
     assert "restart budget" in response.json()["error"]["message"]
+
+
+
+class _CountTokensUpstream(BaseHTTPRequestHandler):
+    request_path: ClassVar[str] = ""
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.rfile.read(length)
+        self.__class__.request_path = self.path
+        payload = json.dumps({"input_tokens": 7}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def _vllm_chat_plan(port: int) -> Plan:
+    model = ModelSpec("proxy-model", "test", 500_000_000, 24, 16, 2, 64,
+                      1024, 4096, ["chat"], 80.0, "test",
+                      {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(plan.services[0], backend="vllm", port=port)
+    return replace(plan, services=[service])
+
+
+def test_gateway_count_tokens_estimates_for_openai_backends() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _CountTokensUpstream)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    _CountTokensUpstream.request_path = ""
+    try:
+        plan = _vllm_chat_plan(upstream.server_address[1])
+        client = TestClient(create_app(plan))
+        response = client.post("/v1/messages/count_tokens", json={
+            "model": "nmesh-auto",
+            "system": "be brief",
+            "tools": [{"name": "get", "input_schema": {"type": "object"}}],
+            "messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": "hello"}],
+            }],
+        })
+        assert response.status_code == 200
+        tokens = response.json()["input_tokens"]
+        assert isinstance(tokens, int) and tokens > 0
+        # Backends without a native Anthropic endpoint are never called.
+        assert _CountTokensUpstream.request_path == ""
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_count_tokens_passes_through_for_llamacpp() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _CountTokensUpstream)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    _CountTokensUpstream.request_path = ""
+    try:
+        model = ModelSpec("proxy-model", "test", 500_000_000, 24, 16, 2, 64,
+                          1024, 4096, ["chat"], 80.0, "test",
+                          {"hf_gguf": "test/repo"})
+        plan = build_plan(
+            profile(64, (24,)), [model], Policy(roles=["chat"])
+        )
+        service = replace(
+            plan.services[0], port=upstream.server_address[1]
+        )
+        plan = replace(plan, services=[service])
+        client = TestClient(create_app(plan))
+        response = client.post("/v1/messages/count_tokens", json={
+            "model": "nmesh-auto",
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert response.json() == {"input_tokens": 7}
+        # llamacpp keeps the native passthrough.
+        assert _CountTokensUpstream.request_path == "/v1/messages/count_tokens"
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
