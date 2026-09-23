@@ -1194,3 +1194,90 @@ def test_supervisor_status_prunes_dead_persisted_entries(
     persisted = json.loads(supervisor.state_path.read_text())
     assert [s["service"] for s in persisted["services"]] == ["chat"]
     supervisor.down()
+
+
+def _sleep_swap_plan(catalog: list[ModelSpec]):
+    """Two swap-group members; 'alpha' is a sleep-capable vLLM service."""
+    plan = _recovery_plan(catalog)
+    alpha = replace(
+        plan.services[0], name="alpha", backend="vllm", sleep_mode=True,
+    )
+    beta = replace(plan.services[0], name="beta")
+    return replace(
+        plan, services=[alpha, beta], swap_group=["alpha", "beta"],
+    )
+
+
+def test_swap_switch_parks_sleep_capable_member(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _sleep_swap_plan(catalog)
+    launches: list[str] = []
+    supervisor = Supervisor(
+        lambda service: launches.append(service.name) or _RecoverProcess(),
+        tmp_path / "sleep-swap.json",
+        health_timeout=0.01,
+        probe=lambda: profile(64, (24,)),
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    posts: list[str] = []
+    supervisor._sleep_post = (
+        lambda _service, path, timeout=120.0: posts.append(path) or True
+    )
+    supervisor.up(plan, no_download=True, admit=False)
+    assert launches == ["alpha", "beta"]
+    supervisor.ensure_running("beta")
+    # Switching to beta parks alpha instead of killing it — weights move
+    # to CPU RAM and VRAM frees, per vLLM level-1 sleep semantics.
+    assert posts == ["sleep?level=1"]
+    assert supervisor.sleeping == {"alpha"}
+    assert "alpha" in supervisor.processes
+    entry = next(
+        item for item in supervisor.status().services
+        if item["service"] == "alpha"
+    )
+    assert entry["running"] is True and entry["sleeping"] is True
+    supervisor.ensure_running("alpha")
+    # Switching back wakes the parked engine — no cold relaunch.
+    assert posts == ["sleep?level=1", "wake_up"]
+    assert supervisor.sleeping == set()
+    assert launches == ["alpha", "beta"]
+    supervisor.down()
+
+
+def test_swap_switch_falls_back_to_kill_when_ram_short(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _sleep_swap_plan(catalog)
+    alpha = plan.services[0]
+    launches: list[str] = []
+    # Free RAM below weight_bytes cannot hold parked weights — the
+    # supervisor must keep the old kill path rather than oversubscribe.
+    supervisor = Supervisor(
+        lambda service: launches.append(service.name) or _RecoverProcess(),
+        tmp_path / "sleep-swap-short-ram.json",
+        health_timeout=0.01,
+        probe=lambda: profile(1),
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    posts: list[str] = []
+    supervisor._sleep_post = (
+        lambda _service, path, timeout=120.0: posts.append(path) or True
+    )
+    supervisor.up(plan, no_download=True, admit=False)
+    assert free_budgets(supervisor.probe())[1] < alpha.memory.weight_bytes
+    supervisor.ensure_running("beta")
+    assert posts == []
+    assert supervisor.sleeping == set()
+    assert "alpha" not in supervisor.processes
+    supervisor.down()

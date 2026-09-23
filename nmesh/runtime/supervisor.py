@@ -220,6 +220,11 @@ class Supervisor:
         self.external_shared: set[str] = set()
         self.adopted: dict[str, dict[str, object]] = {}
         self.idle: set[str] = set()
+        # Swap members whose engine is parked (vLLM level-1 sleep): the
+        # process stays in self.processes/alive but its weights sit in CPU
+        # RAM. A parked member answers /is_sleeping but cannot serve until
+        # POSTed /wake_up.
+        self.sleeping: set[str] = set()
         self.restarts: dict[str, list[float]] = {}
         self.failed: dict[str, str] = {}
         self.launched_argv: dict[str, list[str]] = {}
@@ -282,6 +287,53 @@ class Supervisor:
             return error.code < 500
         except (OSError, ValueError):
             return False
+
+    @staticmethod
+    def _sleep_post(
+        service: PlannedService, path: str, timeout: float = 120.0
+    ) -> bool:
+        """POST a sleep-mode endpoint on the service port; False when the
+        engine does not answer (feature absent, engine dead, parked I/O
+        error) — callers then degrade to the kill-and-relaunch path."""
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{service.port}/{path}", method="POST"
+            )
+            with urllib.request.urlopen(request, timeout=timeout):
+                return True
+        except (OSError, ValueError):
+            return False
+
+    @staticmethod
+    def _engine_sleeping(service: PlannedService) -> bool:
+        """GET /is_sleeping on a sleep-capable engine; any failure means the
+        engine is not parked (or not sleep-capable at all)."""
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{service.port}/is_sleeping", timeout=2
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (OSError, ValueError):
+            return False
+        return bool(isinstance(payload, dict) and payload.get("is_sleeping"))
+
+    def _park(self, service: PlannedService) -> bool:
+        """Put a sleep-capable swap member to sleep instead of killing it.
+
+        Level-1 sleep backs the weights up in CPU RAM and frees VRAM for the
+        incoming member. The RAM footprint is bounded by the plan's
+        weight_bytes — refuse when free RAM cannot hold it and let the
+        caller kill the process, preserving the swap budget instead of
+        silently oversubscribing memory."""
+        try:
+            _, free_ram = free_budgets(self.probe())
+        except (OSError, RuntimeError):
+            return False
+        if free_ram < service.memory.weight_bytes:
+            return False
+        # /sleep returns once the engine finished parking; multi-GB weights
+        # copy at PCIe speed, well inside this timeout.
+        return self._sleep_post(service, "sleep?level=1", timeout=120.0)
 
     @classmethod
     def _entry_alive(cls, entry: Mapping[str, object]) -> bool:
@@ -476,9 +528,23 @@ class Supervisor:
                     else None
                 ),
             }
+            if getattr(service, "sleep_mode", False) and self._engine_sleeping(service):
+                # Entry-verified engine parked by an earlier supervisor —
+                # keep it adopted and parked; ensure_running wakes it.
+                self.sleeping.add(service.name)
             self.external_shared.discard(service.name)
             return True
         self.adopted.pop(service.name, None)
+        if (
+            getattr(service, "sleep_mode", False)
+            and self._engine_sleeping(service)
+            and self._sleep_post(service, "wake_up")
+            and self._wait_health(service)
+        ):
+            # Parked orphan on the planned port: wake before judging — a
+            # sleeping engine answers endpoints but cannot serve.
+            self.external_shared.add(service.name)
+            return True
         if self._healthy(service):
             orphan_pid = engine_listener_pid(service.port)
             if orphan_pid is not None and not _pid_serves_model(
@@ -1303,6 +1369,7 @@ class Supervisor:
             self.external_shared.clear()
             self.adopted.clear()
             self.idle.clear()
+            self.sleeping.clear()
             self.restarts.clear()
             self.failed.clear()
             self.active_plan = None
@@ -1333,14 +1400,62 @@ class Supervisor:
             actualized = False
             if service_name in selected.swap_group:
                 for name in list(self.processes):
-                    if name != service_name and name in selected.swap_group:
-                        self._stop_process(name)
+                    if (
+                        name != service_name
+                        and name in selected.swap_group
+                        and name not in self.sleeping
+                    ):
+                        parked = next(
+                            (
+                                item for item in selected.services
+                                if item.name == name
+                            ),
+                            None,
+                        )
+                        if (
+                            parked is not None
+                            and getattr(parked, "sleep_mode", False)
+                            and self._park(parked)
+                        ):
+                            self.sleeping.add(name)
+                        else:
+                            self._stop_process(name)
             dead = service_name in self.processes and not self._alive(service_name)
             if dead:
                 self.processes.pop(service_name, None)
+                self.sleeping.discard(service_name)
             if self._spec_drift(target):
                 self._stop_process(service_name)
-            if service_name not in self.processes and self._adopt(target):
+            if service_name in self.sleeping:
+                # vLLM sleep mode parked this engine's weights — a wake
+                # restores them in seconds instead of a cold model load.
+                if self._sleep_post(
+                    target, "wake_up"
+                ) and self._wait_health(target):
+                    self.sleeping.discard(service_name)
+                    self.failed.pop(service_name, None)
+                    self._persist(selected)
+                    return self.status()
+                self._stop_process(service_name)
+            adopted = (
+                service_name not in self.processes and self._adopt(target)
+            )
+            if service_name in self.sleeping:
+                # The adopted engine was parked before this supervisor
+                # started — wake it the same way.
+                if self._sleep_post(
+                    target, "wake_up"
+                ) and self._wait_health(target):
+                    self.sleeping.discard(service_name)
+                    self.failed.pop(service_name, None)
+                    self._persist(selected)
+                    return self.status()
+                record = self.adopted.pop(service_name, None)
+                pid = record.get("pid") if isinstance(record, dict) else None
+                if isinstance(pid, int) and not isinstance(pid, bool):
+                    self._terminator(pid)
+                adopted = False
+            if adopted:
                 pass
             elif self._already_up(target):
                 if target.launch.shared_daemon:
@@ -1443,6 +1558,7 @@ class Supervisor:
             else:
                 self._stop_process(service_name)
             self.idle.add(service_name)
+            self.sleeping.discard(service_name)
             self.restarts.pop(service_name, None)
             self.failed.pop(service_name, None)
             if self.active_plan is not None:
@@ -1457,6 +1573,7 @@ class Supervisor:
         process = self.processes.pop(service_name, None)
         self.launched_argv.pop(service_name, None)
         self.notes.pop(service_name, None)
+        self.sleeping.discard(service_name)
         if process is None:
             return
         if process.poll() is None:
@@ -1504,6 +1621,7 @@ class Supervisor:
             "restarts": len(self.restarts.get(name, [])),
             "parallel_slots": _slots(self.active_plan, name),
             **planned_fields(name),
+            **({"sleeping": True} if name in self.sleeping else {}),
             **({"note": self.notes[name]} if name in self.notes else {}),
         } for name, process in self.processes.items()]
         entries.extend({
@@ -1527,8 +1645,14 @@ class Supervisor:
             "adopted": True,
             "parallel_slots": _slots(self.active_plan, name),
             **planned_fields(name),
+            **({"sleeping": True} if name in self.sleeping else {}),
             **({"note": self.notes[name]} if name in self.notes else {}),
         } for name, record in self.adopted.items() if name not in self.processes)
+        for entry in entries:
+            if entry.get("adopted") and entry.get("service") in self.sleeping:
+                # A parked engine may fail the health probe while asleep —
+                # it is still alive and a wake away from serving.
+                entry["running"] = True
         entries.extend({
             "service": name,
             "pid": None,

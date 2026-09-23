@@ -92,6 +92,7 @@ MESSAGES = {
         "warn.sleep_idle_unsupported": "{model}: this llama.cpp build lacks --sleep-idle-seconds; services will stay resident.",
         "warn.moe_cpu_offload": "{service}: llama.cpp will run {model} with all layers on the GPU while {layers} MoE layers keep their expert tensors on the CPU (--n-cpu-moe); the shown decode speed is a modeled estimate until measured.",
         "warn.moe_cpu_unsupported": "{model}: this llama.cpp build lacks --n-cpu-moe; the planned MoE expert offload was dropped.",
+        "warn.vllm_sleep_unsupported": "{service}: vLLM {version} lacks sleep mode (needs >= 0.9); the engine will be restarted on each swap switch.",
         "warn.cache_reuse_unsupported": "{model}: this llama.cpp build lacks --cache-reuse; prompt cache will not be reused across requests.",
         "warn.context_shift_enabled": "{model}: context shift is enabled; once generation exceeds the context window the oldest tokens are silently dropped (prompts larger than the window are still refused).",
         "warn.context_shift_unsupported": "{model}: this llama.cpp build lacks --context-shift; oversized input will still be rejected.",
@@ -308,6 +309,7 @@ MESSAGES = {
         "label.reloaded": "Reloaded: {services} (created_at={created_at})",
         "label.unloaded": "Unloaded: {services}",
         "label.service_idle": "{service}: idle",
+        "label.service_sleeping": "{service}: asleep (wake on next request)",
         "label.service_failed": "{service}: failed — {reason}",
         "label.services": "Services",
         "label.state": "State",
@@ -572,6 +574,7 @@ MESSAGES = {
         "warn.sleep_idle_unsupported": "{model}: この llama.cpp ビルドは --sleep-idle-seconds に対応していないため、サービスは常駐したままになります。",
         "warn.moe_cpu_offload": "{service}: llama.cpp は {model} の全レイヤーをGPUに置きつつ、{layers} MoEレイヤーのエキスパートテンソルをCPUに置きます(--n-cpu-moe)。表示のデコード速度は実測まで推定値です。",
         "warn.moe_cpu_unsupported": "{model}: この llama.cpp ビルドは --n-cpu-moe 非対応のため、計画していたMoEエキスパートオフロードを取りやめました。",
+        "warn.vllm_sleep_unsupported": "{service}: vLLM {version} はスリープモードに未対応です（0.9以上が必要）。スワップ切替のたびにエンジンを再起動します。",
         "warn.cache_reuse_unsupported": "{model}: この llama.cpp ビルドは --cache-reuse に対応していないため、リクエスト間でプロンプトキャッシュは再利用されません。",
         "warn.context_shift_enabled": "{model}: コンテキストシフトが有効です。生成がコンテキスト窓を超えると最古のトークンが静かに捨てられます（窓を超える入力自体は従来どおり拒否されます）。",
         "warn.context_shift_unsupported": "{model}: この llama.cpp ビルドは --context-shift に対応していないため、窓を超える入力は従来どおり拒否されます。",
@@ -753,6 +756,7 @@ MESSAGES["ja"].update({
     "err.gateway_unload": "\u30b2\u30fc\u30c8\u30a6\u30a7\u30a4\u306e\u30a2\u30f3\u30ed\u30fc\u30c9\u306b\u5931\u6557\u3057\u307e\u3057\u305f: {error}",
     "label.unloaded": "\u30a2\u30f3\u30ed\u30fc\u30c9\u5b8c\u4e86: {services}",
     "label.service_idle": "{service}: \u30a2\u30a4\u30c9\u30eb",
+    "label.service_sleeping": "{service}: \u30b9\u30ea\u30fc\u30d7\u4e2d\uff08\u6b21\u306e\u30ea\u30af\u30a8\u30b9\u30c8\u3067\u5fa9\u5e30\uff09",
     "label.service_failed": "{service}: \u5931\u6557 \u2014 {reason}",
 })
 

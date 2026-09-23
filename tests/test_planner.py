@@ -2309,3 +2309,76 @@ def test_benchmark_key_distinguishes_tensor_split() -> None:
     )
     assert split.endswith("|ts2-1")
     assert base != split
+
+
+def test_vllm_sleep_mode_requires_swap_membership_and_0_9(
+    catalog: list[ModelSpec],
+) -> None:
+    plan = build_plan(profile(64, (24,)), catalog, Policy(roles=["chat"]))
+    service = replace(plan.services[0], backend="vllm")
+    vllm_profile = replace(
+        plan.profile,
+        available_backends={
+            **plan.profile.available_backends, "vllm": "vllm version 0.9.2"
+        },
+    )
+    warnings: list[str] = []
+    (member,) = planner_core._enable_vllm_sleep_mode(
+        [service], vllm_profile, [service.name], warnings, "en"
+    )
+    assert member.sleep_mode
+    assert member.launch.argv[-1] == "--enable-sleep-mode"
+    assert member.launch.env["VLLM_SERVER_DEV_MODE"] == "1"
+    assert not warnings
+    # Resident members keep the dev-mode endpoints off their sockets.
+    (resident,) = planner_core._enable_vllm_sleep_mode(
+        [service], vllm_profile, [], [], "en"
+    )
+    assert not resident.sleep_mode
+    assert "--enable-sleep-mode" not in resident.launch.argv
+    # vLLM < 0.9 keeps the kill-and-restart swap path and warns.
+    old = replace(
+        vllm_profile,
+        available_backends={
+            **vllm_profile.available_backends, "vllm": "0.8.5"
+        },
+    )
+    old_warnings: list[str] = []
+    (unsupported,) = planner_core._enable_vllm_sleep_mode(
+        [service], old, [service.name], old_warnings, "en"
+    )
+    assert not unsupported.sleep_mode
+    assert "--enable-sleep-mode" not in unsupported.launch.argv
+    assert old_warnings and "0.8.5" in old_warnings[0]
+    # An unparseable version string is also treated as unsupported.
+    unknown = replace(
+        vllm_profile,
+        available_backends={
+            **vllm_profile.available_backends, "vllm": "test"
+        },
+    )
+    unknown_warnings: list[str] = []
+    (guarded,) = planner_core._enable_vllm_sleep_mode(
+        [service], unknown, [service.name], unknown_warnings, "en"
+    )
+    assert not guarded.sleep_mode
+    assert unknown_warnings
+
+
+def test_sleep_mode_round_trips_plan(tmp_path, catalog: list[ModelSpec]) -> None:
+    plan = build_plan(profile(64, (24,)), catalog, Policy(roles=["chat"]))
+    path = tmp_path / "plan.json"
+    parked = replace(plan, services=[replace(plan.services[0], sleep_mode=True)])
+    save_plan(parked, path)
+    loaded = load_plan(path)
+    assert loaded is not None and loaded.services[0].sleep_mode
+    # A False sleep_mode is omitted from saved plans, same as spec defaults.
+    plain = replace(
+        plan, services=[replace(plan.services[0], sleep_mode=False)]
+    )
+    save_plan(plain, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert "sleep_mode" not in payload["services"][0]
+    loaded = load_plan(path)
+    assert loaded is not None and loaded.services[0].sleep_mode is False
+
