@@ -2,6 +2,8 @@
 
 ## 未リリース
 ### Added
+
+- **KV キャッシュのホスト RAM オフロード（llama.cpp `--no-kv-offload`）をプランナに実装**: 重みだけなら VRAM に収まるのに「重み + KV + オーバーヘッド」では収まらないケースで、従来は均一 `-ngl` 部分オフロードしか選べませんでした。`--no-kv-offload`（llama.cpp PR #5820 系、KV をホスト RAM に保持）を使う案を新候補として生成し、KV バイトを GPU 側ではなく RAM 側に計上 — GPU レイヤーが増えます。デコードは全 KV 窓を PCIe 越しに読むため上限速度を `20 GB/s ÷ スロットあたり KV バイト` でモデル化して正直に競合させます。非対応検出時は候補を出さず、`plan.json` の `kv_offload_cpu` に永続化・再計画時もフラグを維持します。LAUNCH_REVISION 5
 - **`nmesh watch` に `hf` ソースを追加**: `--sources hf` で HF Hub API の `gguf` タグ付き新着モデル（`lastModified` 降順）を取得し、各モデルカードの README を抽出→検証パイプラインへ投入します。新しいコミュニティ量子化や GGUF 化がいち早く `catalog_gap` 候補として浮上します。`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN` で認証可能、取得失敗時は到達不能として正直に報告します
 - **`nmesh watch` に `github` / `arxiv` ソースを追加**: `--sources github,arxiv` で llama.cpp / vLLM / Ollama の GitHub リリースノート（GitHub REST API・リリース本文）と arXiv cs.CL のローカル推論関連アブストラクトを取得し、既存の抽出→検証パイプラインへ投入します。GitHub の匿名レート制限（IPあたり60回/時、共有 egress では枯渇しがち）は `GITHUB_TOKEN`/`GH_TOKEN` で回避可能。レート制限到達時は空結果ではなく到達不能として正直に報告します（arXiv のバースト規制も同様）。既定ソースは従来どおり `zenn,qiita` です
 - **MoE モデルのエキスパート CPU オフロード（llama.cpp `--n-cpu-moe`）をプランナに実装**: 重みが VRAM を超える MoE モデルで、従来の均一 `-ngl` 部分オフロードの代わりに「全レイヤーの密テンソル（アテンション・共有エキスパート・埋め込み）を GPU に置いたまま、先頭 K MoE レイヤのエキスパートテンソルを RAM へ逃がす」候補を生成します（llama.cpp PR #15077、2025-08）。必要 K は `solve_moe_cpu_layers` がエキスパートバイト/層で切り上げ、均一分割案とスコアで競わせます。カタログに `active_params` / `moe_expert_params` / `n_moe_layers` を追加（gpt-oss-20b/120b、qwen3-next-80b は公開 config.json の実値）。デコード推定は per-token で実際に読まれる活性パラメータ（例: gpt-oss-120b は 117B 中 5.1B）に基づくようになり、MoE モデルの tok/s 見積もりと選択順位が変わります（意図どおり）。`--n-cpu-moe` 非対応ビルドでは警告を出してオフロード案を出しません。ベンチキーは `|moeK` で分離、再計画・マルチ GPU では K を増やして適合を試行。LAUNCH_REVISION 3

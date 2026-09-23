@@ -2309,3 +2309,58 @@ def test_benchmark_key_distinguishes_tensor_split() -> None:
     )
     assert split.endswith("|ts2-1")
     assert base != split
+def kv_offload_model() -> ModelSpec:
+    # 8B dense model: q4 weights (~4.85GB) fit a 6GB GPU but weights +
+    # KV + compute overhead (~6.5GB) do not, so the plain plan is a
+    # partial -ngl offload unless --no-kv-offload parks KV in host RAM.
+    return ModelSpec(
+        "kvtest", "kvtest", 8_000_000_000, 32, 32, 8, 128, 4096, 8192,
+        ["chat"], 80.0, "apache", {"hf_gguf": "kvtest.gguf"},
+    )
+
+
+def test_kv_offload_parks_cache_in_ram_when_weights_fit() -> None:
+    machine = replace(
+        profile(64, (6,)),
+        backend_flags={
+            "llamacpp": ("--parallel", "-ngl", "--no-kv-offload"),
+        },
+    )
+    model = kv_offload_model()
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], max_context=4096)
+    )
+    service = result.services[0]
+    assert service.memory.kv_offload_cpu
+    assert service.kv_offload_cpu
+    assert "--no-kv-offload" in service.launch.argv
+    # The KV cache is accounted under RAM instead of VRAM: the GPU side
+    # carries only offloaded layers plus compute overhead.
+    assert service.memory.gpu_bytes == pytest.approx(
+        service.memory.per_layer_bytes * service.n_gpu_layers
+        + service.memory.compute_overhead
+    )
+    assert service.memory.cpu_bytes == pytest.approx(
+        service.memory.per_layer_bytes * (model.n_layers - service.n_gpu_layers)
+        + service.memory.kv_cache_bytes
+    )
+    assert service.memory.gpu_bytes <= service.memory.vram_budget + 1
+
+
+def test_kv_offload_skipped_when_flag_missing() -> None:
+    machine = replace(
+        profile(64, (6,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl")},
+    )
+    model = kv_offload_model()
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], max_context=4096)
+    )
+    service = result.services[0]
+    assert not service.memory.kv_offload_cpu
+    assert not service.kv_offload_cpu
+    assert service.n_gpu_layers < model.n_layers
+    assert "--no-kv-offload" not in service.launch.argv
+    # With KV charged to the GPU the plan keeps some layers on the CPU
+    # instead — the offload variant is never emitted without the flag.
+    assert service.memory.cpu_bytes > 0

@@ -91,6 +91,9 @@ class MemoryEstimate:
     n_cpu_moe: int = 0
     moe_expert_bytes_per_layer: float = 0.0
     moe_layers: int = 0
+    # KV cache kept in host RAM (llama.cpp --no-kv-offload): counted on
+    # the CPU side of the split instead of VRAM.
+    kv_offload_cpu: bool = False
 
 
 @dataclass
@@ -255,6 +258,7 @@ class PlannedService:
     spec_draft: str = ""
     n_cpu_moe: int = 0
     tensor_split: tuple[int, ...] = ()
+    kv_offload_cpu: bool = False
 
 
 def _is_embed_only(value: ModelSpec | PlannedService) -> bool:
@@ -279,7 +283,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 4
+LAUNCH_REVISION = 5
 
 
 @dataclass(frozen=True)
@@ -558,7 +562,24 @@ def _throughput(model: ModelSpec, memory: MemoryEstimate, layers: int,
         # scales by the active fraction. For gpt-oss-120b that is 5.1B
         # of 117B params, not the whole artifact.
         basis = basis * min(1.0, model.active_params / model.params)
-    return 0.75 * effective * 1e9 / basis
+    tps = 0.75 * effective * 1e9 / basis
+    if memory.kv_offload_cpu:
+        tps = min(tps, _kv_offload_tps_cap(memory))
+    return tps
+
+
+def _kv_offload_tps_cap(memory: MemoryEstimate) -> float:
+    """Decode-rate ceiling when the KV cache lives in host RAM.
+
+    With ``--no-kv-offload`` every decode step streams the filled KV
+    window (``kv_cache_bytes`` per slot) over the PCIe link, so the rate
+    is bounded by link bandwidth divided by bytes read per token. 20 GB/s
+    approximates effective PCIe 4.0 x16 throughput (~25 GB/s theoretical).
+    """
+    if memory.kv_cache_bytes <= 0:
+        return float("inf")
+    kv_read = memory.kv_cache_bytes / max(1, memory.parallel_slots)
+    return 20e9 / kv_read
 
 
 def _backend(profile: HardwareProfile, model: ModelSpec, layers: int) -> tuple[str, bool]:
@@ -642,6 +663,7 @@ def _launch(
     cache_reuse: int = 0,
     context_shift: bool = False,
     n_cpu_moe: int = 0,
+    kv_offload_cpu: bool = False,
     *,
     binary: str | None = None,
 ) -> LaunchSpec:
@@ -721,6 +743,13 @@ def _launch(
             elif warnings is not None:
                 warnings.append(
                     t("warn.moe_cpu_unsupported", language, model=model.id)
+                )
+        if backend == "llamacpp" and kv_offload_cpu:
+            if not known or "--no-kv-offload" in flags:
+                argv.append("--no-kv-offload")
+            elif warnings is not None:
+                warnings.append(
+                    t("warn.kv_offload_unsupported", language, model=model.id)
                 )
         if backend == "llamacpp" and spec != "none" and _honors_spec(
             backend, backend_flags, spec
@@ -1188,6 +1217,83 @@ def _candidate_for(
                             decode_applicable=decode_applicable,
                             n_cpu_moe=moe_k,
                         ))
+            # KV-cache offload: llama.cpp's --no-kv-offload keeps the KV
+            # cache in host RAM instead of on the GPU, trading PCIe-bound
+            # attention reads for VRAM. When the weights alone fit but
+            # weights + KV do not, this turns a partial -ngl offload into
+            # more GPU layers. The score decides against the partial
+            # candidate (and, if offered, the MoE variant).
+            kv_offload_layers = 0
+            if (
+                decode_applicable
+                and backend == "llamacpp"
+                and 0 < layers < model.n_layers
+                and base.kv_cache_bytes > 0
+                and base.per_layer_bytes > 0
+                and profile.backend_gpu_devices.get("llamacpp") != ()
+                and _supports_gpu_layers(backend_flags)
+                and (
+                    backend_flags is None
+                    or "--no-kv-offload" in backend_flags
+                )
+            ):
+                kv_offload_layers = max(
+                    0,
+                    min(
+                        model.n_layers,
+                        math.floor(
+                            (base.vram_budget - base.compute_overhead)
+                            / base.per_layer_bytes
+                        ),
+                    ),
+                )
+            if kv_offload_layers > layers:
+                kv_base = replace(base, kv_offload_cpu=True)
+                kv_gpu, kv_cpu = _split_memory(
+                    kv_base, model.n_layers, kv_offload_layers
+                )
+                if (
+                    kv_gpu <= base.vram_budget + 1
+                    and kv_cpu <= base.ram_budget + 1
+                ):
+                    kv_memory = replace(
+                        kv_base,
+                        gpu_bytes=kv_gpu,
+                        cpu_bytes=kv_cpu,
+                        n_gpu_layers=kv_offload_layers,
+                    )
+                    kv_bench = _bench_value(
+                        cache, model, quant, backend, gpu_name,
+                        kv_offload_layers, accounted_kv_quant, policy.spec,
+                    )
+                    kv_tps = (
+                        kv_bench
+                        if kv_bench is not None
+                        else _throughput(
+                            model, kv_memory, kv_offload_layers, profile,
+                            model.params * bpw / 8,
+                        )
+                    )
+                    kv_tps = min(kv_tps, _kv_offload_tps_cap(kv_memory))
+                    if kv_tps >= policy.min_decode_tps:
+                        kv_speed = (
+                            min(kv_tps, SPEED_REFERENCE_TPS)
+                            / SPEED_REFERENCE_TPS * 100 * ws
+                        )
+                        kv_score = (
+                            kv_speed
+                            if prior is None
+                            else prior * wq + kv_speed
+                        )
+                        if policy.languages:
+                            kv_score *= 1.0 if covers else 0.7
+                        candidates.append(_Candidate(
+                            model, quant, context, kv_memory,
+                            kv_offload_layers, kv_tps, backend, installed,
+                            accounted_kv_quant, policy.kv_quant, kv_score,
+                            kv_bench is None,
+                            decode_applicable=decode_applicable,
+                        ))
             break
     return sorted(candidates, key=lambda item: item.score, reverse=True)
 
@@ -1217,17 +1323,22 @@ def split_memory(memory: MemoryEstimate, model_layers: int, layers: int) -> tupl
             memory.moe_expert_bytes_per_layer
             * min(memory.n_cpu_moe, memory.moe_layers)
         )
+        kv_on_gpu = 0.0 if memory.kv_offload_cpu else memory.kv_cache_bytes
         gpu_bytes = (
             memory.weight_bytes - expert_cpu
-            + memory.kv_cache_bytes + memory.compute_overhead
+            + kv_on_gpu + memory.compute_overhead
         )
-        return gpu_bytes, expert_cpu
+        return gpu_bytes, expert_cpu + memory.kv_cache_bytes - kv_on_gpu
     on_gpu = layers > 0
     gpu_bytes = memory.per_layer_bytes * layers + (
-        memory.kv_cache_bytes + memory.compute_overhead if on_gpu else 0.0
+        (0.0 if memory.kv_offload_cpu else memory.kv_cache_bytes)
+        + memory.compute_overhead if on_gpu else 0.0
     )
     cpu_bytes = memory.per_layer_bytes * (model_layers - layers) + (
-        0.0 if on_gpu else memory.kv_cache_bytes + memory.compute_overhead
+        memory.kv_cache_bytes
+        if memory.kv_offload_cpu and on_gpu
+        else 0.0 if on_gpu
+        else memory.kv_cache_bytes + memory.compute_overhead
     )
     return gpu_bytes, cpu_bytes
 
@@ -1621,6 +1732,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
             spec_policy.context_shift if spec_policy is not None else False
         ),
         n_cpu_moe=candidate.n_cpu_moe,
+        kv_offload_cpu=candidate.memory.kv_offload_cpu,
         binary=profile.backend_paths.get(candidate.backend),
     )
     service = PlannedService(
@@ -1643,6 +1755,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         spec=spec_kind,
         spec_draft=spec_draft,
         n_cpu_moe=candidate.n_cpu_moe,
+        kv_offload_cpu=candidate.memory.kv_offload_cpu,
     )
     if candidate.n_cpu_moe > 0:
         warnings.append(
@@ -1730,6 +1843,13 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
             backend_flags is None or "--n-cpu-moe" in backend_flags
         ):
             argv += ["--n-cpu-moe", str(service.n_cpu_moe)]
+        if "--no-kv-offload" in argv:
+            if not service.kv_offload_cpu:
+                argv.remove("--no-kv-offload")
+        elif service.kv_offload_cpu and (
+            backend_flags is None or "--no-kv-offload" in backend_flags
+        ):
+            argv.append("--no-kv-offload")
         gpu_layer_flags = GPU_LAYER_FLAGS
         gpu_layers_supported = gpu_devices != () and _supports_gpu_layers(backend_flags)
         if layers is not None and gpu_layers_supported:
@@ -1766,16 +1886,19 @@ def _cpu_llamacpp_service(
     model_layers = max(
         1, round(service.memory.weight_bytes / service.memory.per_layer_bytes)
     )
-    memory = replace(service.memory, n_gpu_layers=0, n_cpu_moe=0)
+    memory = replace(
+        service.memory, n_gpu_layers=0, n_cpu_moe=0, kv_offload_cpu=False
+    )
     gpu_bytes, cpu_bytes = _split_memory(memory, model_layers, 0)
     memory = replace(memory, gpu_bytes=gpu_bytes, cpu_bytes=cpu_bytes)
     launch = _rebuild_launch(
-        replace(service, n_cpu_moe=0), 1, 0, backend_flags, warnings,
+        replace(service, n_cpu_moe=0, kv_offload_cpu=False),
+        1, 0, backend_flags, warnings,
         gpu_devices=gpu_devices, language=language,
     )
     return replace(
-        service, n_gpu_layers=0, n_cpu_moe=0, memory=memory,
-        launch=launch, tensor_split=(),
+        service, n_gpu_layers=0, n_cpu_moe=0, kv_offload_cpu=False,
+        memory=memory, launch=launch, tensor_split=(),
     )
 
 
@@ -3269,6 +3392,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             tensor_split=tuple(
                 int(x) for x in sd.get("tensor_split", []) or ()
             ),
+            kv_offload_cpu=bool(sd.get("kv_offload_cpu", False)),
         ))
     rd = data["routing"]
     if not isinstance(rd, dict):
