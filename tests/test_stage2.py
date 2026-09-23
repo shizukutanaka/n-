@@ -1281,3 +1281,62 @@ def test_swap_switch_falls_back_to_kill_when_ram_short(
     assert supervisor.sleeping == set()
     assert "alpha" not in supervisor.processes
     supervisor.down()
+
+
+def test_supervisor_waits_health_concurrently_across_services(
+    tmp_path, catalog: list[object], monkeypatch
+) -> None:
+    """Two freshly spawned services health-wait in parallel, not serially —
+    `nmesh up` latency tracks the slowest load, not the sum of all loads."""
+    plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
+    base_service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url=None),
+    )
+    first = replace(base_service, name="svc-a")
+    second = replace(base_service, name="svc-b")
+    plan = replace(plan, services=[first, second])
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+
+    class FakeProcess:
+        pid = 123
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    intervals: list[tuple[float, float]] = []
+
+    def slow_wait(_service, timeout: float | None = None) -> bool:
+        start = time.monotonic()
+        time.sleep(0.2)
+        intervals.append((start, time.monotonic()))
+        return True
+
+    supervisor = Supervisor(
+        lambda _service: FakeProcess(),
+        tmp_path / "state.json",
+        health_timeout=1.0,
+    )
+    monkeypatch.setattr(supervisor, "_adopt", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_wait_health", slow_wait)
+    try:
+        supervisor.up(plan, no_download=True, admit=False)
+    finally:
+        supervisor.down()
+
+    assert len(intervals) == 2
+    intervals.sort()
+    assert intervals[1][0] < intervals[0][1]

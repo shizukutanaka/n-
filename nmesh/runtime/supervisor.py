@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import RLock
@@ -1108,6 +1109,7 @@ class Supervisor:
             self._drop_unplanned(current)
             for attempt in range(1, 4):
                 try:
+                    spawned: list[PlannedService] = []
                     for index in range(len(current.services)):
                         service = current.services[index]
                         dead = service.name in self.processes and not self._alive(service.name)
@@ -1194,12 +1196,24 @@ class Supervisor:
                         self.idle.discard(service.name)
                         self._arm_atexit()
                         self.failed.pop(service.name, None)
-                        if not self._wait_health(service):
-                            raise RuntimeError(
-                                self._unhealthy_message(
-                                    service.name, service.port, service.backend
+                        spawned.append(service)
+                    # Health-wait only after every service has spawned: the
+                    # polls are independent, so waiting concurrently keeps
+                    # `nmesh up` time at the slowest single load instead of
+                    # the sum across services.
+                    if spawned:
+                        with ThreadPoolExecutor(
+                            max_workers=len(spawned)
+                        ) as pool:
+                            healthy = pool.map(self._wait_health, spawned)
+                        for service, is_healthy in zip(spawned, healthy):
+                            if not is_healthy:
+                                raise RuntimeError(
+                                    self._unhealthy_message(
+                                        service.name, service.port,
+                                        service.backend,
+                                    )
                                 )
-                            )
                     if (current is plan or actualized) and {
                         item.name for item in current.services
                     } == {item.name for item in plan.services}:
