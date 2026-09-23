@@ -2309,3 +2309,49 @@ def test_benchmark_key_distinguishes_tensor_split() -> None:
     )
     assert split.endswith("|ts2-1")
     assert base != split
+
+
+def test_kv_unified_is_launched_for_parallel_slots(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={
+            "llamacpp": (
+                "--parallel", "-ngl", "--kv-unified", "--kv-unified-per-slot",
+            )
+        },
+    )
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], parallel_slots=4),
+    )
+    service = result.services[0]
+    assert service.memory.parallel_slots > 1
+    argv = service.launch.argv
+    assert "--kv-unified" in argv
+    assert argv[argv.index("--kv-unified-per-slot") + 1] == str(service.context)
+
+
+def test_kv_unified_omitted_without_support_or_single_slot(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl")},
+    )
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], parallel_slots=4),
+    )
+    assert "--kv-unified" not in result.services[0].launch.argv
+    machine = replace(
+        machine,
+        backend_flags={
+            "llamacpp": ("--parallel", "-ngl", "--kv-unified", "-kvu"),
+        },
+    )
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], parallel_slots=1),
+    )
+    assert "--kv-unified" not in result.services[0].launch.argv

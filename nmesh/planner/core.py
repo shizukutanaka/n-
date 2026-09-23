@@ -279,7 +279,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 4
+LAUNCH_REVISION = 5
 
 
 @dataclass(frozen=True)
@@ -2303,6 +2303,24 @@ def _rewrite_launch(
             warnings.append(
                 t("warn.parallel_clamped", language, requested=slots)
             )
+        # Unified KV (llama.cpp PR #16736): one pool shared across slots so
+        # sequences sharing a prefix store it once. -c already sizes the pool
+        # to context*slots; --kv-unified-per-slot keeps each sequence's bound.
+        kv_unified = (
+            parallel
+            and slots > 1
+            and "--spec-type" not in argv
+            and (not known or any(f in flags for f in ("-kvu", "--kv-unified")))
+        )
+        if kv_unified and "--kv-unified" not in argv:
+            argv.append("--kv-unified")
+            if not known or "--kv-unified-per-slot" in flags:
+                argv += ["--kv-unified-per-slot", str(service.context)]
+        elif not kv_unified and "--kv-unified" in argv:
+            argv.remove("--kv-unified")
+            if "--kv-unified-per-slot" in argv:
+                index = argv.index("--kv-unified-per-slot")
+                del argv[index:index + 2]
     elif service.backend == "vllm":
         if "--max-num-seqs" in argv:
             argv[argv.index("--max-num-seqs") + 1] = str(slots)
