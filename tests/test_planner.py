@@ -1126,7 +1126,7 @@ def test_f16_kv_quantization_has_no_speed_warning(
 
 @pytest.mark.parametrize(
     ("backend", "os_name", "gpu_gib"),
-    [("ollama", "windows", ()), ("vllm", "linux", (24,))],
+    [("vllm", "linux", (24,))],
 )
 def test_non_llamacpp_kv_quantization_downgrades_accounting(
     catalog: list[ModelSpec], backend: str, os_name: str, gpu_gib: tuple[int, ...],
@@ -1160,14 +1160,15 @@ def test_non_llamacpp_kv_quantization_downgrades_accounting(
 def test_unsupported_kv_quantization_cannot_false_fit() -> None:
     model = ModelSpec(
         "fit", "fit", 500_000_000, 24, 16, 16, 128, 2048, 8192,
-        ["chat"], 90.0, "test", {"ollama": "test"},
+        ["chat"], 90.0, "test", {"hf_gguf": "org/fit"},
     )
     base = profile(
         1,
-        backends={"ollama": "test", "llamacpp": None, "vllm": None, "mlx": None},
+        backends={"ollama": None, "llamacpp": "test", "vllm": None, "mlx": None},
     )
     machine = replace(
         base,
+        backend_flags={"llamacpp": ("--parallel", "-ngl")},
         total_ram_bytes=int(1.2 * GIB),
         available_ram_bytes=int(1.2 * GIB),
     )
@@ -2242,3 +2243,70 @@ def test_moe_plan_round_trip_preserves_offload(tmp_path) -> None:
     assert service.memory.n_cpu_moe == original.n_cpu_moe
     assert service.memory.moe_layers == 24
     assert service.launch.argv == original.launch.argv
+
+
+def _ollama_only_backends() -> dict[str, str | None]:
+    return {"ollama": "test", "llamacpp": None, "vllm": None, "mlx": None}
+
+
+def test_ollama_launch_env_carries_plan_knobs(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    launch = planner_core._launch(
+        "ollama", model, "q4_k_m", 8192, 11434, 0, 1, slots=4,
+    )
+    assert launch.shared_daemon
+    assert launch.env == {
+        "OLLAMA_CONTEXT_LENGTH": "8192",
+        "OLLAMA_NUM_PARALLEL": "4",
+    }
+    quantized = planner_core._launch(
+        "ollama", model, "q4_k_m", 8192, 11434, 0, 1,
+        slots=4, kv_quant="q8_0",
+    )
+    assert quantized.env["OLLAMA_KV_CACHE_TYPE"] == "q8_0"
+    # Quantized V cache requires flash attention (same restriction as
+    # llama.cpp); Ollama's FA is opt-in via env.
+    assert quantized.env["OLLAMA_FLASH_ATTENTION"] == "1"
+
+
+def test_ollama_kv_quant_is_honored_and_accounted(
+    catalog: list[ModelSpec],
+) -> None:
+    plan = build_plan(
+        profile(64, backends=_ollama_only_backends()),
+        catalog,
+        Policy(roles=["chat"], kv_quant="q8_0", model_ids=("qwen2.5-7b-instruct",)),
+    )
+    service = plan.services[0]
+    assert service.backend == "ollama"
+    assert service.kv_quant == "q8_0"
+    assert service.launch.env["OLLAMA_KV_CACHE_TYPE"] == "q8_0"
+    assert not any("does not support" in warning for warning in plan.warnings)
+
+
+def test_ollama_shared_daemon_env_unifies_widest_requirement() -> None:
+    cat = [
+        ModelSpec(
+            "a", "a", 7_000_000_000, 32, 32, 8, 128, 4096, 8192,
+            ["chat"], 80.0, "apache", {"ollama": "a:latest"},
+        ),
+        ModelSpec(
+            "b", "b", 7_000_000_000, 32, 32, 8, 128, 4096, 2048,
+            ["code"], 80.0, "apache", {"ollama": "b:latest"},
+        ),
+    ]
+    plan = build_plan(
+        profile(64, backends=_ollama_only_backends()), cat,
+        Policy(roles=["chat", "code"], parallel_slots=4),
+    )
+    ollama = [service for service in plan.services if service.backend == "ollama"]
+    assert len(ollama) == 2
+    widest_context = max(service.context for service in ollama)
+    widest_slots = max(service.memory.parallel_slots for service in ollama)
+    assert len({service.context for service in ollama}) == 2
+    for service in ollama:
+        # One `ollama serve` process serves all of them — the env of
+        # whichever spawns it applies to all, so it must carry the
+        # widest requirement.
+        assert service.launch.env["OLLAMA_CONTEXT_LENGTH"] == str(widest_context)
+        assert service.launch.env["OLLAMA_NUM_PARALLEL"] == str(widest_slots)

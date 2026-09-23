@@ -633,9 +633,21 @@ def _launch(
     rerank_only = list(roles) == ["rerank"]
     ref = _source_for(backend, model, quant)
     if backend == "ollama":
+        # `ollama serve` reads daemon-level knobs from env only; without
+        # these the daemon runs its defaults (4096 ctx, 1 parallel), which
+        # silently ignores the planned context/slots/memory accounting.
+        env = {
+            "OLLAMA_CONTEXT_LENGTH": str(context),
+            "OLLAMA_NUM_PARALLEL": str(slots),
+        }
+        if kv_quant != "f16":
+            env["OLLAMA_KV_CACHE_TYPE"] = kv_quant
+            # A quantized V cache requires flash attention (same llama.cpp
+            # restriction); Ollama leaves FA opt-in via env.
+            env["OLLAMA_FLASH_ATTENTION"] = "1"
         return LaunchSpec(
             [binary or "ollama", "serve"],
-            {},
+            env,
             "http://127.0.0.1:11434/api/tags",
             True,
         )
@@ -1235,6 +1247,9 @@ def _honors_kv_quant(
     backend: str,
     backend_flags: frozenset[str] | tuple[str, ...] | None,
 ) -> bool:
+    if backend == "ollama":
+        # OLLAMA_KV_CACHE_TYPE env — accepted by every ollama serve build.
+        return True
     if backend != "llamacpp":
         return False
     return backend_flags is None or all(flag in backend_flags for flag in KV_CACHE_TYPE_FLAGS)
@@ -2268,6 +2283,48 @@ def _rewrite_launch(
     return replace(service.launch, argv=argv)
 
 
+def _unify_ollama_daemon_env(
+    services: list[PlannedService],
+) -> list[PlannedService]:
+    """Align daemon env across services sharing one `ollama serve` process.
+
+    Every ollama service launches (or adopts) the same daemon, so the
+    first-spawned service's env applies to all of them. The daemon knobs
+    must therefore be consistent: CONTEXT_LENGTH and NUM_PARALLEL are
+    per-model defaults, so the widest requirement wins.
+    """
+    shared = [
+        service
+        for service in services
+        if service.backend == "ollama" and service.launch.shared_daemon
+    ]
+    if not shared:
+        return services
+    env = {
+        "OLLAMA_CONTEXT_LENGTH": str(max(s.context for s in shared)),
+        "OLLAMA_NUM_PARALLEL": str(max(s.memory.parallel_slots for s in shared)),
+    }
+    kv_types = {
+        service.launch.env.get("OLLAMA_KV_CACHE_TYPE", "")
+        for service in shared
+    } - {""}
+    if kv_types:
+        env["OLLAMA_KV_CACHE_TYPE"] = min(kv_types)
+        env["OLLAMA_FLASH_ATTENTION"] = "1"
+    names = {service.name for service in shared}
+    return [
+        replace(
+            service,
+            launch=replace(
+                service.launch, env={**service.launch.env, **env}
+            ),
+        )
+        if service.name in names
+        else service
+        for service in services
+    ]
+
+
 def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                policy: Policy | None = None,
                bench_cache: Mapping[object, float] | None = None,
@@ -2734,6 +2791,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         ))
     services = _place_services(services, profile, selected, swap_group, warnings)
     services = _assign_slots(services, profile, selected, swap_group, warnings)
+    services = _unify_ollama_daemon_env(services)
     selected_unmeasured: set[str] = set()
     for service in services:
         if service.model_id.casefold() in requested_model_ids:
