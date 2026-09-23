@@ -1615,6 +1615,59 @@ def test_vllm_slots_and_total_vram_fraction() -> None:
     )
 
 
+def test_mlock_emitted_for_resident_llamacpp_service(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl", "--mlock")},
+    )
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], min_decode_tps=0)
+    )
+    service = result.services[0]
+    assert service.backend == "llamacpp"
+    assert service.resident
+    assert "--mlock" in service.launch.argv
+
+
+def test_mlock_absent_for_swap_member_and_warns_when_unsupported(
+    catalog: list[ModelSpec],
+) -> None:
+    machine = replace(
+        profile(8),
+        backend_flags={"llamacpp": ("--parallel",)},
+    )
+    result = build_plan(machine, catalog, Policy(min_decode_tps=0))
+    resident = [s for s in result.services if s.resident]
+    swapped = [s for s in result.services if not s.resident]
+    assert resident and swapped
+    assert all("--mlock" not in s.launch.argv for s in result.services)
+    if any(s.backend == "llamacpp" for s in resident):
+        assert any("lacks --mlock" in w for w in result.warnings)
+
+
+def test_mlock_only_on_resident_when_supported(
+    catalog: list[ModelSpec],
+) -> None:
+    machine = replace(
+        profile(8),
+        backend_flags={"llamacpp": ("--parallel", "--mlock")},
+    )
+    result = build_plan(machine, catalog, Policy(min_decode_tps=0))
+    resident_llamacpp = [
+        s for s in result.services if s.resident and s.backend == "llamacpp"
+    ]
+    swapped = [s for s in result.services if not s.resident]
+    assert resident_llamacpp and swapped
+    for service in resident_llamacpp:
+        assert "--mlock" in service.launch.argv
+    for service in swapped:
+        if service.backend == "llamacpp":
+            assert "--mlock" not in service.launch.argv
+
+
 def test_forced_slots_clamp_and_one_is_silent(catalog: list[ModelSpec]) -> None:
     small = build_plan(
         profile(32, (12,)), [
@@ -1874,6 +1927,7 @@ def test_embedding_uses_supported_flag_aliases_without_warnings() -> None:
                 "--pooling",
                 "--parallel",
                 "-ngl",
+                "--mlock",
             ),
         },
     )
