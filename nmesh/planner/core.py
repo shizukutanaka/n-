@@ -279,7 +279,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 4
+LAUNCH_REVISION = 5
 
 
 @dataclass(frozen=True)
@@ -2148,6 +2148,24 @@ def _assign_slots(
             swap_accounted[key] = max(swap_usage[key].values(), default=0.0)
             usage[key] += swap_accounted[key]
 
+    # Mirror llama.cpp's own default thread budget
+    # (common_cpu_get_num_math: half the logical cores on >4-core machines,
+    # all of them on small ones). Each llama-server assumes the whole
+    # budget, so co-running llamacpp services oversubscribe the box —
+    # divide it across services that can be active at once (residents plus
+    # one active member per swap group).
+    logical = max(1, profile.logical_cores)
+    math_threads = max(1, logical // 2) if logical > 4 else logical
+    concurrent = sum(
+        1
+        for item in services
+        if item.backend == "llamacpp" and item.name not in swap_names
+    ) + (1 if any(
+        item.backend == "llamacpp" and item.name in swap_names
+        for item in services
+    ) else 0)
+    cpu_threads = max(1, math_threads // concurrent) if concurrent > 1 else None
+
     result: list[PlannedService] = []
     for service in services:
         cap = SLOT_CAPS.get(service.backend, 1)
@@ -2253,6 +2271,7 @@ def _assign_slots(
         launch = _rewrite_launch(
             service, slots, gpu_fraction,
             profile.backend_flags.get(service.backend), warnings, policy.lang,
+            cpu_threads,
         )
         result.append(replace(service, memory=rewritten, launch=launch))
         old_bytes = (
@@ -2274,6 +2293,7 @@ def _rewrite_launch(
     backend_flags: frozenset[str] | tuple[str, ...] | None = None,
     warnings: list[str] | None = None,
     language: str = "en",
+    cpu_threads: int | None = None,
 ) -> LaunchSpec:
     argv = list(service.launch.argv)
     if service.backend == "llamacpp":
@@ -2303,6 +2323,10 @@ def _rewrite_launch(
             warnings.append(
                 t("warn.parallel_clamped", language, requested=slots)
             )
+        if cpu_threads is not None and (
+            not known or any(f in flags for f in ("-t", "--threads"))
+        ):
+            argv += ["-t", str(cpu_threads)]
     elif service.backend == "vllm":
         if "--max-num-seqs" in argv:
             argv[argv.index("--max-num-seqs") + 1] = str(slots)

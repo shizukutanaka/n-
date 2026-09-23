@@ -2309,3 +2309,47 @@ def test_benchmark_key_distinguishes_tensor_split() -> None:
     )
     assert split.endswith("|ts2-1")
     assert base != split
+
+
+def test_llamacpp_thread_budget_splits_across_coresident_services(
+    catalog: list[ModelSpec],
+) -> None:
+    small = next(item for item in catalog if item.id == "qwen2.5-0.5b-instruct")
+    lead_model = next(
+        item for item in catalog if item.id == "qwen2.5-1.5b-instruct"
+    )
+    worker_catalog = [
+        replace(lead_model, quality=100.0),
+        replace(small, quality=50.0),
+    ]
+    machine = replace(
+        profile(16, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl", "-t")},
+    )
+    result = build_plan(
+        machine,
+        worker_catalog,
+        Policy(roles=["chat", "worker"], min_decode_tps=0),
+    )
+    llamacpp_services = [
+        service for service in result.services
+        if service.backend == "llamacpp"
+    ]
+    assert len(llamacpp_services) == 2
+    # logical_cores=16 → upstream-style math budget 8; two co-running
+    # llamacpp services split it → -t 4 each.
+    for service in llamacpp_services:
+        argv = service.launch.argv
+        assert argv[argv.index("-t") + 1] == "4"
+
+
+def test_llamacpp_thread_budget_omitted_when_alone(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl", "-t")},
+    )
+    result = build_plan(machine, [model], Policy(roles=["chat"]))
+    assert "-t" not in result.services[0].launch.argv
