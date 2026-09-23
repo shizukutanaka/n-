@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Self
 
 import huggingface_hub
 import pytest
@@ -378,24 +377,12 @@ def test_split_gguf_parts_fetch_through_bounded_pool(
 
     service = _llamacpp_service(tmp_path)
     service.download_repo = "org/repo"
-    seen_workers: list[int] = []
-    inner_pools: list[ThreadPoolExecutor] = []
+    seen_workers: list[int | None] = []
 
-    class SpyPool:
-        def __init__(self, max_workers: int) -> None:
+    class SpyPool(ThreadPoolExecutor):
+        def __init__(self, max_workers: int | None = None) -> None:
             seen_workers.append(max_workers)
-            self._inner = ThreadPoolExecutor(max_workers=max_workers)
-            inner_pools.append(self._inner)
-
-        def __enter__(self) -> Self:
-            self._inner.__enter__()
-            return self
-
-        def __exit__(self, *args: object) -> None:
-            self._inner.__exit__(*args)
-
-        def map(self, fn, items):
-            return self._inner.map(fn, items)
+            super().__init__(max_workers=max_workers)
 
     monkeypatch.setattr(acquisition, "ThreadPoolExecutor", SpyPool)
     monkeypatch.setattr(
