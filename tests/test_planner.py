@@ -2382,3 +2382,49 @@ def test_sleep_mode_round_trips_plan(tmp_path, catalog: list[ModelSpec]) -> None
     loaded = load_plan(path)
     assert loaded is not None and loaded.services[0].sleep_mode is False
 
+
+
+def test_no_warmup_marks_swap_members_only() -> None:
+    models = [
+        ModelSpec(
+            "chat-m", "f", 1_000_000_000, 24, 16, 4, 128, 2048, 8192,
+            ["chat"], 90.0, "apache", {"hf_gguf": "a.gguf"},
+        ),
+        ModelSpec(
+            "code-m", "f", 500_000_000, 12, 8, 4, 64, 2048, 8192,
+            ["code"], 80.0, "apache", {"hf_gguf": "b.gguf"},
+        ),
+    ]
+    machine = profile(8, backends={"llamacpp": "test"})
+    result = build_plan(
+        machine, models, Policy(roles=["chat", "code"])
+    )
+    assert len(result.services) == 2
+    resident, swapped = result.services
+    assert resident.resident and not swapped.resident
+    assert swapped.backend == "llamacpp"
+    assert "--no-warmup" not in resident.launch.argv
+    assert "--no-warmup" in swapped.launch.argv
+
+
+def test_no_warmup_skipped_when_flag_probe_lacks_it() -> None:
+    models = [
+        ModelSpec(
+            "chat-m", "f", 1_000_000_000, 24, 16, 4, 128, 2048, 8192,
+            ["chat"], 90.0, "apache", {"hf_gguf": "a.gguf"},
+        ),
+        ModelSpec(
+            "code-m", "f", 500_000_000, 12, 8, 4, 64, 2048, 8192,
+            ["code"], 80.0, "apache", {"hf_gguf": "b.gguf"},
+        ),
+    ]
+    machine = replace(
+        profile(8, backends={"llamacpp": "test"}),
+        backend_flags={"llamacpp": ("--parallel", "-ngl")},
+    )
+    result = build_plan(
+        machine, models, Policy(roles=["chat", "code"])
+    )
+    swapped = [s for s in result.services if not s.resident]
+    assert swapped
+    assert all("--no-warmup" not in s.launch.argv for s in swapped)

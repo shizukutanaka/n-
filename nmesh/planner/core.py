@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -1646,6 +1646,19 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         spec_draft=spec_draft,
         n_cpu_moe=candidate.n_cpu_moe,
     )
+    if (
+        candidate.backend == "llamacpp"
+        and not service.resident
+        and "--no-warmup" not in launch.argv
+        and (backend_flags is None or "--no-warmup" in backend_flags)
+    ):
+        # Swap members cold-restart on every switch; the warmup run adds a
+        # full prompt eval to each respawn, so skipping it speeds return.
+        # Residents keep it — one-time early validation is worth the cost.
+        launch = replace(
+            service.launch, argv=[*service.launch.argv, "--no-warmup"]
+        )
+        service = replace(service, launch=launch)
     if candidate.n_cpu_moe > 0:
         warnings.append(
             t(
@@ -1750,6 +1763,15 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
                 warnings.append(
                     t("warn.gpu_layers_unsupported", language)
                 )
+        if "--no-warmup" in argv:
+            index = argv.index("--no-warmup")
+            if service.resident:
+                del argv[index]
+        elif (
+            not service.resident
+            and (backend_flags is None or "--no-warmup" in backend_flags)
+        ):
+            argv.append("--no-warmup")
     return replace(service.launch, argv=argv)
 
 
