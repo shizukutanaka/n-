@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import socket
 import threading
+import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import nmesh.bench.runner as bench_runner
@@ -1007,3 +1010,77 @@ def test_gateway_revive_failure_returns_503(monkeypatch) -> None:
     })
     assert response.status_code == 503
     assert "restart budget" in response.json()["error"]["message"]
+
+
+class _SlowHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        int(self.headers["Content-Length"])
+        self.rfile.read(int(self.headers["Content-Length"]))
+        time.sleep(5.0)
+        body = b'{"model":"m","choices":[]}'
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def test_disconnect_watch_aborts_upstream_post() -> None:
+    """A disconnected client's upstream POST is cancelled (499) so the
+    backend frees its decode slot instead of finishing a dead request."""
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _SlowHandler)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{upstream.server_address[1]}/v1/chat/completions"
+
+        async def scenario() -> float:
+            client = httpx.AsyncClient(timeout=httpx.Timeout(10.0))
+
+            async def probe() -> bool:
+                return True
+
+            started = time.monotonic()
+            with pytest.raises(HTTPException) as exc:
+                await gateway_module._post_with_disconnect_watch(
+                    client, url, {}, probe
+                )
+            assert exc.value.status_code == 499
+            await client.aclose()
+            return time.monotonic() - started
+
+        elapsed = asyncio.run(scenario())
+        assert elapsed < 4.0
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_disconnect_watch_passes_response_when_connected() -> None:
+    """Probe reporting connected leaves the upstream POST untouched."""
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UsageHandler)
+    _UsageHandler.stream = False
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{upstream.server_address[1]}/v1/chat/completions"
+
+        async def scenario() -> httpx.Response:
+            client = httpx.AsyncClient(timeout=httpx.Timeout(10.0))
+
+            async def probe() -> bool:
+                return False
+
+            try:
+                return await gateway_module._post_with_disconnect_watch(
+                    client, url, {"model": "m"}, probe
+                )
+            finally:
+                await client.aclose()
+
+        response = asyncio.run(scenario())
+        assert response.status_code == 200
+    finally:
+        _UsageHandler.stream = True
+        upstream.shutdown()
+        upstream.server_close()

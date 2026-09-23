@@ -8,7 +8,7 @@ import secrets
 import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -992,6 +992,47 @@ async def _slot_progress(
     return out
 
 
+async def _post_with_disconnect_watch(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: Mapping[str, object],
+    disconnect_probe: Callable[[], Awaitable[bool]] | None,
+) -> httpx.Response:
+    """POST to upstream, aborting the request when the client disconnects.
+
+    Without a watch the inference server keeps decoding to completion for a
+    caller that is already gone, occupying a scarce parallel slot; cancelling
+    the httpx task closes the transport so the backend aborts generation.
+    """
+    post = asyncio.ensure_future(client.post(url, json=payload))
+    if disconnect_probe is None:
+        return await post
+
+    async def _watch() -> None:
+        while not post.done():
+            if await disconnect_probe():
+                post.cancel()
+                return
+            await asyncio.sleep(0.25)
+
+    watcher = asyncio.ensure_future(_watch())
+    try:
+        return await post
+    except asyncio.CancelledError:
+        if post.cancelled():
+            # Our watcher cancelled the upstream POST — the client is gone.
+            raise HTTPException(
+                status_code=499, detail="Client disconnected"
+            ) from None
+        # The handler itself was cancelled — abort the upstream call too.
+        post.cancel()
+        raise
+    finally:
+        watcher.cancel()
+        with suppress(asyncio.CancelledError):
+            await watcher
+
+
 def create_app(
     plan: Plan | None = None,
     watchdog: bool = False,
@@ -1149,7 +1190,9 @@ def create_app(
     async def proxy(request: dict[str, object], service: PlannedService,
                     plan_snapshot: Plan, telemetry_keys: Mapping[str, str],
                     path: str, instrument: bool = True,
-                    limit_slots: bool = False) -> object:
+                    limit_slots: bool = False,
+                    disconnect_probe: Callable[[], Awaitable[bool]] | None = None
+        ) -> object:
         started = time.perf_counter()
         last_use.touch(service.name)
         slot_token: object | None = None
@@ -1454,7 +1497,9 @@ def create_app(
         try:
             async def post_upstream(payload: Mapping[str, object]) -> httpx.Response:
                 try:
-                    return await client.post(url, json=payload)
+                    return await _post_with_disconnect_watch(
+                        client, url, payload, disconnect_probe
+                    )
                 except (httpx.ConnectError, httpx.ConnectTimeout):
                     try:
                         await asyncio.to_thread(
@@ -1462,8 +1507,9 @@ def create_app(
                         )
                     except Exception as error:
                         raise HTTPException(status_code=502, detail=str(error)) from error
-                    return await client.post(
-                        f"{_base_url(service)}{path}", json=payload
+                    return await _post_with_disconnect_watch(
+                        client, f"{_base_url(service)}{path}", payload,
+                        disconnect_probe,
                     )
 
             chunk_plan = (
@@ -2045,7 +2091,9 @@ def create_app(
         return job.as_dict()
 
     @app.post("/v1/chat/completions")
-    async def chat_completions(request: dict[str, object]) -> object:
+    async def chat_completions(
+        request: dict[str, object], http_request: Request
+    ) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
         if request.get("model") == "nmesh-delegate":
@@ -2055,10 +2103,13 @@ def create_app(
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/chat/completions",
             limit_slots=True,
+            disconnect_probe=http_request.is_disconnected,
         )
 
     @app.post("/v1/completions")
-    async def legacy_completions(request: dict[str, object]) -> object:
+    async def legacy_completions(
+        request: dict[str, object], http_request: Request
+    ) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
         token_hint = await _routing_token_hint(request, selected)
@@ -2066,10 +2117,13 @@ def create_app(
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/completions",
             limit_slots=True,
+            disconnect_probe=http_request.is_disconnected,
         )
 
     @app.post("/v1/messages")
-    async def anthropic_messages(request: dict[str, object]) -> object:
+    async def anthropic_messages(
+        request: dict[str, object], http_request: Request
+    ) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
         token_hint = await _routing_token_hint(request, selected)
@@ -2077,10 +2131,13 @@ def create_app(
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/messages",
             limit_slots=True,
+            disconnect_probe=http_request.is_disconnected,
         )
 
     @app.post("/v1/messages/count_tokens")
-    async def anthropic_count_tokens(request: dict[str, object]) -> object:
+    async def anthropic_count_tokens(
+        request: dict[str, object], http_request: Request
+    ) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
         token_hint = await _routing_token_hint(request, selected)
@@ -2088,19 +2145,25 @@ def create_app(
         return await proxy(
             request, service, selected, telemetry_keys,
             "/v1/messages/count_tokens", instrument=False,
+            disconnect_probe=http_request.is_disconnected,
         )
 
     @app.post("/v1/embeddings")
-    async def embeddings(request: dict[str, object]) -> object:
+    async def embeddings(
+        request: dict[str, object], http_request: Request
+    ) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
         service = _service(selected, selected.routing.role_to_service.get("embed", ""))
         return await proxy(
-            request, service, selected, telemetry_keys, "/v1/embeddings", instrument=False
+            request, service, selected, telemetry_keys, "/v1/embeddings",
+            instrument=False, disconnect_probe=http_request.is_disconnected,
         )
 
     @app.post("/v1/rerank")
-    async def rerank(request: dict[str, object]) -> object:
+    async def rerank(
+        request: dict[str, object], http_request: Request
+    ) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
         # llama.cpp serves rerank OR embeddings per instance (single pooling
@@ -2116,7 +2179,8 @@ def create_app(
             )
         service = _service(selected, name)
         return await proxy(
-            request, service, selected, telemetry_keys, "/v1/rerank", instrument=False
+            request, service, selected, telemetry_keys, "/v1/rerank",
+            instrument=False, disconnect_probe=http_request.is_disconnected,
         )
 
     return app
