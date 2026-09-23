@@ -1810,3 +1810,40 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_drop_unplanned_signals_all_before_waiting(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A replan dropping several owned services SIGTERMs them all before
+    waiting — convergence tracks the slowest exit, not the sum."""
+    ops: list[str] = []
+
+    class SlowProc:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.pid = 9000 + len(ops)
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            ops.append(f"term:{self.name}")
+
+        def kill(self) -> None:
+            ops.append(f"kill:{self.name}")
+
+        def wait(self, timeout: float | None = None) -> int:
+            ops.append(f"wait:{self.name}")
+            return 0
+
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json",
+        terminator=lambda _pid: None,
+    )
+    supervisor.processes["a"] = SlowProc("a")
+    supervisor.processes["b"] = SlowProc("b")
+
+    plan = SimpleNamespace(services=[])
+    assert supervisor._drop_unplanned(plan) is True
+    assert ops == ["term:a", "term:b", "wait:a", "wait:b"]

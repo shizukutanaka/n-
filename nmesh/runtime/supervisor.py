@@ -567,8 +567,9 @@ class Supervisor:
         not ours to stop — only self.processes and adopted entries."""
         planned = {service.name for service in plan.services}
         dropped = False
-        for name in [name for name in self.processes if name not in planned]:
-            self._stop_process(name)
+        dropped_names = [name for name in self.processes if name not in planned]
+        self._stop_processes(dropped_names)
+        for name in dropped_names:
             self.idle.discard(name)
             dropped = True
         for name, record in list(self.adopted.items()):
@@ -1569,31 +1570,59 @@ class Supervisor:
         with self._lock:
             return set(self.idle)
 
-    def _stop_process(self, service_name: str) -> None:
+    def _forget_process(self, service_name: str) -> ProcessLike | None:
         process = self.processes.pop(service_name, None)
         self.launched_argv.pop(service_name, None)
         self.notes.pop(service_name, None)
         self.sleeping.discard(service_name)
+        return process
+
+    @staticmethod
+    def _signal_stop(process: ProcessLike) -> None:
+        if is_windows():
+            process.terminate()
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                process.terminate()
+
+    @staticmethod
+    def _wait_stop(process: ProcessLike) -> None:
+        try:
+            process.wait(timeout=10)
+        except (subprocess.TimeoutExpired, TimeoutError):
+            if not is_windows():
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    process.kill()
+            else:
+                process.kill()
+
+    def _stop_process(self, service_name: str) -> None:
+        process = self._forget_process(service_name)
         if process is None:
             return
         if process.poll() is None:
-            if is_windows():
-                process.terminate()
-            else:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except OSError:
-                    process.terminate()
-            try:
-                process.wait(timeout=10)
-            except (subprocess.TimeoutExpired, TimeoutError):
-                if not is_windows():
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except OSError:
-                        process.kill()
-                else:
-                    process.kill()
+            self._signal_stop(process)
+            self._wait_stop(process)
+
+    def _stop_processes(self, service_names: list[str]) -> None:
+        """Batch stop: SIGTERM every process before waiting on any.
+
+        Sequential _stop_process waits serially, so N stubborn exits cost
+        N×10s; signalling first lets them exit concurrently and the waits
+        only observe the slowest one.
+        """
+        pending: list[ProcessLike] = []
+        for name in service_names:
+            process = self._forget_process(name)
+            if process is not None and process.poll() is None:
+                self._signal_stop(process)
+                pending.append(process)
+        for process in pending:
+            self._wait_stop(process)
 
     def status(self) -> RuntimeStatus:
         def planned(name: str) -> PlannedService | None:
