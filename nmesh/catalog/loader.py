@@ -37,6 +37,11 @@ class ModelSpec:
     active_params: int = 0
     moe_expert_params: int = 0
     n_moe_layers: int = 0
+    # Generation defaults recommended by the model card (e.g. Qwen3 ships
+    # temperature/top_p/top_k in generation_config.json). Applied to chat
+    # requests that don't set the parameter, like vLLM's generation_config
+    # handling — explicit request values always win.
+    sampling: tuple[tuple[str, int | float], ...] = ()
 
 
 def _model_from_mapping(item: object) -> ModelSpec | None:
@@ -74,6 +79,14 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
         ) or ("en",)
         quality_value = item["quality"]
         quality = None if quality_value is None else float(quality_value)
+        sampling_value = item.get("sampling", {})
+        sampling: list[tuple[str, int | float]] = []
+        if isinstance(sampling_value, dict):
+            sampling = [
+                (str(key), value)
+                for key, value in sampling_value.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            ]
         return ModelSpec(
             id=str(item["id"]),
             family=str(item["family"]),
@@ -98,6 +111,7 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
             active_params=int(item.get("active_params", 0)),
             moe_expert_params=int(item.get("moe_expert_params", 0)),
             n_moe_layers=int(item.get("n_moe_layers", 0)),
+            sampling=tuple(sampling),
         )
     except (TypeError, ValueError):
         return None

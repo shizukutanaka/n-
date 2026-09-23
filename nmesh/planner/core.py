@@ -255,6 +255,9 @@ class PlannedService:
     spec_draft: str = ""
     n_cpu_moe: int = 0
     tensor_split: tuple[int, ...] = ()
+    # Model-card generation defaults (temperature/top_p/top_k/...) applied to
+    # requests that don't set them — mirrors vLLM's generation_config defaults.
+    sampling: tuple[tuple[str, int | float], ...] = ()
 
 
 def _is_embed_only(value: ModelSpec | PlannedService) -> bool:
@@ -1643,6 +1646,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         spec=spec_kind,
         spec_draft=spec_draft,
         n_cpu_moe=candidate.n_cpu_moe,
+        sampling=candidate.model.sampling,
     )
     if candidate.n_cpu_moe > 0:
         warnings.append(
@@ -3269,6 +3273,10 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             tensor_split=tuple(
                 int(x) for x in sd.get("tensor_split", []) or ()
             ),
+            sampling=tuple(
+                (str(k), int(v) if isinstance(v, int) else float(v))
+                for k, v in (sd.get("sampling") or {}).items()
+            ),
         ))
     rd = data["routing"]
     if not isinstance(rd, dict):
@@ -3314,6 +3322,13 @@ def save_plan(plan: Plan, path: Path | None = None) -> Path:
                 service_payload.pop("spec", None)
             if service_payload.get("spec_draft") == "":
                 service_payload.pop("spec_draft", None)
+            sampling_payload = service_payload.get("sampling")
+            if isinstance(sampling_payload, (list, tuple)):
+                service_payload["sampling"] = {
+                    str(k): v for k, v in sampling_payload
+                }
+            if not service_payload.get("sampling"):
+                service_payload.pop("sampling", None)
         temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(temporary, target)
     except OSError:

@@ -2309,3 +2309,27 @@ def test_benchmark_key_distinguishes_tensor_split() -> None:
     )
     assert split.endswith("|ts2-1")
     assert base != split
+
+
+def test_sampling_defaults_round_trip_plan(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    assert dict(model.sampling)["top_k"] == 20
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = plan.services[0]
+    assert dict(service.sampling)["temperature"] == 0.7
+    path = tmp_path / "plan.json"
+    save_plan(plan, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["services"][0]["sampling"]["top_k"] == 20
+    loaded = load_plan(path)
+    assert loaded is not None
+    assert dict(loaded.services[0].sampling)["top_k"] == 20
+    # An empty sampling map is omitted from saved plans, same as defaults.
+    bare = replace(plan, services=[replace(service, sampling=())])
+    save_plan(bare, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert "sampling" not in payload["services"][0]
+    loaded = load_plan(path)
+    assert loaded is not None and loaded.services[0].sampling == ()

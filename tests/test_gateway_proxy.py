@@ -1007,3 +1007,32 @@ def test_gateway_revive_failure_returns_503(monkeypatch) -> None:
     })
     assert response.status_code == 503
     assert "restart budget" in response.json()["error"]["message"]
+
+
+def test_gateway_applies_model_sampling_defaults() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec(
+            "sampling-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+            4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"},
+            sampling=(("temperature", 0.6), ("top_p", 0.95), ("top_k", 20)),
+        )
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        client = TestClient(create_app(plan))
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto", "stream": True, "temperature": 0.3,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        body = _UpstreamHandler.request_body
+        # Model-card defaults fill unset params; explicit request wins.
+        assert body["temperature"] == 0.3
+        assert body["top_p"] == 0.95
+        assert body["top_k"] == 20
+    finally:
+        upstream.shutdown()
+        upstream.server_close()

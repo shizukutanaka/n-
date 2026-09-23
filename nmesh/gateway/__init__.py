@@ -513,6 +513,8 @@ def _upstream_body(request: Mapping[str, object], service: PlannedService) -> di
     body["model"] = service.model_ref
     if service.backend == "ollama":
         body["keep_alive"] = "5m" if service.resident else "30s"
+    for key, value in getattr(service, "sampling", ()):
+        body.setdefault(key, value)
     return body
 
 
