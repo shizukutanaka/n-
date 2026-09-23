@@ -2382,3 +2382,92 @@ def test_sleep_mode_round_trips_plan(tmp_path, catalog: list[ModelSpec]) -> None
     loaded = load_plan(path)
     assert loaded is not None and loaded.services[0].sleep_mode is False
 
+
+
+def test_vllm_cpu_offload_candidate_when_weights_overflow() -> None:
+    model = ModelSpec(
+        "vllm-m", "test", 20_000_000_000, 40, 32, 8, 128, 4096, 8192,
+        ["chat"], 90.0, "apache",
+        {"hf": "org/vllm-m", "hf_gguf": "org/vllm-m-gguf"},
+    )
+    candidates = planner_core._candidate_for(
+        model,
+        profile(
+            64, (12,), "linux",
+            backends={
+                "vllm": "vllm 0.9.0", "llamacpp": None,
+                "ollama": None, "mlx": None,
+            },
+        ),
+        Policy(roles=["chat"], min_decode_tps=0),
+        None,
+    )
+    offload = [
+        item for item in candidates
+        if item.backend == "vllm" and item.cpu_offload_gib > 0
+    ]
+    assert offload, "expected a vLLM --cpu-offload-gb candidate"
+    candidate = offload[0]
+    assert candidate.memory.vllm_offload_bytes > 0
+    assert candidate.memory.cpu_bytes > 0
+    assert candidate.memory.gpu_bytes <= candidate.memory.vram_budget + 1
+    assert candidate.decode_tps > 0
+
+
+def test_vllm_cpu_offload_absent_when_weights_fit() -> None:
+    model = ModelSpec(
+        "vllm-s", "test", 2_000_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], 80.0, "apache",
+        {"hf": "org/vllm-s", "hf_gguf": "org/vllm-s-gguf"},
+    )
+    candidates = planner_core._candidate_for(
+        model,
+        profile(
+            64, (12,), "linux",
+            backends={
+                "vllm": "vllm 0.9.0", "llamacpp": None,
+                "ollama": None, "mlx": None,
+            },
+        ),
+        Policy(roles=["chat"], min_decode_tps=0),
+        None,
+    )
+    assert candidates
+    assert all(item.cpu_offload_gib == 0 for item in candidates)
+
+
+def test_vllm_offload_service_emits_flag_and_roundtrips(tmp_path) -> None:
+    # 40B on an 8 GiB GPU: every quant overflows VRAM, so a winning vLLM
+    # candidate must be an offload variant.
+    model = ModelSpec(
+        "vllm-xl", "test", 40_000_000_000, 40, 32, 8, 128, 4096, 8192,
+        ["chat"], 90.0, "apache",
+        {"hf": "org/vllm-xl", "hf_gguf": "org/vllm-xl-gguf"},
+    )
+    result = build_plan(
+        profile(
+            64, (8,), "linux",
+            backends={
+                "vllm": "vllm 0.9.0", "llamacpp": None,
+                "ollama": None, "mlx": None,
+            },
+        ),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert service.backend == "vllm"
+    assert service.cpu_offload_gib > 0
+    assert "--cpu-offload-gb" in service.launch.argv
+    flag = service.launch.argv.index("--cpu-offload-gb")
+    assert float(service.launch.argv[flag + 1]) == pytest.approx(
+        service.cpu_offload_gib
+    )
+    assert service.memory.cpu_bytes > 0
+
+    path = tmp_path / "plan.json"
+    save_plan(result, path)
+    loaded = load_plan(path)
+    assert loaded.services[0].cpu_offload_gib == pytest.approx(
+        service.cpu_offload_gib
+    )

@@ -92,6 +92,9 @@ class MemoryEstimate:
     n_cpu_moe: int = 0
     moe_expert_bytes_per_layer: float = 0.0
     moe_layers: int = 0
+    # vLLM weight offload: bytes parked on the CPU via --cpu-offload-gb,
+    # vLLM's virtual VRAM extension (engine args, stable since v0.4).
+    vllm_offload_bytes: float = 0.0
 
 
 @dataclass
@@ -257,6 +260,7 @@ class PlannedService:
     n_cpu_moe: int = 0
     tensor_split: tuple[int, ...] = ()
     sleep_mode: bool = False
+    cpu_offload_gib: float = 0.0
 
 
 def _is_embed_only(value: ModelSpec | PlannedService) -> bool:
@@ -281,7 +285,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -529,6 +533,7 @@ def _throughput(model: ModelSpec, memory: MemoryEstimate, layers: int,
     token for an artifact with an untied duplicate head.
     """
     # Throughput uses bytes read per token, not artifact bytes.
+    cpu_bandwidth = 40.0
     if memory.n_cpu_moe > 0 and memory.moe_layers > 0:
         # --n-cpu-moe K: all dense tensors read from the GPU; activated
         # experts read from the GPU only for the moe_layers - K layers
@@ -545,6 +550,15 @@ def _throughput(model: ModelSpec, memory: MemoryEstimate, layers: int,
             (shared + expert_active * expert_gpu)
             / (model.active_params or model.params)
         )
+    elif memory.vllm_offload_bytes > 0 and memory.weight_bytes > 0:
+        # vLLM cpu-offload pages the offloaded weights over PCIe per token
+        # (~25 GB/s for gen4 x16), not through CPU compute — a slower
+        # channel than llama.cpp's partial-layer CPU execution.
+        gpu_frac = (
+            (memory.weight_bytes - memory.vllm_offload_bytes)
+            / memory.weight_bytes
+        )
+        cpu_bandwidth = 25.0
     else:
         gpu_frac = layers / model.n_layers
     gpu_frac = max(0.0, min(1.0, gpu_frac))
@@ -552,7 +566,7 @@ def _throughput(model: ModelSpec, memory: MemoryEstimate, layers: int,
         effective = 40.0
     else:
         gpu_bw = sum(_gpu_bandwidth(gpu) for gpu in profile.gpus) / len(profile.gpus)
-        effective = 1.0 / (gpu_frac / gpu_bw + (1.0 - gpu_frac) / 40.0)
+        effective = 1.0 / (gpu_frac / gpu_bw + (1.0 - gpu_frac) / cpu_bandwidth)
     basis = memory.weight_bytes if weight_bytes is None else weight_bytes
     if model.active_params > 0 and model.params > 0:
         # MoE decode reads only the activated weights per token — the
@@ -583,6 +597,32 @@ def _backend(profile: HardwareProfile, model: ModelSpec, layers: int) -> tuple[s
         if profile.available_backends.get(name):
             return name, True
     return (candidates[0], False) if candidates else ("", False)
+
+
+def _vllm_offload_adjust(
+    model: ModelSpec, estimate: MemoryEstimate, layers: int, backend: str,
+) -> tuple[MemoryEstimate, int, float]:
+    """vLLM has no partial-layer offload — a solved layer spill must park
+    the shortfall weight GiB on the CPU via ``--cpu-offload-gb`` (vLLM
+    engine args: a virtual VRAM extension, stable since v0.4). The emitted
+    argv always loads the whole model, so layers resolve to ``n_layers``.
+    Returns (estimate, layers, offload GiB)."""
+    if backend != "vllm" or not 0 < layers < model.n_layers:
+        return estimate, layers, 0.0
+    headroom = (
+        estimate.vram_budget
+        - estimate.kv_cache_bytes
+        - estimate.compute_overhead
+    )
+    shortfall = estimate.weight_bytes - headroom
+    if shortfall <= 0:
+        return estimate, layers, 0.0
+    gib = math.ceil(shortfall / 1024**3 * 10) / 10
+    adjusted = replace(
+        estimate,
+        vllm_offload_bytes=min(gib * 1024**3, estimate.weight_bytes),
+    )
+    return adjusted, model.n_layers, gib
 
 
 def _source_for(backend: str, model: ModelSpec, quant: str) -> str:
@@ -644,6 +684,7 @@ def _launch(
     cache_reuse: int = 0,
     context_shift: bool = False,
     n_cpu_moe: int = 0,
+    cpu_offload_gib: float = 0.0,
     *,
     binary: str | None = None,
 ) -> LaunchSpec:
@@ -667,6 +708,8 @@ def _launch(
             argv += ["--tensor-parallel-size", str(tensor_parallel)]
         if gpu_fraction is not None:
             argv += ["--gpu-memory-utilization", f"{gpu_fraction:.3f}"]
+        if cpu_offload_gib > 0:
+            argv += ["--cpu-offload-gb", f"{cpu_offload_gib:g}"]
         if embed_only and warnings is not None:
             warnings.append(
                 t("warn.embeddings_backend_unverified", language, model=model.id)
@@ -858,6 +901,7 @@ class _Candidate:
     embed_context_cap: int | None = None
     embed_retrieval_limit: RetrievalLimit | None = None
     n_cpu_moe: int = 0
+    cpu_offload_gib: float = 0.0
 
 
 def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: str,
@@ -968,6 +1012,13 @@ def _candidate_for(
                 layers = 0
             gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
             backend, installed = _backend(profile, model, layers)
+            base, layers, cpu_offload_gib = _vllm_offload_adjust(
+                model, base, layers, backend
+            )
+            if cpu_offload_gib > 0:
+                gpu_bytes, cpu_bytes = _split_memory(
+                    base, model.n_layers, layers
+                )
             context_before_embed_cap = None
             embed_context_cap = None
             embed_retrieval_limit = None
@@ -991,6 +1042,13 @@ def _candidate_for(
                         base, model.n_layers, layers,
                     )
                     backend, installed = _backend(profile, model, layers)
+                    base, layers, cpu_offload_gib = _vllm_offload_adjust(
+                        model, base, layers, backend
+                    )
+                    if cpu_offload_gib > 0:
+                        gpu_bytes, cpu_bytes = _split_memory(
+                            base, model.n_layers, layers,
+                        )
             if _is_embed_only(model) and embed_retrieval_limits is not None:
                 embed_retrieval_limit = embed_retrieval_limits.get((
                     model.id.casefold(),
@@ -1017,6 +1075,14 @@ def _candidate_for(
                 if profile.tier == Tier.T0_CPU:
                     layers = 0
                 gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
+                if backend == "vllm":
+                    base, layers, cpu_offload_gib = _vllm_offload_adjust(
+                        model, base, layers, backend
+                    )
+                    if cpu_offload_gib > 0:
+                        gpu_bytes, cpu_bytes = _split_memory(
+                            base, model.n_layers, layers
+                        )
                 if (
                     gpu_bytes > base.vram_budget + 1
                     or cpu_bytes > base.ram_budget + 1
@@ -1043,7 +1109,7 @@ def _candidate_for(
                     cache, model, quant, backend, gpu_name, layers, accounted_kv_quant,
                     policy.spec,
                 )
-                if decode_applicable
+                if decode_applicable and cpu_offload_gib == 0
                 else None
             )
             bench_record = (
@@ -1053,7 +1119,11 @@ def _candidate_for(
                         accounted_kv_quant, policy.spec,
                     )
                 )
-                if decode_applicable and bench_records is not None else None
+                if (
+                    decode_applicable
+                    and cpu_offload_gib == 0
+                    and bench_records is not None
+                ) else None
             )
             confirmed = (
                 not decode_applicable
@@ -1124,6 +1194,7 @@ def _candidate_for(
                 context_before_embed_cap=context_before_embed_cap,
                 embed_context_cap=embed_context_cap,
                 embed_retrieval_limit=embed_retrieval_limit,
+                cpu_offload_gib=cpu_offload_gib,
             ))
             # MoE expert-offload variant: llama.cpp's --n-cpu-moe K keeps
             # every layer's dense tensors on the GPU while the expert
@@ -1224,6 +1295,15 @@ def split_memory(memory: MemoryEstimate, model_layers: int, layers: int) -> tupl
             + memory.kv_cache_bytes + memory.compute_overhead
         )
         return gpu_bytes, expert_cpu
+    if memory.vllm_offload_bytes > 0:
+        # vLLM --cpu-offload-gb: the offloaded weight bytes live on the CPU
+        # and page per layer; the rest is GPU-resident with KV + overhead.
+        offload = min(memory.vllm_offload_bytes, memory.weight_bytes)
+        gpu_bytes = (
+            memory.weight_bytes - offload
+            + memory.kv_cache_bytes + memory.compute_overhead
+        )
+        return gpu_bytes, offload
     on_gpu = layers > 0
     gpu_bytes = memory.per_layer_bytes * layers + (
         memory.kv_cache_bytes + memory.compute_overhead if on_gpu else 0.0
@@ -1623,6 +1703,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
             spec_policy.context_shift if spec_policy is not None else False
         ),
         n_cpu_moe=candidate.n_cpu_moe,
+        cpu_offload_gib=candidate.cpu_offload_gib,
         binary=profile.backend_paths.get(candidate.backend),
     )
     service = PlannedService(
@@ -1645,6 +1726,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         spec=spec_kind,
         spec_draft=spec_draft,
         n_cpu_moe=candidate.n_cpu_moe,
+        cpu_offload_gib=candidate.cpu_offload_gib,
     )
     if candidate.n_cpu_moe > 0:
         warnings.append(
@@ -1653,6 +1735,16 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
                 language,
                 service=name,
                 layers=candidate.n_cpu_moe,
+                model=candidate.model.id,
+            )
+        )
+    if candidate.cpu_offload_gib > 0:
+        warnings.append(
+            t(
+                "warn.vllm_cpu_offload",
+                language,
+                service=name,
+                gib=f"{candidate.cpu_offload_gib:g}",
                 model=candidate.model.id,
             )
         )
@@ -3325,6 +3417,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             spec=str(sd.get("spec", "none")),
             spec_draft=str(sd.get("spec_draft", "")),
             n_cpu_moe=int(sd.get("n_cpu_moe", 0)),
+            cpu_offload_gib=float(sd.get("cpu_offload_gib", 0.0)),
             tensor_split=tuple(
                 int(x) for x in sd.get("tensor_split", []) or ()
             ),
