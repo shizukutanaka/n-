@@ -630,6 +630,347 @@ def _completion_not_supported(
     )
 
 
+_ANTHROPIC_FINISH_REASONS = {
+    "stop": "end_turn",
+    "length": "max_tokens",
+    "tool_calls": "tool_use",
+    "function_call": "tool_use",
+    "content_filter": "refusal",
+}
+
+
+def _as_sequence(value: object) -> Sequence[object]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return value
+    return ()
+
+
+def _flatten_content(parts: list[dict[str, object]]) -> object:
+    if len(parts) == 1 and parts[0].get("type") == "text":
+        return str(parts[0].get("text", ""))
+    return parts
+
+
+def _anthropic_to_openai(request: Mapping[str, object]) -> dict[str, object]:
+    """Translate an Anthropic Messages request body to OpenAI chat format.
+
+    Backends without a native /v1/messages endpoint (everything except
+    llama.cpp) receive the OpenAI equivalent instead of a 404.
+    """
+    body: dict[str, object] = {}
+    messages: list[dict[str, object]] = []
+    system = request.get("system")
+    if isinstance(system, str) and system:
+        messages.append({"role": "system", "content": system})
+    else:
+        system_text = "\n\n".join(
+            str(block.get("text", ""))
+            for block in _as_sequence(system)
+            if isinstance(block, Mapping) and block.get("type") == "text"
+        )
+        if system_text:
+            messages.append({"role": "system", "content": system_text})
+    for raw in _as_sequence(request.get("messages")):
+        if not isinstance(raw, Mapping):
+            continue
+        role = raw.get("role")
+        content = raw.get("content")
+        if isinstance(content, str) or content is None:
+            messages.append({"role": role, "content": content})
+            continue
+        parts: list[dict[str, object]] = []
+        tool_calls: list[dict[str, object]] = []
+        tool_results: list[tuple[object, str]] = []
+        for block in _as_sequence(content):
+            if not isinstance(block, Mapping):
+                continue
+            block_type = block.get("type")
+            if block_type == "text":
+                parts.append({"type": "text", "text": str(block.get("text", ""))})
+            elif block_type == "image":
+                source = block.get("source")
+                if isinstance(source, Mapping) and source.get("type") == "base64":
+                    url = (
+                        f"data:{source.get('media_type', 'image/png')}"
+                        f";base64,{source.get('data', '')}"
+                    )
+                    parts.append({"type": "image_url", "image_url": {"url": url}})
+            elif block_type == "tool_use":
+                tool_calls.append({
+                    "id": str(block.get("id", "")),
+                    "type": "function",
+                    "function": {
+                        "name": str(block.get("name", "")),
+                        "arguments": json.dumps(block.get("input") or {}),
+                    },
+                })
+            elif block_type == "tool_result":
+                result = block.get("content")
+                if isinstance(result, str) or result is None:
+                    rendered = result or ""
+                else:
+                    rendered = "\n".join(
+                        str(part.get("text", ""))
+                        for part in _as_sequence(result)
+                        if isinstance(part, Mapping) and part.get("type") == "text"
+                    )
+                tool_results.append((block.get("tool_use_id", ""), rendered))
+        if role == "assistant":
+            message: dict[str, object] = {"role": "assistant"}
+            message["content"] = _flatten_content(parts) if parts else None
+            if tool_calls:
+                message["tool_calls"] = tool_calls
+            messages.append(message)
+        else:
+            for call_id, rendered in tool_results:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": str(call_id),
+                    "content": rendered,
+                })
+            if parts:
+                messages.append({
+                    "role": role if isinstance(role, str) else "user",
+                    "content": _flatten_content(parts),
+                })
+    body["messages"] = messages
+    for key in ("max_tokens", "temperature", "top_p", "top_k"):
+        value = request.get(key)
+        if value is not None:
+            body[key] = value
+    stop = request.get("stop_sequences")
+    if isinstance(stop, str):
+        body["stop"] = [stop]
+    elif _as_sequence(stop):
+        body["stop"] = [str(item) for item in _as_sequence(stop)]
+    tools: list[dict[str, object]] = []
+    for tool in _as_sequence(request.get("tools")):
+        if not isinstance(tool, Mapping):
+            continue
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": tool.get("name", ""),
+                "description": tool.get("description", ""),
+                "parameters": tool.get("input_schema") or {},
+            },
+        })
+    if tools:
+        body["tools"] = tools
+    choice = request.get("tool_choice")
+    if isinstance(choice, Mapping):
+        kind = choice.get("type")
+        if kind == "auto":
+            body["tool_choice"] = "auto"
+        elif kind == "any":
+            body["tool_choice"] = "required"
+        elif kind == "none":
+            body["tool_choice"] = "none"
+        elif kind == "tool" and choice.get("name"):
+            body["tool_choice"] = {
+                "type": "function",
+                "function": {"name": choice.get("name")},
+            }
+    metadata = request.get("metadata")
+    if isinstance(metadata, Mapping) and metadata.get("user_id"):
+        body["user"] = metadata["user_id"]
+    if request.get("stream"):
+        body["stream"] = True
+    return body
+
+
+def _openai_to_anthropic(
+    payload: Mapping[str, object], model: object
+) -> dict[str, object]:
+    """Translate a chat.completion body into an Anthropic message."""
+    choices = _as_sequence(payload.get("choices"))
+    choice = choices[0] if choices else {}
+    if not isinstance(choice, Mapping):
+        choice = {}
+    message = choice.get("message")
+    if not isinstance(message, Mapping):
+        message = {}
+    blocks: list[dict[str, object]] = []
+    text = message.get("content")
+    if isinstance(text, str) and text:
+        blocks.append({"type": "text", "text": text})
+    for call in _as_sequence(message.get("tool_calls")):
+        if not isinstance(call, Mapping):
+            continue
+        function = call.get("function")
+        if not isinstance(function, Mapping):
+            function = {}
+        try:
+            inputs = json.loads(str(function.get("arguments", "") or "{}"))
+        except json.JSONDecodeError:
+            inputs = {}
+        if not isinstance(inputs, dict):
+            inputs = {}
+        blocks.append({
+            "type": "tool_use",
+            "id": str(call.get("id", "")),
+            "name": str(function.get("name", "")),
+            "input": inputs,
+        })
+    if not blocks:
+        blocks.append({"type": "text", "text": ""})
+    usage = payload.get("usage")
+    if not isinstance(usage, Mapping):
+        usage = {}
+    finish = choice.get("finish_reason")
+    return {
+        "id": str(payload.get("id", "msg_nm")),
+        "type": "message",
+        "role": "assistant",
+        "content": blocks,
+        "model": model,
+        "stop_reason": (
+            _ANTHROPIC_FINISH_REASONS.get(str(finish), "end_turn")
+            if finish else None
+        ),
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": _upstream_int(usage.get("prompt_tokens")) or 0,
+            "output_tokens": _upstream_int(usage.get("completion_tokens")) or 0,
+        },
+    }
+
+
+class _AnthropicStreamTranslator:
+    """Translate OpenAI chat.completion.chunk payloads into Anthropic SSE."""
+
+    def __init__(self, model: object) -> None:
+        self._model = model
+        self._started = False
+        self._finished = False
+        self._block_index = -1
+        self._open: str | None = None
+        self._stop_reason: str | None = None
+        self._output_tokens = 0
+
+    @staticmethod
+    def _frame(event: str, data: Mapping[str, object]) -> bytes:
+        return (
+            f"event: {event}\n"
+            f"data: {json.dumps(data, separators=(',', ':'))}\n\n"
+        ).encode()
+
+    def _start(self, message_id: str, input_tokens: int) -> bytes:
+        self._started = True
+        return self._frame("message_start", {
+            "type": "message_start",
+            "message": {
+                "id": message_id,
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": self._model,
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": 0,
+                },
+            },
+        })
+
+    def _close_block(self) -> bytes:
+        if self._open is None:
+            return b""
+        frame = self._frame("content_block_stop", {
+            "type": "content_block_stop", "index": self._block_index,
+        })
+        self._open = None
+        return frame
+
+    def _open_block(self, kind: str, content_block: Mapping[str, object]) -> bytes:
+        self._block_index += 1
+        self._open = kind
+        return self._frame("content_block_start", {
+            "type": "content_block_start",
+            "index": self._block_index,
+            "content_block": content_block,
+        })
+
+    def feed(self, payload: Mapping[str, object]) -> bytes:
+        out = b""
+        usage = payload.get("usage")
+        input_tokens = 0
+        if isinstance(usage, Mapping):
+            completion = _upstream_int(usage.get("completion_tokens"))
+            if completion is not None:
+                self._output_tokens = completion
+            prompt = _upstream_int(usage.get("prompt_tokens"))
+            input_tokens = prompt if prompt is not None else 0
+        if not self._started:
+            out += self._start(str(payload.get("id", "msg_nm")), input_tokens)
+        choices = _as_sequence(payload.get("choices"))
+        if not choices or not isinstance(choices[0], Mapping):
+            return out
+        choice = choices[0]
+        delta = choice.get("delta")
+        if not isinstance(delta, Mapping):
+            delta = {}
+        text = delta.get("content")
+        if isinstance(text, str) and text:
+            if self._open != "text":
+                out += self._close_block()
+                out += self._open_block("text", {"type": "text", "text": ""})
+            out += self._frame("content_block_delta", {
+                "type": "content_block_delta",
+                "index": self._block_index,
+                "delta": {"type": "text_delta", "text": text},
+            })
+        for call in _as_sequence(delta.get("tool_calls")):
+            if not isinstance(call, Mapping):
+                continue
+            function = call.get("function")
+            if not isinstance(function, Mapping):
+                function = {}
+            name = function.get("name")
+            call_id = call.get("id")
+            if name is not None or call_id is not None:
+                out += self._close_block()
+                out += self._open_block("tool_use", {
+                    "type": "tool_use",
+                    "id": str(call_id or ""),
+                    "name": str(name or ""),
+                })
+            arguments = function.get("arguments")
+            if isinstance(arguments, str) and arguments:
+                out += self._frame("content_block_delta", {
+                    "type": "content_block_delta",
+                    "index": self._block_index,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": arguments,
+                    },
+                })
+        finish = choice.get("finish_reason")
+        if finish:
+            self._stop_reason = _ANTHROPIC_FINISH_REASONS.get(
+                str(finish), "end_turn"
+            )
+        return out
+
+    def finish(self) -> bytes:
+        """Emit the closing Anthropic frames once the upstream stream ends."""
+        if self._finished or not self._started:
+            return b""
+        self._finished = True
+        out = self._close_block()
+        out += self._frame("message_delta", {
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": self._stop_reason or "end_turn",
+                "stop_sequence": None,
+            },
+            "usage": {"output_tokens": self._output_tokens},
+        })
+        out += self._frame("message_stop", {"type": "message_stop"})
+        return out
+
+
 def _embedding_input(request: Mapping[str, object]) -> tuple[str | None, bool]:
     value = request.get("input")
     if isinstance(value, str):
@@ -1149,7 +1490,8 @@ def create_app(
     async def proxy(request: dict[str, object], service: PlannedService,
                     plan_snapshot: Plan, telemetry_keys: Mapping[str, str],
                     path: str, instrument: bool = True,
-                    limit_slots: bool = False) -> object:
+                    limit_slots: bool = False,
+                    anthropic_translate: bool = False) -> object:
         started = time.perf_counter()
         last_use.touch(service.name)
         slot_token: object | None = None
@@ -1217,7 +1559,14 @@ def create_app(
                         jobs.finish(job, ok=False, detail="ensure_failed")
                         raise HTTPException(status_code=503, detail=str(error)) from error
         body = _upstream_body(request, service)
-        url = f"{_base_url(service)}{path}"
+        upstream_path = path
+        if anthropic_translate:
+            body = _anthropic_to_openai(request)
+            body["model"] = service.model_ref
+            if service.backend == "ollama":
+                body["keep_alive"] = "5m" if service.resident else "30s"
+            upstream_path = "/v1/chat/completions"
+        url = f"{_base_url(service)}{upstream_path}"
         embedding_cap = (
             plan_state.embed_input_caps.get((
                 service.model_id.casefold(),
@@ -1235,8 +1584,16 @@ def create_app(
             request_wants_usage = (
                 isinstance(stream_options, Mapping)
                 and bool(stream_options.get("include_usage"))
-            )
-            if service.backend == "llamacpp" and not path.startswith("/v1/messages"):
+            ) or anthropic_translate
+            if anthropic_translate:
+                # The translated OpenAI stream must carry a usage chunk so the
+                # Anthropic message_delta can report output_tokens.
+                upstream_stream_options = dict(
+                    stream_options if isinstance(stream_options, Mapping) else {}
+                )
+                upstream_stream_options["include_usage"] = True
+                body["stream_options"] = upstream_stream_options
+            elif service.backend == "llamacpp" and not path.startswith("/v1/messages"):
                 upstream_stream_options = (
                     dict(stream_options) if isinstance(stream_options, Mapping) else {}
                 )
@@ -1252,7 +1609,7 @@ def create_app(
                     except Exception as error:
                         raise HTTPException(status_code=502, detail=str(error)) from error
                     upstream_request = client.build_request(
-                        "POST", f"{_base_url(service)}{path}", json=body
+                        "POST", f"{_base_url(service)}{upstream_path}", json=body
                     )
                     upstream = await client.send(upstream_request, stream=True)
             except HTTPException:
@@ -1302,6 +1659,10 @@ def create_app(
                                 media_type=upstream.headers.get("content-type"))
 
             stream_completed = False
+            translator = (
+                _AnthropicStreamTranslator(request.get("model", service.model_id))
+                if anthropic_translate else None
+            )
 
             async def stream() -> AsyncIterator[bytes]:
                 nonlocal stream_completed
@@ -1322,7 +1683,12 @@ def create_app(
                         if content.endswith(b"\r"):
                             content = content[:-1]
                             ending = b"\r\n"
-                    if not content.startswith(b"data: ") or content == b"data: [DONE]":
+                    if not content.startswith(b"data: "):
+                        return line
+                    if content == b"data: [DONE]":
+                        if translator is not None:
+                            tail = translator.finish()
+                            return tail or None
                         return line
                     try:
                         payload = json.loads(content[6:])
@@ -1359,6 +1725,9 @@ def create_app(
                         tokens += 1
                         first_line_time = first_line_time or now
                         last_line_time = now
+                    if translator is not None:
+                        translated = translator.feed(payload)
+                        return translated or None
                     nested_message = payload.get("message")
                     if "model" in payload or (
                         isinstance(nested_message, dict) and "model" in nested_message
@@ -1386,6 +1755,10 @@ def create_app(
                         output = transform(buffer)
                         if output is not None:
                             yield output
+                    if translator is not None:
+                        tail = translator.finish()
+                        if tail:
+                            yield tail
                     stream_completed = True
                 except httpx.HTTPError as error:
                     raise HTTPException(status_code=502, detail=str(error)) from error
@@ -1691,9 +2064,13 @@ def create_app(
                 pass
         await _record_prompt_calibration(
             service,
-            request,
+            body,
             data.get("usage") if isinstance(data, dict) else None,
         )
+        if anthropic_translate and isinstance(data, dict):
+            data = _openai_to_anthropic(
+                data, request.get("model", service.model_id)
+            )
         embedding_headers.update(embedding_chunk_headers)
         if embedding_headers:
             if job is not None:
@@ -2077,6 +2454,7 @@ def create_app(
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/messages",
             limit_slots=True,
+            anthropic_translate=service.backend != "llamacpp",
         )
 
     @app.post("/v1/messages/count_tokens")

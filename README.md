@@ -391,14 +391,19 @@ embed model on a second llama.cpp process with `--reranking`). Without it,
 a Cohere-style `{query, documents}` body and returns `results` with
 `relevance_score`s.
 
-The gateway also passes through the Anthropic Messages API when the backend
-serves it (llama.cpp does): `POST /v1/messages` and
+The gateway also serves the Anthropic Messages API: `POST /v1/messages` and
 `POST /v1/messages/count_tokens`. Requests route through the same planner
 as chat completions — role-based service selection, context-depth rerouting,
 slot limits, and swap ordering all apply — so Anthropic-shaped clients such as
-Claude Code can point at the gateway directly. Streaming Anthropic SSE frames
-(`event:`/`data:` pairs) pass through unmodified; OpenAI-only fields such as
-`stream_options` are not injected into Anthropic requests.
+Claude Code can point at the gateway directly. When the selected backend has
+a native Anthropic endpoint (llama.cpp does), requests pass through untouched
+and streaming Anthropic SSE frames (`event:`/`data:` pairs) pass through
+unmodified. Backends without one (vLLM, Ollama, MLX) receive the request
+translated to OpenAI `/v1/chat/completions` — `system`, `stop_sequences`,
+`tools`/`tool_choice`, `tool_use`/`tool_result` blocks, `max_tokens`,
+`temperature`/`top_p`/`top_k` all map — and the response is translated back
+to the Anthropic message shape, including `content_block_*`/`message_*` SSE
+events for streams.
 
 `GET /v1/models` returns the OpenAI-compatible model list — `nmesh-auto`
 (router-selected), one `nmesh-<service>` ID per planned service, and

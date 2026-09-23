@@ -1007,3 +1007,163 @@ def test_gateway_revive_failure_returns_503(monkeypatch) -> None:
     })
     assert response.status_code == 503
     assert "restart budget" in response.json()["error"]["message"]
+
+
+class _OpenAICompatHandler(BaseHTTPRequestHandler):
+    request_body: ClassVar[dict[str, object]] = {}
+    request_path: ClassVar[str] = ""
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.__class__.request_body = json.loads(self.rfile.read(length))
+        self.__class__.request_path = self.path
+        self.send_response(200)
+        if not self.__class__.request_body.get("stream"):
+            payload = json.dumps({
+                "id": "chatcmpl-1", "model": "upstream-model",
+                "choices": [{
+                    "index": 0, "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "translated ok"},
+                }],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 4},
+            }).encode()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        for chunk in (
+            (
+                b'data: {"id":"chatcmpl-1","model":"upstream-model",'
+                b'"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+            ),
+            (
+                b'data: {"id":"chatcmpl-1","model":"upstream-model",'
+                b'"choices":[{"delta":{"content":"translated "}}]}\n\n'
+            ),
+            (
+                b'data: {"id":"chatcmpl-1","model":"upstream-model",'
+                b'"choices":[{"delta":{"content":"ok"}}]}\n\n'
+            ),
+            (
+                b'data: {"id":"chatcmpl-1","model":"upstream-model",'
+                b'"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+            ),
+            (
+                b'data: {"id":"chatcmpl-1","model":"upstream-model",'
+                b'"choices":[],"usage":{"prompt_tokens":11,'
+                b'"completion_tokens":4}}\n\n'
+            ),
+            b"data: [DONE]\n\n",
+        ):
+            self.wfile.write(chunk)
+            self.wfile.flush()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def _openai_backend_plan(port: int) -> Plan:
+    model = ModelSpec("proxy-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(plan.services[0], backend="vllm", port=port)
+    return replace(plan, services=[service])
+
+
+def test_gateway_translates_anthropic_for_openai_backends() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _OpenAICompatHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        plan = _openai_backend_plan(upstream.server_address[1])
+        client = TestClient(create_app(plan))
+        response = client.post("/v1/messages", json={
+            "model": "nmesh-auto", "max_tokens": 64,
+            "system": [{"type": "text", "text": "be brief"}],
+            "stop_sequences": ["END"],
+            "tools": [{
+                "name": "get",
+                "description": "d",
+                "input_schema": {"type": "object"},
+            }],
+            "tool_choice": {"type": "any"},
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "answer"},
+                    {"type": "tool_use", "id": "toolu_1",
+                     "name": "get", "input": {"q": 1}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1",
+                     "content": [{"type": "text", "text": "result"}]},
+                    {"type": "text", "text": "thanks"},
+                ]},
+            ],
+        })
+        assert response.status_code == 200
+        body = _OpenAICompatHandler.request_body
+        assert _OpenAICompatHandler.request_path == "/v1/chat/completions"
+        messages = body["messages"]
+        assert messages[0] == {"role": "system", "content": "be brief"}
+        assert body["stop"] == ["END"]
+        assert body["max_tokens"] == 64
+        assert body["tool_choice"] == "required"
+        assert body["tools"][0]["function"]["parameters"] == {"type": "object"}
+        assistant = messages[2]
+        assert assistant["tool_calls"][0]["function"]["name"] == "get"
+        tool = messages[3]
+        assert tool == {
+            "role": "tool", "tool_call_id": "toolu_1", "content": "result",
+        }
+        payload = response.json()
+        assert payload["type"] == "message"
+        assert payload["role"] == "assistant"
+        assert payload["model"] == "nmesh-auto"
+        assert payload["content"] == [{"type": "text", "text": "translated ok"}]
+        assert payload["stop_reason"] == "end_turn"
+        assert payload["usage"] == {"input_tokens": 11, "output_tokens": 4}
+        assert "system" not in body and "stop_sequences" not in body
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_translates_anthropic_stream_for_openai_backends() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _OpenAICompatHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        plan = _openai_backend_plan(upstream.server_address[1])
+        client = TestClient(create_app(plan))
+        response = client.post("/v1/messages", json={
+            "model": "nmesh-auto", "stream": True, "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        text = response.text
+        assert "event: message_start" in text
+        assert '"model":"nmesh-auto"' in text
+        assert "event: content_block_start" in text
+        assert "text_delta" in text
+        assert '"text":"translated "' in text
+        assert '"text":"ok"' in text
+        assert "event: content_block_stop" in text
+        assert "event: message_delta" in text
+        assert '"stop_reason":"end_turn"' in text
+        assert '"output_tokens":4' in text
+        assert "event: message_stop" in text
+        # Nothing OpenAI-shaped leaks to the Anthropic client.
+        assert "upstream-model" not in text
+        assert "[DONE]" not in text
+        assert "chat.completion.chunk" not in text
+        assert _OpenAICompatHandler.request_path == "/v1/chat/completions"
+        assert _OpenAICompatHandler.request_body["stream_options"] == {
+            "include_usage": True,
+        }
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
