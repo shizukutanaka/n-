@@ -61,12 +61,15 @@ class BenchRecord:
 
 def benchmark_key(model_id: str, quant: str, backend: str, gpu_name: str,
                   n_gpu_layers: int | None, kv_quant: str = "f16",
-                  spec: str = "none", n_cpu_moe: int = 0) -> str:
+                  spec: str = "none", n_cpu_moe: int = 0,
+                  tensor_split: tuple[int, ...] = ()) -> str:
     suffix = "" if kv_quant == "f16" else f"|kv{kv_quant}"
     if spec != "none":
         suffix += f"|sp{spec}"
     if n_cpu_moe > 0:
         suffix += f"|moe{n_cpu_moe}"
+    if len(tensor_split) > 1 and len(set(tensor_split)) > 1:
+        suffix += "|ts" + "-".join(str(part) for part in tensor_split)
     return f"{model_id}|{quant}|{backend}|{gpu_name}|{n_gpu_layers or 0}{suffix}"
 
 

@@ -2365,7 +2365,7 @@ def _bench(args: argparse.Namespace) -> int:
     key = benchmark_key(service.model_id, service.quant, service.backend,
                         plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
                         service.n_gpu_layers, service.kv_quant, service.spec,
-                        service.n_cpu_moe)
+                        service.n_cpu_moe, service.tensor_split)
     demoted: tuple[str, ...] = ()
     spec_demoted: tuple[str, ...] = ()
     delegation_demoted: tuple[str, ...] = ()

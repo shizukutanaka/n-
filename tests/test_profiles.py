@@ -45,12 +45,23 @@ def test_bundled_profiles_round_trip_and_gpu_budgets() -> None:
                 assert 0 < service.n_gpu_layers <= layers[service.model_id]
             if not service.gpu_indices or service.memory.gpu_bytes <= 0:
                 continue
-            per_gpu = service.memory.gpu_bytes / len(service.gpu_indices)
+            # llamacpp services may carry a proportional --tensor-split;
+            # anything else divides its GPU bytes evenly across its cards.
+            ratios = (
+                list(service.tensor_split)
+                if len(service.tensor_split) == len(service.gpu_indices)
+                else [1] * len(service.gpu_indices)
+            )
+            ratio_total = sum(ratios)
+            shares = [
+                service.memory.gpu_bytes * ratio / ratio_total
+                for ratio in ratios
+            ]
             target = swap_usage if service.name in swap_group else usage
-            for index in service.gpu_indices:
-                target[index] = max(target[index], per_gpu) if (
+            for share, index in zip(shares, service.gpu_indices):
+                target[index] = max(target[index], share) if (
                     service.name in swap_group
-                ) else target[index] + per_gpu
+                ) else target[index] + share
         for gpu in profile.gpus:
             assert usage[gpu.index] + swap_usage[gpu.index] <= _gpu_budget(gpu) + 1
 
