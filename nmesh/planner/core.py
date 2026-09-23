@@ -91,6 +91,9 @@ class MemoryEstimate:
     n_cpu_moe: int = 0
     moe_expert_bytes_per_layer: float = 0.0
     moe_layers: int = 0
+    # Hybrid models: fixed per-slot recurrent state (folded into
+    # kv_cache_bytes; zero on pure-attention models).
+    recurrent_state_bytes: float = 0.0
 
 
 @dataclass
@@ -420,7 +423,11 @@ def estimate_memory(
         )
     else:
         kv_bytes_per_tok = tok_layer_bytes * kv_layers
-    kv_cache_bytes = kv_bytes_per_tok * context * parallel_slots
+    # Recurrent (Mamba/GDN) layers keep a fixed conv+SSM state per slot,
+    # independent of context — llama.cpp llama_memory_recurrent sizes it
+    # per sequence, so it scales with parallel_slots, not with tokens.
+    recurrent = float(model.recurrent_state_bytes)
+    kv_cache_bytes = (kv_bytes_per_tok * context + recurrent) * parallel_slots
     compute_overhead = 0.06 * weight_bytes + 320 * 1024**2
     vram_budget, ram_budget = _profile_budgets(profile, budget_source)
     moe_expert_bytes_per_layer = (
@@ -434,6 +441,7 @@ def estimate_memory(
         weight_bytes * 1.05, parallel_slots=parallel_slots,
         moe_expert_bytes_per_layer=moe_expert_bytes_per_layer,
         moe_layers=model.n_moe_layers,
+        recurrent_state_bytes=recurrent,
     )
 
 
@@ -2136,7 +2144,10 @@ def _assign_slots(
         key = domain(service)
         leftover = max(budget(key) - usage[key], 0.0)
         if eligible and requested != 1:
-            kv_per_slot = service.memory.kv_bytes_per_tok * service.context
+            kv_per_slot = (
+                service.memory.kv_bytes_per_tok * service.context
+                + service.memory.recurrent_state_bytes
+            )
             if kv_per_slot > 0:
                 if requested is None:
                     available_extra = math.floor(
@@ -2148,7 +2159,10 @@ def _assign_slots(
                     slots = min(cap, requested, 1 + max(available, 0))
         slots = max(1, slots)
         if slots > 1:
-            kv_cache_bytes = service.memory.kv_bytes_per_tok * service.context * slots
+            kv_cache_bytes = (
+                service.memory.kv_bytes_per_tok * service.context
+                + service.memory.recurrent_state_bytes
+            ) * slots
             rewritten = replace(
                 service.memory,
                 kv_cache_bytes=kv_cache_bytes,
@@ -2174,7 +2188,10 @@ def _assign_slots(
                 t("warn.slots_tradeoff", policy.lang, service=service.name,
                   slots=slots, tps=f"{service.decode_tps:.1f}")
             )
-        kv_cache_bytes = service.memory.kv_bytes_per_tok * service.context * slots
+        kv_cache_bytes = (
+            service.memory.kv_bytes_per_tok * service.context
+            + service.memory.recurrent_state_bytes
+        ) * slots
         rewritten = replace(
             service.memory,
             kv_cache_bytes=kv_cache_bytes,

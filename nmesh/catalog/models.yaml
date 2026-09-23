@@ -529,6 +529,12 @@
   # estimates use the active parameter count but no expert offload is
   # planned for this model.
   active_params: 3000000000
+  # Recurrent state per slot: 23 mamba layers (layers_block_type in the
+  # config) × f32 × [(mamba_num_heads×mamba_head_dim + 2×n_groups×
+  # ssm_state_size)×(conv_kernel-1) + mamba_num_heads×mamba_head_dim×
+  # ssm_state_size] = 23×4×(6144×3 + 4096×128), per llama.cpp's
+  # llama_memory_recurrent sizing.
+  recurrent_state_bytes: 49930240
   max_context: 262144
   roles: [chat, code, tool]
   quality: 76
@@ -557,6 +563,12 @@
   active_params: 3000000000
   moe_expert_params: 77309411328
   n_moe_layers: 48
+  # Recurrent state per slot: 36 GDN layers × f32 × [(linear_num_value_
+  # heads×linear_value_head_dim + 2×linear_num_key_heads×
+  # linear_key_head_dim)×(linear_conv_kernel_dim-1) + (linear_num_value_
+  # heads×linear_value_head_dim)×linear_key_head_dim] = 36×4×(8192×3 +
+  # 4096×128), per llama.cpp's llama_memory_recurrent sizing.
+  recurrent_state_bytes: 79036416
   max_context: 262144
   roles: [chat, code, tool]
   quality: 82
@@ -567,6 +579,32 @@
     hf_gguf: "Qwen/Qwen3-Next-80B-A3B-Instruct-GGUF"
     hf: "Qwen/Qwen3-Next-80B-A3B-Instruct"
     hf_mlx: "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit"
+- id: qwen3-coder-30b-a3b-instruct
+  family: qwen3-coder
+  params: 30500000000
+  n_layers: 48
+  n_heads: 32
+  n_kv_heads: 4
+  head_dim: 128
+  hidden_size: 2048
+  vocab_size: 151936
+  head_layout: separate
+  # Dense attention on all 48 layers (standard Qwen3MoE arch, not the
+  # hybrid Qwen3-Next one). MoE: 128 routed experts (3x2048x768 params
+  # each), no shared expert, top-8 routed — ~3.3B active of 30.5B total.
+  active_params: 3300000000
+  moe_expert_params: 28991029248
+  n_moe_layers: 48
+  max_context: 262144
+  roles: [chat, code, tool]
+  quality: 85
+  license: apache-2.0
+  languages: [en, zh]
+  sources:
+    ollama: "qwen3-coder:30b"
+    hf_gguf: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
+    hf: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+    hf_mlx: "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit"
 - id: qwen3-embedding-4b
   family: qwen3-embedding
   params: 4020000000

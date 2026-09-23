@@ -2242,3 +2242,78 @@ def test_moe_plan_round_trip_preserves_offload(tmp_path) -> None:
     assert service.memory.n_cpu_moe == original.n_cpu_moe
     assert service.memory.moe_layers == 24
     assert service.launch.argv == original.launch.argv
+
+
+def test_estimate_memory_counts_recurrent_state_per_slot() -> None:
+    hybrid = ModelSpec(
+        "hybrid-rs", "nemotron-h", 30_000_000_000, 52, 32, 2, 128, 2688,
+        131072, ["chat"], 76.0, "nvidia-open-model-license",
+        {"hf_gguf": "test/repo"}, kv_layers=6,
+        recurrent_state_bytes=49_930_240,
+    )
+    one = estimate_memory(hybrid, "q4_k_m", 8192)
+    two = estimate_memory(hybrid, "q4_k_m", 8192, parallel_slots=2)
+    attention_kv = one.kv_bytes_per_tok * 8192
+    # llama_memory_recurrent sizes the conv+SSM state per sequence and it
+    # does not shrink with context — one fixed chunk per parallel slot.
+    assert one.recurrent_state_bytes == pytest.approx(49_930_240)
+    assert one.kv_cache_bytes == pytest.approx(attention_kv + 49_930_240)
+    assert two.kv_cache_bytes == pytest.approx((attention_kv + 49_930_240) * 2)
+    dense = estimate_memory(moe_model(), "q4_k_m", 8192)
+    assert dense.recurrent_state_bytes == 0
+
+
+def test_catalog_hybrid_models_carry_recurrent_state(catalog: list[ModelSpec]) -> None:
+    fields = {
+        model.id: model.recurrent_state_bytes
+        for model in catalog
+        if model.recurrent_state_bytes
+    }
+    # Values are derived in models.yaml from each model's public config
+    # and llama.cpp's llama_memory_recurrent conv+SSM sizing.
+    assert fields == {
+        "nemotron-3.5-lightning-30b": 49_930_240,
+        "qwen3-next-80b-a3b-instruct": 79_036_416,
+    }
+    for model in catalog:
+        if model.recurrent_state_bytes:
+            assert model.kv_layers and model.kv_layers < model.n_layers
+
+
+def test_qwen3_coder_30b_catalog_entry(catalog: list[ModelSpec]) -> None:
+    model = next(
+        item for item in catalog if item.id == "qwen3-coder-30b-a3b-instruct"
+    )
+    # Qwen3MoeForCausalLM config: 48 dense-attention MoE layers, 128
+    # routed experts x3x2048x768 params each, top-8, no shared expert.
+    assert model.n_moe_layers == 48
+    assert model.moe_expert_params == 28_991_029_248
+    assert model.active_params == 3_300_000_000
+    assert model.kv_layers == 0
+    assert model.recurrent_state_bytes == 0
+    assert model.max_context == 262144
+
+
+def test_hybrid_plan_counts_recurrent_state_in_slots(catalog: list[ModelSpec]) -> None:
+    model = next(
+        item for item in catalog if item.id == "nemotron-3.5-lightning-30b"
+    )
+    result = build_plan(
+        profile(96, (40,)),
+        [model],
+        Policy(
+            roles=["chat"], model_ids=("nemotron-3.5-lightning-30b",),
+            parallel_slots=4,
+        ),
+    )
+    service = result.services[0]
+    slots = service.memory.parallel_slots
+    assert slots > 1
+    assert service.memory.recurrent_state_bytes == pytest.approx(49_930_240)
+    assert service.memory.kv_cache_bytes == pytest.approx(
+        (
+            service.memory.kv_bytes_per_tok * service.context
+            + service.memory.recurrent_state_bytes
+        )
+        * slots
+    )
