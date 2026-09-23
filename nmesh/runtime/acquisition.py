@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -414,14 +415,22 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
         chosen, files, total_bytes = _resolve_gguf(repo_id, service.quant)
         from huggingface_hub import hf_hub_download
 
-        paths = [
-            Path(hf_hub_download(
+        def _fetch(filename: str) -> Path:
+            return Path(hf_hub_download(
                 repo_id=repo_id,
                 filename=filename,
                 local_dir=str(target.parent),
             ))
-            for filename in files
-        ]
+
+        if len(files) > 1:
+            # Split GGUFs are several GB each; hf_hub_download is thread-safe
+            # per file (own .incomplete resume handling), so fetch parts in
+            # parallel instead of serially (huggingface_hub docs pattern).
+            workers = min(8, len(files))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                paths = list(pool.map(_fetch, files))
+        else:
+            paths = [_fetch(files[0])]
         warning = _artifact_warning(service, chosen, files[0], total_bytes)
         if corrupt_note is not None:
             warning = f"{corrupt_note} {warning}" if warning else corrupt_note

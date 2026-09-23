@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Self
 
 import huggingface_hub
 import pytest
@@ -361,10 +362,61 @@ def test_interrupted_split_gguf_resumes_missing_parts(tmp_path, monkeypatch) -> 
 
     acquired = acquisition.acquire(service)
 
-    assert calls == [
+    # Parts are fetched in parallel, so only the completed set is stable.
+    assert sorted(calls) == [
         "model-00001-of-00002.gguf", "model-00002-of-00002.gguf"
     ]
     assert acquired.path == tmp_path / "model-00001-of-00002.gguf"
+
+
+def test_split_gguf_parts_fetch_through_bounded_pool(
+    tmp_path, monkeypatch
+) -> None:
+    """Multi-part GGUFs go through a bounded thread pool; single files keep
+    the plain serial path."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    service = _llamacpp_service(tmp_path)
+    service.download_repo = "org/repo"
+    seen_workers: list[int] = []
+    inner_pools: list[ThreadPoolExecutor] = []
+
+    class SpyPool:
+        def __init__(self, max_workers: int) -> None:
+            seen_workers.append(max_workers)
+            self._inner = ThreadPoolExecutor(max_workers=max_workers)
+            inner_pools.append(self._inner)
+
+        def __enter__(self) -> Self:
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self._inner.__exit__(*args)
+
+        def map(self, fn, items):
+            return self._inner.map(fn, items)
+
+    monkeypatch.setattr(acquisition, "ThreadPoolExecutor", SpyPool)
+    monkeypatch.setattr(
+        acquisition,
+        "_resolve_gguf",
+        lambda _repo, _quant: (
+            "q4_k_m",
+            [f"model-{i:05d}-of-00003.gguf" for i in (1, 2, 3)],
+            300,
+        ),
+    )
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda **kwargs: str(tmp_path / str(kwargs["filename"])),
+    )
+
+    acquired = acquisition.acquire(service)
+
+    assert seen_workers == [3]
+    assert acquired.path == tmp_path / "model-00001-of-00003.gguf"
 
 
 def test_complete_split_gguf_skips_download(tmp_path, monkeypatch) -> None:
