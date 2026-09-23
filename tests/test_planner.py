@@ -633,7 +633,12 @@ def test_mid_gpu_full_model(catalog: list[ModelSpec]) -> None:
 
 
 def test_workstation_resident_roles(catalog: list[ModelSpec]) -> None:
-    result = build_plan(profile(64, (24,)), catalog)
+    # model_ids pins the pool: bigger MoE catalog entries legitimately
+    # crowd out the embed role when they consume most of the RAM pool.
+    result = build_plan(
+        profile(64, (24,)), catalog,
+        Policy(model_ids=("phi-4-14b", "qwen3-embedding-8b")),
+    )
     assert_memory_fit(result)
     assert result.tier == Tier.T4_WORKSTATION
     assert all(service.resident for service in result.services)
@@ -641,10 +646,11 @@ def test_workstation_resident_roles(catalog: list[ModelSpec]) -> None:
 
 
 def test_server_vllm_single_gpu(catalog: list[ModelSpec]) -> None:
+    # model_ids pins the model: a 120B MoE legitimately spans both GPUs.
     result = build_plan(
         profile(128, (80, 80), os_name="linux"),
         catalog,
-        Policy(roles=["chat"]),
+        Policy(roles=["chat"], model_ids=("phi-4-14b",)),
     )
     assert_memory_fit(result)
     assert result.tier == Tier.T5_SERVER
@@ -653,6 +659,8 @@ def test_server_vllm_single_gpu(catalog: list[ModelSpec]) -> None:
 
 
 def test_apple_mlx(catalog: list[ModelSpec]) -> None:
+    # model_ids pins the model: on unified memory a heavier MoE entry can
+    # legitimately fill the shared RAM pool beyond the GPU-side budget.
     result = build_plan(
         profile(
             64,
@@ -662,7 +670,7 @@ def test_apple_mlx(catalog: list[ModelSpec]) -> None:
             backends={"ollama": None, "llamacpp": None, "vllm": None, "mlx": "installed"},
         ),
         catalog,
-        Policy(roles=["chat"]),
+        Policy(roles=["chat"], model_ids=("phi-4-14b",)),
     )
     assert_memory_fit(result)
     assert result.services[0].backend == "mlx"
@@ -2062,3 +2070,175 @@ def test_download_budget_warning_silent_within_limit(
         Policy(roles=["chat"], min_decode_tps=0, allow_download_gb=4096.0),
     )
     assert not any("download budget" in w for w in result.warnings)
+
+
+def moe_model() -> ModelSpec:
+    # gpt-oss-20b-shaped MoE: 24 layers, experts ~19.1B of 20.9B params.
+    return ModelSpec(
+        "moe-mix", "moe-mix", 20_900_000_000, 24, 32, 8, 128, 2880, 131072,
+        ["chat"], 90.0, "apache",
+        {"hf_gguf": "moe-mix.gguf", "hf": "moe-mix"},
+        vocab_size=201048,
+        active_params=3_600_000_000,
+        moe_expert_params=19_110_297_600,
+        n_moe_layers=24,
+    )
+
+
+def test_estimate_memory_carries_moe_expert_sizing() -> None:
+    estimate = estimate_memory(moe_model(), "q4_k_m", 8192)
+    assert estimate.moe_layers == 24
+    assert estimate.moe_expert_bytes_per_layer == pytest.approx(
+        19_110_297_600 / 24 * estimate.weight_bytes / 20_900_000_000
+    )
+    assert estimate.n_cpu_moe == 0
+    dense = estimate_memory(
+        ModelSpec(
+            "dense", "dense", 8_000_000_000, 36, 32, 8, 128, 4096, 8192,
+            ["chat"], 80.0, "apache", {"hf_gguf": "dense.gguf"},
+        ),
+        "q4_k_m", 8192,
+    )
+    assert dense.moe_layers == 0
+    assert dense.moe_expert_bytes_per_layer == 0.0
+
+
+def test_solve_moe_cpu_layers_bounds() -> None:
+    estimate = estimate_memory(moe_model(), "q4_k_m", 8192)
+    assert planner_core.solve_moe_cpu_layers(
+        replace(estimate, vram_budget=estimate.weight_bytes * 2)
+    ) == 0
+    assert planner_core.solve_moe_cpu_layers(estimate) is None
+    estimate = replace(estimate, vram_budget=estimate.weight_bytes * 0.55)
+    solved = planner_core.solve_moe_cpu_layers(estimate)
+    assert solved is not None and 0 < solved < estimate.moe_layers
+    adjusted = replace(estimate, n_cpu_moe=solved)
+    gpu_bytes, cpu_bytes = planner_core.split_memory(
+        adjusted, 24, 24
+    )
+    assert gpu_bytes <= estimate.vram_budget + 1
+    assert cpu_bytes == pytest.approx(
+        estimate.moe_expert_bytes_per_layer * solved
+    )
+    estimate = replace(estimate, vram_budget=1024)
+    assert planner_core.solve_moe_cpu_layers(estimate) is None
+
+
+def test_moe_offload_candidate_keeps_all_layers_on_gpu() -> None:
+    result = build_plan(
+        profile(64, (8,)),
+        [moe_model()],
+        Policy(roles=["chat"], min_decode_tps=0, model_ids=("moe-mix",)),
+    )
+    service = result.services[0]
+    assert service.backend == "llamacpp"
+    assert service.n_cpu_moe > 0
+    assert service.n_gpu_layers == service.memory.n_gpu_layers == 24
+    argv = service.launch.argv
+    assert "--n-cpu-moe" in argv
+    assert argv[argv.index("--n-cpu-moe") + 1] == str(service.n_cpu_moe)
+    assert service.memory.gpu_bytes <= service.memory.vram_budget + 1
+    assert service.memory.cpu_bytes <= service.memory.ram_budget + 1
+    assert any("--n-cpu-moe" in w for w in result.warnings)
+    normal = estimate_memory(moe_model(), service.quant, service.context)
+    partial_layers = planner_core.solve_gpu_layers(normal, 24)
+    assert partial_layers < 24
+
+
+def test_moe_offload_variant_skipped_without_flag_support() -> None:
+    base = profile(64, (8,))
+    probed = replace(
+        base, backend_flags={"llamacpp": ("--ctx-size", "--parallel")}
+    )
+    result = build_plan(
+        probed,
+        [moe_model()],
+        Policy(roles=["chat"], min_decode_tps=0, model_ids=("moe-mix",)),
+    )
+    service = result.services[0]
+    assert service.n_cpu_moe == 0
+    assert "--n-cpu-moe" not in service.launch.argv
+
+
+def test_moe_offload_variant_skipped_without_gpu() -> None:
+    result = build_plan(
+        profile(64),
+        [moe_model()],
+        Policy(roles=["chat"], min_decode_tps=0, model_ids=("moe-mix",)),
+    )
+    assert result.services[0].n_cpu_moe == 0
+
+
+def test_moe_offload_variant_unused_when_model_fits() -> None:
+    result = build_plan(
+        profile(64, (32,)),
+        [moe_model()],
+        Policy(roles=["chat"], min_decode_tps=0, model_ids=("moe-mix",)),
+    )
+    service = result.services[0]
+    assert service.n_cpu_moe == 0
+    assert "--n-cpu-moe" not in service.launch.argv
+
+
+def test_moe_launch_emits_flag_or_warns() -> None:
+    model = moe_model()
+    launched = planner_core._launch(
+        "llamacpp", model, "q4_k_m", 8192, 18010, 24, 1, n_cpu_moe=4,
+    )
+    assert "--n-cpu-moe" in launched.argv
+    assert launched.argv[launched.argv.index("--n-cpu-moe") + 1] == "4"
+    warnings: list[str] = []
+    launched = planner_core._launch(
+        "llamacpp", model, "q4_k_m", 8192, 18010, 24, 1,
+        backend_flags=("--ctx-size",), warnings=warnings, n_cpu_moe=4,
+    )
+    assert "--n-cpu-moe" not in launched.argv
+    assert any("--n-cpu-moe" in warning for warning in warnings)
+
+
+def test_benchmark_key_distinguishes_moe_offload() -> None:
+    plain = benchmark_key("moe-mix", "q4_k_m", "llamacpp", "gpu", 24)
+    assert "|moe" not in plain
+    offloaded = benchmark_key(
+        "moe-mix", "q4_k_m", "llamacpp", "gpu", 24, n_cpu_moe=10
+    )
+    assert offloaded == f"{plain}|moe10"
+
+
+def test_moe_throughput_scales_with_offload() -> None:
+    memory = estimate_memory(moe_model(), "q4_k_m", 8192)
+    hw = profile(64, (8,))
+    full = planner_core._throughput(moe_model(), memory, 24, hw)
+    moe_memory = replace(
+        memory, n_cpu_moe=12,
+        gpu_bytes=memory.vram_budget * 0.9,
+        cpu_bytes=memory.moe_expert_bytes_per_layer * 12,
+    )
+    moe = planner_core._throughput(moe_model(), moe_memory, 24, hw)
+    assert moe < full
+    partial = replace(memory, n_cpu_moe=0)
+    layers = planner_core.solve_gpu_layers(
+        replace(partial, vram_budget=hw.gpus[0].total_vram_bytes * 0.92), 24
+    )
+    assert 0 < layers < 24
+    assert planner_core._throughput(
+        moe_model(), partial, layers, hw
+    ) < moe
+
+
+def test_moe_plan_round_trip_preserves_offload(tmp_path) -> None:
+    result = build_plan(
+        profile(64, (8,)),
+        [moe_model()],
+        Policy(roles=["chat"], min_decode_tps=0, model_ids=("moe-mix",)),
+    )
+    assert result.services[0].n_cpu_moe > 0
+    path = tmp_path / "moe-plan.json"
+    save_plan(result, path)
+    loaded = load_plan(path)
+    service = loaded.services[0]
+    original = result.services[0]
+    assert service.n_cpu_moe == original.n_cpu_moe
+    assert service.memory.n_cpu_moe == original.n_cpu_moe
+    assert service.memory.moe_layers == 24
+    assert service.launch.argv == original.launch.argv

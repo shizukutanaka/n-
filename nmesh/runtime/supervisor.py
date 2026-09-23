@@ -579,6 +579,7 @@ class Supervisor:
                     weight_bytes=float(acquired.artifact_bytes),
                 )
                 layers = service.memory.n_gpu_layers or service.n_gpu_layers or 0
+                memory = replace(memory, n_cpu_moe=service.n_cpu_moe)
                 gpu_bytes, cpu_bytes = split_memory(
                     memory, model.n_layers, layers
                 )
@@ -587,6 +588,7 @@ class Supervisor:
                     gpu_bytes=gpu_bytes,
                     cpu_bytes=cpu_bytes,
                     n_gpu_layers=layers,
+                    n_cpu_moe=service.n_cpu_moe,
                 )
                 if acquired.artifact_bytes > estimated_bytes * 1.10:
                     artifact_replanned = True

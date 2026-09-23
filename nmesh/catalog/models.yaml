@@ -473,6 +473,11 @@
   head_layout: separate
   sliding_window: 128
   sliding_window_pattern: 2
+  # MoE: 32 experts/layer (3x2880x2880 params each) on all 24 layers,
+  # top-4 routed per token — 3.6B active of 21B total (openai/gpt-oss-20b).
+  active_params: 3600000000
+  moe_expert_params: 19110297600
+  n_moe_layers: 24
   max_context: 131072
   roles: [chat, code, tool]
   quality: 78
@@ -494,6 +499,11 @@
   head_layout: separate
   sliding_window: 128
   sliding_window_pattern: 2
+  # MoE: 128 experts/layer (3x2880x2880 params each) on all 36 layers,
+  # top-4 routed per token — 5.1B active of 117B total (openai/gpt-oss-120b).
+  active_params: 5100000000
+  moe_expert_params: 114661785600
+  n_moe_layers: 36
   max_context: 131072
   roles: [chat, code, tool]
   quality: 88
@@ -514,6 +524,11 @@
   vocab_size: 131072
   head_layout: separate
   kv_layers: 6
+  # A3B naming: ~3B activated of 30B total. Expert-tensor layout is not
+  # verified, so moe_expert_params/n_moe_layers stay unset — decode
+  # estimates use the active parameter count but no expert offload is
+  # planned for this model.
+  active_params: 3000000000
   max_context: 262144
   roles: [chat, code, tool]
   quality: 76
@@ -523,6 +538,35 @@
     ollama: "nemotron-3.5-lightning"
     hf_gguf: "unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF"
     hf: "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+- id: qwen3-next-80b-a3b-instruct
+  family: qwen3-next
+  params: 80000000000
+  n_layers: 48
+  n_heads: 16
+  n_kv_heads: 2
+  head_dim: 256
+  hidden_size: 2048
+  vocab_size: 151936
+  head_layout: separate
+  # Hybrid gated-deltanet/attention: full attention every 4th of 48 layers
+  # (Qwen/Qwen3-Next-80B-A3B-Instruct config: full_attention_interval=4),
+  # so only 12 layers carry a KV cache.
+  kv_layers: 12
+  # MoE on all 48 layers: 512 routed experts (3x2048x512 params each) +
+  # one shared expert per layer, top-10 routed — 3B active of 80B total.
+  active_params: 3000000000
+  moe_expert_params: 77309411328
+  n_moe_layers: 48
+  max_context: 262144
+  roles: [chat, code, tool]
+  quality: 82
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    ollama: "qwen3-next:80b"
+    hf_gguf: "Qwen/Qwen3-Next-80B-A3B-Instruct-GGUF"
+    hf: "Qwen/Qwen3-Next-80B-A3B-Instruct"
+    hf_mlx: "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit"
 - id: qwen3-embedding-4b
   family: qwen3-embedding
   params: 4020000000
