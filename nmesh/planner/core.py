@@ -279,7 +279,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 4
+LAUNCH_REVISION = 5
 
 
 @dataclass(frozen=True)
@@ -715,6 +715,15 @@ def _launch(
             and _honors_kv_quant(backend, backend_flags)
         ):
             argv += ["--cache-type-k", kv_quant, "--cache-type-v", kv_quant]
+            argv.append(
+                "--flash-attn"
+                if not known
+                else next(
+                    flag
+                    for flag in FLASH_ATTENTION_FLAGS
+                    if flag in flags
+                )
+            )
         if backend == "llamacpp" and n_cpu_moe > 0:
             if not known or "--n-cpu-moe" in flags:
                 argv += ["--n-cpu-moe", str(n_cpu_moe)]
@@ -1237,6 +1246,10 @@ _split_memory = split_memory
 
 GPU_LAYER_FLAGS = ("-ngl", "--gpu-layers", "--n-gpu-layers")
 KV_CACHE_TYPE_FLAGS = ("--cache-type-k", "--cache-type-v")
+# A quantized V cache only starts under flash attention — llama.cpp
+# aborts with "quantized V cache was requested, but this requires Flash
+# Attention" otherwise, so honoring the flags includes the FA flag.
+FLASH_ATTENTION_FLAGS = ("-fa", "--flash-attn")
 SPEC_TYPE_FLAGS = ("--spec-type",)
 SPEC_DRAFT_FLAGS = ("--spec-draft-model", "--spec-draft-n-max")
 
@@ -1253,7 +1266,10 @@ def _honors_kv_quant(
 ) -> bool:
     if backend != "llamacpp":
         return False
-    return backend_flags is None or all(flag in backend_flags for flag in KV_CACHE_TYPE_FLAGS)
+    return backend_flags is None or (
+        all(flag in backend_flags for flag in KV_CACHE_TYPE_FLAGS)
+        and any(flag in backend_flags for flag in FLASH_ATTENTION_FLAGS)
+    )
 
 
 def _honors_spec(

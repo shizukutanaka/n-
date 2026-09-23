@@ -894,7 +894,7 @@ def test_supported_llamacpp_kv_quantization_is_launched(
         backend_flags={
             "llamacpp": (
                 "--parallel", "-ngl", "--tensor-split",
-                "--cache-type-k", "--cache-type-v",
+                "--cache-type-k", "--cache-type-v", "--flash-attn",
             ),
         },
     )
@@ -908,6 +908,9 @@ def test_supported_llamacpp_kv_quantization_is_launched(
     assert service.memory.kv_cache_bytes == pytest.approx(f16.kv_cache_bytes / 2)
     assert service.launch.argv[service.launch.argv.index("--cache-type-k") + 1] == "q8_0"
     assert service.launch.argv[service.launch.argv.index("--cache-type-v") + 1] == "q8_0"
+    # A quantized V cache only runs under flash attention, so the flag
+    # must accompany --cache-type-v.
+    assert "--flash-attn" in service.launch.argv
     speed_warnings = [
         warning for warning in result.warnings
         if "planned throughput does not model KV cache type" in warning
@@ -1088,6 +1091,27 @@ def test_embed_and_rerank_share_model_download_once(
     )
     embed = next(s for s in result.services if s.name == "embed")
     assert result.total_download_bytes <= int(embed.memory.disk_needed) + 1
+
+
+def test_kv_quant_falls_back_without_flash_attention_flag(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={
+            "llamacpp": (
+                "--parallel", "-ngl", "--cache-type-k", "--cache-type-v",
+            ),
+        },
+    )
+    result = build_plan(machine, [model], Policy(roles=["chat"], kv_quant="q8_0"))
+    service = result.services[0]
+    # ctk/ctv alone is not enough: llama.cpp aborts on a quantized V
+    # cache without flash attention, so the plan must stay f16 here.
+    assert service.kv_quant == "f16"
+    assert not any("--cache-type" in flag for flag in service.launch.argv)
+    assert "--flash-attn" not in service.launch.argv
 
 
 def test_unsupported_llamacpp_kv_quantization_downgrades_accounting(
