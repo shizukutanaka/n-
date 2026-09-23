@@ -85,6 +85,12 @@ class MemoryEstimate:
     gpu_bytes: float = 0.0
     n_gpu_layers: int = 0
     parallel_slots: int = 1
+    # MoE expert offload: n_cpu_moe routed-expert layers stay on the CPU
+    # (llama.cpp --n-cpu-moe). moe_expert_bytes_per_layer/moe_layers carry
+    # the expert-tensor sizing the split and re-solve need.
+    n_cpu_moe: int = 0
+    moe_expert_bytes_per_layer: float = 0.0
+    moe_layers: int = 0
 
 
 @dataclass
@@ -247,6 +253,7 @@ class PlannedService:
     kv_quant: str = "f16"
     spec: str = "none"
     spec_draft: str = ""
+    n_cpu_moe: int = 0
 
 
 def _is_embed_only(value: ModelSpec | PlannedService) -> bool:
@@ -271,7 +278,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 2
+LAUNCH_REVISION = 3
 
 
 @dataclass(frozen=True)
@@ -360,6 +367,31 @@ def _swa_layer_count(model: ModelSpec, kv_layers: int) -> int:
     return kv_layers - kv_layers // pattern
 
 
+def _resolve_gpu_fit(
+    memory: MemoryEstimate, model_layers: int,
+) -> tuple[int, int, float, float]:
+    """Best-effort GPU fit under a tighter VRAM budget.
+
+    MoE services first push more expert layers to the CPU while every
+    dense tensor stays GPU-resident; only when the experts alone cannot
+    cover the overflow do they fall back to the uniform partial-layer
+    solve (which drops --n-cpu-moe). Returns
+    (n_gpu_layers, n_cpu_moe, gpu_bytes, cpu_bytes).
+    """
+    if memory.n_cpu_moe > 0 and memory.moe_layers > 0:
+        moe_k = solve_moe_cpu_layers(memory)
+        if moe_k is not None:
+            adjusted = replace(memory, n_cpu_moe=moe_k)
+            gpu_bytes, cpu_bytes = _split_memory(
+                adjusted, model_layers, model_layers
+            )
+            return model_layers, moe_k, gpu_bytes, cpu_bytes
+        memory = replace(memory, n_cpu_moe=0)
+    layers = solve_gpu_layers(memory, model_layers)
+    gpu_bytes, cpu_bytes = _split_memory(memory, model_layers, layers)
+    return layers, 0, gpu_bytes, cpu_bytes
+
+
 def estimate_memory(
     model: ModelSpec, quant: str, context: int, parallel_slots: int = 1,
     profile: HardwareProfile | None = None, kv_quant: str = "f16",
@@ -391,10 +423,17 @@ def estimate_memory(
     kv_cache_bytes = kv_bytes_per_tok * context * parallel_slots
     compute_overhead = 0.06 * weight_bytes + 320 * 1024**2
     vram_budget, ram_budget = _profile_budgets(profile, budget_source)
+    moe_expert_bytes_per_layer = (
+        model.moe_expert_params / model.n_moe_layers * weight_bytes / model.params
+        if model.n_moe_layers > 0 and model.moe_expert_params > 0
+        else 0.0
+    )
     return MemoryEstimate(
         weight_bytes, per_layer_bytes, kv_bytes_per_tok, kv_cache_bytes, compute_overhead,
         weight_bytes + kv_cache_bytes + compute_overhead, vram_budget, ram_budget,
         weight_bytes * 1.05, parallel_slots=parallel_slots,
+        moe_expert_bytes_per_layer=moe_expert_bytes_per_layer,
+        moe_layers=model.n_moe_layers,
     )
 
 
@@ -420,6 +459,30 @@ def solve_gpu_layers(memory: MemoryEstimate, n_layers: int) -> int:
         / memory.per_layer_bytes
     )
     return max(0, min(n_layers, raw))
+
+
+def solve_moe_cpu_layers(memory: MemoryEstimate) -> int | None:
+    """Routed-expert layers that must stay on the CPU for the model to fit.
+
+    With llama.cpp's ``--n-cpu-moe K`` the non-expert tensors of every
+    layer stay on the GPU while the expert tensors of the first K MoE
+    layers stream from RAM, so the GPU-side weight is
+    ``weight_bytes - K * moe_expert_bytes_per_layer``. Returns None when
+    even offloading every expert layer cannot fit the VRAM budget (the
+    dense remainder plus KV plus overhead alone is too large).
+    """
+    if memory.moe_layers <= 0 or memory.moe_expert_bytes_per_layer <= 0:
+        return None
+    overflow = (
+        memory.weight_bytes + memory.kv_cache_bytes + memory.compute_overhead
+        - memory.vram_budget
+    )
+    if overflow <= 0:
+        return 0
+    needed = math.ceil(overflow / memory.moe_expert_bytes_per_layer)
+    if needed > memory.moe_layers:
+        return None
+    return needed
 
 
 def _gpu_bandwidth(gpu: GPUInfo) -> float:
@@ -448,13 +511,37 @@ def _throughput(model: ModelSpec, memory: MemoryEstimate, layers: int,
     token for an artifact with an untied duplicate head.
     """
     # Throughput uses bytes read per token, not artifact bytes.
-    gpu_frac = layers / model.n_layers
+    if memory.n_cpu_moe > 0 and memory.moe_layers > 0:
+        # --n-cpu-moe K: all dense tensors read from the GPU; activated
+        # experts read from the GPU only for the moe_layers - K layers
+        # whose experts were not offloaded.
+        shared = max(model.params - model.moe_expert_params, 0)
+        expert_active = min(
+            max((model.active_params or model.params) - shared, 0),
+            model.moe_expert_params,
+        )
+        expert_gpu = (
+            max(memory.moe_layers - memory.n_cpu_moe, 0) / memory.moe_layers
+        )
+        gpu_frac = (
+            (shared + expert_active * expert_gpu)
+            / (model.active_params or model.params)
+        )
+    else:
+        gpu_frac = layers / model.n_layers
+    gpu_frac = max(0.0, min(1.0, gpu_frac))
     if gpu_frac == 0 or not profile.gpus:
         effective = 40.0
     else:
         gpu_bw = sum(_gpu_bandwidth(gpu) for gpu in profile.gpus) / len(profile.gpus)
         effective = 1.0 / (gpu_frac / gpu_bw + (1.0 - gpu_frac) / 40.0)
     basis = memory.weight_bytes if weight_bytes is None else weight_bytes
+    if model.active_params > 0 and model.params > 0:
+        # MoE decode reads only the activated weights per token — the
+        # shared tensors plus the routed experts — so the byte basis
+        # scales by the active fraction. For gpt-oss-120b that is 5.1B
+        # of 117B params, not the whole artifact.
+        basis = basis * min(1.0, model.active_params / model.params)
     return 0.75 * effective * 1e9 / basis
 
 
@@ -538,6 +625,7 @@ def _launch(
     sleep_idle_seconds: int = 0,
     cache_reuse: int = 0,
     context_shift: bool = False,
+    n_cpu_moe: int = 0,
     *,
     binary: str | None = None,
 ) -> LaunchSpec:
@@ -611,6 +699,13 @@ def _launch(
             and _honors_kv_quant(backend, backend_flags)
         ):
             argv += ["--cache-type-k", kv_quant, "--cache-type-v", kv_quant]
+        if backend == "llamacpp" and n_cpu_moe > 0:
+            if not known or "--n-cpu-moe" in flags:
+                argv += ["--n-cpu-moe", str(n_cpu_moe)]
+            elif warnings is not None:
+                warnings.append(
+                    t("warn.moe_cpu_unsupported", language, model=model.id)
+                )
         if backend == "llamacpp" and spec != "none" and _honors_spec(
             backend, backend_flags, spec
         ):
@@ -744,17 +839,22 @@ class _Candidate:
     context_before_embed_cap: int | None = None
     embed_context_cap: int | None = None
     embed_retrieval_limit: RetrievalLimit | None = None
+    n_cpu_moe: int = 0
 
 
 def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: str,
                  backend: str, gpu_name: str, layers: int,
-                 kv_quant: str = "f16", spec: str = "none") -> float | None:
+                 kv_quant: str = "f16", spec: str = "none",
+                 n_cpu_moe: int = 0) -> float | None:
     if cache is None:
         return None
     keys: list[object] = [
-        benchmark_key(model.id, quant, backend, gpu_name, layers, kv_quant, spec)
+        benchmark_key(
+            model.id, quant, backend, gpu_name, layers, kv_quant, spec,
+            n_cpu_moe,
+        )
     ]
-    if kv_quant == "f16" and spec == "none":
+    if kv_quant == "f16" and spec == "none" and n_cpu_moe == 0:
         keys.extend((
             (model.id, quant, backend, gpu_name, layers),
             f"{model.id}:{quant}:{backend}:{gpu_name}:{layers}",
@@ -879,7 +979,14 @@ def _candidate_for(
                     quant.casefold(),
                     backend.casefold(),
                 ))
-            if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
+            if (
+                gpu_bytes > base.vram_budget + 1
+                or cpu_bytes > base.ram_budget + 1
+                or (
+                    profile.unified_memory
+                    and gpu_bytes + cpu_bytes > base.ram_budget + 1
+                )
+            ):
                 continue
             backend_flags = profile.backend_flags.get(backend)
             if (
@@ -892,12 +999,22 @@ def _candidate_for(
                 if profile.tier == Tier.T0_CPU:
                     layers = 0
                 gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
-                if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
+                if (
+                    gpu_bytes > base.vram_budget + 1
+                    or cpu_bytes > base.ram_budget + 1
+                    or (
+                        profile.unified_memory
+                        and gpu_bytes + cpu_bytes > base.ram_budget + 1
+                    )
+                ):
                     continue
             if backend == "llamacpp" and profile.backend_gpu_devices.get("llamacpp") == ():
                 layers = 0
                 gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
-                if gpu_bytes > base.vram_budget + 1 or cpu_bytes > base.ram_budget + 1:
+                if (
+                    gpu_bytes > base.vram_budget + 1
+                    or cpu_bytes > base.ram_budget + 1
+                ):
                     continue
             if not _has_source(backend, model):
                 continue
@@ -990,6 +1107,71 @@ def _candidate_for(
                 embed_context_cap=embed_context_cap,
                 embed_retrieval_limit=embed_retrieval_limit,
             ))
+            # MoE expert-offload variant: llama.cpp's --n-cpu-moe K keeps
+            # every layer's dense tensors on the GPU while the expert
+            # tensors of the first K MoE layers stream from RAM, which
+            # usually beats the uniform partial -ngl offload for MoE
+            # models whose experts dominate the weight bytes. The score
+            # decides between this variant and the plain candidate.
+            moe_k: int | None = None
+            if (
+                decode_applicable
+                and backend == "llamacpp"
+                and base.moe_layers > 0
+                and 0 < layers < model.n_layers
+                and profile.backend_gpu_devices.get("llamacpp") != ()
+                and _supports_gpu_layers(backend_flags)
+                and (backend_flags is None or "--n-cpu-moe" in backend_flags)
+            ):
+                moe_k = solve_moe_cpu_layers(base)
+            if moe_k:
+                moe_base = replace(base, n_cpu_moe=moe_k)
+                moe_gpu, moe_cpu = _split_memory(
+                    moe_base, model.n_layers, model.n_layers
+                )
+                if (
+                    moe_gpu <= base.vram_budget + 1
+                    and moe_cpu <= base.ram_budget + 1
+                ):
+                    moe_memory = replace(
+                        moe_base,
+                        gpu_bytes=moe_gpu,
+                        cpu_bytes=moe_cpu,
+                        n_gpu_layers=model.n_layers,
+                    )
+                    moe_bench = _bench_value(
+                        cache, model, quant, backend, gpu_name,
+                        model.n_layers, accounted_kv_quant, policy.spec,
+                        moe_k,
+                    )
+                    moe_tps = (
+                        moe_bench
+                        if moe_bench is not None
+                        else _throughput(
+                            model, moe_memory, model.n_layers, profile,
+                            model.params * bpw / 8,
+                        )
+                    )
+                    if moe_tps >= policy.min_decode_tps:
+                        moe_speed = (
+                            min(moe_tps, SPEED_REFERENCE_TPS)
+                            / SPEED_REFERENCE_TPS * 100 * ws
+                        )
+                        moe_score = (
+                            moe_speed
+                            if prior is None
+                            else prior * wq + moe_speed
+                        )
+                        if policy.languages:
+                            moe_score *= 1.0 if covers else 0.7
+                        candidates.append(_Candidate(
+                            model, quant, context, moe_memory,
+                            model.n_layers, moe_tps, backend, installed,
+                            accounted_kv_quant, policy.kv_quant, moe_score,
+                            moe_bench is None,
+                            decode_applicable=decode_applicable,
+                            n_cpu_moe=moe_k,
+                        ))
             break
     return sorted(candidates, key=lambda item: item.score, reverse=True)
 
@@ -1011,6 +1193,19 @@ def _serves_role(model: ModelSpec, role: str) -> bool:
 
 
 def split_memory(memory: MemoryEstimate, model_layers: int, layers: int) -> tuple[float, float]:
+    if memory.n_cpu_moe > 0 and memory.moe_layers > 0:
+        # MoE expert offload: all dense tensors stay on the GPU (layers is
+        # model_layers by construction) while the expert tensors of the
+        # first n_cpu_moe MoE layers stream from RAM.
+        expert_cpu = (
+            memory.moe_expert_bytes_per_layer
+            * min(memory.n_cpu_moe, memory.moe_layers)
+        )
+        gpu_bytes = (
+            memory.weight_bytes - expert_cpu
+            + memory.kv_cache_bytes + memory.compute_overhead
+        )
+        return gpu_bytes, expert_cpu
     on_gpu = layers > 0
     gpu_bytes = memory.per_layer_bytes * layers + (
         memory.kv_cache_bytes + memory.compute_overhead if on_gpu else 0.0
@@ -1409,6 +1604,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         context_shift=(
             spec_policy.context_shift if spec_policy is not None else False
         ),
+        n_cpu_moe=candidate.n_cpu_moe,
         binary=profile.backend_paths.get(candidate.backend),
     )
     service = PlannedService(
@@ -1430,7 +1626,18 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         kv_quant=candidate.kv_quant,
         spec=spec_kind,
         spec_draft=spec_draft,
+        n_cpu_moe=candidate.n_cpu_moe,
     )
+    if candidate.n_cpu_moe > 0:
+        warnings.append(
+            t(
+                "warn.moe_cpu_offload",
+                language,
+                service=name,
+                layers=candidate.n_cpu_moe,
+                model=candidate.model.id,
+            )
+        )
     if candidate.requested_kv_quant != candidate.kv_quant:
         warnings.append(
             t(
@@ -1492,6 +1699,16 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
         elif "--tensor-split" in argv:
             index = argv.index("--tensor-split")
             del argv[index:index + 2]
+        if "--n-cpu-moe" in argv:
+            index = argv.index("--n-cpu-moe")
+            if service.n_cpu_moe > 0:
+                argv[index + 1] = str(service.n_cpu_moe)
+            else:
+                del argv[index:index + 2]
+        elif service.n_cpu_moe > 0 and (
+            backend_flags is None or "--n-cpu-moe" in backend_flags
+        ):
+            argv += ["--n-cpu-moe", str(service.n_cpu_moe)]
         gpu_layer_flags = GPU_LAYER_FLAGS
         gpu_layers_supported = gpu_devices != () and _supports_gpu_layers(backend_flags)
         if layers is not None and gpu_layers_supported:
@@ -1528,14 +1745,16 @@ def _cpu_llamacpp_service(
     model_layers = max(
         1, round(service.memory.weight_bytes / service.memory.per_layer_bytes)
     )
-    memory = replace(service.memory, n_gpu_layers=0)
+    memory = replace(service.memory, n_gpu_layers=0, n_cpu_moe=0)
     gpu_bytes, cpu_bytes = _split_memory(memory, model_layers, 0)
     memory = replace(memory, gpu_bytes=gpu_bytes, cpu_bytes=cpu_bytes)
     launch = _rebuild_launch(
-        service, 1, 0, backend_flags, warnings,
+        replace(service, n_cpu_moe=0), 1, 0, backend_flags, warnings,
         gpu_devices=gpu_devices, language=language,
     )
-    return replace(service, n_gpu_layers=0, memory=memory, launch=launch)
+    return replace(
+        service, n_gpu_layers=0, n_cpu_moe=0, memory=memory, launch=launch
+    )
 
 
 def _place_services(
@@ -1598,6 +1817,7 @@ def _place_services(
 
     for service in ordered:
         original_layers = service.n_gpu_layers
+        original_moe = service.n_cpu_moe
         if service.memory.gpu_bytes <= 0:
             warn_cpu_fallback(service)
             placed[service.name] = service
@@ -1640,18 +1860,20 @@ def _place_services(
                     ),
                 )
                 adjusted = replace(service.memory, vram_budget=placement_budget)
-                layers = solve_gpu_layers(adjusted, model_layers)
-                gpu_bytes, cpu_bytes = _split_memory(
-                    adjusted, model_layers, layers
+                layers, moe_k, gpu_bytes, cpu_bytes = _resolve_gpu_fit(
+                    adjusted, model_layers
                 )
                 if cpu_bytes <= adjusted.ram_budget + 1:
                     service = replace(
                         service,
                         n_gpu_layers=layers,
+                        n_cpu_moe=moe_k,
                         memory=replace(
                             adjusted,
                             gpu_bytes=gpu_bytes,
                             cpu_bytes=cpu_bytes,
+                            n_cpu_moe=moe_k,
+                            n_gpu_layers=layers,
                         ),
                     )
                     if layers == 0:
@@ -1722,11 +1944,15 @@ def _place_services(
             )
             target_budget = placement_budget
             card_memory = replace(current.memory, vram_budget=target_budget)
-            layers = solve_gpu_layers(card_memory, model_layers)
-            if layers < current.n_gpu_layers:
-                adjusted = replace(card_memory, n_gpu_layers=layers)
-                gpu_bytes, cpu_bytes = _split_memory(
-                    adjusted, model_layers, layers
+            layers, moe_k, gpu_bytes, cpu_bytes = _resolve_gpu_fit(
+                card_memory, model_layers
+            )
+            if (
+                layers < current.n_gpu_layers
+                or moe_k != current.n_cpu_moe
+            ):
+                adjusted = replace(
+                    card_memory, n_gpu_layers=layers, n_cpu_moe=moe_k
                 )
                 if (
                     cpu_bytes <= adjusted.ram_budget + 1
@@ -1736,6 +1962,7 @@ def _place_services(
                     current = replace(
                         current,
                         n_gpu_layers=layers,
+                        n_cpu_moe=moe_k,
                         memory=replace(
                             adjusted, gpu_bytes=gpu_bytes, cpu_bytes=cpu_bytes
                         ),
@@ -1770,6 +1997,7 @@ def _place_services(
         if (
             tensor_parallel != 1
             or current.n_gpu_layers != original_layers
+            or current.n_cpu_moe != original_moe
             or (tensor_parallel == 1 and "--tensor-split" in current.launch.argv)
         ):
             current = replace(
@@ -2967,6 +3195,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
         memory_values = {str(k): v for k, v in md.items()}
         memory_values["n_gpu_layers"] = int(memory_values["n_gpu_layers"])
         memory_values["parallel_slots"] = int(memory_values.get("parallel_slots", 1))
+        memory_values["n_cpu_moe"] = int(memory_values.get("n_cpu_moe", 0))
         memory = MemoryEstimate(**memory_values)
         launch = LaunchSpec(
             [str(x) for x in ld["argv"]], {str(k): str(v) for k, v in ld["env"].items()},
@@ -2987,6 +3216,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             kv_quant=str(sd.get("kv_quant", "f16")),
             spec=str(sd.get("spec", "none")),
             spec_draft=str(sd.get("spec_draft", "")),
+            n_cpu_moe=int(sd.get("n_cpu_moe", 0)),
         ))
     rd = data["routing"]
     if not isinstance(rd, dict):

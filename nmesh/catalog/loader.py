@@ -30,6 +30,13 @@ class ModelSpec:
     kv_layers: int = 0
     sliding_window: int = 0
     sliding_window_pattern: int = 0
+    # MoE anatomy: active_params is the per-token activated parameter count
+    # (shared + routed experts actually read), moe_expert_params the params
+    # inside routed-expert tensors, n_moe_layers the number of MoE layers.
+    # All zero on dense models.
+    active_params: int = 0
+    moe_expert_params: int = 0
+    n_moe_layers: int = 0
 
 
 def _model_from_mapping(item: object) -> ModelSpec | None:
@@ -88,6 +95,9 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
             kv_layers=int(item.get("kv_layers", 0)),
             sliding_window=int(item.get("sliding_window", 0)),
             sliding_window_pattern=int(item.get("sliding_window_pattern", 0)),
+            active_params=int(item.get("active_params", 0)),
+            moe_expert_params=int(item.get("moe_expert_params", 0)),
+            n_moe_layers=int(item.get("n_moe_layers", 0)),
         )
     except (TypeError, ValueError):
         return None
