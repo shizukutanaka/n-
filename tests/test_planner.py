@@ -1327,12 +1327,14 @@ def test_oversized_llamacpp_model_uses_tensor_split() -> None:
 
 
 def test_oversized_llamacpp_cpu_fallback_clears_split_and_warns() -> None:
+    # Tiny GPUs: the KV pool alone exceeds the combined VRAM budgets,
+    # forcing the pure CPU fallback this test exercises.
     model = ModelSpec(
         "cpu-fallback-llamacpp", "test", 60_000_000_000, 80, 80, 100, 128,
         12800, 4096, ["chat"], 99.0, "test", {"hf_gguf": "test.gguf"},
     )
     result = build_plan(
-        profile(128, (24, 8)),
+        profile(128, (4, 4)),
         [model],
         Policy(roles=["chat"], min_decode_tps=0),
     )
@@ -1340,6 +1342,7 @@ def test_oversized_llamacpp_cpu_fallback_clears_split_and_warns() -> None:
     assert service.backend == "llamacpp"
     assert service.n_gpu_layers == 0
     assert service.gpu_indices == []
+    assert service.tensor_split == ()
     assert service.launch.argv[service.launch.argv.index("-ngl") + 1] == "0"
     assert "--tensor-split" not in service.launch.argv
     warning = i18n.t("warn.gpu_layers_cpu_fallback", "en", service=service.name)
@@ -2242,3 +2245,67 @@ def test_moe_plan_round_trip_preserves_offload(tmp_path) -> None:
     assert service.memory.n_cpu_moe == original.n_cpu_moe
     assert service.memory.moe_layers == 24
     assert service.launch.argv == original.launch.argv
+
+
+def test_split_ratios_helper() -> None:
+    assert planner_core._split_ratios((24.0, 12.0)) == (2, 1)
+    assert planner_core._split_ratios((24.0, 24.0)) == (1, 1)
+    assert planner_core._split_ratios((23.9, 16.1)) == (3, 2)
+    assert planner_core._split_ratios((24.0, 0.0)) == (1, 1)
+    assert planner_core._split_ratios((30.0, 20.0, 10.0)) == (3, 2, 1)
+
+
+def test_tensor_split_proportional_to_gpu_budgets() -> None:
+    model = ModelSpec(
+        "oversized-llamacpp", "test", 40_000_000_000, 80, 32, 8, 128,
+        4096, 128, ["chat"], 99.0, "test", {"hf_gguf": "test.gguf"},
+    )
+    result = build_plan(
+        profile(128, (24, 8)),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert service.backend == "llamacpp"
+    assert service.gpu_indices == [0, 1]
+    assert service.tensor_split == (3, 1)
+    index = service.launch.argv.index("--tensor-split")
+    assert service.launch.argv[index + 1] == "3,1"
+    warning = i18n.t(
+        "warn.tensor_split_proportional", "en",
+        service=service.name, split="3,1",
+    )
+    assert warning in result.warnings
+
+
+def test_tensor_split_uniform_when_budgets_equal(tmp_path) -> None:
+    model = ModelSpec(
+        "oversized-llamacpp", "test", 40_000_000_000, 80, 32, 8, 128,
+        4096, 128, ["chat"], 99.0, "test", {"hf_gguf": "test.gguf"},
+    )
+    result = build_plan(
+        profile(128, (16, 16)),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert service.tensor_split == (1, 1)
+    index = service.launch.argv.index("--tensor-split")
+    assert service.launch.argv[index + 1] == "1,1"
+    assert not any("usable VRAM" in warning for warning in result.warnings)
+    path = tmp_path / "plan.json"
+    save_plan(result, path)
+    loaded = load_plan(path)
+    assert loaded.services[0].tensor_split == (1, 1)
+    assert loaded.services[0].launch.argv == service.launch.argv
+
+
+def test_benchmark_key_distinguishes_tensor_split() -> None:
+    base = benchmark_key(
+        "m", "q4_k_m", "llamacpp", "gpu0", 40, tensor_split=(1, 1)
+    )
+    split = benchmark_key(
+        "m", "q4_k_m", "llamacpp", "gpu0", 40, tensor_split=(2, 1)
+    )
+    assert split.endswith("|ts2-1")
+    assert base != split

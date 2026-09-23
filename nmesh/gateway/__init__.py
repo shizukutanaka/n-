@@ -886,7 +886,7 @@ class _PlanState:
             service.name: benchmark_key(
                 service.model_id, service.quant, service.backend, gpu,
                 service.n_gpu_layers, service.kv_quant, service.spec,
-                service.n_cpu_moe,
+                service.n_cpu_moe, service.tensor_split,
             )
             for service in plan.services
         }

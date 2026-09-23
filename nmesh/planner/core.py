@@ -254,6 +254,7 @@ class PlannedService:
     spec: str = "none"
     spec_draft: str = ""
     n_cpu_moe: int = 0
+    tensor_split: tuple[int, ...] = ()
 
 
 def _is_embed_only(value: ModelSpec | PlannedService) -> bool:
@@ -278,7 +279,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 3
+LAUNCH_REVISION = 4
 
 
 @dataclass(frozen=True)
@@ -483,6 +484,21 @@ def solve_moe_cpu_layers(memory: MemoryEstimate) -> int | None:
     if needed > memory.moe_layers:
         return None
     return needed
+
+
+def _split_ratios(budgets: Sequence[float]) -> tuple[int, ...]:
+    """Integer ``--tensor-split`` proportions matching usable per-GPU budgets.
+
+    llama.cpp normalizes the list, so emitting budget-proportional ratios
+    lets a larger card hold more layers; the uniform ``1,1,...`` split
+    forces the smallest card's share onto every GPU.
+    """
+    floor = min(budgets)
+    if floor <= 0:
+        return tuple(1 for _ in budgets)
+    ints = tuple(max(1, round(10 * value / floor)) for value in budgets)
+    divisor = math.gcd(*ints)
+    return tuple(value // divisor for value in ints)
 
 
 def _gpu_bandwidth(gpu: GPUInfo) -> float:
@@ -1682,7 +1698,12 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
             del argv[index:index + 2]
     elif service.backend == "llamacpp":
         if tensor_parallel > 1:
-            value = ",".join(["1"] * tensor_parallel)
+            parts = (
+                list(service.tensor_split)
+                if len(service.tensor_split) == tensor_parallel
+                else [1] * tensor_parallel
+            )
+            value = ",".join(str(part) for part in parts)
             supported = backend_flags is None or "--tensor-split" in backend_flags
             if supported and "--tensor-split" in argv:
                 argv[argv.index("--tensor-split") + 1] = value
@@ -1753,7 +1774,8 @@ def _cpu_llamacpp_service(
         gpu_devices=gpu_devices, language=language,
     )
     return replace(
-        service, n_gpu_layers=0, n_cpu_moe=0, memory=memory, launch=launch
+        service, n_gpu_layers=0, n_cpu_moe=0, memory=memory,
+        launch=launch, tensor_split=(),
     )
 
 
@@ -1847,7 +1869,17 @@ def _place_services(
         elif service.backend in {"llamacpp", "vllm"} and len(indices) > 1:
             assigned = indices
             tensor_parallel = len(indices)
-            placement_budget = min(remaining[index] for index in indices) * tensor_parallel
+            proportional = service.backend == "llamacpp"
+            ratios = (
+                _split_ratios([remaining[index] for index in indices])
+                if proportional
+                else tuple(1 for _ in indices)
+            )
+            placement_budget = (
+                sum(remaining[index] for index in indices)
+                if proportional
+                else min(remaining[index] for index in indices) * tensor_parallel
+            )
             reserve_split = True
             if (
                 service.backend == "llamacpp"
@@ -1883,14 +1915,31 @@ def _place_services(
                     else:
                         reserve_split = True
             if reserve_split:
-                committed = service.memory.gpu_bytes / tensor_parallel
-                for index in indices:
+                service = replace(service, tensor_split=ratios)
+                ratio_total = sum(ratios)
+                for position, index in enumerate(indices):
+                    committed = (
+                        service.memory.gpu_bytes * ratios[position] / ratio_total
+                    )
                     if is_swap:
                         new_reserved = max(swap_reserved[index], committed)
                         remaining[index] -= new_reserved - swap_reserved[index]
                         swap_reserved[index] = new_reserved
                     else:
                         remaining[index] -= committed
+            else:
+                service = replace(service, tensor_split=())
+            if (
+                reserve_split and proportional
+                and len(set(ratios)) > 1
+            ):
+                warnings.append(
+                    t(
+                        "warn.tensor_split_proportional", policy.lang,
+                        service=service.name,
+                        split=",".join(str(part) for part in ratios),
+                    )
+                )
         elif service.backend in {"ollama", "vllm", "mlx"}:
             total_bytes = service.memory.cpu_bytes + service.memory.gpu_bytes
             if ram_used + total_bytes <= ram_budget + 1:
@@ -3217,6 +3266,9 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             spec=str(sd.get("spec", "none")),
             spec_draft=str(sd.get("spec_draft", "")),
             n_cpu_moe=int(sd.get("n_cpu_moe", 0)),
+            tensor_split=tuple(
+                int(x) for x in sd.get("tensor_split", []) or ()
+            ),
         ))
     rd = data["routing"]
     if not isinstance(rd, dict):
