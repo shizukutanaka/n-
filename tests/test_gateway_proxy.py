@@ -1007,3 +1007,196 @@ def test_gateway_revive_failure_returns_503(monkeypatch) -> None:
     })
     assert response.status_code == 503
     assert "restart budget" in response.json()["error"]["message"]
+
+
+class _ResponsesUpstreamHandler(BaseHTTPRequestHandler):
+    request_body: ClassVar[dict[str, object]] = {}
+    path_seen: ClassVar[str] = ""
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.__class__.request_body = json.loads(self.rfile.read(length))
+        self.__class__.path_seen = self.path
+        self.send_response(200)
+        if not self.__class__.request_body.get("stream"):
+            body = json.dumps({
+                "model": "upstream-model",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "ok"},
+                    }
+                ],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 7},
+            }).encode()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        chunks = [
+            {"choices": [{"delta": {"role": "assistant", "content": "Hel"}}]},
+            {"choices": [{"delta": {"content": "lo"}}]},
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "get_time",
+                                        "arguments": '{"tz":',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": '"JST"}'}}
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            {"choices": [], "usage": {"prompt_tokens": 11, "completion_tokens": 9}},
+        ]
+        for chunk in chunks:
+            self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
+            self.wfile.flush()
+        self.wfile.write(b"data: [DONE]\n\n")
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def _responses_plan(backend: str, port: int) -> Plan:
+    model = ModelSpec("responses-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(plan.services[0], backend=backend, port=port)
+    return replace(plan, services=[service])
+
+
+def test_responses_translates_to_chat_completions_for_non_llamacpp() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _ResponsesUpstreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        plan = _responses_plan("vllm", upstream.server_address[1])
+        client = TestClient(create_app(plan))
+
+        stream = client.post("/v1/responses", json={
+            "model": "client-model", "stream": True,
+            "instructions": "be brief",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+                {"type": "function_call_output", "call_id": "call_0",
+                 "output": "3pm"},
+            ],
+            "max_output_tokens": 32,
+        })
+        assert stream.status_code == 200
+        assert _ResponsesUpstreamHandler.path_seen == "/v1/chat/completions"
+        body = _ResponsesUpstreamHandler.request_body
+        assert body["messages"][0] == {"role": "system", "content": "be brief"}
+        assert body["messages"][1] == {"role": "user", "content": "hello"}
+        assert body["messages"][2]["role"] == "tool"
+        assert body["messages"][2]["tool_call_id"] == "call_0"
+        assert body["max_tokens"] == 32
+        assert "input" not in body and "instructions" not in body
+        assert body["stream_options"] == {"include_usage": True}
+
+        assert "event: response.created" in stream.text
+        assert "event: response.output_text.delta" in stream.text
+        assert "event: response.function_call_arguments.delta" in stream.text
+        events = [
+            json.loads(line[6:])
+            for line in stream.text.splitlines()
+            if line.startswith("data: ") and line != "data: [DONE]"
+        ]
+        final = next(
+            item for item in events if item.get("type") == "response.completed"
+        )
+        response_obj = final["response"]
+        assert response_obj["status"] == "completed"
+        assert response_obj["model"] == "client-model"
+        messages = [
+            item for item in response_obj["output"] if item["type"] == "message"
+        ]
+        assert messages[0]["content"][0]["text"] == "Hello"
+        calls = [
+            item
+            for item in response_obj["output"]
+            if item["type"] == "function_call"
+        ]
+        assert calls[0]["name"] == "get_time"
+        assert calls[0]["call_id"] == "call_1"
+        assert calls[0]["arguments"] == '{"tz":"JST"}'
+        assert response_obj["usage"]["input_tokens"] == 11
+        assert response_obj["usage"]["output_tokens"] == 9
+        assert all(
+            item["sequence_number"] == index + 1
+            for index, item in enumerate(events)
+        )
+
+        nonstream = client.post("/v1/responses", json={"input": "hi"})
+        assert nonstream.status_code == 200
+        result = nonstream.json()
+        assert result["object"] == "response"
+        assert result["status"] == "completed"
+        assert result["output"][0]["type"] == "message"
+        assert result["output"][0]["content"][0]["text"] == "ok"
+        assert result["usage"]["input_tokens"] == 11
+        assert result["usage"]["output_tokens"] == 7
+        body = _ResponsesUpstreamHandler.request_body
+        assert body["messages"] == [{"role": "user", "content": "hi"}]
+        assert "input" not in body
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_responses_passes_through_for_llamacpp() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _ResponsesUpstreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        plan = _responses_plan("llamacpp", upstream.server_address[1])
+        client = TestClient(create_app(plan))
+
+        stream = client.post("/v1/responses", json={
+            "stream": True,
+            "input": [{"type": "message", "role": "user",
+                       "content": [{"type": "input_text", "text": "hello"}]}],
+        })
+        assert stream.status_code == 200
+        assert _ResponsesUpstreamHandler.path_seen == "/v1/responses"
+        body = _ResponsesUpstreamHandler.request_body
+        assert "input" in body and "messages" not in body
+        assert "event: response.created" not in stream.text
+        assert 'data: {"choices"' in stream.text
+
+        nonstream = client.post("/v1/responses", json={"input": "hi"})
+        assert nonstream.status_code == 200
+        assert "choices" in nonstream.json()
+        body = _ResponsesUpstreamHandler.request_body
+        assert body["input"] == "hi"
+    finally:
+        upstream.shutdown()
+        upstream.server_close()

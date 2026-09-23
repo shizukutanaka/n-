@@ -240,6 +240,34 @@ async def _unload_service(
     }
 
 
+def _responses_input_text(request: Mapping[str, object]) -> str:
+    parts: list[str] = []
+    instructions = request.get("instructions")
+    if isinstance(instructions, str) and instructions:
+        parts.append(instructions)
+    input_value = request.get("input")
+    if isinstance(input_value, str):
+        parts.append(input_value)
+    elif isinstance(input_value, list):
+        for item in input_value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, Mapping):
+                content = item.get("content")
+                if isinstance(content, str):
+                    parts.append(content)
+                elif isinstance(content, list):
+                    parts.extend(
+                        part.get("text", "")
+                        for part in content
+                        if isinstance(part, Mapping)
+                        and part.get("type")
+                        in {"input_text", "output_text", "text"}
+                        and isinstance(part.get("text"), str)
+                    )
+    return " ".join(parts)
+
+
 def _content(request: Mapping[str, object]) -> str:
     messages = _get(request, "messages", [])
     if isinstance(messages, list) and messages:
@@ -261,6 +289,8 @@ def _content(request: Mapping[str, object]) -> str:
                     )
                 )
         return " ".join(parts)
+    if "input" in request or "instructions" in request:
+        return _responses_input_text(request)
     prompt = _get(request, "prompt", "")
     if isinstance(prompt, str):
         return prompt
@@ -516,9 +546,486 @@ def _upstream_body(request: Mapping[str, object], service: PlannedService) -> di
     return body
 
 
+def _responses_to_openai(request: Mapping[str, object]) -> dict[str, object]:
+    # Backends without a native /v1/responses endpoint (everything except
+    # recent llama.cpp builds) are served through the chat completions shape.
+    def item_text(content: object) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                part.get("text", "")
+                for part in content
+                if isinstance(part, Mapping)
+                and part.get("type") in {"input_text", "output_text", "text"}
+                and isinstance(part.get("text"), str)
+            )
+        return ""
+
+    messages: list[dict[str, object]] = []
+    instructions = request.get("instructions")
+    if isinstance(instructions, str) and instructions:
+        messages.append({"role": "system", "content": instructions})
+    input_value = request.get("input")
+    if isinstance(input_value, str):
+        messages.append({"role": "user", "content": input_value})
+    elif isinstance(input_value, list):
+        for item in input_value:
+            if isinstance(item, str):
+                messages.append({"role": "user", "content": item})
+                continue
+            if not isinstance(item, Mapping):
+                continue
+            item_type = item.get("type", "message")
+            if item_type == "message":
+                role = item.get("role")
+                role = role if isinstance(role, str) and role else "user"
+                if role == "developer":
+                    role = "system"
+                messages.append(
+                    {"role": role, "content": item_text(item.get("content"))}
+                )
+            elif item_type == "function_call":
+                call_id = item.get("call_id") or item.get("id")
+                name = item.get("name")
+                arguments = item.get("arguments")
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": call_id if isinstance(call_id, str) else "",
+                                "type": "function",
+                                "function": {
+                                    "name": name if isinstance(name, str) else "",
+                                    "arguments": (
+                                        arguments
+                                        if isinstance(arguments, str)
+                                        else json.dumps(arguments)
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                )
+            elif item_type == "function_call_output":
+                output = item.get("output")
+                call_id = item.get("call_id") or item.get("id")
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": (
+                            call_id if isinstance(call_id, str) else ""
+                        ),
+                        "content": (
+                            output
+                            if isinstance(output, str)
+                            else json.dumps(output)
+                        ),
+                    }
+                )
+            # reasoning and other item kinds carry no chat-side equivalent.
+    body: dict[str, object] = {"messages": messages}
+    tools = request.get("tools")
+    if isinstance(tools, list):
+        converted: list[dict[str, object]] = []
+        for tool in tools:
+            if not isinstance(tool, Mapping) or tool.get("type") != "function":
+                continue
+            function: dict[str, object] = {
+                "name": tool.get("name"),
+                "description": tool.get("description"),
+                "parameters": tool.get("parameters"),
+            }
+            if "strict" in tool:
+                function["strict"] = tool["strict"]
+            converted.append({"type": "function", "function": function})
+        if converted:
+            body["tools"] = converted
+    tool_choice = request.get("tool_choice")
+    if isinstance(tool_choice, str) and tool_choice in {"auto", "required", "none"}:
+        body["tool_choice"] = tool_choice
+    elif isinstance(tool_choice, Mapping) and tool_choice.get("type") == "function":
+        name = tool_choice.get("name")
+        if isinstance(name, str):
+            body["tool_choice"] = {"type": "function", "function": {"name": name}}
+    passthrough = (
+        "max_output_tokens", "temperature", "top_p", "presence_penalty",
+        "frequency_penalty", "stream", "parallel_tool_calls", "user", "model",
+    )
+    for key in passthrough:
+        if key in request:
+            body[key] = request[key]
+    if "max_output_tokens" in body:
+        body["max_tokens"] = body.pop("max_output_tokens")
+    return body
+
+
+def _openai_to_responses(
+    data: Mapping[str, object], model: object
+) -> dict[str, object]:
+    output: list[dict[str, object]] = []
+    finish_reason = "stop"
+    choices = data.get("choices")
+    if (
+        isinstance(choices, list)
+        and choices
+        and isinstance(choices[0], Mapping)
+    ):
+        reason = choices[0].get("finish_reason")
+        if isinstance(reason, str):
+            finish_reason = reason
+        message = choices[0].get("message")
+    else:
+        message = None
+    if isinstance(message, Mapping):
+        content = message.get("content")
+        output.append(
+            {
+                "type": "message",
+                "id": f"msg_{secrets.token_hex(12)}",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": content if isinstance(content, str) else "",
+                        "annotations": [],
+                    }
+                ],
+            }
+        )
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for call in tool_calls:
+                if not isinstance(call, Mapping):
+                    continue
+                function = call.get("function")
+                function = function if isinstance(function, Mapping) else {}
+                call_id = call.get("id")
+                name = function.get("name")
+                arguments = function.get("arguments")
+                output.append(
+                    {
+                        "type": "function_call",
+                        "id": f"fc_{secrets.token_hex(12)}",
+                        "call_id": call_id if isinstance(call_id, str) else "",
+                        "name": name if isinstance(name, str) else "",
+                        "arguments": (
+                            arguments if isinstance(arguments, str) else ""
+                        ),
+                        "status": "completed",
+                    }
+                )
+    usage_in = data.get("usage")
+    usage_in = usage_in if isinstance(usage_in, Mapping) else {}
+    input_tokens = _upstream_int(usage_in.get("prompt_tokens")) or 0
+    output_tokens = _upstream_int(usage_in.get("completion_tokens")) or 0
+    created = data.get("created")
+    status = "incomplete" if finish_reason == "length" else "completed"
+    return {
+        "id": f"resp_{secrets.token_hex(12)}",
+        "object": "response",
+        "created_at": (
+            int(created)
+            if isinstance(created, (int, float)) and not isinstance(created, bool)
+            else int(time.time())
+        ),
+        "status": status,
+        "incomplete_details": (
+            None if status == "completed" else {"reason": "max_output_tokens"}
+        ),
+        "model": model,
+        "output": output,
+        "error": None,
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
+        "instructions": None,
+        "previous_response_id": None,
+        "store": False,
+        "truncation": "disabled",
+        "max_output_tokens": None,
+        "service_tier": "default",
+        "metadata": {},
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "reasoning": {"effort": None, "summary": None},
+        "text": {"format": {"type": "text"}},
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0},
+        },
+    }
+
+
+class _ResponsesStreamTranslator:
+    """Turn upstream chat-completion chunks into /v1/responses SSE frames."""
+
+    def __init__(self, model: object) -> None:
+        self._model = model
+        self._response_id = f"resp_{secrets.token_hex(12)}"
+        self._created = int(time.time())
+        self._sequence = 0
+        self._started = False
+        self._message_id = f"msg_{secrets.token_hex(12)}"
+        self._message_open = False
+        self._message_done = False
+        self._text: list[str] = []
+        self._finish_reason: str | None = None
+        self._usage: dict[str, object] | None = None
+        self._calls: dict[int, dict[str, object]] = {}
+        self._call_fragments: dict[int, list[str]] = {}
+        self._output_index = 0
+
+    def _frame(self, event: str, data: Mapping[str, object]) -> bytes:
+        self._sequence += 1
+        payload = json.dumps(
+            {"type": event, "sequence_number": self._sequence, **data},
+            separators=(",", ":"),
+        ).encode()
+        return b"event: " + event.encode() + b"\ndata: " + payload + b"\n\n"
+
+    def _response_shell(self) -> dict[str, object]:
+        return {
+            "id": self._response_id,
+            "object": "response",
+            "created_at": self._created,
+            "status": "in_progress",
+            "model": self._model,
+            "output": [],
+            "error": None,
+            "usage": None,
+        }
+
+    def _start(self) -> bytes:
+        if self._started:
+            return b""
+        self._started = True
+        shell = self._response_shell()
+        return (
+            self._frame("response.created", {"response": shell})
+            + self._frame("response.in_progress", {"response": shell})
+        )
+
+    def _open_message(self) -> bytes:
+        if self._message_open:
+            return b""
+        self._message_open = True
+        item = {
+            "type": "message",
+            "id": self._message_id,
+            "status": "in_progress",
+            "role": "assistant",
+            "content": [],
+        }
+        part = {"type": "output_text", "text": "", "annotations": []}
+        return (
+            self._frame(
+                "response.output_item.added",
+                {"output_index": 0, "item": item},
+            )
+            + self._frame(
+                "response.content_part.added",
+                {
+                    "item_id": self._message_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "part": part,
+                },
+            )
+        )
+
+    def _close_message(self) -> bytes:
+        if not self._message_open or self._message_done:
+            return b""
+        self._message_done = True
+        text = "".join(self._text)
+        item = {
+            "type": "message",
+            "id": self._message_id,
+            "status": "completed",
+            "role": "assistant",
+            "content": [
+                {"type": "output_text", "text": text, "annotations": []}
+            ],
+        }
+        part = {"type": "output_text", "text": text, "annotations": []}
+        return (
+            self._frame(
+                "response.output_text.done",
+                {
+                    "item_id": self._message_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "text": text,
+                },
+            )
+            + self._frame(
+                "response.content_part.done",
+                {
+                    "item_id": self._message_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "part": part,
+                },
+            )
+            + self._frame(
+                "response.output_item.done",
+                {"output_index": 0, "item": item},
+            )
+        )
+
+    def feed(self, payload: Mapping[str, object]) -> bytes:
+        out = self._start()
+        choices = payload.get("choices")
+        usage = payload.get("usage")
+        if isinstance(usage, Mapping):
+            self._usage = dict(usage)
+        if not isinstance(choices, list) or not choices:
+            return out
+        delta = choices[0].get("delta") if isinstance(choices[0], Mapping) else None
+        if not isinstance(delta, Mapping):
+            delta = {}
+        content = delta.get("content")
+        if isinstance(content, str) and content:
+            out += self._open_message()
+            self._text.append(content)
+            out += self._frame(
+                "response.output_text.delta",
+                {
+                    "item_id": self._message_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": content,
+                },
+            )
+        tool_calls = delta.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for call in tool_calls:
+                if not isinstance(call, Mapping):
+                    continue
+                index = call.get("index")
+                index = index if isinstance(index, int) else len(self._calls)
+                function = call.get("function")
+                function = function if isinstance(function, Mapping) else {}
+                state = self._calls.get(index)
+                if state is None:
+                    self._output_index += 1
+                    call_id = call.get("id")
+                    name = function.get("name")
+                    state = {
+                        "item_id": f"fc_{secrets.token_hex(12)}",
+                        "call_id": call_id if isinstance(call_id, str) else "",
+                        "name": name if isinstance(name, str) else "",
+                        "output_index": self._output_index,
+                    }
+                    self._calls[index] = state
+                    self._call_fragments[index] = []
+                    item = {
+                        "type": "function_call",
+                        "id": state["item_id"],
+                        "call_id": state["call_id"],
+                        "name": state["name"],
+                        "arguments": "",
+                        "status": "in_progress",
+                    }
+                    out += self._frame(
+                        "response.output_item.added",
+                        {
+                            "output_index": state["output_index"],
+                            "item": item,
+                        },
+                    )
+                fragment = (
+                    function.get("arguments")
+                    if isinstance(function, Mapping)
+                    else None
+                )
+                if isinstance(fragment, str) and fragment:
+                    self._call_fragments[index].append(fragment)
+                    out += self._frame(
+                        "response.function_call_arguments.delta",
+                        {
+                            "item_id": state["item_id"],
+                            "output_index": state["output_index"],
+                            "delta": fragment,
+                        },
+                    )
+        reason = choices[0].get("finish_reason")
+        if isinstance(reason, str):
+            self._finish_reason = reason
+            out += self._close_message()
+            for index in sorted(self._calls):
+                state = self._calls[index]
+                arguments = "".join(self._call_fragments[index])
+                out += self._frame(
+                    "response.function_call_arguments.done",
+                    {
+                        "item_id": state["item_id"],
+                        "output_index": state["output_index"],
+                        "arguments": arguments,
+                    },
+                )
+                item = {
+                    "type": "function_call",
+                    "id": state["item_id"],
+                    "call_id": state["call_id"],
+                    "name": state["name"],
+                    "arguments": arguments,
+                    "status": "completed",
+                }
+                out += self._frame(
+                    "response.output_item.done",
+                    {
+                        "output_index": state["output_index"],
+                        "item": item,
+                    },
+                )
+        return out
+
+    def finish(self) -> bytes:
+        if not self._started:
+            return b""
+        out = self._close_message()
+        choice: dict[str, object] = {"finish_reason": self._finish_reason or "stop"}
+        data: dict[str, object] = {"choices": [choice]}
+        text = "".join(self._text)
+        message: dict[str, object] = {}
+        if text or self._message_done:
+            message["content"] = text
+        if self._calls:
+            tool_calls = []
+            for index in sorted(self._calls):
+                state = self._calls[index]
+                tool_calls.append(
+                    {
+                        "id": state["call_id"],
+                        "type": "function",
+                        "function": {
+                            "name": state["name"],
+                            "arguments": "".join(self._call_fragments[index]),
+                        },
+                    }
+                )
+            message["tool_calls"] = tool_calls
+        if message:
+            choice["message"] = message
+        if self._usage:
+            data["usage"] = self._usage
+        response = _openai_to_responses(data, self._model)
+        response["id"] = self._response_id
+        response["created_at"] = self._created
+        out += self._frame("response.completed", {"response": response})
+        return out + b"data: [DONE]\n\n"
+
+
 def _reserved_tokens(request: Mapping[str, object]) -> int:
     values = [0]
-    for key in ("max_tokens", "max_completion_tokens"):
+    for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
         value = request.get(key)
         if not isinstance(value, (int, float, str)) or isinstance(value, bool):
             continue
@@ -1149,7 +1656,8 @@ def create_app(
     async def proxy(request: dict[str, object], service: PlannedService,
                     plan_snapshot: Plan, telemetry_keys: Mapping[str, str],
                     path: str, instrument: bool = True,
-                    limit_slots: bool = False) -> object:
+                    limit_slots: bool = False,
+                    responses_translate: bool = False) -> object:
         started = time.perf_counter()
         last_use.touch(service.name)
         slot_token: object | None = None
@@ -1216,8 +1724,12 @@ def create_app(
                     except Exception as error:
                         jobs.finish(job, ok=False, detail="ensure_failed")
                         raise HTTPException(status_code=503, detail=str(error)) from error
-        body = _upstream_body(request, service)
-        url = f"{_base_url(service)}{path}"
+        upstream_path = "/v1/chat/completions" if responses_translate else path
+        body = _upstream_body(
+            _responses_to_openai(request) if responses_translate else request,
+            service,
+        )
+        url = f"{_base_url(service)}{upstream_path}"
         embedding_cap = (
             plan_state.embed_input_caps.get((
                 service.model_id.casefold(),
@@ -1236,7 +1748,10 @@ def create_app(
                 isinstance(stream_options, Mapping)
                 and bool(stream_options.get("include_usage"))
             )
-            if service.backend == "llamacpp" and not path.startswith("/v1/messages"):
+            if responses_translate or (
+                service.backend == "llamacpp"
+                and not path.startswith("/v1/messages")
+            ):
                 upstream_stream_options = (
                     dict(stream_options) if isinstance(stream_options, Mapping) else {}
                 )
@@ -1252,7 +1767,7 @@ def create_app(
                     except Exception as error:
                         raise HTTPException(status_code=502, detail=str(error)) from error
                     upstream_request = client.build_request(
-                        "POST", f"{_base_url(service)}{path}", json=body
+                        "POST", f"{_base_url(service)}{upstream_path}", json=body
                     )
                     upstream = await client.send(upstream_request, stream=True)
             except HTTPException:
@@ -1302,6 +1817,11 @@ def create_app(
                                 media_type=upstream.headers.get("content-type"))
 
             stream_completed = False
+            translator = (
+                _ResponsesStreamTranslator(request.get("model", service.model_id))
+                if responses_translate
+                else None
+            )
 
             async def stream() -> AsyncIterator[bytes]:
                 nonlocal stream_completed
@@ -1323,11 +1843,30 @@ def create_app(
                             content = content[:-1]
                             ending = b"\r\n"
                     if not content.startswith(b"data: ") or content == b"data: [DONE]":
+                        if responses_translate and content == b"data: [DONE]":
+                            assert translator is not None
+                            return translator.finish()
                         return line
                     try:
                         payload = json.loads(content[6:])
                     except json.JSONDecodeError:
                         payload = None
+                    if responses_translate:
+                        assert translator is not None
+                        if isinstance(payload, dict):
+                            candidate_usage = payload.get("usage")
+                            candidate_timings = payload.get("timings")
+                            if isinstance(candidate_usage, dict):
+                                usage = candidate_usage
+                            if isinstance(candidate_timings, dict):
+                                timings = candidate_timings
+                            if isinstance(payload.get("choices"), list) and payload["choices"]:
+                                now = time.perf_counter()
+                                tokens += 1
+                                first_line_time = first_line_time or now
+                                last_line_time = now
+                            return translator.feed(payload) or None
+                        return line
                     if not isinstance(payload, dict):
                         now = time.perf_counter()
                         tokens += 1
@@ -1386,6 +1925,10 @@ def create_app(
                         output = transform(buffer)
                         if output is not None:
                             yield output
+                    if responses_translate and translator is not None:
+                        tail = translator.finish()
+                        if tail:
+                            yield tail
                     stream_completed = True
                 except httpx.HTTPError as error:
                     raise HTTPException(status_code=502, detail=str(error)) from error
@@ -1623,6 +2166,10 @@ def create_app(
                 jobs.finish(job, ok=False, detail=str(sys.exc_info()[1]))
         if isinstance(data, dict) and "model" in data:
             data["model"] = request.get("model", service.model_id)
+        if responses_translate and isinstance(data, dict) and "error" not in data:
+            data = _openai_to_responses(
+                data, request.get("model", service.model_id)
+            )
         embedding_headers: dict[str, str] = {}
         embedding_chunk_headers: dict[str, str] = {}
         if (
@@ -2088,6 +2635,20 @@ def create_app(
         return await proxy(
             request, service, selected, telemetry_keys,
             "/v1/messages/count_tokens", instrument=False,
+        )
+
+    @app.post("/v1/responses")
+    async def responses_api(request: dict[str, object]) -> object:
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
+        token_hint = await _routing_token_hint(request, selected)
+        service = _service(selected, route(request, selected, token_hint=token_hint))
+        return await proxy(
+            request, service, selected, telemetry_keys, "/v1/responses",
+            limit_slots=True,
+            # llama.cpp serves /v1/responses natively; other backends get the
+            # request served through a chat-completions translation.
+            responses_translate=service.backend != "llamacpp",
         )
 
     @app.post("/v1/embeddings")
