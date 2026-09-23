@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 import os
+import shutil
 import socket
 import statistics
 import subprocess
@@ -375,6 +376,23 @@ def _load_profile(path: str) -> HardwareProfile:
         raise ValueError(str(error)) from error
 
 
+def _nmesh_home_disk() -> tuple[Path, int, int] | None:
+    """Free/total bytes on the filesystem holding NMESH_HOME.
+
+    NMESH_HOME may not exist yet (first run) — disk_usage fails on a missing
+    path, so walk up to the nearest existing ancestor.
+    """
+    home = nmesh_home()
+    candidate = home if home.exists() else home.parent
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    try:
+        usage = shutil.disk_usage(candidate)
+    except OSError:
+        return None
+    return candidate, usage.free, usage.total
+
+
 def _doctor(as_json: bool, profile_path: str | None = None) -> int:
     try:
         profile = _load_profile(profile_path) if profile_path else detect_hardware()
@@ -391,10 +409,28 @@ def _doctor(as_json: bool, profile_path: str | None = None) -> int:
         for service in selected.services
     ] if selected is not None else []
     localized_warnings = _profile_warnings(profile, language)
+    disk = _nmesh_home_disk()
+    disk_low = disk is not None and disk[1] < 5 * (1 << 30)
+    if disk_low:
+        assert disk is not None
+        localized_warnings = localized_warnings + [
+            i18n.t(
+                "warn.disk_low",
+                language,
+                path=str(disk[0]),
+                free=_bytes(disk[1]),
+            )
+        ]
     if as_json:
         data = asdict(profile)
         data["warnings"] = localized_warnings
         data["free_budgets"] = {"vram_bytes": free_vram, "ram_bytes": free_ram}
+        if disk is not None:
+            data["disk"] = {
+                "path": str(disk[0]),
+                "free_bytes": disk[1],
+                "total_bytes": disk[2],
+            }
         data["selected_models"] = selected_models
         if profile_path:
             data["simulated"] = True
@@ -421,6 +457,12 @@ def _doctor(as_json: bool, profile_path: str | None = None) -> int:
         )
     table.add_row("Free budget VRAM", _bytes(free_vram))
     table.add_row("Free budget RAM", _bytes(free_ram))
+    if disk is not None:
+        table.add_row(
+            "NMESH_HOME disk",
+            f"{_bytes(disk[2])} / {_bytes(disk[1])} "
+            f"{i18n.t('label.free', language)} ({disk[0]})",
+        )
     _console().print(table)
     backend = Table(title=i18n.t("label.backends", language))
     backend.add_column(i18n.t("label.backend", language))

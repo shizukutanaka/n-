@@ -1810,3 +1810,37 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_doctor_reports_disk_usage(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """doctor surfaces free space on the NMESH_HOME filesystem — model
+    artifacts are several GB each, so exhaustion otherwise shows up only
+    as a mid-download failure."""
+    monkeypatch.setattr(cli, "detect_hardware", lambda: profile(64, (24,)))
+    monkeypatch.setattr(cli, "load_plan", lambda: None)
+    (tmp_path / "home").mkdir()
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path / "home"))
+    assert cli._doctor(True) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["disk"]["free_bytes"] > 0
+    assert data["disk"]["total_bytes"] >= data["disk"]["free_bytes"]
+    assert data["disk"]["path"].endswith("home")
+
+
+def test_doctor_warns_on_low_disk(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """Below the artifact-scale floor doctor names the mount and the free
+    bytes instead of letting `nmesh up` fail partway through a download."""
+    monkeypatch.setattr(cli, "detect_hardware", lambda: profile(8))
+    monkeypatch.setattr(cli, "load_plan", lambda: None)
+    monkeypatch.setattr(
+        cli, "_nmesh_home_disk",
+        lambda: (tmp_path / "home", 1024, 1024 * 1024),
+    )
+    assert cli._doctor(False) == 0
+    out = capsys.readouterr().out
+    assert "Low disk space" in out
+    assert "home" in out
