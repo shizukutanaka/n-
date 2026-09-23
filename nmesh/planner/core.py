@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -255,6 +256,7 @@ class PlannedService:
     spec_draft: str = ""
     n_cpu_moe: int = 0
     tensor_split: tuple[int, ...] = ()
+    sleep_mode: bool = False
 
 
 def _is_embed_only(value: ModelSpec | PlannedService) -> bool:
@@ -279,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 4
+LAUNCH_REVISION = 5
 
 
 @dataclass(frozen=True)
@@ -2317,6 +2319,60 @@ def _rewrite_launch(
     return replace(service.launch, argv=argv)
 
 
+_VLLM_SLEEP_MIN_VERSION = (0, 9)
+
+
+def _vllm_supports_sleep(profile: HardwareProfile) -> bool:
+    """True when the probed vLLM advertises sleep mode (>= 0.9). The version
+    string comes from `vllm --version`; an absent or unparseable value is
+    treated as unsupported so a too-old engine never sees the flag."""
+    version = profile.available_backends.get("vllm") or ""
+    match = re.search(r"(\d+)\.(\d+)", version)
+    return match is not None and (
+        int(match.group(1)), int(match.group(2))
+    ) >= _VLLM_SLEEP_MIN_VERSION
+
+
+def _enable_vllm_sleep_mode(
+    services: list[PlannedService],
+    profile: HardwareProfile,
+    swap_group: Sequence[str],
+    warnings: list[str],
+    language: str,
+) -> list[PlannedService]:
+    """Give non-resident vLLM services `--enable-sleep-mode` so a swap switch
+    parks the engine (weights to CPU RAM, VRAM freed) instead of killing and
+    cold-reloading it. Only swap-group members qualify — resident services
+    gain nothing and the dev-mode endpoints stay off their sockets. Sleep
+    support needs vLLM >= 0.9; older builds keep the kill-and-restart path.
+    """
+    swap_names = set(swap_group)
+    supported = _vllm_supports_sleep(profile)
+    result: list[PlannedService] = []
+    for service in services:
+        if service.backend != "vllm" or service.name not in swap_names:
+            result.append(service)
+            continue
+        if not supported:
+            warnings.append(t(
+                "warn.vllm_sleep_unsupported", language,
+                service=service.name,
+                version=profile.available_backends.get("vllm") or "?",
+            ))
+            result.append(service)
+            continue
+        result.append(replace(
+            service,
+            sleep_mode=True,
+            launch=replace(
+                service.launch,
+                argv=[*service.launch.argv, "--enable-sleep-mode"],
+                env={**service.launch.env, "VLLM_SERVER_DEV_MODE": "1"},
+            ),
+        ))
+    return result
+
+
 def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                policy: Policy | None = None,
                bench_cache: Mapping[object, float] | None = None,
@@ -2783,6 +2839,9 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         ))
     services = _place_services(services, profile, selected, swap_group, warnings)
     services = _assign_slots(services, profile, selected, swap_group, warnings)
+    services = _enable_vllm_sleep_mode(
+        services, profile, swap_group, warnings, selected.lang
+    )
     selected_unmeasured: set[str] = set()
     for service in services:
         if service.model_id.casefold() in requested_model_ids:
@@ -3269,6 +3328,7 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             tensor_split=tuple(
                 int(x) for x in sd.get("tensor_split", []) or ()
             ),
+            sleep_mode=bool(sd.get("sleep_mode", False)),
         ))
     rd = data["routing"]
     if not isinstance(rd, dict):
@@ -3314,6 +3374,8 @@ def save_plan(plan: Plan, path: Path | None = None) -> Path:
                 service_payload.pop("spec", None)
             if service_payload.get("spec_draft") == "":
                 service_payload.pop("spec_draft", None)
+            if service_payload.get("sleep_mode") is False:
+                service_payload.pop("sleep_mode", None)
         temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(temporary, target)
     except OSError:

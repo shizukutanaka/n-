@@ -1252,6 +1252,12 @@ def _runtime(args: argparse.Namespace) -> int:
                         i18n.t("label.service_idle", language,
                                service=item.get("service"))
                     )
+            for item in result.services:
+                if item.get("sleeping"):
+                    _console().print(
+                        i18n.t("label.service_sleeping", language,
+                               service=item.get("service"))
+                    )
         if args.command == "up" and args.detach and gateway_log is not None:
             _console().print(
                 i18n.t("label.gateway_log", language, path=gateway_log)
