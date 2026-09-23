@@ -494,7 +494,9 @@ def test_gateway_telemetry_derives_prompt_depth_from_llamacpp_timings(
         upstream.server_close()
 
 
-def test_non_llamacpp_stream_does_not_inject_usage(monkeypatch) -> None:
+def test_non_usage_backend_stream_does_not_inject_usage(monkeypatch) -> None:
+    """Backends outside _STREAM_USAGE_BACKENDS (mlx: stream_options support
+    unverified upstream) must receive the request body untouched."""
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
     thread = threading.Thread(target=upstream.serve_forever, daemon=True)
     thread.start()
@@ -508,7 +510,7 @@ def test_non_llamacpp_stream_does_not_inject_usage(monkeypatch) -> None:
         model = ModelSpec("backend-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
                           4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
         plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
-        for backend in ("ollama", "vllm"):
+        for backend in ("mlx",):
             service = replace(plan.services[0], backend=backend)
             client = TestClient(create_app(replace(plan, services=[service])))
             response = client.post("/v1/chat/completions", json={
@@ -1007,3 +1009,39 @@ def test_gateway_revive_failure_returns_503(monkeypatch) -> None:
     })
     assert response.status_code == 503
     assert "restart budget" in response.json()["error"]["message"]
+
+
+def test_gateway_injects_usage_for_vllm_and_ollama_streams(monkeypatch) -> None:
+    """vllm/ollama support stream_options.include_usage (OpenAI spec), so the
+    gateway injects it like llamacpp and records exact decode telemetry."""
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UsageHandler)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    monkeypatch.setattr(
+        gateway_module, "_base_url",
+        lambda service: f"http://127.0.0.1:{upstream.server_address[1]}",
+    )
+    samples = []
+    monkeypatch.setattr(gateway_module, "record_telemetry", samples.append)
+    try:
+        model = ModelSpec("usage-backend-model", "test", 500_000_000, 24, 16, 2,
+                          64, 1024, 4096, ["chat"], 80.0, "test",
+                          {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        for backend in ("vllm", "ollama"):
+            _UsageHandler.request_body = {}
+            service = replace(plan.services[0], backend=backend)
+            client = TestClient(create_app(replace(plan, services=[service])))
+            response = client.post("/v1/chat/completions", json={
+                "model": "client-model", "stream": True,
+                "messages": [{"role": "user", "content": "hello"}],
+            })
+            assert response.status_code == 200
+            assert _UsageHandler.request_body["stream_options"] == {
+                "include_usage": True,
+            }
+            assert samples[-1].approximate is False
+            assert samples[-1].completion_tokens == 17
+    finally:
+        _UsageHandler.request_body = {}
+        upstream.shutdown()
+        upstream.server_close()
