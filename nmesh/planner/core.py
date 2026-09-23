@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -1719,8 +1719,23 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
                     warnings.append(
                         t("warn.tensor_split_unsupported", language)
                     )
+            if supported:
+                # llama.cpp defaults --main-gpu (output layer + small ops)
+                # to the first visible device; with a non-uniform split the
+                # card holding the largest share is the better owner.
+                main = parts.index(max(parts))
+                if "--main-gpu" in argv:
+                    index = argv.index("--main-gpu")
+                    del argv[index:index + 2]
+                if main != 0 and (
+                    backend_flags is None or "--main-gpu" in backend_flags
+                ):
+                    argv += ["--main-gpu", str(main)]
         elif "--tensor-split" in argv:
             index = argv.index("--tensor-split")
+            del argv[index:index + 2]
+        if tensor_parallel <= 1 and "--main-gpu" in argv:
+            index = argv.index("--main-gpu")
             del argv[index:index + 2]
         if "--n-cpu-moe" in argv:
             index = argv.index("--n-cpu-moe")

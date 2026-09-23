@@ -2300,6 +2300,53 @@ def test_tensor_split_uniform_when_budgets_equal(tmp_path) -> None:
     assert loaded.services[0].launch.argv == service.launch.argv
 
 
+def test_main_gpu_follows_largest_split_share() -> None:
+    model = ModelSpec(
+        "oversized-llamacpp", "test", 40_000_000_000, 80, 32, 8, 128,
+        4096, 128, ["chat"], 99.0, "test", {"hf_gguf": "test.gguf"},
+    )
+    result = build_plan(
+        profile(128, (8, 24)),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert service.tensor_split == (1, 3)
+    index = service.launch.argv.index("--main-gpu")
+    assert service.launch.argv[index + 1] == "1"
+
+
+def test_main_gpu_omitted_for_default_and_uniform_splits() -> None:
+    model = ModelSpec(
+        "oversized-llamacpp", "test", 40_000_000_000, 80, 32, 8, 128,
+        4096, 128, ["chat"], 99.0, "test", {"hf_gguf": "test.gguf"},
+    )
+    # Largest share already sits on device 0: llama.cpp's default main
+    # GPU is correct, so the flag is not emitted.
+    result = build_plan(
+        profile(128, (24, 8)),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert result.services[0].tensor_split == (3, 1)
+    assert "--main-gpu" not in result.services[0].launch.argv
+
+
+def test_main_gpu_not_emitted_when_flag_probe_lacks_it() -> None:
+    model = ModelSpec(
+        "oversized-llamacpp", "test", 40_000_000_000, 80, 32, 8, 128,
+        4096, 128, ["chat"], 99.0, "test", {"hf_gguf": "test.gguf"},
+    )
+    machine = replace(
+        profile(128, (8, 24)),
+        backend_flags={"llamacpp": ("--tensor-split", "-ngl")},
+    )
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert "--main-gpu" not in result.services[0].launch.argv
+
+
 def test_benchmark_key_distinguishes_tensor_split() -> None:
     base = benchmark_key(
         "m", "q4_k_m", "llamacpp", "gpu0", 40, tensor_split=(1, 1)
