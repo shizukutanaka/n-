@@ -279,7 +279,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 4
+LAUNCH_REVISION = 5
 
 
 @dataclass(frozen=True)
@@ -750,6 +750,16 @@ def _launch(
             elif warnings is not None:
                 warnings.append(
                     t("warn.cache_reuse_unsupported", language, model=model.id)
+                )
+        if (
+            backend == "llamacpp" and model.jinja
+            and not embed_only and not rerank_only
+        ):
+            if not known or "--jinja" in flags:
+                argv.append("--jinja")
+            elif warnings is not None:
+                warnings.append(
+                    t("warn.jinja_unsupported", language, model=model.id)
                 )
         if (
             backend == "llamacpp" and context_shift

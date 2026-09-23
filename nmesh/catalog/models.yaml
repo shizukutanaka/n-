@@ -478,6 +478,9 @@
   active_params: 3600000000
   moe_expert_params: 19110297600
   n_moe_layers: 24
+  # gpt-oss answers in harmony format; llama.cpp only applies it under
+  # --jinja (upstream recommended args: --jinja -fa).
+  jinja: true
   max_context: 131072
   roles: [chat, code, tool]
   quality: 78
@@ -504,6 +507,7 @@
   active_params: 5100000000
   moe_expert_params: 114661785600
   n_moe_layers: 36
+  jinja: true
   max_context: 131072
   roles: [chat, code, tool]
   quality: 88

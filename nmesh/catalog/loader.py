@@ -37,6 +37,9 @@ class ModelSpec:
     active_params: int = 0
     moe_expert_params: int = 0
     n_moe_layers: int = 0
+    # Whether the model's chat format needs llama.cpp --jinja (e.g.
+    # gpt-oss harmony — without it the server mishandles templating).
+    jinja: bool = False
 
 
 def _model_from_mapping(item: object) -> ModelSpec | None:
@@ -98,6 +101,7 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
             active_params=int(item.get("active_params", 0)),
             moe_expert_params=int(item.get("moe_expert_params", 0)),
             n_moe_layers=int(item.get("n_moe_layers", 0)),
+            jinja=bool(item.get("jinja", False)),
         )
     except (TypeError, ValueError):
         return None

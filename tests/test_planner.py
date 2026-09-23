@@ -2309,3 +2309,47 @@ def test_benchmark_key_distinguishes_tensor_split() -> None:
     )
     assert split.endswith("|ts2-1")
     assert base != split
+
+
+def test_jinja_flag_emitted_for_gpt_oss(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "gpt-oss-20b")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={
+            "llamacpp": ("--parallel", "-ngl", "--jinja"),
+        },
+    )
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert "--jinja" in result.services[0].launch.argv
+
+
+def test_jinja_flag_omitted_or_warns(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "gpt-oss-20b")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl")},
+    )
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert "--jinja" not in result.services[0].launch.argv
+    assert any("--jinja" in warning for warning in result.warnings)
+
+    plain = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    result = build_plan(
+        replace(
+            profile(64, (24,)),
+            backend_flags={
+                "llamacpp": ("--parallel", "-ngl", "--jinja"),
+            },
+        ),
+        [plain],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert "--jinja" not in result.services[0].launch.argv
