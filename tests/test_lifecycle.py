@@ -1810,3 +1810,41 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_down_signals_all_services_before_waiting(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """down() SIGTERMs every process before waiting on any — shutdown time
+    tracks the slowest exit rather than the sum of sequential waits."""
+    ops: list[str] = []
+
+    class SlowProc:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.pid = 9000 + len(ops)
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            ops.append(f"term:{self.name}")
+
+        def kill(self) -> None:
+            ops.append(f"kill:{self.name}")
+
+        def wait(self, timeout: float | None = None) -> int:
+            ops.append(f"wait:{self.name}")
+            return 0
+
+    monkeypatch.setattr(supervisor_module, "load_plan", lambda: None)
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json",
+        terminator=lambda _pid: None,
+    )
+    supervisor.processes["a"] = SlowProc("a")
+    supervisor.processes["b"] = SlowProc("b")
+
+    supervisor.down()
+
+    assert ops == ["term:a", "term:b", "wait:a", "wait:b"]

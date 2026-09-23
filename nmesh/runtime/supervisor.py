@@ -1289,6 +1289,7 @@ class Supervisor:
                 if isinstance(pid, int) and not isinstance(pid, bool):
                     self._terminator(pid)
                     report(name, record)
+            signaled: list[tuple[str, dict[str, object], ProcessLike]] = []
             for name, process in list(self.processes.items()):
                 report_fields: dict[str, object] = {"pid": process.pid}
                 planned = (
@@ -1318,6 +1319,10 @@ class Supervisor:
                         os.killpg(process.pid, signal.SIGTERM)
                     except OSError:
                         process.terminate()
+                signaled.append((name, report_fields, process))
+            # SIGTERM every service before waiting on any: shutdown time
+            # tracks the slowest exit rather than the sum of all exits.
+            for name, report_fields, process in signaled:
                 try:
                     process.wait(timeout=10)
                 except (subprocess.TimeoutExpired, TimeoutError):
