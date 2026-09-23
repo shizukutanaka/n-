@@ -2309,3 +2309,13 @@ def test_benchmark_key_distinguishes_tensor_split() -> None:
     )
     assert split.endswith("|ts2-1")
     assert base != split
+def test_glm45air_catalog_moe_anatomy(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "glm-4.5-air")
+    assert model.active_params == 12_000_000_000
+    assert (model.kv_layers, model.n_moe_layers) == (46, 45)
+    estimate = estimate_memory(model, "q4_k_m", 8192)
+    # 128 routed experts x 3 tensors x 4096x1408 params on 45 MoE layers
+    # (zai-org/GLM-4.5-Air config.json).
+    assert estimate.moe_expert_bytes_per_layer == pytest.approx(
+        99_656_663_040 / 45 * estimate.weight_bytes / 106_000_000_000
+    )

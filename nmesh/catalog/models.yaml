@@ -513,6 +513,32 @@
     ollama: "gpt-oss:120b"
     hf_gguf: "ggml-org/gpt-oss-120b-GGUF"
     hf: "openai/gpt-oss-120b"
+- id: glm-4.5-air
+  family: glm4-moe
+  params: 106000000000
+  n_layers: 46
+  n_heads: 96
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 151552
+  head_layout: separate
+  kv_layers: 46
+  # MoE on the last 45 of 46 layers (first_k_dense_replace=1): 128 routed
+  # experts (3x4096x1408 params each) + 1 shared expert, top-8 routed —
+  # 12B active of 106B total (zai-org/GLM-4.5-Air config.json).
+  active_params: 12000000000
+  moe_expert_params: 99656663040
+  n_moe_layers: 45
+  max_context: 131072
+  roles: [chat, code, tool]
+  quality: 86
+  license: mit
+  languages: [en, zh]
+  sources:
+    ollama: "glm-4.5-air"
+    hf_gguf: "ggml-org/GLM-4.5-Air-GGUF"
+    hf: "zai-org/GLM-4.5-Air"
 - id: nemotron-3.5-lightning-30b
   family: nemotron-h
   params: 30000000000
