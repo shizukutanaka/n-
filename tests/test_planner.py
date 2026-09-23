@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -1613,6 +1614,61 @@ def test_vllm_slots_and_total_vram_fraction() -> None:
     assert fraction == round(
         min(0.95, max(0.10, service.memory.gpu_bytes / total_vram)), 3
     )
+
+
+def test_vllm_heterogeneous_multi_gpu_utilization_bounds_small_card() -> None:
+    # --gpu-memory-utilization applies per TP worker against each card's own
+    # total, so on heterogeneous cards the value must be bound by the
+    # smallest card — the old sum-based value emitted ~0.68, claiming only
+    # ~33GB on the 48GB card vs each worker's ~44GB share → startup OOM.
+    model = ModelSpec(
+        "hetero", "test", 105_000_000_000, 100, 64, 8, 128,
+        12800, 4096, ["chat"], 99.0, "test", {"hf": "test/model"},
+    )
+    result = build_plan(
+        profile(128, (80, 48), os_name="linux"),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0, parallel_slots=1),
+    )
+    service = result.services[0]
+    assert service.backend == "vllm"
+    assert len(service.gpu_indices) == 2
+    argv = service.launch.argv
+    fraction = float(argv[argv.index("--gpu-memory-utilization") + 1])
+    totals = [
+        gpu.total_vram_bytes for gpu in result.profile.gpus
+        if gpu.index in service.gpu_indices
+    ]
+    per_gpu = service.memory.gpu_bytes / len(service.gpu_indices)
+    expected = min(
+        0.95,
+        math.ceil(min(0.95, max(0.10, per_gpu / min(totals))) * 1000) / 1000,
+    )
+    assert fraction == expected
+    assert fraction * min(totals) >= per_gpu
+
+
+def test_vllm_tp_rejected_when_equal_share_cannot_bind_small_card() -> None:
+    # 150B needs ~112GiB: no single card fits, and an equal TP share
+    # (~56GiB) exceeds the 48GB card's claimable pool (0.95 × 48GB). The
+    # planner must not commit an equal split there — the service falls
+    # back instead of launching into a guaranteed OOM.
+    model = ModelSpec(
+        "too-big", "test", 150_000_000_000, 100, 64, 8, 128,
+        12800, 4096, ["chat"], 99.0, "test", {"hf": "test/model"},
+    )
+    result = build_plan(
+        profile(128, (80, 48), os_name="linux"),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0, parallel_slots=1),
+    )
+    service = result.services[0]
+    assert service.backend == "vllm"
+    # Never a silent equal TP split onto the undersized card — either the
+    # CPU collapse (no GPU indices) or the warned over-budget fallback.
+    assert service.gpu_indices != [0, 1]
+    if service.gpu_indices:
+        assert any("over" in warning for warning in result.warnings)
 
 
 def test_forced_slots_clamp_and_one_is_silent(catalog: list[ModelSpec]) -> None:

@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -666,7 +666,10 @@ def _launch(
         if tensor_parallel > 1:
             argv += ["--tensor-parallel-size", str(tensor_parallel)]
         if gpu_fraction is not None:
-            argv += ["--gpu-memory-utilization", f"{gpu_fraction:.3f}"]
+            # Round up: truncating the fraction claims less pool than the
+            # service's share and the workers OOM at startup.
+            util = min(0.95, math.ceil(gpu_fraction * 1000) / 1000)
+            argv += ["--gpu-memory-utilization", f"{util:.3f}"]
         if embed_only and warnings is not None:
             warnings.append(
                 t("warn.embeddings_backend_unverified", language, model=model.id)
@@ -1810,6 +1813,7 @@ def _place_services(
     budgets = {
         gpu.index: _gpu_budget(gpu, policy.budget_source) for gpu in profile.gpus
     }
+    totals = {gpu.index: gpu.total_vram_bytes for gpu in profile.gpus}
     ram_budget = _profile_budgets(profile, policy.budget_source)[1]
     ram_used = 0.0
     remaining = dict(budgets)
@@ -1849,9 +1853,16 @@ def _place_services(
             continue
         is_swap = service.name in swap_names
         fits = [
-            index for index in indices
+            index
+            for index in indices
             if service.memory.gpu_bytes
             <= remaining[index] + (swap_reserved[index] if is_swap else 0.0) + 1
+            and (
+                service.backend != "vllm"
+                # --gpu-memory-utilization is emitted bounded by 0.95, so a
+                # vLLM service can never provision more than 95% of a card.
+                or service.memory.gpu_bytes <= 0.95 * totals[index] + 1
+            )
         ]
         placement_budget = 0.0
         if fits:
@@ -1868,7 +1879,23 @@ def _place_services(
                 swap_reserved[target] = committed
             else:
                 remaining[target] -= committed
-        elif service.backend in {"llamacpp", "vllm"} and len(indices) > 1:
+        elif (
+            service.backend in {"llamacpp", "vllm"}
+            and len(indices) > 1
+            and (
+                service.backend != "vllm"
+                # vLLM splits TP evenly and the emitted utilization is capped
+                # at 0.95 of each card: an equal share must fit the smallest
+                # card's claimable pool, otherwise fall through to the
+                # generic fallback instead of oversubscribing it.
+                or service.memory.gpu_bytes
+                <= min(
+                    min(remaining[index] for index in indices),
+                    0.95 * min(totals[index] for index in indices),
+                )
+                * len(indices) + 1
+            )
+        ):
             assigned = indices
             tensor_parallel = len(indices)
             proportional = service.backend == "llamacpp"
@@ -2245,12 +2272,21 @@ def _assign_slots(
         gpu_fraction = None
         if service.backend == "vllm" and profile.gpus:
             indices = service.gpu_indices or [gpu.index for gpu in profile.gpus]
-            total_vram = sum(
-                gpu.total_vram_bytes for gpu in profile.gpus if gpu.index in indices
-            )
-            if total_vram > 0:
+            totals = [
+                gpu.total_vram_bytes
+                for gpu in profile.gpus
+                if gpu.index in indices
+            ]
+            if indices and totals and min(totals) > 0:
+                # --gpu-memory-utilization applies per TP worker against each
+                # card's own total, so the required share is bound by the
+                # smallest card (larger cards simply get a deeper KV pool).
                 gpu_fraction = min(
-                    0.95, max(0.10, rewritten.gpu_bytes / total_vram)
+                    0.95,
+                    max(
+                        0.10,
+                        rewritten.gpu_bytes / len(indices) / min(totals),
+                    ),
                 )
         launch = _rewrite_launch(
             service, slots, gpu_fraction,
@@ -2311,7 +2347,10 @@ def _rewrite_launch(
         else:
             argv.extend(["--max-num-seqs", str(slots)])
         if gpu_fraction is not None:
-            formatted = f"{gpu_fraction:.3f}"
+            # Round up like _launch: truncating under-claims the pool.
+            formatted = (
+                f"{min(0.95, math.ceil(gpu_fraction * 1000) / 1000):.3f}"
+            )
             if "--gpu-memory-utilization" in argv:
                 argv[argv.index("--gpu-memory-utilization") + 1] = formatted
             else:
