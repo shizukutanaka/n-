@@ -2309,3 +2309,61 @@ def test_benchmark_key_distinguishes_tensor_split() -> None:
     )
     assert split.endswith("|ts2-1")
     assert base != split
+def test_slot_save_path_emitted_for_nonresident_llamacpp(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-0.5b-instruct")
+    embedder = next(item for item in catalog if item.id == "bge-m3")
+    machine = replace(
+        profile(8, backends={"llamacpp": "test"}),
+        backend_flags={
+            "llamacpp": ("--parallel", "-ngl", "--slot-save-path"),
+        },
+    )
+    result = build_plan(
+        machine,
+        [model, embedder],
+        Policy(roles=["chat", "embed"], min_decode_tps=0),
+    )
+    parked = next(
+        item for item in result.services if item.name in result.swap_group
+    )
+    assert "--slot-save-path" in parked.launch.argv
+
+
+def test_slot_save_path_omitted_for_resident_or_unsupported(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    resident_plan = build_plan(
+        replace(
+            profile(64, (24,)),
+            backend_flags={
+                "llamacpp": ("--parallel", "-ngl", "--slot-save-path"),
+            },
+        ),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert (
+        "--slot-save-path" not in resident_plan.services[0].launch.argv
+    )
+    small = next(item for item in catalog if item.id == "qwen2.5-0.5b-instruct")
+    embedder = next(item for item in catalog if item.id == "bge-m3")
+    machine = replace(
+        profile(8, backends={"llamacpp": "test"}),
+        backend_flags={"llamacpp": ("--parallel", "-ngl")},
+    )
+    result = build_plan(
+        machine,
+        [small, embedder],
+        Policy(roles=["chat", "embed"], min_decode_tps=0),
+    )
+    parked = next(
+        (
+            item for item in result.services if item.name in result.swap_group
+        ),
+        None,
+    )
+    assert parked is not None
+    assert "--slot-save-path" not in parked.launch.argv

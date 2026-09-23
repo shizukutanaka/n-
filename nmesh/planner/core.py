@@ -279,7 +279,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 4
+LAUNCH_REVISION = 5
 
 
 @dataclass(frozen=True)
@@ -2303,6 +2303,14 @@ def _rewrite_launch(
             warnings.append(
                 t("warn.parallel_clamped", language, requested=slots)
             )
+        # Non-resident members are swapped out and respawned; with
+        # --slot-save-path llama.cpp exposes /slots/{i}?action=save|restore
+        # so the supervisor can park KV to disk instead of losing it.
+        if (
+            not service.resident
+            and (not known or "--slot-save-path" in flags)
+        ):
+            argv += ["--slot-save-path", str(nmesh_home() / "slots")]
     elif service.backend == "vllm":
         if "--max-num-seqs" in argv:
             argv[argv.index("--max-num-seqs") + 1] = str(slots)

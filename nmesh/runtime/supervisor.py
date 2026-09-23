@@ -1334,6 +1334,16 @@ class Supervisor:
             if service_name in selected.swap_group:
                 for name in list(self.processes):
                     if name != service_name and name in selected.swap_group:
+                        parked = next(
+                            (
+                                item
+                                for item in selected.services
+                                if item.name == name
+                            ),
+                            None,
+                        )
+                        if parked is not None:
+                            self._slot_cache_post(parked, "save")
                         self._stop_process(name)
             dead = service_name in self.processes and not self._alive(service_name)
             if dead:
@@ -1379,6 +1389,7 @@ class Supervisor:
                     )
                     self.failed[service_name] = message
                     raise RuntimeError(message)
+                self._slot_cache_post(target, "restore")
                 self.failed.pop(service_name, None)
             if actualized:
                 save_plan(selected, self.plan_path)
@@ -1452,6 +1463,41 @@ class Supervisor:
     def idle_services(self) -> set[str]:
         with self._lock:
             return set(self.idle)
+
+    def _slot_cache_post(
+        self, service: PlannedService, action: str
+    ) -> None:
+        """Best-effort llama.cpp slot KV save/restore.
+
+        Services launched with --slot-save-path expose
+        POST /slots/{i}?action=save|restore (llama.cpp server API). Saving
+        parks each slot's prompt cache to disk so a swap-out loses only
+        its weights, and the next spawn restores it. Every failure is
+        ignored: the cache is opportunistic and never load-bearing.
+        """
+        argv = service.launch.argv
+        if service.backend != "llamacpp" or "--slot-save-path" not in argv:
+            return
+        Path(argv[argv.index("--slot-save-path") + 1]).mkdir(
+            parents=True, exist_ok=True
+        )
+        slots = max(1, service.memory.parallel_slots or 1)
+        for index in range(slots):
+            body = json.dumps(
+                {"filename": f"{service.name}-slot{index}.bin"}
+            ).encode()
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{service.port}/slots/{index}"
+                f"?action={action}",
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=5):
+                    pass
+            except (OSError, ValueError):
+                pass
 
     def _stop_process(self, service_name: str) -> None:
         process = self.processes.pop(service_name, None)

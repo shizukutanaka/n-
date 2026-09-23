@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
 import time
+import urllib.request
 from dataclasses import replace
 
 import psutil
@@ -1193,4 +1195,101 @@ def test_supervisor_status_prunes_dead_persisted_entries(
     assert "worker" not in names
     persisted = json.loads(supervisor.state_path.read_text())
     assert [s["service"] for s in persisted["services"]] == ["chat"]
+    supervisor.down()
+
+
+def test_supervisor_slot_cache_save_restore_on_swap(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    running = plan.services[0]
+    save_dir = tmp_path / "slots"
+
+    def with_slot_path(service):
+        return replace(
+            service,
+            launch=replace(
+                service.launch,
+                argv=[
+                    *service.launch.argv,
+                    "--slot-save-path",
+                    str(save_dir),
+                ],
+            ),
+            memory=replace(service.memory, parallel_slots=2),
+        )
+
+    running = with_slot_path(replace(running, name="chat"))
+    parked_member = with_slot_path(replace(running, name="chat-alt"))
+    plan = replace(
+        plan,
+        services=[running, parked_member],
+        swap_group=["chat", "chat-alt"],
+    )
+    posted: list[tuple[str, dict]] = []
+    real_urlopen = urllib.request.urlopen
+
+    def fake_urlopen(request, timeout=None):
+        url = getattr(request, "full_url", request)
+        if "/slots/" in url:
+            posted.append(
+                (url, json.loads(request.data.decode())),
+            )
+            return io.BytesIO(b"{}")
+        return real_urlopen(request, timeout=timeout)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    supervisor = Supervisor(
+        lambda _service: _AdmissionProcess(),
+        tmp_path / "slot-cache.json",
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    supervisor.processes["chat"] = _AdmissionProcess()
+
+    supervisor.ensure_running("chat-alt", plan)
+
+    saves = [entry for entry in posted if "action=save" in entry[0]]
+    restores = [entry for entry in posted if "action=restore" in entry[0]]
+    # Both slots of the parked member are saved before it is killed, then
+    # both slots of the respawned member are restored after health.
+    assert [body["filename"] for _, body in saves] == [
+        "chat-slot0.bin",
+        "chat-slot1.bin",
+    ]
+    assert all(f"/slots/{i}" in url for i, (url, _) in enumerate(saves))
+    assert [body["filename"] for _, body in restores] == [
+        "chat-alt-slot0.bin",
+        "chat-alt-slot1.bin",
+    ]
+    supervisor.down()
+
+
+def test_supervisor_slot_cache_skipped_without_flag(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    posted: list[str] = []
+    real_urlopen = urllib.request.urlopen
+
+    def fake_urlopen(request, timeout=None):
+        url = getattr(request, "full_url", request)
+        if "/slots/" in url:
+            posted.append(url)
+            return io.BytesIO(b"{}")
+        return real_urlopen(request, timeout=timeout)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    supervisor = Supervisor(
+        lambda _service: _AdmissionProcess(),
+        tmp_path / "slot-cache-none.json",
+        health_timeout=0.01,
+    )
+    supervisor._slot_cache_post(plan.services[0], "save")
+    assert posted == []
     supervisor.down()
