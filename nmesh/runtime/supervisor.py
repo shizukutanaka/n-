@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import RLock
@@ -1816,6 +1817,7 @@ class Supervisor:
                         if isinstance(persisted, list)
                         else set()
                     )
+            restarted: list[PlannedService] = []
             for service in self.active_plan.services:
                 if service.name in self.idle:
                     continue
@@ -1876,7 +1878,24 @@ class Supervisor:
                     self.processes[service.name] = self.launcher(service)
                     self.launched_argv[service.name] = list(service.launch.argv)
                     self._arm_atexit()
-                    if not self._wait_health(service, timeout=min(self.health_timeout, 30.0)):
+                    restarted.append(service)
+                except Exception as error:  # noqa: BLE001
+                    self.processes.pop(service.name, None)
+                    if not self._restart_budget(service.name):
+                        self.failed[service.name] = str(error)
+            # Wait on every restarted service concurrently — mass-restart
+            # recovery tracks the slowest load, not the sum of all loads.
+            if restarted:
+                timeout = min(self.health_timeout, 30.0)
+                with ThreadPoolExecutor(
+                    max_workers=len(restarted)
+                ) as pool:
+                    healthy = pool.map(
+                        lambda item: self._wait_health(item, timeout=timeout),
+                        restarted,
+                    )
+                for service, is_healthy in zip(restarted, healthy):
+                    if not is_healthy:
                         self._stop_process(service.name)
                         if not self._restart_budget(service.name):
                             self.failed[service.name] = self._with_log_tail(
@@ -1884,10 +1903,6 @@ class Supervisor:
                                 i18n.t("warn.health_failed", i18n.lang(),
                                        service=service.name),
                             )
-                except Exception as error:  # noqa: BLE001
-                    self.processes.pop(service.name, None)
-                    if not self._restart_budget(service.name):
-                        self.failed[service.name] = str(error)
             if changed:
                 self._persist(self.active_plan)
             return self.status()

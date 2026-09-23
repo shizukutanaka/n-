@@ -1810,3 +1810,57 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_heartbeat_waits_restart_health_concurrently(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Multiple crashed services health-wait in parallel after respawn —
+    watchdog recovery tracks the slowest load, not the sum of all waits."""
+    plan = build_plan(profile(8), load_catalog(), Policy(roles=["chat"]))
+    base_service = replace(plan.services[0], name="svc-a")
+    second = replace(plan.services[0], name="svc-b")
+    plan = replace(plan, services=[base_service, second])
+
+    class FakeProcess:
+        pid = 123
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    intervals: list[tuple[float, float]] = []
+
+    def slow_wait(_service, timeout: float | None = None) -> bool:
+        start = time.monotonic()
+        time.sleep(0.2)
+        intervals.append((start, time.monotonic()))
+        return True
+
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=True: Acquired(None, None, False),
+    )
+    supervisor = Supervisor(
+        launcher=lambda _service: FakeProcess(),
+        state_path=tmp_path / "state.json",
+        health_timeout=1.0,
+        terminator=lambda _pid: None,
+    )
+    supervisor.active_plan = plan
+    monkeypatch.setattr(supervisor, "_adopt", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_wait_health", slow_wait)
+    supervisor.heartbeat()
+
+    assert len(intervals) == 2
+    intervals.sort()
+    assert intervals[1][0] < intervals[0][1]
