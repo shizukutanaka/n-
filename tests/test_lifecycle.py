@@ -1810,3 +1810,41 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_wait_health_scales_timeout_with_weight(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    plan = build_plan(profile(8), load_catalog(), Policy(roles=["chat"]))
+    service = plan.services[0]
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json",
+        health_timeout=120.0,
+    )
+    clock = [0.0]
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.time.monotonic", lambda: clock[0],
+    )
+
+    def polls_for(weight_bytes: float) -> int:
+        counted = [0]
+
+        def fake_healthy(_service) -> bool:
+            counted[0] += 1
+            clock[0] += 30.0
+            return False
+
+        monkeypatch.setattr(supervisor, "_healthy", fake_healthy)
+        clock[0] = 0.0
+        heavy = replace(
+            service, memory=replace(service.memory, weight_bytes=weight_bytes),
+        )
+        assert supervisor._wait_health(heavy) is False
+        return counted[0]
+
+    small = polls_for(4 * 1024**3)
+    # 120s default / 30s per fake poll.
+    assert small == 4
+    large = polls_for(80 * 1024**3)
+    # 80 GiB at 256 MiB/s ≈ 320s → more polls than the 120s default allows.
+    assert large == 11

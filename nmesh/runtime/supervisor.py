@@ -40,6 +40,11 @@ from .logs import log_path, open_log, tail
 
 STATE_PATH = nmesh_home() / "state.json"
 HEALTH_TIMEOUT = 120.0
+# Conservative floor for paging a model's weights into memory (256 MiB/s,
+# a slow HDD or a contended network mount). Used to stretch the health
+# timeout for very large models — mmap makes "load" a page-in bound cost,
+# and a crashed process is still detected instantly via poll().
+MIN_MODEL_LOAD_BPS = 256 * 1024 * 1024
 MAX_RESTARTS = 3
 RESTART_WINDOW = 300.0
 GIB = 1024**3
@@ -868,7 +873,14 @@ class Supervisor:
             return False
 
     def _wait_health(self, service: PlannedService, timeout: float | None = None) -> bool:
-        timeout = self.health_timeout if timeout is None else timeout
+        if timeout is None:
+            # A multi-GB weight load legitimately outlasts HEALTH_TIMEOUT on
+            # slow storage; waiting longer only delays a verdict for a hung
+            # process, since an exited one is caught by poll() immediately.
+            timeout = max(
+                self.health_timeout,
+                service.memory.weight_bytes / MIN_MODEL_LOAD_BPS,
+            )
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             process = self.processes.get(service.name)
@@ -1876,7 +1888,13 @@ class Supervisor:
                     self.processes[service.name] = self.launcher(service)
                     self.launched_argv[service.name] = list(service.launch.argv)
                     self._arm_atexit()
-                    if not self._wait_health(service, timeout=min(self.health_timeout, 30.0)):
+                    if not self._wait_health(
+                        service,
+                        timeout=max(
+                            30.0,
+                            service.memory.weight_bytes / MIN_MODEL_LOAD_BPS,
+                        ),
+                    ):
                         self._stop_process(service.name)
                         if not self._restart_budget(service.name):
                             self.failed[service.name] = self._with_log_tail(

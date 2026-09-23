@@ -40,6 +40,7 @@ from nmesh.runtime import ensure_running, heartbeat, idle_services, unload
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime.logs import log_path
 from nmesh.runtime.logs import tail as tail_log
+from nmesh.runtime.supervisor import MIN_MODEL_LOAD_BPS
 from nmesh.telemetry import Sample, summary_by_approximate
 from nmesh.telemetry import record as record_telemetry
 from nmesh.telemetry import summary as telemetry_summary
@@ -1200,7 +1201,14 @@ def create_app(
             try:
                 await asyncio.wait_for(
                     gate.acquire(service.name, _ensure_target),
-                    timeout=300.0,
+                    # Large weights may need minutes just to page in on the
+                    # swap path — the supervisor's health wait scales the
+                    # same way, so the client timeout must cover it too.
+                    timeout=max(
+                        300.0,
+                        service.memory.weight_bytes / MIN_MODEL_LOAD_BPS
+                        + 60.0,
+                    ),
                 )
             except asyncio.TimeoutError as error:
                 raise HTTPException(status_code=504, detail="Timed out waiting for service swap") from error
