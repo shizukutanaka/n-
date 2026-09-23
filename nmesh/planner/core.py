@@ -644,6 +644,7 @@ def _launch(
     cache_reuse: int = 0,
     context_shift: bool = False,
     n_cpu_moe: int = 0,
+    mlock: bool = False,
     *,
     binary: str | None = None,
 ) -> LaunchSpec:
@@ -786,6 +787,13 @@ def _launch(
             elif warnings is not None:
                 warnings.append(
                     t("warn.context_shift_unsupported", language, model=model.id)
+                )
+        if backend == "llamacpp" and mlock:
+            if not known or "--mlock" in flags or "-ml" in flags:
+                argv.append("--mlock")
+            elif warnings is not None:
+                warnings.append(
+                    t("warn.mlock_unsupported", language, model=model.id)
                 )
         if backend == "llamacpp" and embed_only:
             if not known or "--embeddings" in flags:
@@ -1633,6 +1641,11 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
                 **warning_args,
             )
         )
+    resident = (
+        resident_override
+        if resident_override is not None
+        else profile.tier not in {Tier.T0_CPU, Tier.T1_LOW} or not services
+    )
     launch = _launch(
         candidate.backend, candidate.model, candidate.quant, candidate.context,
         port, layers or 0, tensor_parallel,
@@ -1653,6 +1666,10 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
             spec_policy.context_shift if spec_policy is not None else False
         ),
         n_cpu_moe=candidate.n_cpu_moe,
+        # Resident services keep their weights in RAM for good; pinning them
+        # avoids first-token stalls when the kernel would otherwise reclaim
+        # the pages under memory pressure.
+        mlock=resident,
         binary=profile.backend_paths.get(candidate.backend),
     )
     service = PlannedService(
@@ -1661,11 +1678,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         candidate.quant, candidate.backend, candidate.context,
         11434 if candidate.backend == "ollama" else port, indices,
         None if candidate.backend in {"vllm", "mlx", "ollama"} else layers,
-        (
-            resident_override
-            if resident_override is not None
-            else profile.tier not in {Tier.T0_CPU, Tier.T1_LOW} or not services
-        ),
+        resident,
         memory,
         candidate.decode_tps if candidate.decode_applicable else None,
         candidate.estimated,
