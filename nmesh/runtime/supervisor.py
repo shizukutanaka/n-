@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import RLock
@@ -1108,6 +1109,42 @@ class Supervisor:
             self._drop_unplanned(current)
             for attempt in range(1, 4):
                 try:
+                    # Acquire is a network/download call per service; running
+                    # them serially makes a multi-model `nmesh up` pay the
+                    # sum of all downloads. Prefetch every candidate service's
+                    # artifact concurrently — the per-service result is still
+                    # consumed in plan order below, so _apply_acquired and
+                    # admission replans keep their sequential semantics. A
+                    # prefetch for a service that turns out skipped (adopted,
+                    # drifted, already-up) only warms the shared artifact
+                    # store, which the plan needs anyway on its next spawn.
+                    prefetched: dict[str, Acquired] = {}
+                    prefetch_errors: dict[str, BaseException] = {}
+                    if not no_download and len(current.services) > 1:
+                        candidates = [
+                            service
+                            for service in current.services
+                            if service.name not in self.processes
+                            and service.name not in self.adopted
+                            and service.name not in self.failed
+                        ]
+                        if len(candidates) > 1:
+                            with ThreadPoolExecutor(
+                                max_workers=min(4, len(candidates))
+                            ) as pool:
+                                future_map = {
+                                    service.name: pool.submit(
+                                        acquire,
+                                        service,
+                                        local_only=no_download,
+                                    )
+                                    for service in candidates
+                                }
+                            for name, future in future_map.items():
+                                try:
+                                    prefetched[name] = future.result()
+                                except Exception as error:  # noqa: BLE001
+                                    prefetch_errors[name] = error
                     for index in range(len(current.services)):
                         service = current.services[index]
                         dead = service.name in self.processes and not self._alive(service.name)
@@ -1137,7 +1174,14 @@ class Supervisor:
                         # no_download only skips the network, never the
                         # resolution — launch.argv would otherwise keep a
                         # planned name ({id}-{quant}.gguf) that need not exist.
-                        acquired = acquire(service, local_only=no_download)
+                        if service.name in prefetch_errors:
+                            raise prefetch_errors[service.name]
+                        if service.name in prefetched:
+                            acquired = prefetched[service.name]
+                        else:
+                            acquired = acquire(
+                                service, local_only=no_download
+                            )
                         current, service, changed, artifact_replanned = self._apply_acquired(
                             current, service, acquired
                         )
