@@ -333,7 +333,8 @@ def _enable_hf_transfer() -> None:
     constants = sys.modules.get("huggingface_hub.constants")
     if constants is not None:
         # huggingface_hub caches the env read at import; patch the live module.
-        setattr(constants, "HF_HUB_ENABLE_HF_TRANSFER", True)
+        # ModuleType assignment is untyped; the constant exists at runtime.
+        constants.HF_HUB_ENABLE_HF_TRANSFER = True  # type: ignore[attr-defined]
 
 
 def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
