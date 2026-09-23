@@ -18,6 +18,7 @@ from typing import Protocol
 import psutil
 
 from nmesh import __version__, i18n
+from nmesh.artifact import ollama_port
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.paths import is_windows, nmesh_home
@@ -963,7 +964,7 @@ class Supervisor:
             {
                 "service": name,
                 "pid": None,
-                "port": _port(plan, name, 11434),
+                "port": _port(plan, name, ollama_port()),
                 "started_at": time.time(),
                 "shared": True,
                 "external": False,

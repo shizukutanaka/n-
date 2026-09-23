@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from nmesh import i18n
-from nmesh.artifact import service_fingerprint
+from nmesh.artifact import ollama_base_url, service_fingerprint
 from nmesh.bench import benchmark_key
 from nmesh.bench.embed import EMBED_HARNESS_VERSION, load_embed_cache
 from nmesh.bench.retrieval import (
@@ -416,7 +416,7 @@ def _embedding_chunks(
 
 
 def _base_url(service: PlannedService) -> str:
-    return "http://127.0.0.1:11434" if service.backend == "ollama" else (
+    return ollama_base_url() if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
     )
 

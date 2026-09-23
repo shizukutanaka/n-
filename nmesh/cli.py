@@ -27,7 +27,7 @@ from rich.console import Console
 from rich.table import Table
 
 from nmesh import __version__, i18n
-from nmesh.artifact import gguf_info, service_fingerprint
+from nmesh.artifact import gguf_info, ollama_base_url, service_fingerprint
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.bench import (
     BENCH_HARNESS_VERSION,
@@ -2004,7 +2004,7 @@ def _bench(args: argparse.Namespace) -> int:
     if not _service_running(service, running):
         print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
         return 1
-    base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
+    base_url = ollama_base_url() if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
     )
     if service.roles == ["embed"]:
@@ -2634,7 +2634,7 @@ def _eval(args: argparse.Namespace) -> int:
     if not tasks:
         print(i18n.t("err.eval_categories", i18n.lang()), file=sys.stderr)
         return 1
-    base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
+    base_url = ollama_base_url() if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
     )
     allowance = max(0, getattr(args, "reasoning_allowance", 0) or 0)
@@ -3100,7 +3100,7 @@ def _orchestration_generative(service: PlannedService) -> bool:
 
 
 def _orchestration_url(service: PlannedService) -> str:
-    return "http://127.0.0.1:11434" if service.backend == "ollama" else (
+    return ollama_base_url() if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
     )
 
@@ -4551,7 +4551,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     file=sys.stderr,
                 )
 
-        base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
+        base_url = ollama_base_url() if service.backend == "ollama" else (
             f"http://127.0.0.1:{service.port}"
         )
         best: tuple[int, int, float] | None = None

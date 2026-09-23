@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
+from urllib.parse import urlparse
 
 import httpx
 
@@ -220,9 +222,34 @@ def gguf_fingerprint(path: Path) -> str | None:
     return f"gguf:{info.tensors}:{info.size}:{info.digest}"
 
 
+def ollama_base_url() -> str:
+    """Base URL of the ollama daemon nmesh manages.
+
+    `OLLAMA_BASE_URL` (nmesh-specific full URL) wins, then the official
+    `OLLAMA_HOST` (which may be a bare host:port); both are normalized to a
+    scheme'd URL without a trailing slash. Defaults to the local daemon.
+    """
+    raw = os.environ.get("OLLAMA_BASE_URL") or os.environ.get("OLLAMA_HOST")
+    if not raw:
+        return "http://127.0.0.1:11434"
+    raw = raw.strip()
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    return raw.rstrip("/")
+
+
+def ollama_port() -> int:
+    """Daemon port implied by `ollama_base_url()` (env override included)."""
+    try:
+        return urlparse(ollama_base_url()).port or 11434
+    except ValueError:
+        return 11434
+
+
 def ollama_fingerprint(
-    model_ref: str, base_url: str = "http://127.0.0.1:11434",
+    model_ref: str, base_url: str | None = None,
 ) -> str | None:
+    base_url = base_url or ollama_base_url()
     try:
         response = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=5.0)
         response.raise_for_status()

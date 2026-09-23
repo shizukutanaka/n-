@@ -10,7 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from nmesh import __version__
-from nmesh.artifact import gguf_info, service_fingerprint
+from nmesh.artifact import (
+    gguf_info,
+    ollama_base_url,
+    ollama_port,
+    service_fingerprint,
+)
 from nmesh.artifacts import artifact_key
 from nmesh.bench.cache import BENCH_HARNESS_VERSION, BenchRecord, benchmark_key
 from nmesh.bench.retrieval import RetrievalLimit
@@ -281,7 +286,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -654,7 +659,7 @@ def _launch(
         return LaunchSpec(
             [binary or "ollama", "serve"],
             {},
-            "http://127.0.0.1:11434/api/tags",
+            f"{ollama_base_url()}/api/tags",
             True,
         )
     if backend == "vllm":
@@ -1629,7 +1634,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         name, group, candidate.model.id, _source_for(candidate.backend, candidate.model, candidate.quant),
         _download_repo_for(candidate.backend, candidate.model),
         candidate.quant, candidate.backend, candidate.context,
-        11434 if candidate.backend == "ollama" else port, indices,
+        ollama_port() if candidate.backend == "ollama" else port, indices,
         None if candidate.backend in {"vllm", "mlx", "ollama"} else layers,
         (
             resident_override

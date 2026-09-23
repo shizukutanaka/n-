@@ -185,3 +185,24 @@ def test_service_fingerprint_dispatches_only_verified_backends(
     assert artifact.service_fingerprint("vllm", "qwen") is None
     assert calls[0][0] == "gguf"
     assert calls[1] == ("ollama", "qwen")
+
+
+def test_ollama_base_url_defaults_to_local_daemon(monkeypatch) -> None:
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    assert artifact.ollama_base_url() == "http://127.0.0.1:11434"
+    assert artifact.ollama_port() == 11434
+
+
+def test_ollama_base_url_env_override_normalizes(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_HOST", "gpu-box:11435")
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    assert artifact.ollama_base_url() == "http://gpu-box:11435"
+    assert artifact.ollama_port() == 11435
+
+
+def test_ollama_base_url_prefers_base_url_over_host(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://10.0.0.2:11436/")
+    monkeypatch.setenv("OLLAMA_HOST", "other:1")
+    assert artifact.ollama_base_url() == "http://10.0.0.2:11436"
+    assert artifact.ollama_port() == 11436
