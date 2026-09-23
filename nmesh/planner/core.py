@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -651,9 +651,20 @@ def _launch(
     rerank_only = list(roles) == ["rerank"]
     ref = _source_for(backend, model, quant)
     if backend == "ollama":
+        # OLLAMA_MODELS pins the daemon's weight store under NMESH_HOME so
+        # nmesh-managed state stays under one root; a user-set env wins.
+        env = (
+            {"OLLAMA_MODELS": str(nmesh_home() / "models" / "ollama")}
+            if not os.environ.get("OLLAMA_MODELS")
+            else {}
+        )
+        if env and warnings is not None:
+            warnings.append(
+                t("note.ollama_models_dir", language, path=env["OLLAMA_MODELS"])
+            )
         return LaunchSpec(
             [binary or "ollama", "serve"],
-            {},
+            env,
             "http://127.0.0.1:11434/api/tags",
             True,
         )

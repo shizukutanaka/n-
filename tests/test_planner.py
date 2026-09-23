@@ -11,6 +11,7 @@ from nmesh import i18n
 from nmesh.bench import benchmark_key
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.catalog.loader import _model_from_mapping
+from nmesh.paths import nmesh_home
 from nmesh.planner import (
     BPW,
     Policy,
@@ -2382,3 +2383,29 @@ def test_sleep_mode_round_trips_plan(tmp_path, catalog: list[ModelSpec]) -> None
     loaded = load_plan(path)
     assert loaded is not None and loaded.services[0].sleep_mode is False
 
+
+
+def _ollama_model(model_id: str, roles: list[str]) -> ModelSpec:
+    return ModelSpec(
+        model_id, model_id, 7_000_000_000, 32, 32, 8, 128, 4096, 8192,
+        roles, 80.0, "apache", {"ollama": model_id},
+    )
+
+
+def test_ollama_launch_pins_models_dir_under_nmesh_home() -> None:
+    warnings: list[str] = []
+    launched = planner_core._launch(
+        "ollama", _ollama_model("test-ollama", ["chat"]), "q4_k_m", 4096, 11434,
+        0, 1, warnings=warnings,
+    )
+    assert launched.env["OLLAMA_MODELS"] == str(nmesh_home() / "models" / "ollama")
+    assert any("OLLAMA_MODELS" in item for item in warnings)
+
+
+def test_ollama_launch_respects_user_models_dir(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_MODELS", "/custom/store")
+    launched = planner_core._launch(
+        "ollama", _ollama_model("test-ollama", ["chat"]), "q4_k_m", 4096, 11434,
+        0, 1,
+    )
+    assert "OLLAMA_MODELS" not in launched.env
