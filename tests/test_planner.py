@@ -701,6 +701,80 @@ def test_ollama_only_model_never_uses_llamacpp(tmp_path, monkeypatch) -> None:
     assert result.services[0].backend == "ollama"
 
 
+def _ollama_model(mid: str, roles: list[str]) -> ModelSpec:
+    return ModelSpec(
+        mid, mid, 6_000_000_000, 24, 16, 4, 128, 2048, 4096,
+        roles, 80.0, "apache", {"ollama": f"test:{mid}"},
+    )
+
+
+def test_ollama_max_loaded_pinned_to_planned_concurrency() -> None:
+    model = _ollama_model("chat-ollama", ["chat"])
+    result = build_plan(
+        profile(64, (24,), backends={"ollama": "x", "llamacpp": None,
+                                     "vllm": None, "mlx": None}),
+        [model], Policy(roles=["chat"]),
+    )
+    service = result.services[0]
+    assert service.backend == "ollama"
+    assert service.launch.env["OLLAMA_MAX_LOADED_MODELS"] == "1"
+    assert any("OLLAMA_MAX_LOADED_MODELS" in w for w in result.warnings)
+
+
+def test_ollama_max_loaded_counts_residents_plus_one_swap_slot() -> None:
+    models = [
+        _ollama_model("chat-ollama", ["chat"]),
+        _ollama_model("code-ollama", ["code"]),
+    ]
+    backends = {"ollama": "x", "llamacpp": None, "vllm": None, "mlx": None}
+    result = build_plan(
+        profile(8, backends=backends), models, Policy(roles=["chat", "code"]),
+    )
+    assert len(result.services) == 2
+    assert all(s.backend == "ollama" for s in result.services)
+    residents = [s for s in result.services if s.resident]
+    non_residents = [s for s in result.services if not s.resident]
+    assert len(residents) == 1 and len(non_residents) == 1
+    # resident members plus a single swap slot may hold models at once
+    for service in result.services:
+        assert service.launch.env["OLLAMA_MAX_LOADED_MODELS"] == "2"
+
+
+def test_ollama_max_loaded_respects_user_env(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_MAX_LOADED_MODELS", "4")
+    model = _ollama_model("chat-ollama", ["chat"])
+    result = build_plan(
+        profile(64, (24,), backends={"ollama": "x", "llamacpp": None,
+                                     "vllm": None, "mlx": None}),
+        [model], Policy(roles=["chat"]),
+    )
+    assert "OLLAMA_MAX_LOADED_MODELS" not in result.services[0].launch.env
+    assert not any(
+        "OLLAMA_MAX_LOADED_MODELS" in w for w in result.warnings
+    )
+
+
+def test_ollama_max_loaded_not_injected_into_other_backends() -> None:
+    models = [
+        _ollama_model("chat-ollama", ["chat"]),
+        ModelSpec(
+            "code-hf", "code-hf", 500_000_000, 24, 14, 2, 64, 896, 4096,
+            ["code"], 90.0, "apache", {"hf_gguf": "repo/code"},
+        ),
+    ]
+    backends = {"ollama": "x", "llamacpp": "x", "vllm": None, "mlx": None}
+    result = build_plan(
+        profile(64, (24,), backends=backends), models,
+        Policy(roles=["chat", "code"]),
+    )
+    by_backend = {s.backend: s for s in result.services}
+    assert "OLLAMA_MAX_LOADED_MODELS" in by_backend["ollama"].launch.env
+    assert (
+        "OLLAMA_MAX_LOADED_MODELS"
+        not in by_backend["llamacpp"].launch.env
+    )
+
+
 def test_installed_lower_preference_backend_wins() -> None:
     model = ModelSpec(
         "both-sources", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,

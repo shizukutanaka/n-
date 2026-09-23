@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -356,6 +356,25 @@ def _gpu_pin_env(
     if variable is None:
         return {}
     return {variable: ",".join(str(index) for index in assigned)}
+
+
+def _pin_ollama_max_loaded(
+    service: PlannedService, max_loaded: int | None
+) -> PlannedService:
+    if service.backend != "ollama" or max_loaded is None:
+        return service
+    if "OLLAMA_MAX_LOADED_MODELS" in service.launch.env:
+        return service
+    return replace(
+        service,
+        launch=replace(
+            service.launch,
+            env={
+                **service.launch.env,
+                "OLLAMA_MAX_LOADED_MODELS": str(max_loaded),
+            },
+        ),
+    )
 
 
 def _swa_layer_count(model: ModelSpec, kv_layers: int) -> int:
@@ -1804,8 +1823,31 @@ def _place_services(
                     service=service.name,
                 )
             )
+    # The ollama daemon may hold more loaded models than the plan can run
+    # concurrently (resident members plus one swap slot), so pin its
+    # OLLAMA_MAX_LOADED_MODELS to the planned concurrency unless the user
+    # already set it. The env lands on the shared `ollama serve` process.
+    ollama_max_loaded: int | None = None
+    if not os.environ.get("OLLAMA_MAX_LOADED_MODELS"):
+        ollama = [service for service in services if service.backend == "ollama"]
+        if ollama:
+            ollama_max_loaded = sum(
+                1 for service in ollama if service.resident
+            ) + (1 if any(not service.resident for service in ollama) else 0)
+            for service in ollama:
+                warnings.append(
+                    t(
+                        "note.ollama_max_loaded",
+                        policy.lang,
+                        service=service.name,
+                        limit=ollama_max_loaded,
+                    )
+                )
     if not profile.gpus:
-        return services
+        return [
+            _pin_ollama_max_loaded(service, ollama_max_loaded)
+            for service in services
+        ]
     indices = [gpu.index for gpu in profile.gpus]
     budgets = {
         gpu.index: _gpu_budget(gpu, policy.budget_source) for gpu in profile.gpus
@@ -2079,7 +2121,10 @@ def _place_services(
         warn_cpu_fallback(current)
         placed[service.name] = current
         ram_used += current.memory.cpu_bytes
-    return [placed[service.name] for service in services]
+    return [
+        _pin_ollama_max_loaded(placed[service.name], ollama_max_loaded)
+        for service in services
+    ]
 
 
 SLOT_CAPS = {"llamacpp": 8, "vllm": 32, "mlx": 1, "ollama": 1}
