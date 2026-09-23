@@ -75,6 +75,38 @@ try:
 except ValueError:
     CONNECT_TIMEOUT = 10.0
 
+_UPSTREAM_CLIENTS: dict[tuple[str, float], httpx.AsyncClient] = {}
+
+
+def _upstream_client(
+    service: PlannedService, read_timeout: float
+) -> httpx.AsyncClient:
+    """Keep-alive pooled client per upstream/timeout.
+
+    A fresh client per proxied request pays a TCP handshake for every call and
+    churns sockets into TIME_WAIT under load; pooling lets the inference
+    backends keep connections alive across requests. Connections are used from
+    whichever loop the request runs on (each TestClient request gets its own),
+    so the pool is keyed by destination only and _close_upstream_clients drains
+    it at app shutdown.
+    """
+    key = (_base_url(service), read_timeout)
+    client = _UPSTREAM_CLIENTS.get(key)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(
+            timeout=httpx.Timeout(read_timeout, connect=CONNECT_TIMEOUT)
+        )
+        _UPSTREAM_CLIENTS[key] = client
+    return client
+
+
+async def _close_upstream_clients() -> None:
+    """Release every pooled upstream client (app shutdown)."""
+    for client in _UPSTREAM_CLIENTS.values():
+        await client.aclose()
+    _UPSTREAM_CLIENTS.clear()
+
+
 if TYPE_CHECKING:
     import httpx
     from fastapi import FastAPI, HTTPException
@@ -1036,6 +1068,7 @@ def create_app(
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            await _close_upstream_clients()
 
     app = FastAPI(title="nmesh gateway", lifespan=lifespan)
 
@@ -1228,7 +1261,7 @@ def create_app(
             else None
         )
         assert httpx is not None
-        client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT))
+        client = _upstream_client(service, 300.0)
         ticket = in_flight.enter(service.name)
         if request.get("stream"):
             stream_options = request.get("stream_options")
@@ -1256,7 +1289,6 @@ def create_app(
                     )
                     upstream = await client.send(upstream_request, stream=True)
             except HTTPException:
-                await client.aclose()
                 in_flight.leave(service.name, ticket)
                 last_use.touch(service.name)
                 if locked:
@@ -1267,7 +1299,6 @@ def create_app(
                     jobs.finish(job, ok=False, detail="upstream_unreachable")
                 raise
             except httpx.HTTPError as error:
-                await client.aclose()
                 in_flight.leave(service.name, ticket)
                 last_use.touch(service.name)
                 if locked:
@@ -1280,7 +1311,6 @@ def create_app(
             if upstream.status_code >= 400:
                 content = await upstream.aread()
                 await upstream.aclose()
-                await client.aclose()
                 in_flight.leave(service.name, ticket)
                 last_use.touch(service.name)
                 if locked:
@@ -1391,7 +1421,6 @@ def create_app(
                     raise HTTPException(status_code=502, detail=str(error)) from error
                 finally:
                     await upstream.aclose()
-                    await client.aclose()
                     in_flight_peak = in_flight.leave(service.name, ticket)
                     last_use.touch(service.name)
                     if locked:
@@ -1612,7 +1641,6 @@ def create_app(
                 jobs.finish(job, ok=False, detail=str(error))
             raise HTTPException(status_code=502, detail=str(error)) from error
         finally:
-            await client.aclose()
             in_flight_peak = in_flight.leave(service.name, ticket)
             last_use.touch(service.name)
             if locked:

@@ -1007,3 +1007,106 @@ def test_gateway_revive_failure_returns_503(monkeypatch) -> None:
     })
     assert response.status_code == 503
     assert "restart budget" in response.json()["error"]["message"]
+
+
+def test_proxy_pools_upstream_client_across_requests(monkeypatch) -> None:
+    created: list[str] = []
+    original_client = gateway_module._upstream_client
+
+    def _spy(service: object, read_timeout: float) -> object:
+        client = original_client(service, read_timeout)
+        created.append(f"{id(client)}:{client.is_closed}")
+        return client
+
+    monkeypatch.setattr(gateway_module, "_upstream_client", _spy)
+    _UsageHandler.stream = False
+    try:
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UsageHandler)
+        thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        thread.start()
+        try:
+            model = ModelSpec("proxy-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                              4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+            plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+            service = replace(plan.services[0], port=upstream.server_address[1])
+            plan = replace(plan, services=[service])
+            client = TestClient(create_app(plan))
+            for _ in range(2):
+                response = client.post("/v1/chat/completions", json={
+                    "model": "nmesh-auto",
+                    "messages": [{"role": "user", "content": "hello"}],
+                })
+                assert response.status_code == 200
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+    finally:
+        _UsageHandler.stream = True
+    assert len(created) == 2
+    ids = {entry.split(":")[0] for entry in created}
+    assert len(ids) == 1
+    assert all(entry.endswith(":False") for entry in created)
+
+
+
+    constructed: list[object] = []
+    real_client = gateway_module.httpx.AsyncClient
+
+    class _CountingClient(real_client):  # type: ignore[misc]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            if isinstance(kwargs.get("timeout"), gateway_module.httpx.Timeout):
+                constructed.append(self)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(gateway_module.httpx, "AsyncClient", _CountingClient)
+    _UsageHandler.stream = False
+    try:
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UsageHandler)
+        thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        thread.start()
+        try:
+            model = ModelSpec("proxy-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                              4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+            plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+            service = replace(plan.services[0], port=upstream.server_address[1])
+            plan = replace(plan, services=[service])
+            client = TestClient(create_app(plan))
+            for _ in range(2):
+                response = client.post("/v1/chat/completions", json={
+                    "model": "nmesh-auto",
+                    "messages": [{"role": "user", "content": "hello"}],
+                })
+                assert response.status_code == 200
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+    finally:
+        _UsageHandler.stream = True
+    assert len(constructed) == 1
+
+
+def test_upstream_clients_close_with_app_lifespan() -> None:
+    _UsageHandler.stream = False
+    try:
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UsageHandler)
+        thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        thread.start()
+        try:
+            model = ModelSpec("proxy-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                              4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+            plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+            service = replace(plan.services[0], port=upstream.server_address[1])
+            plan = replace(plan, services=[service])
+            with TestClient(create_app(plan)) as client:
+                response = client.post("/v1/chat/completions", json={
+                    "model": "nmesh-auto",
+                    "messages": [{"role": "user", "content": "hello"}],
+                })
+                assert response.status_code == 200
+                assert gateway_module._UPSTREAM_CLIENTS
+        finally:
+            upstream.shutdown()
+            upstream.server_close()
+    finally:
+        _UsageHandler.stream = True
+    assert not gateway_module._UPSTREAM_CLIENTS
