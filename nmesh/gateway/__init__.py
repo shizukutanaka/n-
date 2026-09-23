@@ -529,6 +529,20 @@ def _reserved_tokens(request: Mapping[str, object]) -> int:
     return max(values)
 
 
+def _read_timeout_floor(tokens: int) -> float:
+    # A non-stream upstream responds only once the whole completion is
+    # decoded; at a conservative 0.5 tok/s floor, 300 s covers ~150 tokens.
+    # Scale explicit token budgets so slow-but-healthy backends don't hit a
+    # spurious 502, while still bounding a wedged upstream's slot hold.
+    if tokens <= 0:
+        return 300.0
+    return min(3600.0, max(300.0, tokens * 2.0))
+
+
+def _upstream_read_timeout(request: Mapping[str, object]) -> float:
+    return _read_timeout_floor(_reserved_tokens(request))
+
+
 def _created_timestamp(plan: Plan) -> int:
     try:
         return int(float(plan.created_at))
@@ -1228,7 +1242,11 @@ def create_app(
             else None
         )
         assert httpx is not None
-        client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT))
+        client = httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                _upstream_read_timeout(request), connect=CONNECT_TIMEOUT
+            )
+        )
         ticket = in_flight.enter(service.name)
         if request.get("stream"):
             stream_options = request.get("stream_options")
@@ -1786,7 +1804,10 @@ def create_app(
             def run() -> Delegation:
                 assert httpx is not None
                 with httpx.Client(
-                    timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
+                    timeout=httpx.Timeout(
+                        _read_timeout_floor(max(1, max_tokens)),
+                        connect=CONNECT_TIMEOUT,
+                    )
                 ) as client:
                     return delegate(
                         client,

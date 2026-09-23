@@ -1007,3 +1007,53 @@ def test_gateway_revive_failure_returns_503(monkeypatch) -> None:
     })
     assert response.status_code == 503
     assert "restart budget" in response.json()["error"]["message"]
+
+
+def test_upstream_read_timeout_scales_with_token_budget() -> None:
+    floor = gateway_module._read_timeout_floor
+    assert floor(0) == 300.0
+    assert floor(500) == 1000.0
+    assert floor(10) == 300.0
+    assert floor(5000) == 3600.0
+
+
+def test_proxy_scales_read_timeout_for_explicit_max_tokens(monkeypatch) -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _CompatStreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    timeouts: list[float | None] = []
+    real_client = httpx.AsyncClient
+
+    class _TimeoutSpy:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            timeout = kwargs.get("timeout")
+            timeouts.append(getattr(timeout, "read", None))
+            self._inner = real_client(*args, **kwargs)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._inner, name)
+
+    monkeypatch.setattr(gateway_module.httpx, "AsyncClient", _TimeoutSpy)
+    try:
+        model = ModelSpec("timeout-model", "test", 500_000_000, 24, 16, 2, 64,
+                          1024, 4096, ["chat"], 80.0, "test",
+                          {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+
+        response = client.post("/v1/chat/completions", json={
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 500,
+        })
+        assert response.status_code == 200
+        assert timeouts[-1] == 1000.0
+
+        response = client.post("/v1/chat/completions", json={
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert timeouts[-1] == 300.0
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
