@@ -966,8 +966,14 @@ def _candidate_for(
             layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
             if profile.tier == Tier.T0_CPU:
                 layers = 0
-            gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
             backend, installed = _backend(profile, model, layers)
+            if backend == "mlx" and 0 < layers < model.n_layers:
+                # mlx_lm.server loads the whole model; there is no partial
+                # -ngl knob to emit, so the split must be all-or-nothing —
+                # budgeting a fraction would commit VRAM the service never
+                # actually leaves free.
+                layers = model.n_layers
+            gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
             context_before_embed_cap = None
             embed_context_cap = None
             embed_retrieval_limit = None
@@ -987,10 +993,12 @@ def _candidate_for(
                     )
                     if profile.tier == Tier.T0_CPU:
                         layers = 0
+                    backend, installed = _backend(profile, model, layers)
+                    if backend == "mlx" and 0 < layers < model.n_layers:
+                        layers = model.n_layers
                     gpu_bytes, cpu_bytes = _split_memory(
                         base, model.n_layers, layers,
                     )
-                    backend, installed = _backend(profile, model, layers)
             if _is_embed_only(model) and embed_retrieval_limits is not None:
                 embed_retrieval_limit = embed_retrieval_limits.get((
                     model.id.casefold(),
@@ -1016,6 +1024,8 @@ def _candidate_for(
                 layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
                 if profile.tier == Tier.T0_CPU:
                     layers = 0
+                if backend == "mlx" and 0 < layers < model.n_layers:
+                    layers = model.n_layers
                 gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
                 if (
                     gpu_bytes > base.vram_budget + 1

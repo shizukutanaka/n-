@@ -2382,3 +2382,16 @@ def test_sleep_mode_round_trips_plan(tmp_path, catalog: list[ModelSpec]) -> None
     loaded = load_plan(path)
     assert loaded is not None and loaded.services[0].sleep_mode is False
 
+
+def test_lfm2_24b_a2b_catalog_moe_anatomy(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "lfm2-24b-a2b")
+    assert model.active_params == 2_300_000_000
+    # 10 of 40 layers are full_attention (conv backbone otherwise), and
+    # MoE runs on the last 38 (num_dense_layers=2).
+    assert (model.kv_layers, model.n_moe_layers) == (10, 38)
+    estimate = estimate_memory(model, "q4_k_m", 8192)
+    # 64 routed experts x 3 tensors x 2048x1536 params on 38 MoE layers
+    # (LiquidAI/LFM2-24B-A2B config.json).
+    assert estimate.moe_expert_bytes_per_layer == pytest.approx(
+        22_951_231_488 / 38 * estimate.weight_bytes / 24_000_000_000
+    )
