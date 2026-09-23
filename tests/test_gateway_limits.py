@@ -7,6 +7,7 @@ import threading
 import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from typing import ClassVar
 
 from fastapi.testclient import TestClient
@@ -498,3 +499,53 @@ def test_job_registry_cancel() -> None:
     assert registry.cancel(running) is False
     listed = [j.id for j in registry.list()]
     assert queued.id in listed and running.id in listed
+
+
+def test_slot_progress_polls_services_concurrently(monkeypatch) -> None:
+    """Two running jobs on two services are polled in parallel — elapsed
+    tracks one 0.8s timeout budget, not the sum across services."""
+    plan = _llama_plan(1)
+    svc_a = replace(plan.services[0], name="svc-a")
+    svc_b = replace(plan.services[0], name="svc-b")
+    job_a = SimpleNamespace(id="job-a", service="svc-a", state="running")
+    job_b = SimpleNamespace(id="job-b", service="svc-b", state="running")
+
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args: object) -> bool:
+            return False
+
+        async def get(self, path: str) -> object:
+            await asyncio.sleep(0.3)
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: [
+                    {"is_processing": True,
+                     "next_token": [{"n_decoded": 5}]},
+                ],
+            )
+
+    monkeypatch.setattr(gateway_module.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(
+        gateway_module, "_service_is_running_llamacpp", lambda _s: True
+    )
+    monkeypatch.setattr(gateway_module, "_base_url", lambda _s: "http://x")
+
+    async def scenario() -> tuple[float, dict[str, dict[str, int]]]:
+        started = time.monotonic()
+        result = await gateway_module._slot_progress(
+            [svc_a, svc_b], [job_a, job_b]
+        )
+        return time.monotonic() - started, result
+
+    elapsed, progress = asyncio.run(scenario())
+    assert elapsed < 0.6
+    assert progress == {
+        "job-a": {"decoded": 5},
+        "job-b": {"decoded": 5},
+    }

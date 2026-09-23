@@ -929,6 +929,50 @@ class _PlanState:
         return self._reload_from_disk(force=True)
 
 
+async def _service_slot_progress(
+    service: PlannedService,
+) -> dict[str, int] | None:
+    """Poll one service's /slots for unambiguous decode progress (llama.cpp).
+
+    Returns the progress dict, or None for every failure mode — non-200,
+    timeout, malformed body, count drift — so a dead backend only costs its
+    0.8s timeout, never a wrong value.
+    """
+    try:
+        async with httpx.AsyncClient(
+            base_url=_base_url(service), timeout=0.8
+        ) as client:
+            response = await client.get("/slots")
+        if response.status_code != 200:
+            return None
+        slots = response.json()
+    except (httpx.HTTPError, ValueError):
+        return None
+    if not isinstance(slots, list):
+        return None
+    processing = [
+        slot for slot in slots
+        if isinstance(slot, dict) and slot.get("is_processing") is True
+    ]
+    if len(processing) != 1:
+        return None
+    next_token = processing[0].get("next_token")
+    # /slots reports next_token as a one-element list.
+    if isinstance(next_token, list) and next_token:
+        token_info = next_token[0]
+    else:
+        token_info = next_token
+    progress: dict[str, int] = {}
+    if isinstance(token_info, dict):
+        decoded = _upstream_int(token_info.get("n_decoded"))
+        if decoded is not None:
+            progress["decoded"] = decoded
+        remaining = _upstream_int(token_info.get("n_remain"))
+        if remaining is not None:
+            progress["remaining"] = remaining
+    return progress or None
+
+
 async def _slot_progress(
     services: Sequence[PlannedService], entries: list[Job]
 ) -> dict[str, dict[str, int]]:
@@ -936,9 +980,8 @@ async def _slot_progress(
 
     A job is annotated only when the mapping is unambiguous: its service has
     exactly one running job here and the backend reports exactly one
-    processing slot. Every failure mode (non-llamacpp backend, /slots
-    disabled, timeout, count drift) leaves the field absent rather than
-    reporting a wrong value.
+    processing slot. Services are polled concurrently — each has its own
+    0.8s timeout, so N unreachable backends cost 0.8s total, not N×0.8s.
     """
     running: dict[str, list[Job]] = {}
     for job in entries:
@@ -946,7 +989,7 @@ async def _slot_progress(
             running.setdefault(job.service, []).append(job)
     if not running or httpx is None:
         return {}
-    out: dict[str, dict[str, int]] = {}
+    pollable: list[tuple[Job, PlannedService]] = []
     for service_name, service_jobs in running.items():
         if len(service_jobs) != 1:
             continue
@@ -955,41 +998,15 @@ async def _slot_progress(
         )
         if service is None or not _service_is_running_llamacpp(service):
             continue
-        try:
-            async with httpx.AsyncClient(
-                base_url=_base_url(service), timeout=0.8
-            ) as client:
-                response = await client.get("/slots")
-            if response.status_code != 200:
-                continue
-            slots = response.json()
-        except (httpx.HTTPError, ValueError):
-            continue
-        if not isinstance(slots, list):
-            continue
-        processing = [
-            slot for slot in slots
-            if isinstance(slot, dict) and slot.get("is_processing") is True
-        ]
-        if len(processing) != 1:
-            continue
-        next_token = processing[0].get("next_token")
-        # /slots reports next_token as a one-element list.
-        if isinstance(next_token, list) and next_token:
-            token_info = next_token[0]
-        else:
-            token_info = next_token
-        progress: dict[str, int] = {}
-        if isinstance(token_info, dict):
-            decoded = _upstream_int(token_info.get("n_decoded"))
-            if decoded is not None:
-                progress["decoded"] = decoded
-            remaining = _upstream_int(token_info.get("n_remain"))
-            if remaining is not None:
-                progress["remaining"] = remaining
-        if progress:
-            out[service_jobs[0].id] = progress
-    return out
+        pollable.append((service_jobs[0], service))
+    progresses = await asyncio.gather(
+        *(_service_slot_progress(service) for _, service in pollable)
+    )
+    return {
+        job.id: progress
+        for (job, _), progress in zip(pollable, progresses)
+        if progress is not None
+    }
 
 
 def create_app(
