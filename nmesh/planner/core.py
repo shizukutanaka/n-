@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -1839,6 +1839,33 @@ def _place_services(
             )
             cpu_fallback_warned.add(service.name)
 
+    # Resident ollama services should stay loaded; the daemon's default
+    # keep_alive unloads them after ~5 minutes of inactivity. The shared
+    # daemon cannot discriminate, so only pin when no ollama swap member
+    # exists, and respect a user-provided OLLAMA_KEEP_ALIVE.
+    ollama_resident_pin = (
+        any(s.backend == "ollama" and s.resident for s in services)
+        and not any(s.backend == "ollama" and not s.resident for s in services)
+        and not os.environ.get("OLLAMA_KEEP_ALIVE")
+    )
+
+    def _pin_ollama_keep_alive(service: PlannedService) -> PlannedService:
+        if (
+            not ollama_resident_pin
+            or service.backend != "ollama"
+            or "OLLAMA_KEEP_ALIVE" in service.launch.env
+        ):
+            return service
+        warnings.append(
+            t("note.ollama_keep_alive", policy.lang, service=service.name)
+        )
+        return replace(
+            service,
+            launch=replace(
+                service.launch,
+                env={**service.launch.env, "OLLAMA_KEEP_ALIVE": "-1"},
+            ),
+        )
     for service in ordered:
         original_layers = service.n_gpu_layers
         original_moe = service.n_cpu_moe
@@ -2079,7 +2106,9 @@ def _place_services(
         warn_cpu_fallback(current)
         placed[service.name] = current
         ram_used += current.memory.cpu_bytes
-    return [placed[service.name] for service in services]
+    return [
+        _pin_ollama_keep_alive(placed[service.name]) for service in services
+    ]
 
 
 SLOT_CAPS = {"llamacpp": 8, "vllm": 32, "mlx": 1, "ollama": 1}

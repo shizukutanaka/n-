@@ -1615,6 +1615,76 @@ def test_vllm_slots_and_total_vram_fraction() -> None:
     )
 
 
+def _ollama_only_backends() -> dict[str, str | None]:
+    return {"ollama": "x", "llamacpp": None, "vllm": None, "mlx": None}
+
+
+def test_ollama_keep_alive_pinned_for_resident_service() -> None:
+    model = ModelSpec(
+        "ollama-model", "test", 4_000_000_000, 32, 32, 8, 128,
+        2048, 4096, ["chat"], 80.0, "apache", {"ollama": "org/m"},
+    )
+    result = build_plan(
+        profile(64, (24,), backends=_ollama_only_backends()),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert service.backend == "ollama"
+    assert service.resident
+    assert service.launch.env.get("OLLAMA_KEEP_ALIVE") == "-1"
+
+
+def test_ollama_keep_alive_not_pinned_when_swap_member_present() -> None:
+    model = ModelSpec(
+        "ollama-model", "test", 4_000_000_000, 32, 32, 8, 128,
+        2048, 4096, ["chat"], 80.0, "apache", {"ollama": "org/m"},
+    )
+    result = build_plan(
+        profile(64, (24,), backends=_ollama_only_backends()),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    services = [
+        replace(
+            service,
+            resident=False,
+            launch=replace(
+                service.launch,
+                env={
+                    key: value
+                    for key, value in service.launch.env.items()
+                    if key != "OLLAMA_KEEP_ALIVE"
+                },
+            ),
+        )
+        for service in result.services
+    ]
+    placed = planner_core._place_services(
+        services, result.profile, result.policy,
+        [service.name for service in services], [],
+    )
+    assert all(
+        "OLLAMA_KEEP_ALIVE" not in service.launch.env for service in placed
+    )
+
+
+def test_ollama_keep_alive_respects_user_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OLLAMA_KEEP_ALIVE", "30m")
+    model = ModelSpec(
+        "ollama-model", "test", 4_000_000_000, 32, 32, 8, 128,
+        2048, 4096, ["chat"], 80.0, "apache", {"ollama": "org/m"},
+    )
+    result = build_plan(
+        profile(64, (24,), backends=_ollama_only_backends()),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert "OLLAMA_KEEP_ALIVE" not in result.services[0].launch.env
+
+
 def test_forced_slots_clamp_and_one_is_silent(catalog: list[ModelSpec]) -> None:
     small = build_plan(
         profile(32, (12,)), [
