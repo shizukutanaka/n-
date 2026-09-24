@@ -226,3 +226,62 @@ def test_swap_exclusive_pair_is_not_eligible(monkeypatch) -> None:
     message = response.json()["error"]["message"]
     assert "chat" in message and "worker" in message
     assert "mutually exclusive" in message
+
+
+def test_delegate_completion_registers_and_finishes_job(monkeypatch) -> None:
+    """Delegated completions appear in /v1/jobs like proxied requests —
+    they were invisible before, hiding in-flight and recent delegations."""
+    plan = _delegation_plan()
+    monkeypatch.setattr(
+        gateway_module, "load_cache", lambda: {"record": _record(plan)}
+    )
+
+    def fake_delegate(client, prompt, max_tokens, *, lead, worker, ledger):
+        del client, prompt, max_tokens
+        return Delegation(
+            "worker", True, False, False,
+            Call("worker", 3, 4, False, 0.0),
+            Call("YES", 5, 1, False, 0.0),
+        )
+
+    monkeypatch.setattr(gateway_module, "delegate", fake_delegate)
+    with TestClient(create_app(plan)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "nmesh-delegate",
+                  "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert response.status_code == 200
+        listing = client.get("/v1/jobs").json()
+        (entry,) = listing["jobs"]
+        assert entry["service"] == "nmesh-delegate"
+        assert entry["endpoint"] == "/v1/chat/completions"
+        assert entry["state"] == "done"
+        assert entry["started_at"] is not None
+        assert entry["finished_at"] is not None
+
+
+def test_delegate_completion_marks_job_failed_on_upstream_error(
+    monkeypatch,
+) -> None:
+    plan = _delegation_plan()
+    monkeypatch.setattr(
+        gateway_module, "load_cache", lambda: {"record": _record(plan)}
+    )
+
+    def fake_delegate(client, prompt, max_tokens, *, lead, worker, ledger):
+        del client, prompt, max_tokens, lead, worker, ledger
+        raise gateway_module.httpx.ConnectError("refused")
+
+    monkeypatch.setattr(gateway_module, "delegate", fake_delegate)
+    with TestClient(create_app(plan)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "nmesh-delegate",
+                  "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert response.status_code == 502
+        (entry,) = client.get("/v1/jobs").json()["jobs"]
+        assert entry["service"] == "nmesh-delegate"
+        assert entry["state"] == "failed"
+        assert "refused" in entry["detail"]
