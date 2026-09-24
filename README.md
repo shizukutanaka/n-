@@ -108,7 +108,9 @@ lower quantization is published, the runtime records that safe substitution in
 
 `nmesh run "<prompt>"` sends a one-shot chat request through the running
 gateway: the request's `model` is set to `nmesh-<role>`, so `--role` selects
-which planned service answers (default `chat`). `--stream` prints tokens as
+which planned service answers (default `chat`), while `--model` addresses a
+specific service name, role, or catalog model id directly.
+`--stream` prints tokens as
 they are generated and `--json` prints the raw response object.
 `nmesh jobs` lists the gateway's queued and running jobs (running jobs show
 live decode progress when the backend exposes it), and

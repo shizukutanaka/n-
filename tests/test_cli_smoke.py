@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import types
 
 import pytest
@@ -55,3 +56,36 @@ def test_version_reports_package_and_evidence_versions(
     assert "nmesh 0.1.0" in output
     assert f"bench={cli.BENCH_HARNESS_VERSION}" in output
     assert "probe_rules=" in output
+
+
+def test_run_prompt_model_overrides_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[bytes] = []
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self) -> bytes:
+            return (
+                b'{"choices": [{"message": {"content": "ok"}}]}'
+            )
+
+    def fake_urlopen(request, timeout=0):
+        sent.append(request.data)
+        return _FakeResponse()
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    args = types.SimpleNamespace(
+        model="qwen3-8b", role="chat", port=18000, json=True,
+        stream=False, prompt="hi",
+    )
+    assert cli._run_prompt(args) == 0
+    assert json.loads(sent[0])["model"] == "qwen3-8b"
+
+    sent.clear()
+    args.model = ""
+    assert cli._run_prompt(args) == 0
+    assert json.loads(sent[0])["model"] == "nmesh-chat"
