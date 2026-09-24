@@ -6,6 +6,7 @@ import socket
 import threading
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from typing import ClassVar
 
 import httpx
@@ -1045,3 +1046,35 @@ def test_gateway_injects_usage_for_vllm_and_ollama_streams(monkeypatch) -> None:
         _UsageHandler.request_body = {}
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_service_running_check_memoizes_runtime_status(monkeypatch) -> None:
+    """The per-request llamacpp gate must not rebuild full runtime status on
+    every call — a 1s memo bounds it (status endpoints stay fresh)."""
+    model = ModelSpec("memo-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = plan.services[0]
+    calls = 0
+
+    def fake_status() -> object:
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(services=[{
+            "service": service.name,
+            "running": True,
+            "backend": "llamacpp",
+        }])
+
+    monkeypatch.setattr(gateway_module, "runtime_status", fake_status)
+    monkeypatch.setattr(gateway_module, "_runtime_status_cache", None)
+    assert gateway_module._service_is_running_llamacpp(service) is True
+    assert gateway_module._service_is_running_llamacpp(service) is True
+    assert calls == 1
+    # stale cache entry forces a refresh
+    cached = gateway_module._runtime_status_cache
+    monkeypatch.setattr(
+        gateway_module, "_runtime_status_cache", (0.0, cached[1])
+    )
+    assert gateway_module._service_is_running_llamacpp(service) is True
+    assert calls == 2

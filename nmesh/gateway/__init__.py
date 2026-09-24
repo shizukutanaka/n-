@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -36,7 +37,7 @@ from nmesh.orchestrate import (
     load_cache,
 )
 from nmesh.planner import PLAN_PATH, Plan, PlannedService, load_plan
-from nmesh.runtime import ensure_running, heartbeat, idle_services, unload
+from nmesh.runtime import RuntimeStatus, ensure_running, heartbeat, idle_services, unload
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime.logs import log_path
 from nmesh.runtime.logs import tail as tail_log
@@ -553,11 +554,35 @@ def _chat_service(plan: Plan) -> PlannedService | None:
     return next((item for item in plan.services if item.name == name), None)
 
 
+# runtime_status() rebuilds the full supervisor status — state parse plus
+# per-daemon health probes — so the per-request gates below share a one-second
+# memo instead of paying that cost for every call (and once per running job in
+# the /v1/jobs progress loop). Admin/status endpoints keep calling
+# runtime_status() directly so they always report fresh state.
+_RUNTIME_STATUS_TTL = 1.0
+_runtime_status_lock = threading.Lock()
+_runtime_status_cache: tuple[float, RuntimeStatus] | None = None
+
+
+def _runtime_status() -> RuntimeStatus:
+    global _runtime_status_cache
+    now = time.monotonic()
+    with _runtime_status_lock:
+        if (
+            _runtime_status_cache is not None
+            and now - _runtime_status_cache[0] < _RUNTIME_STATUS_TTL
+        ):
+            return _runtime_status_cache[1]
+        status = runtime_status()
+        _runtime_status_cache = (now, status)
+        return status
+
+
 def _service_is_running_llamacpp(service: PlannedService) -> bool:
     if service.backend != "llamacpp":
         return False
     try:
-        runtime = runtime_status()
+        runtime = _runtime_status()
     except (OSError, ValueError, RuntimeError):
         return False
     return any(
@@ -1005,6 +1030,8 @@ def create_app(
 ) -> FastAPIApp:
     if FastAPI is None:
         raise ImportError("Install nmesh[gateway] to use the gateway")
+    global _runtime_status_cache
+    _runtime_status_cache = None
     explicit = plan is not None
     selected = plan if explicit else load_plan(PLAN_PATH)
     if selected is None:
