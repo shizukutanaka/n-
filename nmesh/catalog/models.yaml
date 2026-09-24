@@ -277,6 +277,24 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: nemotron-mini-4b-instruct
+  family: nemotron
+  params: 4000000000
+  n_layers: 32
+  n_heads: 24
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 3072
+  vocab_size: 256000
+  head_layout: separate
+  max_context: 4096
+  roles: [chat]
+  quality: 52
+  license: nvidia-open-model-license
+  languages: [en]
+  sources:
+    hf_gguf: "bartowski/Nemotron-Mini-4B-Instruct-GGUF"
+    hf: "nvidia/Nemotron-Mini-4B-Instruct"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
