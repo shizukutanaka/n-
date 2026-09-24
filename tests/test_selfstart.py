@@ -263,12 +263,18 @@ def test_ignored_up_plan_flags_lists_nondefaults() -> None:
     ) == ["--kv-quant", "--cache-reuse"]
 
 
+def _saved_profile() -> SimpleNamespace:
+    return SimpleNamespace(gpus=[], total_ram_bytes=0)
+
+
 def test_saved_plan_warns_when_up_flags_ignored(monkeypatch, capsys) -> None:
     saved = SimpleNamespace(
         services=[object()], runnable=True,
         launch_revision=LAUNCH_REVISION,
+        profile=_saved_profile(),
     )
     monkeypatch.setattr(cli, "load_plan", lambda: saved)
+    monkeypatch.setattr(cli, "detect_hardware", _saved_profile)
     assert cli._ensure_runnable_plan(_up_args(context_shift=True)) is saved
     assert "--context-shift" in capsys.readouterr().err
 
@@ -276,8 +282,10 @@ def test_saved_plan_warns_when_up_flags_ignored(monkeypatch, capsys) -> None:
 def test_saved_plan_warns_when_launch_revision_stale(monkeypatch, capsys) -> None:
     saved = SimpleNamespace(
         services=[object()], runnable=True, launch_revision=0,
+        profile=_saved_profile(),
     )
     monkeypatch.setattr(cli, "load_plan", lambda: saved)
+    monkeypatch.setattr(cli, "detect_hardware", _saved_profile)
     assert cli._ensure_runnable_plan(_up_args()) is saved
     err = capsys.readouterr().err
     assert "older nmesh" in err
@@ -288,10 +296,31 @@ def test_saved_plan_at_current_revision_stays_silent(monkeypatch, capsys) -> Non
     saved = SimpleNamespace(
         services=[object()], runnable=True,
         launch_revision=LAUNCH_REVISION,
+        profile=_saved_profile(),
     )
     monkeypatch.setattr(cli, "load_plan", lambda: saved)
+    monkeypatch.setattr(cli, "detect_hardware", _saved_profile)
     assert cli._ensure_runnable_plan(_up_args()) is saved
     assert "older nmesh" not in capsys.readouterr().err
+
+
+def test_saved_plan_warns_on_hardware_drift(monkeypatch, capsys) -> None:
+    gpu = SimpleNamespace(index=0, total_vram_bytes=24 * 2**30)
+    saved = SimpleNamespace(
+        services=[object()], runnable=True,
+        launch_revision=LAUNCH_REVISION,
+        profile=SimpleNamespace(gpus=[gpu], total_ram_bytes=64 * 2**30),
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: saved)
+    monkeypatch.setattr(
+        cli,
+        "detect_hardware",
+        lambda: SimpleNamespace(gpus=[], total_ram_bytes=64 * 2**30),
+    )
+    assert cli._ensure_runnable_plan(_up_args()) is saved
+    err = capsys.readouterr().err
+    assert "GPU(s) removed: 0" in err
+    assert "nmesh plan" in err
 
 
 def test_plan_roundtrip_preserves_launch_revision(

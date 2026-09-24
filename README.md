@@ -222,7 +222,11 @@ the persisted plan stable as a capability description.
 
 At launch, `nmesh up` proactively checks current free memory and replans when
 the saved plan no longer fits. Use `nmesh up --ignore-free-memory` to skip that
-check and rely on the normal runtime fallback ladder. `nmesh doctor` displays
+check and rely on the normal runtime fallback ladder. `nmesh up` also warns
+when the hardware itself drifted since `nmesh plan` — a GPU added or removed,
+>5% VRAM total change, or >10% RAM change — since a stale plan may commit
+placements that can no longer launch (re-run `nmesh plan` to re-fit).
+`nmesh doctor` displays
 each GPU's total/free VRAM and the resulting free VRAM/RAM budgets.
 
 ## State and port environment variables
