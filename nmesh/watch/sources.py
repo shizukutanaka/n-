@@ -12,6 +12,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
@@ -139,6 +140,7 @@ def fetch_zenn(
     try:
         items: list[SourceItem] = []
         yields: list[str] = []
+        entries: list[tuple[Mapping[str, object], str]] = []
         for topic in topics:
             response = session.get(
                 "https://zenn.dev/api/articles",
@@ -161,16 +163,32 @@ def fetch_zenn(
                 path = _text(article.get("path"))
                 if not path:
                     continue
-                url = f"https://zenn.dev{path}"
-                page = session.get(url)
-                page.raise_for_status()
-                items.append(SourceItem(
-                    "zenn",
-                    url,
-                    _text(article.get("title")),
-                    _strip_html(page.text),
-                    _text(article.get("published_at") or article.get("publishedAt")),
-                ))
+                entries.append((article, f"https://zenn.dev{path}"))
+        # Article pages are independent reads — fetch them concurrently
+        # (httpx.Client is thread-safe) instead of one request per article.
+        # The first failed page surfaces the same exception the serial loop
+        # raised, after the pool joins.
+        def fetch_page(
+            entry: tuple[Mapping[str, object], str],
+        ) -> tuple[Mapping[str, object], str, httpx.Response]:
+            article, url = entry
+            return article, url, session.get(url)
+
+        workers = min(6, len(entries))
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                pages = list(pool.map(fetch_page, entries))
+        else:
+            pages = [fetch_page(entry) for entry in entries]
+        for article, url, page in pages:
+            page.raise_for_status()
+            items.append(SourceItem(
+                "zenn",
+                url,
+                _text(article.get("title")),
+                _strip_html(page.text),
+                _text(article.get("published_at") or article.get("publishedAt")),
+            ))
         selected = _unique_items(items)
         return SourceStatus(
             "zenn",

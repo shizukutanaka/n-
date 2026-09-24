@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -596,3 +598,41 @@ def test_cli_state_deduplication_and_all_override(tmp_path: Path, monkeypatch, c
     assert main(["watch", "--offline", str(items), "--all", "--json"]) == 0
     third = json.loads(capsys.readouterr().out)
     assert third["new_findings"] == 1
+
+
+def test_zenn_fetches_article_pages_concurrently() -> None:
+    """Each article page is an independent fetch — fetch_zenn resolves them
+    concurrently instead of one request per article, preserving order."""
+    in_flight = [0]
+    max_in_flight = [0]
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/articles":
+            return httpx.Response(200, json={
+                "articles": [
+                    {"path": "/a/one", "title": "one"},
+                    {"path": "/a/two", "title": "two"},
+                    {"path": "/a/three", "title": "three"},
+                ],
+            })
+        with lock:
+            in_flight[0] += 1
+            max_in_flight[0] = max(max_in_flight[0], in_flight[0])
+        try:
+            time.sleep(0.05)
+            return httpx.Response(
+                200, text=f"<p>body-{request.url.path}</p>"
+            )
+        finally:
+            with lock:
+                in_flight[0] -= 1
+
+    status, items = fetch_zenn(("llm",), 3, _client(handler))
+    assert status.reachable is True
+    assert max_in_flight[0] >= 2
+    assert [item.url for item in items] == [
+        "https://zenn.dev/a/one",
+        "https://zenn.dev/a/two",
+        "https://zenn.dev/a/three",
+    ]
