@@ -324,6 +324,20 @@ def _service(plan: Plan, name: str) -> PlannedService:
     return service
 
 
+def _tokenize_service(request: dict[str, object], plan: Plan) -> PlannedService:
+    name = (
+        _explicit(request.get("model"), plan)
+        or plan.routing.role_to_service.get("chat")
+        or (plan.services[0].name if plan.services else "")
+    )
+    if not name:
+        raise HTTPException(
+            status_code=501,
+            detail="this plan has no services",
+        )
+    return _service(plan, name)
+
+
 def _embed_input_caps(plan: Plan) -> dict[tuple[str, str, str], int]:
     services = [service for service in plan.services if service.roles == ["embed"]]
     if not services:
@@ -2129,6 +2143,26 @@ def create_app(
         service = _service(selected, name)
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/rerank", instrument=False
+        )
+
+    @app.post("/v1/tokenize")
+    async def tokenize(request: dict[str, object]) -> object:
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
+        service = _tokenize_service(request, selected)
+        return await proxy(
+            request, service, selected, telemetry_keys, "/tokenize",
+            instrument=False,
+        )
+
+    @app.post("/v1/detokenize")
+    async def detokenize(request: dict[str, object]) -> object:
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
+        service = _tokenize_service(request, selected)
+        return await proxy(
+            request, service, selected, telemetry_keys, "/detokenize",
+            instrument=False,
         )
 
     return app

@@ -174,6 +174,28 @@ class _RerankHandler(BaseHTTPRequestHandler):
         return
 
 
+class _TokenizeHandler(BaseHTTPRequestHandler):
+    request_body: ClassVar[dict[str, object]] = {}
+    path_seen: ClassVar[str] = ""
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.__class__.request_body = json.loads(self.rfile.read(length))
+        self.__class__.path_seen = self.path
+        if self.path == "/tokenize":
+            payload = b'{"tokens":[1,2,3]}'
+        else:
+            payload = b'{"content":"abc"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 def test_gateway_rerank_proxies_to_rerank_service() -> None:
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), _RerankHandler)
     thread = threading.Thread(target=upstream.serve_forever, daemon=True)
@@ -212,6 +234,57 @@ def test_gateway_rerank_501_without_rerank_service() -> None:
     })
     assert response.status_code == 501
     assert "rerank" in response.text
+
+
+def test_gateway_tokenize_proxies_to_chat_service() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TokenizeHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec("chat-model", "test", 500_000_000, 24, 16, 2, 64,
+                          1024, 4096, ["chat"], 80.0, "test",
+                          {"hf_gguf": "test/repo"})
+        plan = build_plan(
+            profile(64, (24,)), [model], Policy(roles=["chat"]),
+        )
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        client = TestClient(create_app(plan))
+        response = client.post("/v1/tokenize", json={
+            "model": "nmesh-auto", "content": "hello world",
+        })
+        assert response.status_code == 200
+        assert response.json()["tokens"] == [1, 2, 3]
+        assert _TokenizeHandler.path_seen == "/tokenize"
+        assert _TokenizeHandler.request_body["content"] == "hello world"
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_detokenize_proxies_to_chat_service() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TokenizeHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec("chat-model", "test", 500_000_000, 24, 16, 2, 64,
+                          1024, 4096, ["chat"], 80.0, "test",
+                          {"hf_gguf": "test/repo"})
+        plan = build_plan(
+            profile(64, (24,)), [model], Policy(roles=["chat"]),
+        )
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        client = TestClient(create_app(plan))
+        response = client.post("/v1/detokenize", json={
+            "model": "nmesh-auto", "tokens": [1, 2, 3],
+        })
+        assert response.status_code == 200
+        assert response.json()["content"] == "abc"
+        assert _TokenizeHandler.path_seen == "/detokenize"
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
 
 
 class _AnthropicHandler(BaseHTTPRequestHandler):
