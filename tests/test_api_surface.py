@@ -445,6 +445,14 @@ def test_openai_model_listing_and_detail() -> None:
         assert missing.json()["error"]["code"] == 404
 
 
+def test_model_detail_resolves_routing_names() -> None:
+    plan = _completion_plan(1)
+    with TestClient(create_app(plan)) as client:
+        detail = client.get("/v1/models/chat")
+        assert detail.status_code == 200
+        assert detail.json()["id"] == "nmesh-chat"
+
+
 def test_reserved_tokens_uses_larger_completion_limit() -> None:
     assert gateway_module._reserved_tokens({"max_completion_tokens": 8}) == 8
     assert gateway_module._reserved_tokens({
