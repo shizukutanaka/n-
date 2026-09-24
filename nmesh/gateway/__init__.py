@@ -2106,7 +2106,11 @@ def create_app(
     async def embeddings(request: dict[str, object]) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
-        service = _service(selected, selected.routing.role_to_service.get("embed", ""))
+        service = _service(
+            selected,
+            _explicit(request.get("model"), selected)
+            or selected.routing.role_to_service.get("embed", ""),
+        )
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/embeddings", instrument=False
         )
