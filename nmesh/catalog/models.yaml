@@ -277,6 +277,26 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: magistral-small-2506
+  family: magistral
+  params: 23600000000
+  n_layers: 40
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 5120
+  vocab_size: 131072
+  head_layout: separate
+  max_context: 40960
+  roles: [chat, math]
+  quality: 76
+  license: apache-2.0
+  languages: [en]
+  sources:
+    ollama: "magistral:24b"
+    hf_gguf: "bartowski/Magistral-Small-2506-GGUF"
+    hf: "mistralai/Magistral-Small-2506"
+    hf_mlx: "mlx-community/Magistral-Small-2506-4bit"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
