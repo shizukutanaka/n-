@@ -1890,7 +1890,11 @@ def create_app(
         if worker is not None and decision == "allow":
             ids.add("nmesh-delegate")
         if model_id not in ids:
-            raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
+            resolved = _explicit(model_id, selected)
+            if resolved is None:
+                raise HTTPException(status_code=404,
+                                    detail=f"Unknown model: {model_id}")
+            model_id = f"nmesh-{resolved}"
         return {
             "id": model_id,
             "object": "model",
