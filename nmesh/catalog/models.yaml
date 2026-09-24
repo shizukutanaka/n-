@@ -277,6 +277,31 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: hunyuan-a13b-instruct
+  family: hunyuan-moe
+  params: 80000000000
+  n_layers: 32
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 128167
+  head_layout: shared
+  # Sparse MoE: all 32 layers route top-8 of 64 experts plus 1 shared
+  # expert (3x4096x3072 params each) — 13B active of 80B total per the
+  # vendor, so dense tensors fit smaller GPUs while ~77B of routed
+  # experts stream from RAM under --n-cpu-moe.
+  active_params: 13000000000
+  moe_expert_params: 77309411328
+  n_moe_layers: 32
+  max_context: 32768
+  roles: [chat]
+  quality: 72
+  license: tencent-hunyuan
+  languages: [en, zh]
+  sources:
+    hf_gguf: "bartowski/tencent_Hunyuan-A13B-Instruct-GGUF"
+    hf: "tencent/Hunyuan-A13B-Instruct"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
