@@ -1257,7 +1257,8 @@ class Supervisor:
                     self._sleep_probe = None
             raise RuntimeError(i18n.t("err.runtime_start", i18n.lang()))
 
-    def down(self, foreign: bool = False, gateway_port: int | None = None) -> RuntimeStatus:
+    def down(self, foreign: bool = False, gateway_port: int | None = None,
+             dry_run: bool = False) -> RuntimeStatus:
         swept: int | None = None
         stopped: list[dict[str, object]] = []
         seen_stopped: set[str] = set()
@@ -1288,12 +1289,13 @@ class Supervisor:
                         and self._entry_alive(gateway)
                         and gateway.get("pid") is not None
                     ):
-                        self._terminator(int(gateway["pid"]))
+                        if not dry_run:
+                            self._terminator(int(gateway["pid"]))
                         swept = int(gateway["pid"])
                         report("gateway", {"pid": swept, "port": gateway_port})
             # A gateway owns the watchdog that respawns services — kill it
             # (recorded or orphaned) before touching service processes.
-            if foreign and self._sweep_gateway(gateway_port, swept) is not None:
+            if foreign and self._sweep_gateway(gateway_port, swept, dry_run) is not None:
                 report("gateway", {"port": gateway_port})
             # state.json may be lost while plan.json survives — reclaim
             # service orphans still bound to their planned ports.
@@ -1309,7 +1311,8 @@ class Supervisor:
                         continue
                     orphan_pid = engine_listener_pid(service.port)
                     if orphan_pid is not None:
-                        self._terminator(orphan_pid)
+                        if not dry_run:
+                            self._terminator(orphan_pid)
                         report(service.name, {
                             "pid": orphan_pid,
                             "port": service.port,
@@ -1320,7 +1323,8 @@ class Supervisor:
             for name, record in self.adopted.items():
                 pid = record.get("pid")
                 if isinstance(pid, int) and not isinstance(pid, bool):
-                    self._terminator(pid)
+                    if not dry_run:
+                        self._terminator(pid)
                     report(name, record)
             for name, process in list(self.processes.items()):
                 report_fields: dict[str, object] = {"pid": process.pid}
@@ -1342,6 +1346,9 @@ class Supervisor:
                         "backend": planned.backend,
                     })
                 if process.poll() is not None:
+                    report(name, report_fields)
+                    continue
+                if dry_run:
                     report(name, report_fields)
                     continue
                 if is_windows():
@@ -1382,39 +1389,44 @@ class Supervisor:
                     if owner == os.getpid():
                         continue
                     if foreign and entry.get("pid") is not None and self._entry_alive(entry):
-                        self._terminator(int(entry["pid"]))
+                        if not dry_run:
+                            self._terminator(int(entry["pid"]))
                         report(str(entry.get("service")), entry)
                         continue
                     if self._entry_alive(entry):
                         retained.append(entry)
                 state["services"] = retained
-                if retained or gateway_retained:
-                    self._write_state(state)
-                else:
-                    try:
-                        self.state_path.unlink()
-                    except FileNotFoundError:
-                        pass
-            self.processes.clear()
-            self.launched_argv.clear()
-            self.notes.clear()
-            self.shared_services.clear()
-            self.external_shared.clear()
-            self.adopted.clear()
-            self.idle.clear()
-            self.sleeping.clear()
-            self.restarts.clear()
-            self.failed.clear()
-            self.active_plan = None
+                if not dry_run:
+                    if retained or gateway_retained:
+                        self._write_state(state)
+                    else:
+                        try:
+                            self.state_path.unlink()
+                        except FileNotFoundError:
+                            pass
+            if not dry_run:
+                self.processes.clear()
+                self.launched_argv.clear()
+                self.notes.clear()
+                self.shared_services.clear()
+                self.external_shared.clear()
+                self.adopted.clear()
+                self.idle.clear()
+                self.sleeping.clear()
+                self.restarts.clear()
+                self.failed.clear()
+                self.active_plan = None
         return RuntimeStatus(False, stopped)
 
-    def _sweep_gateway(self, port: int | None, swept: int | None) -> int | None:
+    def _sweep_gateway(self, port: int | None, swept: int | None,
+                       dry_run: bool = False) -> int | None:
         """Terminate an nmesh gateway still listening on *port* that state missed."""
         if port is None:
             return None
         orphan = gateway_listener_pid(port)
         if orphan is not None and orphan != swept:
-            self._terminator(orphan)
+            if not dry_run:
+                self._terminator(orphan)
             return orphan
         return None
 
@@ -1941,8 +1953,9 @@ def up(plan: Plan | None = None, no_download: bool = False, dry_run: bool = Fals
     )
 
 
-def down(foreign: bool = False, gateway_port: int | None = None) -> RuntimeStatus:
-    return _default.down(foreign=foreign, gateway_port=gateway_port)
+def down(foreign: bool = False, gateway_port: int | None = None,
+         dry_run: bool = False) -> RuntimeStatus:
+    return _default.down(foreign=foreign, gateway_port=gateway_port, dry_run=dry_run)
 
 
 def unload(service_name: str) -> bool:
