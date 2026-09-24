@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -259,8 +260,12 @@ def cache_path(path: Path | None = None) -> Path:
     return path or (nmesh_home() / "delegation.json")
 
 
-def load_cache(path: Path | None = None) -> dict[str, DelegationRecord]:
-    target = cache_path(path)
+_CACHE_LOCK = threading.Lock()
+_CACHE_STAMP: tuple[int, int, str] | None = None
+_CACHE_DATA: dict[str, DelegationRecord] = {}
+
+
+def _load_file(target: Path) -> dict[str, DelegationRecord]:
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
@@ -273,6 +278,33 @@ def load_cache(path: Path | None = None) -> dict[str, DelegationRecord]:
         for key, value in results.items()
         if (parsed := _parse(value)) is not None
     }
+
+
+def load_cache(path: Path | None = None) -> dict[str, DelegationRecord]:
+    """Return the delegation cache, re-parsing only when the file changed.
+
+    The gateway's delegation gate calls this on every models-list and
+    delegated completion, which re-parsed delegation.json per request. A
+    cheap (mtime, size) stamp check reuses the previous parse; callers get
+    a shallow copy so they can't mutate the cached entries.
+    """
+    global _CACHE_STAMP, _CACHE_DATA
+    target = cache_path(path)
+    if path is not None:
+        # Explicit test/CLI paths bypass the shared default-path cache.
+        return _load_file(target)
+    try:
+        stat = target.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size, str(target))
+    except OSError:
+        stamp = None
+    with _CACHE_LOCK:
+        if stamp == _CACHE_STAMP:
+            return dict(_CACHE_DATA)
+        data = _load_file(target)
+        _CACHE_STAMP = stamp
+        _CACHE_DATA = data
+        return dict(data)
 
 
 def save(

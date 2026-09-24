@@ -423,6 +423,50 @@ def test_delegation_record_round_trip_defaults_and_validation(tmp_path: Path) ->
         assert load_cache(path) == {}
 
 
+def test_delegation_load_cache_reuses_parse_until_file_changes(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The gateway's delegation gate calls load_cache() per request; the
+    default-path cache must re-parse only when delegation.json changes."""
+    import nmesh.orchestrate.record as record_module
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("NMESH_HOME", str(home))
+    record_module._CACHE_STAMP = None
+    record_module._CACHE_DATA = {}
+    calls: list[Path] = []
+    real_load = record_module._load_file
+    monkeypatch.setattr(
+        record_module,
+        "_load_file",
+        lambda target: (calls.append(target), real_load(target))[1],
+    )
+    record = from_run(
+        _record_run(),
+        reference_id="ref",
+        reference_tps=40.0,
+        epoch="healthy",
+    )
+    target = record_module.cache_path()
+    save_all({"key": record}, target)
+
+    assert load_cache()["key"] == record
+    assert load_cache()["key"] == record
+    assert calls == [target]
+    # Mutating the returned dict must not leak into the cache.
+    load_cache()["key"] = record  # type: ignore[index]
+    assert len(calls) == 1
+
+    changed = json.loads(target.read_text(encoding="utf-8"))
+    changed["results"]["key"]["worker_passed"] += 1
+    target.write_text(json.dumps(changed), encoding="utf-8")
+    mtime = target.stat().st_mtime_ns + 1_000_000_000
+    import os
+    os.utime(target, ns=(mtime, mtime))
+    assert load_cache()["key"].worker_passed == record.worker_passed + 1
+    assert len(calls) == 2
+
+
 def test_orchestrate_measure_rejects_embed_only_fallback_worker(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
