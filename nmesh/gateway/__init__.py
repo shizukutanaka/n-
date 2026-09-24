@@ -1459,9 +1459,15 @@ def create_app(
                     await _record_prompt_calibration(service, request, usage)
             return StreamingResponse(
                 stream(), media_type="text/event-stream",
-                headers=(
-                    {"X-Nmesh-Job-Id": job.id} if job is not None else {}
-                ),
+                # Disable proxy buffering/caching so token chunks arrive as
+                # they are generated when the gateway is fronted by
+                # nginx/Caddy — without these a proxy can hold the whole
+                # stream and deliver it in one blob.
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                    **({"X-Nmesh-Job-Id": job.id} if job is not None else {}),
+                },
             )
         try:
             async def post_upstream(payload: Mapping[str, object]) -> httpx.Response:

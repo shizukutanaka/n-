@@ -1045,3 +1045,29 @@ def test_gateway_injects_usage_for_vllm_and_ollama_streams(monkeypatch) -> None:
         _UsageHandler.request_body = {}
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_stream_response_sets_no_buffering_headers() -> None:
+    """SSE responses must advertise no-buffer/no-cache so a fronting proxy
+    delivers token chunks as they are generated."""
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec("headers-model", "test", 500_000_000, 24, 16, 2, 64,
+                          1024, 4096, ["chat"], 80.0, "test",
+                          {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+        response = client.post("/v1/chat/completions", json={
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert response.headers["X-Accel-Buffering"] == "no"
+        assert response.headers["Cache-Control"] == "no-cache"
+        assert response.headers["Content-Type"].startswith("text/event-stream")
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
