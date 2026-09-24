@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import httpx
@@ -78,6 +80,7 @@ def run(
     cache_prompt: bool | None = None,
     depth: int = 0,
     on_outcome: Callable[[TaskOutcome], None] | None = None,
+    parallel: int = 1,
 ) -> EvalRun:
     """Ask each task and grade the answer text.
 
@@ -100,81 +103,114 @@ def run(
     observed episode. This prevents the 62-second prefill at about 15k tokens
     from colliding with the 62-second budget of a 64-token task.
     """
+    items = list(tasks)
+
+    def _run_one(
+        client: httpx.Client, task: Task
+    ) -> tuple[TaskOutcome, int | None]:
+        transport = False
+        reported: int | None = None
+        request_timeout = (
+            timeout
+            if timeout is not None
+            else 30.0 + (
+                task.max_tokens + max(0, reasoning_allowance)
+            ) / 2.0 + depth / 20.0
+        )
+        try:
+            prompt = (
+                padded_prompt(task.prompt, depth, f"{task.id}|{depth}")
+                if depth > 0 and not task.category.startswith("context.")
+                else task.prompt
+            )
+            request: dict[str, object] = {
+                "model": model_ref,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": task.max_tokens + max(0, reasoning_allowance),
+                "temperature": 0,
+                "stream": False,
+            }
+            if cache_prompt is not None:
+                request["cache_prompt"] = cache_prompt
+            response = client.post(
+                f"{base_url.rstrip('/')}/v1/chat/completions",
+                json=request,
+                timeout=request_timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            usage = payload.get("usage") if isinstance(payload, dict) else None
+            value = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                reported = value
+            choices = payload.get("choices") if isinstance(payload, dict) else None
+            first = choices[0] if isinstance(choices, list) and choices else None
+            message = first.get("message") if isinstance(first, dict) else None
+            text = _output(message.get("content") if isinstance(message, dict) else None)
+            finish = first.get("finish_reason") if isinstance(first, dict) else None
+            unscorable = finish == "length" and not text.strip()
+            passed = False if unscorable else bool(task.check(text))
+        except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as error:
+            transport = True
+            text = _error(error)
+            passed = False
+            unscorable = False
+        value_passed = (
+            None
+            if transport or unscorable or task.value_check is None
+            else bool(task.value_check(text))
+        )
+        outcome = TaskOutcome(
+            task.id,
+            task.category,
+            passed,
+            text[:200],
+            unscorable,
+            value_passed,
+            "transport"
+            if transport
+            else _failure_kind(task, passed, unscorable, value_passed),
+        )
+        return outcome, reported
+
+    workers = max(1, int(parallel))
+    results: list[tuple[TaskOutcome, int | None]] = []
+    if workers == 1:
+        with httpx.Client() as client:
+            for task in items:
+                results.append(_run_one(client, task))
+    else:
+        # Each worker thread owns one keep-alive client; pool.map preserves
+        # task order so on_outcome progress stays sequential and deterministic.
+        thread_clients = threading.local()
+        owned_clients: list[httpx.Client] = []
+
+        def _worker_client() -> httpx.Client:
+            client = getattr(thread_clients, "client", None)
+            if client is None:
+                client = httpx.Client()
+                owned_clients.append(client)
+                thread_clients.client = client
+            return client
+
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                results = list(pool.map(lambda t: _run_one(_worker_client(), t), items))
+        finally:
+            for client in owned_clients:
+                client.close()
+
     outcomes: list[TaskOutcome] = []
     transport_errors = 0
     prompt_tokens_max = 0
-    with httpx.Client() as client:
-        for task in tasks:
-            transport = False
-            request_timeout = (
-                timeout
-                if timeout is not None
-                else 30.0 + (
-                    task.max_tokens + max(0, reasoning_allowance)
-                ) / 2.0 + depth / 20.0
-            )
-            try:
-                prompt = (
-                    padded_prompt(task.prompt, depth, f"{task.id}|{depth}")
-                    if depth > 0 and not task.category.startswith("context.")
-                    else task.prompt
-                )
-                request: dict[str, object] = {
-                    "model": model_ref,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": task.max_tokens + max(0, reasoning_allowance),
-                    "temperature": 0,
-                    "stream": False,
-                }
-                if cache_prompt is not None:
-                    request["cache_prompt"] = cache_prompt
-                response = client.post(
-                    f"{base_url.rstrip('/')}/v1/chat/completions",
-                    json=request,
-                    timeout=request_timeout,
-                )
-                response.raise_for_status()
-                payload = response.json()
-                usage = payload.get("usage") if isinstance(payload, dict) else None
-                reported = usage.get("prompt_tokens") if isinstance(usage, dict) else None
-                if (
-                    isinstance(reported, int)
-                    and not isinstance(reported, bool)
-                    and reported >= 0
-                ):
-                    prompt_tokens_max = max(prompt_tokens_max, reported)
-                choices = payload.get("choices") if isinstance(payload, dict) else None
-                first = choices[0] if isinstance(choices, list) and choices else None
-                message = first.get("message") if isinstance(first, dict) else None
-                text = _output(message.get("content") if isinstance(message, dict) else None)
-                finish = first.get("finish_reason") if isinstance(first, dict) else None
-                unscorable = finish == "length" and not text.strip()
-                passed = False if unscorable else bool(task.check(text))
-            except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as error:
-                transport_errors += 1
-                transport = True
-                text = _error(error)
-                passed = False
-                unscorable = False
-            value_passed = (
-                None
-                if transport or unscorable or task.value_check is None
-                else bool(task.value_check(text))
-            )
-            outcome = TaskOutcome(
-                task.id,
-                task.category,
-                passed,
-                text[:200],
-                unscorable,
-                value_passed,
-                "transport"
-                if transport
-                else _failure_kind(task, passed, unscorable, value_passed),
-            )
-            outcomes.append(outcome)
-            if on_outcome is not None:
-                on_outcome(outcome)
+    for outcome, reported in results:
+        outcomes.append(outcome)
+        if outcome.failure_kind == "transport":
+            transport_errors += 1
+        if reported is not None:
+            prompt_tokens_max = max(prompt_tokens_max, reported)
+        if on_outcome is not None:
+            on_outcome(outcome)
     if outcomes and transport_errors == len(outcomes):
         raise RuntimeError("all evaluation tasks failed at transport level")
     passed_count: int = sum(outcome.passed for outcome in outcomes)

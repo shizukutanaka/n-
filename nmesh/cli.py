@@ -2650,6 +2650,7 @@ def _eval(args: argparse.Namespace) -> int:
             cache_prompt=False if service.backend == "llamacpp" else None,
             depth=depth,
             on_outcome=_eval_progress(len(tasks)),
+            parallel=service.memory.parallel_slots,
         )
     except RuntimeError as error:
         print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
@@ -2685,6 +2686,7 @@ def _eval(args: argparse.Namespace) -> int:
                 cache_prompt=False if service.backend == "llamacpp" else None,
                 depth=0,
                 on_outcome=_eval_progress(len(control_tasks)),
+                parallel=service.memory.parallel_slots,
             )
         except RuntimeError as error:
             print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
@@ -2699,6 +2701,7 @@ def _eval(args: argparse.Namespace) -> int:
                 cache_prompt=False if service.backend == "llamacpp" else None,
                 depth=depth,
                 on_outcome=_eval_progress(len(probes)),
+                parallel=service.memory.parallel_slots,
             )
         except RuntimeError as error:
             print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
@@ -2713,6 +2716,7 @@ def _eval(args: argparse.Namespace) -> int:
                 cache_prompt=False if service.backend == "llamacpp" else None,
                 depth=0,
                 on_outcome=_eval_progress(len(control_tasks)),
+                parallel=service.memory.parallel_slots,
             )
         except RuntimeError as error:
             print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
