@@ -1136,7 +1136,7 @@ class Supervisor:
                     )
             self.active_plan = current
             self._drop_unplanned(current)
-            for attempt in range(1, 4):
+            for attempt in range(1, 5):
                 self._sleep_probe = self._probe_sleeping(current.services)
                 try:
                     for index in range(len(current.services)):
@@ -1250,7 +1250,7 @@ class Supervisor:
                     return result
                 except (OSError, RuntimeError):
                     self.down()
-                    if attempt == 3:
+                    if attempt == 4:
                         raise
                     current = self._fallback(current, attempt)
                 finally:
