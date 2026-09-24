@@ -310,6 +310,7 @@ MESSAGES = {
         "label.unloaded": "Unloaded: {services}",
         "label.service_idle": "{service}: idle",
         "label.service_sleeping": "{service}: asleep (wake on next request)",
+        "label.service_restart_pending": "{service}: stopped — restart scheduled in {seconds}s",
         "label.service_failed": "{service}: failed — {reason}",
         "label.services": "Services",
         "label.state": "State",
@@ -757,6 +758,7 @@ MESSAGES["ja"].update({
     "label.unloaded": "\u30a2\u30f3\u30ed\u30fc\u30c9\u5b8c\u4e86: {services}",
     "label.service_idle": "{service}: \u30a2\u30a4\u30c9\u30eb",
     "label.service_sleeping": "{service}: \u30b9\u30ea\u30fc\u30d7\u4e2d\uff08\u6b21\u306e\u30ea\u30af\u30a8\u30b9\u30c8\u3067\u5fa9\u5e30\uff09",
+        "label.service_restart_pending": "{service}: \u505c\u6b62\u4e2d \u2014 {seconds}\u79d2\u5f8c\u306b\u518d\u8d77\u52d5\u3092\u4e88\u5b9a\u3057\u3066\u3044\u307e\u3059",
     "label.service_failed": "{service}: \u5931\u6557 \u2014 {reason}",
 })
 

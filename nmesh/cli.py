@@ -1258,6 +1258,13 @@ def _runtime(args: argparse.Namespace) -> int:
                         i18n.t("label.service_sleeping", language,
                                service=item.get("service"))
                     )
+            for item in result.services:
+                if item.get("next_restart_in"):
+                    _console().print(
+                        i18n.t("label.service_restart_pending", language,
+                               service=item.get("service"),
+                               seconds=item["next_restart_in"])
+                    )
         if args.command == "up" and args.detach and gateway_log is not None:
             _console().print(
                 i18n.t("label.gateway_log", language, path=gateway_log)

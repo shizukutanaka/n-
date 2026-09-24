@@ -1319,6 +1319,10 @@ def test_supervisor_heartbeat_backoff_delays_crash_revive(
     processes[1].exit_code = 137
     supervisor.heartbeat()
     assert len(processes) == 2  # backoff defers the next revive
+    entry = next(
+        item for item in supervisor.status().services if item["service"] == "chat"
+    )
+    assert entry["next_restart_in"] > 0  # status reports the pending revive
 
     real = time.monotonic
     monkeypatch.setattr(

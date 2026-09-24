@@ -1641,6 +1641,8 @@ class Supervisor:
             "parallel_slots": _slots(self.active_plan, name),
             **planned_fields(name),
             **({"sleeping": True} if name in self.sleeping else {}),
+            **({"next_restart_in": round(self._restart_backoff_remaining(name))}
+               if self._restart_backoff_remaining(name) > 0 else {}),
             **({"note": self.notes[name]} if name in self.notes else {}),
         } for name, process in self.processes.items()]
         entries.extend({
