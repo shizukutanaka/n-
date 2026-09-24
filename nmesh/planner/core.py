@@ -577,8 +577,6 @@ def _backend(profile: HardwareProfile, model: ModelSpec, layers: int) -> tuple[s
         candidates.append("ollama")
     if profile.os == "linux" and "hf" in model.sources:
         candidates.append("vllm")
-    if profile.unified_memory and "hf" in model.sources:
-        candidates.append("mlx")
     for name in candidates:
         if profile.available_backends.get(name):
             return name, True
