@@ -1297,44 +1297,58 @@ def create_app(
                 detail=f"job {job.id} cancelled while queued",
             )
         locked = service.name in plan_snapshot.swap_group
-        if locked:
+        gate_held = False
+        try:
+            if locked:
 
-            def _ensure_target() -> None:
-                ensure_running(service.name, plan_snapshot)
+                def _ensure_target() -> None:
+                    ensure_running(service.name, plan_snapshot)
 
-            try:
-                await asyncio.wait_for(
-                    gate.acquire(service.name, _ensure_target),
-                    timeout=300.0,
-                )
-            except asyncio.TimeoutError as error:
-                raise HTTPException(status_code=504, detail="Timed out waiting for service swap") from error
-            except Exception as error:
-                jobs.finish(job, ok=False, detail="ensure_failed")
-                raise HTTPException(status_code=503, detail=str(error)) from error
-        if not locked and service.name in await asyncio.to_thread(idle_services):
-            revive_lock = revive_locks.setdefault(service.name, asyncio.Lock())
-            async with revive_lock:
-                if service.name in await asyncio.to_thread(idle_services):
-                    try:
-                        await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
-                    except Exception as error:
-                        jobs.finish(job, ok=False, detail="ensure_failed")
-                        raise HTTPException(status_code=503, detail=str(error)) from error
-        body = _upstream_body(request, service)
-        url = f"{_base_url(service)}{path}"
-        embedding_cap = (
-            plan_state.embed_input_caps.get((
-                service.model_id.casefold(),
-                service.quant.casefold(),
-                service.backend.casefold(),
-            ))
-            if path == "/v1/embeddings" and service.roles == ["embed"]
-            else None
-        )
-        assert httpx is not None
-        client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT))
-        ticket = in_flight.enter(service.name)
+                try:
+                    await asyncio.wait_for(
+                        gate.acquire(service.name, _ensure_target),
+                        timeout=300.0,
+                    )
+                except asyncio.TimeoutError as error:
+                    raise HTTPException(status_code=504, detail="Timed out waiting for service swap") from error
+                except Exception as error:
+                    jobs.finish(job, ok=False, detail="ensure_failed")
+                    raise HTTPException(status_code=503, detail=str(error)) from error
+                gate_held = True
+            if not locked and service.name in await asyncio.to_thread(idle_services):
+                revive_lock = revive_locks.setdefault(service.name, asyncio.Lock())
+                async with revive_lock:
+                    if service.name in await asyncio.to_thread(idle_services):
+                        try:
+                            await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
+                        except Exception as error:
+                            jobs.finish(job, ok=False, detail="ensure_failed")
+                            raise HTTPException(status_code=503, detail=str(error)) from error
+            body = _upstream_body(request, service)
+            url = f"{_base_url(service)}{path}"
+            embedding_cap = (
+                plan_state.embed_input_caps.get((
+                    service.model_id.casefold(),
+                    service.quant.casefold(),
+                    service.backend.casefold(),
+                ))
+                if path == "/v1/embeddings" and service.roles == ["embed"]
+                else None
+            )
+            assert httpx is not None
+            client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT))
+            ticket = in_flight.enter(service.name)
+        except BaseException as error:
+            # A failed acquire/revive must not keep the slot (or a held swap
+            # gate): each leaked slot permanently shrinks the concurrency
+            # budget until every request queues out at 503.
+            if gate_held:
+                gate.release()
+            if limit_slots:
+                limiter.release(slot_token)
+            if job is not None:
+                jobs.finish(job, ok=False, detail=str(error))
+            raise
         if request.get("stream"):
             stream_options = request.get("stream_options")
             request_wants_usage = (
@@ -1385,6 +1399,17 @@ def create_app(
                 if job is not None:
                     jobs.finish(job, ok=False, detail=str(error))
                 raise HTTPException(status_code=502, detail=str(error)) from error
+            except BaseException as error:
+                await client.aclose()
+                in_flight.leave(service.name, ticket)
+                last_use.touch(service.name)
+                if locked:
+                    gate.release()
+                if limit_slots:
+                    limiter.release(slot_token)
+                if job is not None:
+                    jobs.finish(job, ok=False, detail=str(error) or "aborted")
+                raise
             if upstream.status_code >= 400:
                 content = await upstream.aread()
                 await upstream.aclose()
