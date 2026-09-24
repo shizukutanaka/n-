@@ -215,6 +215,19 @@ def test_gateway_rerank_501_without_rerank_service() -> None:
     assert "rerank" in response.text
 
 
+def test_gateway_embeddings_501_without_embed_service() -> None:
+    model = ModelSpec("chat-model", "test", 500_000_000, 24, 16, 2, 64,
+                      1024, 4096, ["chat"], 80.0, "test",
+                      {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    client = TestClient(create_app(plan))
+    response = client.post("/v1/embeddings", json={
+        "model": "nmesh-auto", "input": "hello",
+    })
+    assert response.status_code == 501
+    assert "embed" in response.text
+
+
 class _AnthropicHandler(BaseHTTPRequestHandler):
     request_body: ClassVar[dict[str, object]] = {}
 
