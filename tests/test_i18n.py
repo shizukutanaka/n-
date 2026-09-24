@@ -41,6 +41,13 @@ def test_japanese_messages_survived_their_encoding() -> None:
     assert replacement_runs == {}
 
 
+def test_planned_cells_have_localized_strings() -> None:
+    assert t("label.planned_yes", "en") == "yes"
+    assert t("label.planned_no", "en") == "-"
+    assert t("label.planned_yes", "ja") == "はい"
+    assert t("label.planned_no", "ja") == "-"
+
+
 def test_translation_is_failure_tolerant() -> None:
     assert t("missing.key") == "missing.key"
     assert t("warn.language_coverage", "ja") != ""

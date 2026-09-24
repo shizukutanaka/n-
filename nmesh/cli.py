@@ -1744,7 +1744,7 @@ def _models_scan(args: argparse.Namespace) -> int:
             label,
             f"{artifact.bytes / 1024**3:.2f}",
             ",".join(artifact.tags) or "-",
-            str(item["planned"]),
+            i18n.t("label.planned_yes" if item["planned"] else "label.planned_no", i18n.lang()),
             str(item["group"] or "-"),
         )
     _console().print(table)
@@ -1845,7 +1845,11 @@ def _models(args: argparse.Namespace) -> int:
             for item in items:
                 table.add_row(
                     str(item["path"]), str(item["bytes"]), str(item["quant"] or "-"),
-                    str(item["label"] or "-"), str(item["planned"]),
+                    str(item["label"] or "-"),
+                    i18n.t(
+                        "label.planned_yes" if item["planned"] else "label.planned_no",
+                        i18n.lang(),
+                    ),
                 )
             _console().print(table)
         return 0
