@@ -650,7 +650,7 @@ def test_down_reclaims_orphans_when_state_lost(
     )
     monkeypatch.setattr(
         "nmesh.runtime.supervisor.engine_listener_pid",
-        lambda port: 424242 if port == chat.port else None,
+        lambda port, _listeners=None: 424242 if port == chat.port else None,
     )
 
     result = supervisor.down(foreign=True, gateway_port=18000)
@@ -682,7 +682,7 @@ def test_down_does_not_sweep_foreign_port_listeners(
     )
     # foreign listener — engine_listener_pid returns None for it
     monkeypatch.setattr(
-        "nmesh.runtime.supervisor.engine_listener_pid", lambda _port: None
+        "nmesh.runtime.supervisor.engine_listener_pid", lambda _port, _listeners=None: None
     )
 
     result = supervisor.down(foreign=True, gateway_port=18000)
@@ -717,7 +717,7 @@ def test_adopt_rejects_stale_model_process(
     monkeypatch.setattr(supervisor, "_entry_alive", lambda _e: True)
     monkeypatch.setattr(supervisor, "_healthy", lambda _s: True)
     monkeypatch.setattr(
-        "nmesh.runtime.supervisor.engine_listener_pid", lambda _p: 31337
+        "nmesh.runtime.supervisor.engine_listener_pid", lambda _p, _listeners=None: 31337
     )
 
     assert supervisor._adopt(chat) is False
@@ -1810,3 +1810,37 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_down_terminates_orphans_concurrently(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Several adopted orphans must not each pay a serial terminate+wait:
+    down() collects every orphan target and fires one parallel batch."""
+    calls: list[int] = []
+
+    def slow_terminator(pid: int) -> None:
+        calls.append(pid)
+        time.sleep(0.2)
+
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.load_plan", lambda *_a, **_k: None
+    )
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid",
+        lambda _port, _listeners=None: None,
+    )
+    supervisor = Supervisor(
+        lambda _item: _KillableProcess(),
+        tmp_path / "state.json",
+        terminator=slow_terminator,
+    )
+    supervisor.adopted["a"] = {"pid": 123450001}
+    supervisor.adopted["b"] = {"pid": 123450002}
+
+    start = time.monotonic()
+    supervisor.down()
+    elapsed = time.monotonic() - start
+
+    assert sorted(calls) == [123450001, 123450002]
+    assert elapsed < 0.35  # serial would take >= 0.4s

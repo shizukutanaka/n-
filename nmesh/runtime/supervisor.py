@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import RLock
@@ -125,14 +126,59 @@ def gateway_listener_pid(port: int) -> int | None:
     return None
 
 
-def engine_listener_pid(port: int) -> int | None:
+def _all_listeners() -> dict[int, list[int]]:
+    """Port → listening pids for the whole TCP table in one scan.
+
+    One `psutil.net_connections` call (or one `lsof` where that needs extra
+    rights) serves every port lookup a sweep performs — per-port scans in a
+    loop re-enumerate the same table once per service.
+    """
+    result: dict[int, list[int]] = {}
+    try:
+        connections = psutil.net_connections(kind="tcp")
+    except (psutil.Error, OSError):
+        connections = None
+    if connections is not None:
+        for connection in connections:
+            if (
+                connection.laddr
+                and connection.status == "LISTEN"
+                and connection.pid is not None
+            ):
+                result.setdefault(connection.laddr.port, []).append(
+                    connection.pid
+                )
+        return result
+    try:
+        output = subprocess.run(
+            ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return result
+    pid: int | None = None
+    for line in output.stdout.splitlines():
+        if line.startswith("p") and line[1:].isdigit():
+            pid = int(line[1:])
+        elif line.startswith("n") and pid is not None:
+            port = line.rsplit(":", 1)[-1]
+            if port.isdigit():
+                result.setdefault(int(port), []).append(pid)
+    return result
+
+
+def engine_listener_pid(
+    port: int, listeners: Mapping[int, list[int]] | None = None
+) -> int | None:
     """Return the pid of an nmesh-managed engine listening on *port*, if any.
 
     Ownership is proven by the executable living under NMESH_HOME — a foreign
-    process that merely bound the port is never returned.
+    process that merely bound the port is never returned. Pass a precomputed
+    `_all_listeners()` map when sweeping several ports at once.
     """
     root = os.path.realpath(nmesh_home()) + os.sep
-    for pid in _listener_pids(port):
+    pids = _listener_pids(port) if listeners is None else listeners.get(port, [])
+    for pid in pids:
         try:
             exe = psutil.Process(pid).exe()
         except (psutil.Error, OSError):
@@ -1265,7 +1311,9 @@ class Supervisor:
             # state.json may be lost while plan.json survives — reclaim
             # service orphans still bound to their planned ports.
             plan = self.active_plan if self.active_plan is not None else load_plan()
+            orphan_targets: list[tuple[str, int, dict[str, object]]] = []
             if plan is not None:
+                listeners = _all_listeners()
                 for service in plan.services:
                     if (
                         service.name in seen_stopped
@@ -1274,21 +1322,32 @@ class Supervisor:
                         or service.port is None
                     ):
                         continue
-                    orphan_pid = engine_listener_pid(service.port)
+                    orphan_pid = engine_listener_pid(service.port, listeners)
                     if orphan_pid is not None:
-                        self._terminator(orphan_pid)
-                        report(service.name, {
+                        orphan_targets.append((service.name, orphan_pid, {
                             "pid": orphan_pid,
                             "port": service.port,
                             "model_ref": service.model_ref,
                             "backend": service.backend,
-                        })
+                        }))
             adopted_names = set(self.adopted)
             for name, record in self.adopted.items():
                 pid = record.get("pid")
                 if isinstance(pid, int) and not isinstance(pid, bool):
-                    self._terminator(pid)
-                    report(name, record)
+                    orphan_targets.append((name, pid, record))
+            if orphan_targets:
+                if len(orphan_targets) > 1:
+                    with ThreadPoolExecutor(
+                        max_workers=len(orphan_targets)
+                    ) as pool:
+                        list(pool.map(
+                            self._terminator,
+                            [pid for _name, pid, _f in orphan_targets],
+                        ))
+                else:
+                    self._terminator(orphan_targets[0][1])
+                for name, _pid, fields in orphan_targets:
+                    report(name, fields)
             for name, process in list(self.processes.items()):
                 report_fields: dict[str, object] = {"pid": process.pid}
                 planned = (
@@ -1339,6 +1398,7 @@ class Supervisor:
                         if gateway_retained:
                             state["gateway"] = gateway
                 retained: list[dict[str, object]] = []
+                foreign_orphans: list[tuple[str, int, dict[str, object]]] = []
                 entries_state = state.get("services")
                 for entry in entries_state if isinstance(entries_state, list) else ():
                     if not isinstance(entry, dict):
@@ -1349,12 +1409,26 @@ class Supervisor:
                     if owner == os.getpid():
                         continue
                     if foreign and entry.get("pid") is not None and self._entry_alive(entry):
-                        self._terminator(int(entry["pid"]))
-                        report(str(entry.get("service")), entry)
+                        foreign_orphans.append(
+                            (str(entry.get("service")), int(entry["pid"]), entry)
+                        )
                         continue
                     if self._entry_alive(entry):
                         retained.append(entry)
                 state["services"] = retained
+                if len(foreign_orphans) > 1:
+                    with ThreadPoolExecutor(
+                        max_workers=len(foreign_orphans)
+                    ) as pool:
+                        list(pool.map(
+                            self._terminator,
+                            [pid for _name, pid, _e in foreign_orphans],
+                        ))
+                else:
+                    for _name, pid, _entry in foreign_orphans:
+                        self._terminator(pid)
+                for name, _pid, entry in foreign_orphans:
+                    report(name, entry)
                 if retained or gateway_retained:
                     self._write_state(state)
                 else:
