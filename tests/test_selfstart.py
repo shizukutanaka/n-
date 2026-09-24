@@ -71,6 +71,15 @@ def test_invalid_kv_quant_cli_value_is_rejected() -> None:
     assert error.value.code == 2
 
 
+def test_plan_numeric_flags_reject_nonpositive() -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.main(["plan", "--context", "-5"])
+    assert error.value.code == 2
+    with pytest.raises(SystemExit) as error:
+        cli.main(["plan", "--parallel-slots", "0"])
+    assert error.value.code == 2
+
+
 def _plan(missing_backends: list[str], runnable: bool) -> SimpleNamespace:
     return SimpleNamespace(
         missing_backends=missing_backends,
