@@ -2447,6 +2447,12 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     for model_id in selected.model_ids:
         if model_id.casefold() not in known_model_ids:
             warnings.append(t("warn.model_unknown", selected.lang, model=model_id))
+    known_roles = {"chat", "code", "embed", "rerank", "worker"}
+    unknown_roles = [role for role in roles if role not in known_roles]
+    if unknown_roles:
+        warnings.append(
+            t("warn.role_unknown", selected.lang, roles=", ".join(unknown_roles))
+        )
     unmeasured = sorted(
         model.id
         for model in catalog
