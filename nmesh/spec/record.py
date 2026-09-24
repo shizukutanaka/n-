@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -233,20 +234,38 @@ def cache_path(path: Path | None = None) -> Path:
     return path or (nmesh_home() / "spec.json")
 
 
+# Loaded twice per `nmesh bench` run (demote+save, then re-read for the
+# report) — parse only when (mtime_ns, size) changed.
+_cache_memo: dict[Path, tuple[int, int, dict[str, SpecRecord]]] = {}
+_cache_lock = threading.Lock()
+
+
 def load_cache(path: Path | None = None) -> dict[str, SpecRecord]:
     target = cache_path(path)
     try:
+        info = target.stat()
+        stamp = (info.st_mtime_ns, info.st_size)
+    except OSError:
+        stamp = (-1, 0)
+    with _cache_lock:
+        cached = _cache_memo.get(target)
+        if cached is not None and cached[0] == stamp[0] and cached[1] == stamp[1]:
+            return dict(cached[2])
+    records: dict[str, SpecRecord] = {}
+    try:
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return {}
+        payload = None
     results = payload.get("results") if isinstance(payload, Mapping) else None
-    if not isinstance(results, Mapping):
-        return {}
-    return {
-        str(key): parsed
-        for key, value in results.items()
-        if (parsed := _parse(value)) is not None
-    }
+    if isinstance(results, Mapping):
+        records = {
+            str(key): parsed
+            for key, value in results.items()
+            if (parsed := _parse(value)) is not None
+        }
+    with _cache_lock:
+        _cache_memo[target] = (stamp[0], stamp[1], records)
+    return dict(records)
 
 
 def save(record: SpecRecord, path: Path | None = None) -> Path:
