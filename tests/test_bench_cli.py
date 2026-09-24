@@ -187,6 +187,45 @@ def test_autotune_pauses_detached_gateway_watchdog(monkeypatch, capsys) -> None:
     assert ups and all(admit is False for admit in ups)
 
 
+def test_autotune_restores_after_httpx_measure_failure(monkeypatch, capsys) -> None:
+    """A tuned cell that kills the engine raises httpx errors, not OSError —
+    without them in the catch the gateway/plan restore path is unreachable
+    exactly when tuning destabilises the backend."""
+    plan = _plan()
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "save_plan", lambda *_a: None)
+    runtime = SimpleNamespace(
+        services=[{"service": "chat", "running": True, "port": 18010}]
+    )
+    monkeypatch.setattr(cli, "runtime_status", lambda: runtime)
+    monkeypatch.setattr(cli, "_service_running", lambda *_a: True)
+    events: list[str] = []
+    monkeypatch.setattr(
+        cli, "runtime_down", lambda: events.append("down") or SimpleNamespace()
+    )
+    restored: list[object] = []
+    monkeypatch.setattr(
+        cli,
+        "runtime_up",
+        lambda plan_arg, **_kwargs: (
+            events.append("up") or restored.append(plan_arg)
+            or SimpleNamespace()
+        ),
+    )
+    error = httpx.ConnectError("connection refused")
+    monkeypatch.setattr(
+        cli, "measure", lambda *_a: (_ for _ in ()).throw(error)
+    )
+    monkeypatch.setattr(cli, "disarm_atexit", lambda: events.append("disarm"))
+
+    assert cli.main(["autotune"]) == 1
+    # The original plan is restored and the lifecycle unwinds — no traceback.
+    assert restored[-1] is plan
+    assert events[-1] == "disarm"
+    captured = capsys.readouterr()
+    assert "connection refused" in captured.err
+
+
 def test_bench_http_failure_returns_error_without_saving(monkeypatch, capsys) -> None:
     plan = _plan()
     saved = []

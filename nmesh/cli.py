@@ -4615,7 +4615,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     # context/layers — the grid must launch them verbatim.
                     runtime_up(tuned_plan, no_download=True, admit=False)
                     tuned_result = measure(tuned, base_url)
-                except (OSError, RuntimeError) as error:
+                except (OSError, RuntimeError, httpx.HTTPError) as error:
                     print(i18n.t("err.autotune_measure", i18n.lang(), error=error),
                           file=sys.stderr)
                     runtime_down()
