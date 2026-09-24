@@ -445,6 +445,25 @@ def test_openai_model_listing_and_detail() -> None:
         assert missing.json()["error"]["code"] == 404
 
 
+def test_model_listing_exposes_context_and_meta() -> None:
+    plan = _completion_plan(1)
+    service = plan.services[0]
+    with TestClient(create_app(plan)) as client:
+        models = client.get("/v1/models").json()["data"]
+        entry = next(item for item in models if item["id"] == "nmesh-chat")
+        assert entry["max_model_len"] == service.context
+        assert entry["meta"] == {
+            "model": service.model_id,
+            "backend": service.backend,
+            "quant": service.quant,
+            "parallel_slots": service.memory.parallel_slots,
+        }
+        bare = next(item for item in models if item["id"] == "nmesh-auto")
+        assert "max_model_len" not in bare and "meta" not in bare
+        detail = client.get("/v1/models/nmesh-chat")
+        assert detail.json()["max_model_len"] == service.context
+
+
 def test_reserved_tokens_uses_larger_completion_limit() -> None:
     assert gateway_module._reserved_tokens({"max_completion_tokens": 8}) == 8
     assert gateway_module._reserved_tokens({
