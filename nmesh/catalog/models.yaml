@@ -277,6 +277,26 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: devstral-small-2505
+  family: devstral
+  params: 23600000000
+  n_layers: 40
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 5120
+  vocab_size: 131072
+  head_layout: separate
+  max_context: 131072
+  roles: [code]
+  quality: 75
+  license: apache-2.0
+  languages: [en]
+  sources:
+    ollama: "devstral:24b"
+    hf_gguf: "bartowski/Devstral-Small-2505-GGUF"
+    hf: "mistralai/Devstral-Small-2505"
+    hf_mlx: "mlx-community/Devstral-Small-2505-4bit"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
