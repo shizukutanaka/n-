@@ -32,6 +32,29 @@ def _synthetic_gguf() -> bytes:
     ))
 
 
+def _nested_array_gguf(key: str, depth: int) -> bytes:
+    return b"".join((
+        b"GGUF",
+        struct.pack("<IQQ", 3, 0, 1),
+        _string(key),
+        struct.pack("<I", 9),
+        # GGUF forbids arrays of arrays: each item declares its own
+        # item_kind and count, so a hostile header recurses once per level.
+        b"".join(struct.pack("<IQ", 9, 1) for _ in range(depth)),
+    ))
+
+
+def test_gguf_info_rejects_nested_arrays_instead_of_recursing(tmp_path: Path) -> None:
+    path = tmp_path / "nested.gguf"
+    # Value path: a tracked KV key whose array-of-arrays would recurse past
+    # the interpreter limit before the file could possibly end.
+    path.write_bytes(_nested_array_gguf("llama.block_count", 1200))
+    assert artifact.gguf_info(path) is None
+    # Skip path: the same shape behind an untracked key.
+    path.write_bytes(_nested_array_gguf("untracked.key", 1200))
+    assert artifact.gguf_info(path) is None
+
+
 def test_gguf_fingerprint_reads_a_stable_header_only(tmp_path: Path) -> None:
     path = tmp_path / "model.gguf"
     payload = _synthetic_gguf() + b"tensor data that is not hashed"
