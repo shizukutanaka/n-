@@ -1534,6 +1534,7 @@ def test_jobs_cli_old_gateway_404(monkeypatch, tmp_path: Path, capsys) -> None:
 
 def test_jobs_cli_cancel(monkeypatch, tmp_path: Path, capsys) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setenv("NMESH_API_KEY", "secret-key")
     seen: list[object] = []
 
     class _Response:
@@ -1549,12 +1550,15 @@ def test_jobs_cli_cancel(monkeypatch, tmp_path: Path, capsys) -> None:
             ).encode()
 
     def _open(request, *_a, **_k):
-        seen.append(getattr(request, "method", "GET"))
+        seen.append(request)
         return _Response()
 
     monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _open)
     assert cli.main(["jobs", "--cancel", "job-2"]) == 0
-    assert seen == ["DELETE"]
+    assert [getattr(request, "method", "GET") for request in seen] == ["DELETE"]
+    # The gateway's middleware rejects /v1/* without the bearer key — the
+    # cancel request must carry the same auth header as every other call.
+    assert seen[0].get_header("Authorization") == "Bearer secret-key"
     assert "job-2" in capsys.readouterr().out
 
 
