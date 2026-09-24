@@ -405,22 +405,22 @@ def _doctor(as_json: bool, profile_path: str | None = None) -> int:
     table = Table(title="nmesh doctor")
     table.add_column(i18n.t("label.item", language))
     table.add_column(i18n.t("label.value", language))
-    table.add_row("OS", profile.os)
-    table.add_row("CPU", profile.cpu_name)
+    table.add_row(i18n.t("label.os", language), profile.os)
+    table.add_row(i18n.t("label.cpu", language), profile.cpu_name)
     table.add_row("RAM", f"{_bytes(profile.total_ram_bytes)} / {_bytes(profile.available_ram_bytes)} "
                   f"{i18n.t('label.free', language)}")
-    table.add_row("Tier", profile.tier.value)
+    table.add_row(i18n.t("label.tier", language), profile.tier.value)
     table.add_row("GPU", ", ".join(gpu.name for gpu in profile.gpus)
                   or i18n.t("label.none", language))
     for gpu in profile.gpus:
         table.add_row(
-            f"GPU {gpu.index} VRAM",
+            i18n.t("label.gpu_vram", language, index=gpu.index),
             f"{_bytes(gpu.total_vram_bytes)} / {_bytes(gpu.free_vram_bytes)} "
             f"{i18n.t('label.free', language)} "
             f"({i18n.t('label.vram_source', language)}: {gpu.vram_source})",
         )
-    table.add_row("Free budget VRAM", _bytes(free_vram))
-    table.add_row("Free budget RAM", _bytes(free_ram))
+    table.add_row(i18n.t("label.free_budget_vram", language), _bytes(free_vram))
+    table.add_row(i18n.t("label.free_budget_ram", language), _bytes(free_ram))
     _console().print(table)
     backend = Table(title=i18n.t("label.backends", language))
     backend.add_column(i18n.t("label.backend", language))
