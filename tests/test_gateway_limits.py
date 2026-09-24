@@ -498,3 +498,30 @@ def test_job_registry_cancel() -> None:
     assert registry.cancel(running) is False
     listed = [j.id for j in registry.list()]
     assert queued.id in listed and running.id in listed
+
+
+def test_slot_limiter_preserves_in_flight_on_same_limit_replan() -> None:
+    """size() rebuilt every entry on replan — in-flight holders on the old
+    semaphore then occupied upstream slots that new acquisitions ignored,
+    transiently oversubscribing the backend. Entries with in-flight and an
+    unchanged limit are now preserved."""
+    old_plan = _llama_plan(1)
+    same_limit_plan = _llama_plan(1)
+
+    async def scenario() -> None:
+        limiter = SlotLimiter()
+        limiter.size(old_plan)
+        held = await limiter.acquire(old_plan.services[0], 1.0)
+        assert held is not None
+        limiter.size(same_limit_plan)
+        waiting = asyncio.create_task(
+            limiter.acquire(same_limit_plan.services[0], 0.01)
+        )
+        await asyncio.sleep(0)
+        assert await waiting is None  # slot still counted, not bypassed
+        limiter.release(held)
+        freed = await limiter.acquire(same_limit_plan.services[0], 1.0)
+        assert freed is not None
+        limiter.release(freed)
+
+    asyncio.run(scenario())

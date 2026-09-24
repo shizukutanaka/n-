@@ -21,14 +21,22 @@ class SlotLimiter:
         self._entries: dict[str, _Entry] = {}
 
     def size(self, plan: Plan) -> None:
-        self._entries = {
-            service.name: _Entry(
-                asyncio.Semaphore(max(1, service.memory.parallel_slots)),
-                max(1, service.memory.parallel_slots),
-            )
-            for service in plan.services
-            if service.backend in {"llamacpp", "vllm"}
-        }
+        previous = self._entries
+        entries: dict[str, _Entry] = {}
+        for service in plan.services:
+            if service.backend not in {"llamacpp", "vllm"}:
+                continue
+            limit = max(1, service.memory.parallel_slots)
+            old = previous.get(service.name)
+            if old is not None and old.in_flight > 0 and old.limit == limit:
+                # In-flight requests still hold this semaphore — replacing
+                # it would let new acquisitions ignore their occupancy and
+                # transiently oversubscribe the backend's slots after a
+                # same-limit replan under load.
+                entries[service.name] = old
+            else:
+                entries[service.name] = _Entry(asyncio.Semaphore(limit), limit)
+        self._entries = entries
 
     async def acquire(
         self, service: PlannedService, timeout: float
