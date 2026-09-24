@@ -20,6 +20,7 @@ from nmesh.catalog import ModelSpec
 from nmesh.gateway import create_app, route
 from nmesh.planner import Plan, Policy, build_plan, save_plan
 
+from .test_api_surface import _completion_plan
 from .test_planner import profile
 
 
@@ -1045,3 +1046,40 @@ def test_gateway_injects_usage_for_vllm_and_ollama_streams(monkeypatch) -> None:
         _UsageHandler.request_body = {}
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_service_running_check_memoizes_runtime_status(monkeypatch) -> None:
+    """_service_is_running_llamacpp ran a full supervisor status rebuild
+    (state parse + daemon probes) per routing decision; the 1s memo bounds
+    it while still refreshing."""
+    from types import SimpleNamespace
+
+    calls = 0
+
+    def fake_status() -> object:
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(
+            running=True,
+            services=[{
+                "service": "chat",
+                "running": True,
+                "backend": "llamacpp",
+            }],
+        )
+
+    monkeypatch.setattr(gateway_module, "runtime_status", fake_status)
+    monkeypatch.setattr(gateway_module, "_runtime_status_cache", None)
+    service = replace(
+        _completion_plan(1).services[0], backend="llamacpp", name="chat",
+    )
+    assert gateway_module._service_is_running_llamacpp(service) is True
+    assert gateway_module._service_is_running_llamacpp(service) is True
+    assert calls == 1
+    # Stale entries are refetched past the TTL.
+    cached_status = gateway_module._runtime_status_cache[1]
+    monkeypatch.setattr(
+        gateway_module, "_runtime_status_cache", (0.0, cached_status),
+    )
+    assert gateway_module._service_is_running_llamacpp(service) is True
+    assert calls == 2

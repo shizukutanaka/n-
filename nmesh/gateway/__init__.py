@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -36,7 +37,7 @@ from nmesh.orchestrate import (
     load_cache,
 )
 from nmesh.planner import PLAN_PATH, Plan, PlannedService, load_plan
-from nmesh.runtime import ensure_running, heartbeat, idle_services, unload
+from nmesh.runtime import RuntimeStatus, ensure_running, heartbeat, idle_services, unload
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime.logs import log_path
 from nmesh.runtime.logs import tail as tail_log
@@ -553,11 +554,29 @@ def _chat_service(plan: Plan) -> PlannedService | None:
     return next((item for item in plan.services if item.name == name), None)
 
 
+_RUNTIME_STATUS_TTL = 1.0
+_runtime_status_cache: tuple[float, RuntimeStatus] | None = None
+_runtime_status_lock = threading.Lock()
+
+
+def _runtime_status() -> RuntimeStatus:
+    """Supervisor status memoized briefly — a full rebuild parses state and
+    probes daemons, too costly to run per routing decision under load."""
+    global _runtime_status_cache
+    with _runtime_status_lock:
+        cached = _runtime_status_cache
+        if cached is not None and time.monotonic() - cached[0] < _RUNTIME_STATUS_TTL:
+            return cached[1]
+        status = runtime_status()
+        _runtime_status_cache = (time.monotonic(), status)
+        return status
+
+
 def _service_is_running_llamacpp(service: PlannedService) -> bool:
     if service.backend != "llamacpp":
         return False
     try:
-        runtime = runtime_status()
+        runtime = _runtime_status()
     except (OSError, ValueError, RuntimeError):
         return False
     return any(
@@ -1003,6 +1022,8 @@ def create_app(
     watchdog: bool = False,
     watchdog_interval: float = 15.0,
 ) -> FastAPIApp:
+    global _runtime_status_cache
+    _runtime_status_cache = None
     if FastAPI is None:
         raise ImportError("Install nmesh[gateway] to use the gateway")
     explicit = plan is not None
