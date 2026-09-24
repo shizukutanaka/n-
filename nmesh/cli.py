@@ -14,10 +14,11 @@ import time
 import urllib.request
 import zipfile
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 from urllib.error import HTTPError
 from urllib.parse import quote
 
@@ -1151,51 +1152,58 @@ def _runtime(args: argparse.Namespace) -> int:
                     )
                 else:
                     gateway["running"] = True
-            try:
-                with urllib.request.urlopen(
-                    urllib.request.Request(
-                        f"http://127.0.0.1:{port}/v1/jobs?limit=20",
-                        headers=_gateway_headers(),
-                    ), timeout=2
-                ) as jobs_response:
-                    jobs_data = json.loads(jobs_response.read().decode())
-                if isinstance(jobs_data, dict) and jobs_data.get("counts"):
-                    status_data_jobs = jobs_data["counts"]
-            except (OSError, HTTPError, json.JSONDecodeError):
-                pass
-            try:
-                with urllib.request.urlopen(
-                    urllib.request.Request(
-                        f"http://127.0.0.1:{port}/status",
-                        headers=_gateway_headers(),
-                    ), timeout=2
-                ) as gw_response:
-                    gw_data = json.loads(gw_response.read().decode())
-                if isinstance(gw_data, dict):
-                    local_by_name = {
-                        item.get("service"): item
-                        for item in result.services
-                        if isinstance(item, dict)
+            def _fetch_json(path: str) -> dict[str, object] | None:
+                try:
+                    with urllib.request.urlopen(
+                        urllib.request.Request(
+                            f"http://127.0.0.1:{port}{path}",
+                            headers=_gateway_headers(),
+                        ), timeout=2
+                    ) as response:
+                        payload = json.loads(response.read().decode())
+                    return payload if isinstance(payload, dict) else None
+                except (OSError, HTTPError, json.JSONDecodeError):
+                    return None
+
+            # /v1/jobs and /status are independent — a wedged endpoint would
+            # otherwise add its full timeout to the status display serially.
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                jobs_future = pool.submit(_fetch_json, "/v1/jobs?limit=20")
+                gw_future = pool.submit(_fetch_json, "/status")
+            jobs_data = jobs_future.result()
+            if jobs_data is not None:
+                raw_counts = jobs_data.get("counts")
+                if isinstance(raw_counts, dict):
+                    status_data_jobs = {
+                        str(service): cast(dict[str, int], values)
+                        for service, values in raw_counts.items()
+                        if isinstance(values, dict)
                     }
-                    for gw_item in gw_data.get("services") or []:
-                        if not isinstance(gw_item, dict):
-                            continue
-                        name = gw_item.get("service")
-                        # Failed and idle (unloaded) services only exist in
-                        # the gateway's memory — state.json never records
-                        # them, so merge them into the CLI view.
-                        if gw_item.get("failed") is None and not gw_item.get("idle"):
-                            continue
-                        local = local_by_name.get(name)
-                        if local is None:
-                            result.services.append(gw_item)
-                        else:
-                            if gw_item.get("failed") is not None:
-                                local["failed"] = gw_item["failed"]
-                            if gw_item.get("idle"):
-                                local["idle"] = True
-            except (OSError, HTTPError, json.JSONDecodeError):
-                pass
+            gw_data = gw_future.result()
+            if gw_data is not None:
+                gw_services = gw_data.get("services")
+                local_by_name = {
+                    item.get("service"): item
+                    for item in result.services
+                    if isinstance(item, dict)
+                }
+                for gw_item in (gw_services if isinstance(gw_services, list) else []):
+                    if not isinstance(gw_item, dict):
+                        continue
+                    name = gw_item.get("service")
+                    # Failed and idle (unloaded) services only exist in
+                    # the gateway's memory — state.json never records
+                    # them, so merge them into the CLI view.
+                    if gw_item.get("failed") is None and not gw_item.get("idle"):
+                        continue
+                    local = local_by_name.get(name)
+                    if local is None:
+                        result.services.append(gw_item)
+                    else:
+                        if gw_item.get("failed") is not None:
+                            local["failed"] = gw_item["failed"]
+                        if gw_item.get("idle"):
+                            local["idle"] = True
         except OSError:
             if gateway is None:
                 result.services.append(
