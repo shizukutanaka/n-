@@ -210,9 +210,19 @@ def _measure_once(
 
 def measure(service: PlannedService, base_url: str, prefill_tokens: int = 512,
             decode_tokens: int = 128, runs: int = 3, *,
-            cache_prompt: bool | None = None) -> BenchResult:
+            cache_prompt: bool | None = None,
+            warmup: bool = True) -> BenchResult:
     if runs < 1:
         raise ValueError("runs must be at least 1")
+    if warmup:
+        # One uncounted warm-up request: the first call after engine
+        # (re)start faults weight pages in and pays JIT/allocator setup, so
+        # it is not steady state. The unique per-request nonce keeps it out
+        # of the prompt cache either way.
+        _measure_once(
+            service, base_url, prefill_tokens, decode_tokens,
+            cache_prompt=cache_prompt,
+        )
     results = [
         _measure_once(
             service, base_url, prefill_tokens, decode_tokens,
@@ -263,8 +273,10 @@ def measure_controlled(
         measure(
             service, base_url, prefill_tokens, decode_tokens, runs,
             cache_prompt=cache_prompt,
+            # Only the first pass is cold; later passes hit a warm engine.
+            warmup=index == 0,
         )
-        for _ in range(passes)
+        for index in range(passes)
     ]
     pass_tps = tuple(item.decode_tps for item in results)
     ratio = (

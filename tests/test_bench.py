@@ -98,6 +98,8 @@ def test_decode_rate_uses_only_decode_steps(monkeypatch) -> None:
 
 def test_measure_and_controlled_propagate_served_token_medians(monkeypatch) -> None:
     results = iter([
+        # Discarded warm-up sample, then the three measured runs.
+        BenchResult(9.0, 19.0, 0.1, False, 32, "timings", 0, 19.0, 19.0, 1, 1),
         BenchResult(10.0, 20.0, 0.1, False, 32, "timings", 0, 20.0, 20.0, 1, 2),
         BenchResult(11.0, 21.0, 0.1, False, 32, "timings", 0, 21.0, 21.0, 1, 4),
         BenchResult(12.0, 22.0, 0.1, False, 32, "timings", 0, 22.0, 22.0, 1, 6),
@@ -106,13 +108,46 @@ def test_measure_and_controlled_propagate_served_token_medians(monkeypatch) -> N
     measured = measure(object(), "http://test", runs=3)
     assert measured.decode_tokens_served == 4
 
+
+def test_measure_discards_one_warmup_run(monkeypatch) -> None:
+    calls = iter([
+        BenchResult(0.5, 5.0, 0.1, False, 32, "timings", 0, 5.0, 5.0, 1, 1),
+        BenchResult(10.0, 20.0, 0.1, False, 32, "timings", 0, 20.0, 20.0, 1, 2),
+    ])
+    seen: list[object] = []
+
+    def fake_once(*args: object, **kwargs: object) -> BenchResult:
+        seen.append(kwargs.get("cache_prompt"))
+        return next(calls)
+
+    monkeypatch.setattr(runner, "_measure_once", fake_once)
+    measured = measure(object(), "http://test", runs=1, cache_prompt=False)
+    assert measured.decode_tps == 20.0
+    assert seen == [False, False]
+
+    monkeypatch.setattr(
+        runner, "_measure_once", lambda *_args, **_kwargs: calls_cold.pop(0)
+    )
+    calls_cold = [BenchResult(0.5, 5.0, 0.1, False, 32, "timings", 0, 5.0, 5.0, 1, 1)]
+    cold = measure(object(), "http://test", runs=1, warmup=False)
+    assert cold.decode_tps == 5.0
+
+
+def test_measure_controlled_warms_only_first_pass(monkeypatch) -> None:
     passes = iter([
         BenchResult(10.0, 20.0, 0.1, False, 32, "timings", 0, 20.0, 20.0, 1, 8),
         BenchResult(11.0, 21.0, 0.1, False, 32, "timings", 0, 21.0, 21.0, 1, 10),
     ])
-    monkeypatch.setattr(runner, "measure", lambda *_args, **_kwargs: next(passes))
+    warmups: list[object] = []
+
+    def fake_measure(*_args: object, **kwargs: object) -> BenchResult:
+        warmups.append(kwargs.get("warmup"))
+        return next(passes)
+
+    monkeypatch.setattr(runner, "measure", fake_measure)
     controlled = measure_controlled(object(), "http://test", passes=2)
     assert controlled.result.decode_tokens_served == 9
+    assert warmups == [True, False]
 
 
 def test_bench_harness_change_discards_old_sessions_and_rejections() -> None:
