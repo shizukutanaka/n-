@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -142,21 +143,31 @@ def default_stores() -> dict[str, Path]:
     return stores
 
 
+def _manifest_layers(manifest: Path) -> tuple[Path, list[object]] | None:
+    try:
+        if not manifest.is_file():
+            return None
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    layers = payload.get("layers") if isinstance(payload, dict) else None
+    if not isinstance(layers, list):
+        return None
+    return manifest, layers
+
+
 def ollama_tags(models_root: Path) -> dict[str, tuple[str, ...]]:
     result: dict[str, set[str]] = {}
     manifests = models_root / "manifests"
     if not manifests.is_dir():
         return {}
-    for manifest in manifests.rglob("*"):
-        if not manifest.is_file():
+    # One read+parse per manifest — parallelize; blob stores can hold many.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        parsed = pool.map(_manifest_layers, manifests.rglob("*"))
+    for entry in parsed:
+        if entry is None:
             continue
-        try:
-            payload = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            continue
-        layers = payload.get("layers") if isinstance(payload, dict) else None
-        if not isinstance(layers, list):
-            continue
+        manifest, layers = entry
         relative = manifest.relative_to(manifests).parts
         if relative and relative[0] == "registry.ollama.ai":
             relative = relative[1:]
@@ -183,6 +194,13 @@ def _identity(info: GgufInfo) -> str:
     return f"{info.arch}|{info.elements}|{info.tensors}|{info.file_type}|{histogram}"
 
 
+def _safe_gguf_info(path: Path) -> GgufInfo | None:
+    try:
+        return gguf_info(path)
+    except (OSError, RuntimeError):
+        return None
+
+
 def scan(stores: dict[str, Path]) -> list[Artifact]:
     artifacts: list[Artifact] = []
     for store, root in stores.items():
@@ -190,6 +208,7 @@ def scan(stores: dict[str, Path]) -> list[Artifact]:
             continue
         tags = ollama_tags(root.parent) if store == "ollama" else {}
         visited: set[str] = set()
+        candidates: list[Path] = []
         for current, _directories, filenames in os.walk(root, followlinks=False):
             for filename in filenames:
                 path = Path(current) / filename
@@ -200,29 +219,34 @@ def scan(stores: dict[str, Path]) -> list[Artifact]:
                     if realpath in visited:
                         continue
                     visited.add(realpath)
-                    info = gguf_info(path)
-                    if info is None:
-                        continue
-                except (OSError, RuntimeError):
+                    candidates.append(path)
+                except OSError:
                     continue
-                label = parse_label(path.name)
-                artifacts.append(Artifact(
-                    store=store,
-                    path=path,
-                    bytes=info.size,
-                    arch=info.arch,
-                    name=info.name,
-                    tensors=info.tensors,
-                    elements=info.elements,
-                    file_type=info.file_type,
-                    quant=(
-                        None if info.file_type is None
-                        else FILE_TYPE_QUANT.get(info.file_type)
-                    ),
-                    label=label,
-                    tags=tags.get(path.name, ()),
-                    identity=_identity(info),
-                ))
+        # Every candidate costs a GGUF header read+parse — fan out; pool.map
+        # keeps candidate order so results stay deterministic.
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            infos = pool.map(_safe_gguf_info, candidates)
+        for path, info in zip(candidates, infos, strict=True):
+            if info is None:
+                continue
+            label = parse_label(path.name)
+            artifacts.append(Artifact(
+                store=store,
+                path=path,
+                bytes=info.size,
+                arch=info.arch,
+                name=info.name,
+                tensors=info.tensors,
+                elements=info.elements,
+                file_type=info.file_type,
+                quant=(
+                    None if info.file_type is None
+                    else FILE_TYPE_QUANT.get(info.file_type)
+                ),
+                label=label,
+                tags=tags.get(path.name, ()),
+                identity=_identity(info),
+            ))
     return sorted(artifacts, key=lambda artifact: (artifact.store, str(artifact.path).casefold()))
 
 
