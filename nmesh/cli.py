@@ -223,7 +223,7 @@ _CONTEXT_CATEGORIES = (
 
 
 def _console() -> Console:
-    return Console(legacy_windows=False)
+    return Console(legacy_windows=False, markup=False)
 
 
 def _configure_output() -> None:
@@ -401,7 +401,7 @@ def _doctor(as_json: bool, profile_path: str | None = None) -> int:
         _print_json(data)
         return 0
     if profile_path:
-        _console().print(f"[yellow]{i18n.t('warn.simulated_profile', language)}[/yellow]")
+        _console().print(i18n.t('warn.simulated_profile', language), style="yellow")
     table = Table(title="nmesh doctor")
     table.add_column(i18n.t("label.item", language))
     table.add_column(i18n.t("label.value", language))
@@ -437,7 +437,7 @@ def _doctor(as_json: bool, profile_path: str | None = None) -> int:
         )
     _console().print(backend)
     for warning in localized_warnings:
-        _console().print(f"[yellow]- {warning}[/yellow]")
+        _console().print(f"- {warning}", style="yellow")
     if selected_models:
         models = Table(title=i18n.t("label.selected_models", language))
         models.add_column(i18n.t("label.service", language))
@@ -799,7 +799,7 @@ def _plan(args: argparse.Namespace) -> int:
         return 0
     language = result.policy.lang
     if getattr(args, "_simulated", False):
-        _console().print(f"[yellow]{i18n.t('warn.simulated_profile', language)}[/yellow]")
+        _console().print(i18n.t('warn.simulated_profile', language), style="yellow")
     _render_plan(result)
     if path is not None:
         _console().print(i18n.t("label.saved_to", language, path=path))
@@ -835,9 +835,9 @@ def _plan(args: argparse.Namespace) -> int:
             )
         )
     for hint in result.install_hints:
-        _console().print(f"[yellow]{i18n.t('label.install', language, hint=hint)}[/yellow]")
+        _console().print(i18n.t('label.install', language, hint=hint), style="yellow")
     for warning in result.warnings:
-        _console().print(f"[yellow]{i18n.t('label.warning', language, warning=warning)}[/yellow]")
+        _console().print(i18n.t('label.warning', language, warning=warning), style="yellow")
     if not getattr(args, "lang", None) and language != "en":
         _console().print(i18n.t("hint.language", language, language=language))
     if args.explain:
@@ -1922,7 +1922,7 @@ def _engine(args: argparse.Namespace) -> int:
                     "engine.install", i18n.lang(), tag=item.tag, variant=item.variant,
                 ))
                 for warning in warnings:
-                    _console().print(f"[yellow]- {warning}[/yellow]")
+                    _console().print(f"- {warning}", style="yellow")
             return 0
         if command == "use":
             item = engine_runtime.use(args.tag)

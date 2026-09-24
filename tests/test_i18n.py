@@ -41,6 +41,28 @@ def test_japanese_messages_survived_their_encoding() -> None:
     assert replacement_runs == {}
 
 
+def test_console_print_preserves_bracketed_content(capsys) -> None:
+    from nmesh.cli import _console
+
+    _console().print("worker[0] failed with reason [unknown]", style="yellow")
+    out = capsys.readouterr().out
+    assert "worker[0]" in out
+    assert "[unknown]" in out
+
+
+def test_console_table_cells_preserve_bracketed_content(capsys) -> None:
+    from rich.table import Table
+
+    from nmesh.cli import _console
+
+    table = Table()
+    table.add_column("service")
+    table.add_row("llama[7b]")
+    _console().print(table)
+    out = capsys.readouterr().out
+    assert "llama[7b]" in out
+
+
 def test_translation_is_failure_tolerant() -> None:
     assert t("missing.key") == "missing.key"
     assert t("warn.language_coverage", "ja") != ""
