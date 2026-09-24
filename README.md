@@ -380,7 +380,10 @@ In addition to `/v1/chat/completions`, the gateway provides the legacy
 `/v1/completions` endpoint. Its `prompt` may be one string or a list of
 strings; nmesh concatenates that input for context-length routing. Both
 completion endpoints honor explicit `nmesh-<service>` model IDs, streaming,
-backend slot limits, swap ordering, and telemetry.
+backend slot limits, swap ordering, and telemetry. The `model` field also
+resolves a bare service name, a role name, or a catalog model id (e.g.
+`"qwen3-8b"` resolves to whichever service runs that model); unknown values
+fall back to automatic routing.
 
 When the plan includes an `embed` service, the gateway also exposes
 `/v1/embeddings`. llama.cpp serves rerank OR embeddings per instance (a
