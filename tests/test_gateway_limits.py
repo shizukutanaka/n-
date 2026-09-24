@@ -477,6 +477,19 @@ def test_jobs_cancel_queued_job() -> None:
             again = client.delete(f"/v1/jobs/{queued_id}")
             assert again.status_code == 409
             assert client.delete("/v1/jobs/job-nope").status_code == 404
+
+            running_id = next(
+                j["id"] for j in client.get("/v1/jobs").json()["jobs"]
+                if j["state"] == "running"
+            )
+            cancelled_running = client.delete(f"/v1/jobs/{running_id}")
+            assert cancelled_running.status_code == 200
+            assert cancelled_running.json()["state"] == "cancelled"
+            first.join(timeout=10)
+            assert next(
+                j for j in client.get("/v1/jobs").json()["jobs"]
+                if j["id"] == running_id
+            )["state"] == "cancelled"
             _LimitHandler.release.set()
             first.join(timeout=5)
             _LimitHandler.block = False
@@ -495,6 +508,12 @@ def test_job_registry_cancel() -> None:
     assert registry.cancel(queued) is False
     running = registry.submit("chat", "/v1/chat/completions")
     registry.start(running)
-    assert registry.cancel(running) is False
+    # Running jobs now cancel cooperatively — proxy paths poll job.state
+    # and abort the in-flight upstream call, freeing the slot early.
+    assert registry.cancel(running) is True
+    assert running.state == "cancelled"
+    done = registry.submit("chat", "/v1/chat/completions")
+    registry.finish(done, ok=True)
+    assert registry.cancel(done) is False
     listed = [j.id for j in registry.list()]
     assert queued.id in listed and running.id in listed
