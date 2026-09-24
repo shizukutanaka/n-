@@ -17,7 +17,7 @@ python -m venv .venv
 .venv/bin/pytest -q
 ```
 
-現状の基準: ruff エラー0、mypy 62ファイル対象エラー0、pytest 全緑。
+現状の基準: ruff エラー0、mypy 63ファイル対象エラー0、pytest 全緑。
 
 ## 規約
 
