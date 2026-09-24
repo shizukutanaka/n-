@@ -4680,7 +4680,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.json:
             _print_json(data)
         else:
-            print(f"Filename: {filename}\n\n{text}\nInstall with:\n{install_command}")
+            print(
+                f"{i18n.t('label.watch_filename', i18n.lang())}: {filename}\n\n{text}\n"
+                f"{i18n.t('label.autostart_install', i18n.lang())}:\n{install_command}"
+            )
             if args.install:
                 print(i18n.t("label.launcher_written", i18n.lang(), path=launcher_path))
                 print(i18n.t("label.gateway_env", i18n.lang(), path=env_path))
