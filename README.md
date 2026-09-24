@@ -403,7 +403,10 @@ Claude Code can point at the gateway directly. Streaming Anthropic SSE frames
 `GET /v1/models` returns the OpenAI-compatible model list — `nmesh-auto`
 (router-selected), one `nmesh-<service>` ID per planned service, and
 `nmesh-delegate` when the lead/worker gate allows it — so OpenAI client
-libraries work against the gateway unmodified. `GET /status` returns the
+libraries work against the gateway unmodified. Each `nmesh-<service>` entry
+also carries vLLM-style `max_model_len` (the served context) and llama.cpp-style
+`meta` (model id, backend, quant, parallel slots) so clients like Open WebUI
+and aider can cap prompts without parsing `/status`. `GET /status` returns the
 supervisor's live runtime snapshot (per-service state, port, PID, model),
 and `GET /v1/jobs` / `GET /v1/jobs/{id}` expose the job registry behind
 `nmesh jobs`.

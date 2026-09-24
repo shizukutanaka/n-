@@ -1860,22 +1860,41 @@ def create_app(
     async def status_endpoint() -> dict[str, object]:
         return asdict(runtime_status())
 
+    def _model_entry(
+        service: PlannedService | None, model_id: str, created: int
+    ) -> dict[str, object]:
+        entry: dict[str, object] = {
+            "id": model_id,
+            "object": "model",
+            "owned_by": "nmesh",
+            "created": created,
+        }
+        if service is not None:
+            # vLLM's max_model_len and llama.cpp's meta.* fields let clients
+            # (Open WebUI, aider) cap prompts at the served context.
+            entry["max_model_len"] = service.context
+            entry["meta"] = {
+                "model": service.model_id,
+                "backend": service.backend,
+                "quant": service.quant,
+                "parallel_slots": service.memory.parallel_slots,
+            }
+        return entry
+
     @app.get("/v1/models")
     async def models() -> dict[str, object]:
         plan_state.maybe_reload()
         selected, _ = plan_state.snapshot()
-        ids = ["nmesh-auto"] + [f"nmesh-{service.name}" for service in selected.services]
         _, worker, _, decision, _ = _delegation_gate(selected)
+        created = _created_timestamp(selected)
+        ids = ["nmesh-auto"] + [f"nmesh-{service.name}" for service in selected.services]
         if worker is not None and decision == "allow":
             ids.append("nmesh-delegate")
-        created = _created_timestamp(selected)
+        by_id = {
+            f"nmesh-{service.name}": service for service in selected.services
+        }
         return {"object": "list", "data": [
-            {
-                "id": item,
-                "object": "model",
-                "owned_by": "nmesh",
-                "created": created,
-            }
+            _model_entry(by_id.get(item), item, created)
             for item in ids
         ]}
 
@@ -1891,12 +1910,11 @@ def create_app(
             ids.add("nmesh-delegate")
         if model_id not in ids:
             raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
-        return {
-            "id": model_id,
-            "object": "model",
-            "owned_by": "nmesh",
-            "created": _created_timestamp(selected),
-        }
+        service = next(
+            (item for item in selected.services if f"nmesh-{item.name}" == model_id),
+            None,
+        )
+        return _model_entry(service, model_id, _created_timestamp(selected))
 
     @app.post("/admin/reload")
     async def reload_endpoint() -> dict[str, object]:
