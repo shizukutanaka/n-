@@ -3544,6 +3544,12 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.n_max < 1:
+        print(
+            i18n.t("err.spec_n_max", language),
+            file=sys.stderr,
+        )
+        return 2
     plan = load_plan()
     if plan is None or not plan.services:
         print(i18n.t("err.no_active_plan", language), file=sys.stderr)

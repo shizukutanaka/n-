@@ -795,6 +795,8 @@ def test_spec_cli_validates_draft_and_kind(
     assert "--draft" in capsys.readouterr().err
     assert cli.main(["spec", "measure", "--kind", "ngram", "--repeats", "2"]) == 2
     assert "repeats" in capsys.readouterr().err
+    assert cli.main(["spec", "measure", "--kind", "ngram", "--n-max", "0"]) == 2
+    assert "n-max" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         cli.main(["spec", "measure", "--kind", "unknown"])
 
