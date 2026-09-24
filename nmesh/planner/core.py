@@ -1888,7 +1888,10 @@ def _place_services(
                 else tuple(1 for _ in indices)
             )
             placement_budget = (
-                sum(remaining[index] for index in indices)
+                min(
+                    sum(ratios) * remaining[index] / ratios[position]
+                    for position, index in enumerate(indices)
+                )
                 if proportional
                 else min(remaining[index] for index in indices) * tensor_parallel
             )
@@ -2160,6 +2163,31 @@ def _assign_slots(
             swap_accounted[key] = max(swap_usage[key].values(), default=0.0)
             usage[key] += swap_accounted[key]
 
+    # Per-GPU leftovers after placement: services sharing a physical card
+    # belong to different domain keys (e.g. (0,) vs (0,1)), so domain-level
+    # usage misses co-resident neighbours and slot growth can oversubscribe
+    # a card. Charge every service's proportional share to each of its GPUs.
+    gpu_leftover = dict(vram_budget)
+    swap_leftover = {index: 0.0 for index in vram_budget}
+    for item in services:
+        if not item.gpu_indices:
+            continue
+        item_indices = item.gpu_indices
+        item_ratios = (
+            list(item.tensor_split)
+            if len(item.tensor_split) == len(item_indices)
+            else [1] * len(item_indices)
+        )
+        item_total = sum(item_ratios) or 1
+        for position, index in enumerate(item_indices):
+            share = item.memory.gpu_bytes * item_ratios[position] / item_total
+            if item.name in swap_names:
+                swap_leftover[index] = max(swap_leftover[index], share)
+            else:
+                gpu_leftover[index] -= share
+    for index in gpu_leftover:
+        gpu_leftover[index] -= swap_leftover[index]
+
     result: list[PlannedService] = []
     for service in services:
         cap = SLOT_CAPS.get(service.backend, 1)
@@ -2195,7 +2223,22 @@ def _assign_slots(
         )
         slots = 1
         key = domain(service)
-        leftover = max(budget(key) - usage[key], 0.0)
+        if key[0] == "gpu" and key[1]:
+            slot_indices = list(key[1])
+            slot_ratios = (
+                list(service.tensor_split)
+                if len(service.tensor_split) == len(slot_indices)
+                else [1] * len(slot_indices)
+            )
+            slot_total = sum(slot_ratios) or 1
+            leftover = min(
+                max(gpu_leftover.get(index, 0.0), 0.0)
+                * slot_total
+                / slot_ratios[position]
+                for position, index in enumerate(slot_indices)
+            )
+        else:
+            leftover = max(budget(key) - usage[key], 0.0)
         if eligible and requested != 1:
             kv_per_slot = service.memory.kv_bytes_per_tok * service.context
             if kv_per_slot > 0:

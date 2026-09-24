@@ -401,6 +401,46 @@
     hf_gguf: "bartowski/Mistral-7B-Instruct-v0.3-GGUF"
     hf: "mistralai/Mistral-7B-Instruct-v0.3"
     hf_mlx: "mlx-community/Mistral-7B-Instruct-v0.3-4bit"
+- id: mistral-small-3.2-24b-instruct
+  family: mistral
+  params: 23600000000
+  n_layers: 40
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 5120
+  vocab_size: 131072
+  head_layout: separate
+  max_context: 131072
+  roles: [chat, code, tool]
+  quality: 81
+  license: apache-2.0
+  languages: [en, fr, de, es, it, pt, nl, ru, zh, ja, ko]
+  sources:
+    ollama: "mistral-small3.2:24b"
+    hf_gguf: "bartowski/mistralai_Mistral-Small-3.2-24B-Instruct-2506-GGUF"
+    hf: "mistralai/Mistral-Small-3.2-24B-Instruct-2506"
+    hf_mlx: "mlx-community/Mistral-Small-3.2-24B-Instruct-2506-4bit"
+- id: devstral-small-2507
+  family: mistral
+  params: 23600000000
+  n_layers: 40
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 5120
+  vocab_size: 131072
+  head_layout: separate
+  max_context: 131072
+  roles: [chat, code, tool]
+  quality: 82
+  license: apache-2.0
+  languages: [en, fr, de, es, it, pt, nl, ru, zh, ja, ko]
+  sources:
+    ollama: "devstral:24b"
+    hf_gguf: "bartowski/mistralai_Devstral-Small-2507-GGUF"
+    hf: "mistralai/Devstral-Small-2507"
+    hf_mlx: "mlx-community/Devstral-Small-2507-4bit"
 - id: nomic-embed-text-v1.5
   family: nomic-embed
   params: 137000000
