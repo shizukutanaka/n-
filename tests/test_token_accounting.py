@@ -203,6 +203,8 @@ def test_routing_band_uses_exact_count_only_when_service_is_running(monkeypatch)
     assert calls == ["x" * 200]
 
     monkeypatch.setattr(gateway, "runtime_status", lambda: RuntimeStatus(False, []))
+    # The routing path memoizes runtime status for ~1s; simulate a fresh app.
+    monkeypatch.setattr(gateway, "_runtime_status_cache", None)
     monkeypatch.setattr(
         gateway, "exact_tokens",
         lambda *args: (_ for _ in ()).throw(AssertionError("unexpected tokenize")),
