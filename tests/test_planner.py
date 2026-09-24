@@ -801,6 +801,7 @@ def test_catalog_sliding_window_models(catalog: list[ModelSpec]) -> None:
         "gemma2-9b": (4096, 2),
         "gpt-oss-20b": (128, 2),
         "gpt-oss-120b": (128, 2),
+        "phi-3-mini-4k-instruct": (2047, 1),
     }
 
 
