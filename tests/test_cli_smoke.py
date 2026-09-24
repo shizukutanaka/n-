@@ -55,3 +55,10 @@ def test_version_reports_package_and_evidence_versions(
     assert "nmesh 0.1.0" in output
     assert f"bench={cli.BENCH_HARNESS_VERSION}" in output
     assert "probe_rules=" in output
+
+def test_print_json_preserves_non_ascii(capsys) -> None:
+    cli._print_json({"path": "/Users/うめ", "note": "日本語"})
+    out = capsys.readouterr().out
+    assert "うめ" in out and "日本語" in out
+    assert "\\u" not in out
+
