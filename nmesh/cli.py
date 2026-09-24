@@ -4064,8 +4064,9 @@ def _watch(args: argparse.Namespace) -> int:
 
 def _run_prompt(args: argparse.Namespace) -> int:
     stream = bool(getattr(args, "stream", False)) and not args.json
+    model = args.model if getattr(args, "model", "") else f"nmesh-{args.role}"
     payload = json.dumps({
-        "model": f"nmesh-{args.role}",
+        "model": model,
         "messages": [{"role": "user", "content": args.prompt}],
         "stream": stream,
     }).encode()
@@ -4297,6 +4298,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_parser = sub.add_parser("run")
     run_parser.add_argument("prompt")
     run_parser.add_argument("--role", default="chat")
+    run_parser.add_argument(
+        "--model", default="",
+        help="address a specific service, role, or catalog model id "
+             "(overrides --role)",
+    )
     run_parser.add_argument("--port", type=int, default=18000)
     run_parser.add_argument("--json", action="store_true")
     run_parser.add_argument(
