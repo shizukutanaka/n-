@@ -689,3 +689,28 @@
   sources:
     hf_gguf: "LiquidAI/LFM2-24B-A2B-GGUF"
     hf: "LiquidAI/LFM2-24B-A2B"
+- id: gemma-3-4b-it
+  family: gemma3
+  params: 3880000000
+  n_layers: 34
+  n_heads: 8
+  n_kv_heads: 4
+  head_dim: 256
+  hidden_size: 2560
+  vocab_size: 262208
+  head_layout: shared
+  # Hybrid local/global attention: sliding_window_pattern=6 means every
+  # 6th layer is full attention, the rest use a 1024-token sliding window
+  # (google/gemma-3-4b-it config.json).
+  sliding_window: 1024
+  sliding_window_pattern: 6
+  max_context: 131072
+  roles: [chat]
+  quality: 70
+  license: gemma
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th, hi]
+  sources:
+    ollama: "gemma3:4b"
+    hf_gguf: "bartowski/google_gemma-3-4b-it-GGUF"
+    hf: "google/gemma-3-4b-it"
+    hf_mlx: "mlx-community/gemma-3-4b-it-4bit"
