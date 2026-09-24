@@ -2278,6 +2278,38 @@ def test_tensor_split_proportional_to_gpu_budgets() -> None:
     assert warning in result.warnings
 
 
+def test_vllm_oversized_split_falls_back_with_warning() -> None:
+    """vLLM has no partial-layer fit: when equal split would overflow the
+    smallest card it must not be committed silently — fall to the single
+    largest card with the over-budget warning (or CPU when RAM allows)."""
+    result = build_plan(
+        profile(8, (24, 8)),
+        placement_catalog(),
+        Policy(roles=["chat"]),
+    )
+    service = result.services[0]
+    # 23 GiB fits no single card (22.1 / 7.4 GiB budgets) and exceeds the
+    # equal-split ceiling (7.4 x 2) — the split path must decline it.
+    oversized = replace(
+        service,
+        backend="vllm",
+        gpu_indices=[],
+        memory=replace(service.memory, gpu_bytes=23 * GIB),
+    )
+    warnings: list[str] = []
+    resolved = planner_core._place_services(
+        [oversized], result.profile, result.policy, [], warnings,
+    )[0]
+    assert resolved.gpu_indices == [0]
+    assert resolved.tensor_split == ()
+    assert i18n.t(
+        "warn.gpu_over_budget", "en",
+        service=service.name,
+        committed=23 * GIB,
+        budget=planner_core._gpu_budget(result.profile.gpus[0]),
+    ) in warnings
+
+
 def test_tensor_split_uniform_when_budgets_equal(tmp_path) -> None:
     model = ModelSpec(
         "oversized-llamacpp", "test", 40_000_000_000, 80, 32, 8, 128,
