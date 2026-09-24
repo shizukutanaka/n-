@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import sys
+import threading
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -16,6 +17,7 @@ import pytest
 from nmesh import cli
 from nmesh.catalog import load_catalog
 from nmesh.planner import Policy, build_plan
+from nmesh.runtime import RuntimeStatus
 from nmesh.runtime import service_unit as service_unit_module
 from nmesh.runtime import supervisor as supervisor_module
 from nmesh.runtime.acquisition import Acquired
@@ -1810,3 +1812,60 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_status_cli_fetches_gateway_endpoints_concurrently(
+    monkeypatch, tmp_path: Path, capsys,
+) -> None:
+    """nmesh status polls the gateway's /v1/jobs and /status after /health —
+    they are independent and must overlap so a wedged endpoint does not add
+    its full timeout serially."""
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        cli,
+        "runtime_status",
+        lambda: RuntimeStatus(
+            False,
+            [{"service": "gateway", "port": 18000, "running": True}],
+        ),
+    )
+    lock = threading.Lock()
+    in_flight = 0
+    max_in_flight = 0
+
+    class Response:
+        status = 200
+
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return self._body
+
+    def fake_urlopen(request, timeout=None, **_kwargs):
+        nonlocal in_flight, max_in_flight
+        url = getattr(request, "full_url", str(request))
+        if url.endswith("/health"):
+            return Response(b"ok")
+        with lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+        time.sleep(0.2)
+        with lock:
+            in_flight -= 1
+        if "v1/jobs" in url:
+            return Response(b'{"counts": {"chat": {"queued": 0, "running": 1}}}')
+        if url.endswith("/status"):
+            return Response(b'{"services": [{"service": "chat", "failed": "x"}]}')
+        raise OSError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    assert cli.main(["status", "--port", "18000"]) == 0
+    assert max_in_flight == 2
+    assert "chat" in capsys.readouterr().out
