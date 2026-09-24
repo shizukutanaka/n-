@@ -1858,7 +1858,10 @@ def create_app(
 
     @app.get("/status")
     async def status_endpoint() -> dict[str, object]:
-        return asdict(runtime_status())
+        # runtime_status() rebuilds the full supervisor status — state parse
+        # plus per-daemon health probes — so it must not run on the event
+        # loop (a wedged daemon would stall every in-flight request).
+        return asdict(await asyncio.to_thread(runtime_status))
 
     @app.get("/v1/models")
     async def models() -> dict[str, object]:

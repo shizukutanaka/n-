@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import threading
+import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
@@ -19,6 +20,7 @@ from nmesh.bench import benchmark_key, measure
 from nmesh.catalog import ModelSpec
 from nmesh.gateway import create_app, route
 from nmesh.planner import Plan, Policy, build_plan, save_plan
+from nmesh.runtime import RuntimeStatus
 
 from .test_planner import profile
 
@@ -1045,3 +1047,38 @@ def test_gateway_injects_usage_for_vllm_and_ollama_streams(monkeypatch) -> None:
         _UsageHandler.request_body = {}
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_status_endpoint_runs_off_event_loop(monkeypatch) -> None:
+    """runtime_status() builds full supervisor state plus daemon probes — it
+    must run via to_thread or a wedged status build stalls every request."""
+    model = ModelSpec("status-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_status() -> RuntimeStatus:
+        entered.set()
+        release.wait(10)
+        return RuntimeStatus(True, [], [])
+
+    monkeypatch.setattr(gateway_module, "runtime_status", slow_status)
+    client = TestClient(create_app(plan))
+    results: list[int] = []
+
+    def get_status() -> None:
+        results.append(client.get("/status").status_code)
+
+    worker = threading.Thread(target=get_status)
+    worker.start()
+    assert entered.wait(5), "status request never reached runtime_status"
+    # while the status build is blocked, /health must still answer promptly
+    started = time.monotonic()
+    health = client.get("/health")
+    elapsed = time.monotonic() - started
+    release.set()
+    worker.join(timeout=5)
+    assert health.status_code == 200
+    assert elapsed < 5, f"/health stalled {elapsed:.1f}s behind runtime_status"
+    assert results == [200]
