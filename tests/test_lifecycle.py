@@ -919,7 +919,7 @@ def test_unhealthy_message_names_occupied_port(monkeypatch, tmp_path: Path) -> N
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
+    listener.listen(5)
     port = listener.getsockname()[1]
     try:
         message = Supervisor()._unhealthy_message("chat", port)
@@ -1810,3 +1810,35 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_doctor_warns_on_saved_plan_issues(
+    tmp_path: Path, monkeypatch, capsys,
+) -> None:
+    """doctor ties the saved plan to this machine: a backend the plan needs
+    but the host lacks, and a planned port already bound by another process,
+    must surface as warnings before `nmesh up` hits them."""
+    plan = build_plan(profile(8), load_catalog(), Policy(roles=["chat"]))
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(5)
+    port = listener.getsockname()[1]
+    service = replace(plan.services[0], backend="vllm", port=port)
+    plan = replace(plan, services=[service])
+    monkeypatch.setattr(
+        cli, "detect_hardware",
+        lambda: profile(8, (), backends={"llamacpp": "test"}),
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    try:
+        assert cli._doctor(False) == 0
+        out = capsys.readouterr().out
+        assert "backend 'vllm'" in out
+        assert str(port) in out
+
+        assert cli._doctor(True) == 0
+        data = json.loads(capsys.readouterr().out)
+        issues = {issue["issue"] for issue in data["plan_issues"]}
+        assert issues == {"backend_missing", "port_in_use"}
+    finally:
+        listener.close()

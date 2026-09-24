@@ -391,9 +391,57 @@ def _doctor(as_json: bool, profile_path: str | None = None) -> int:
         for service in selected.services
     ] if selected is not None else []
     localized_warnings = _profile_warnings(profile, language)
+    plan_issues: list[dict[str, object]] = []
+    if selected is not None:
+        owned: set[str] = set()
+        try:
+            state = json.loads(
+                (nmesh_home() / "state.json").read_text(encoding="utf-8")
+            )
+            for entry in state.get("services") or []:
+                if not isinstance(entry, dict):
+                    continue
+                pid = entry.get("pid")
+                name = entry.get("service")
+                if (
+                    isinstance(pid, int)
+                    and not isinstance(pid, bool)
+                    and isinstance(name, str)
+                    and psutil.pid_exists(pid)
+                ):
+                    owned.add(name)
+        except (OSError, json.JSONDecodeError):
+            pass
+        for service in selected.services:
+            if service.backend not in profile.available_backends:
+                plan_issues.append({
+                    "service": service.name,
+                    "issue": "backend_missing",
+                    "message": i18n.t(
+                        "warn.plan_backend_missing", language,
+                        service=service.name, backend=service.backend,
+                    ),
+                })
+            if service.name in owned:
+                continue
+            try:
+                with socket.create_connection(
+                    ("127.0.0.1", service.port), timeout=0.2
+                ):
+                    plan_issues.append({
+                        "service": service.name,
+                        "issue": "port_in_use",
+                        "message": i18n.t(
+                            "warn.plan_port_in_use", language,
+                            service=service.name, port=service.port,
+                        ),
+                    })
+            except OSError:
+                pass
     if as_json:
         data = asdict(profile)
         data["warnings"] = localized_warnings
+        data["plan_issues"] = plan_issues
         data["free_budgets"] = {"vram_bytes": free_vram, "ram_bytes": free_ram}
         data["selected_models"] = selected_models
         if profile_path:
@@ -436,6 +484,8 @@ def _doctor(as_json: bool, profile_path: str | None = None) -> int:
             str(len(flags)) if flags is not None else i18n.t("label.unknown", language),
         )
     _console().print(backend)
+    for issue in plan_issues:
+        _console().print(f"[yellow]- {issue['message']}[/yellow]")
     for warning in localized_warnings:
         _console().print(f"[yellow]- {warning}[/yellow]")
     if selected_models:
