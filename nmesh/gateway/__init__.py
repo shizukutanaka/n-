@@ -1760,6 +1760,8 @@ def create_app(
         prompt = _content(request)
         ledger = Ledger()
         managed: list[tuple[PlannedService, object, _Ticket]] = []
+        job = jobs.submit("nmesh-delegate", "/v1/chat/completions")
+        succeeded = False
 
         def concurrency_error(service: PlannedService) -> HTTPException:
             slots = max(1, service.memory.parallel_slots)
@@ -1795,6 +1797,8 @@ def create_app(
                 ticket = in_flight.enter(service.name)
                 managed.append((service, slot, ticket))
 
+            jobs.start(job)
+
             def run() -> Delegation:
                 assert httpx is not None
                 with httpx.Client(
@@ -1811,13 +1815,16 @@ def create_app(
 
             try:
                 result = await asyncio.to_thread(run)
+                succeeded = True
             except (httpx.HTTPError, ValueError) as error:
+                jobs.finish(job, ok=False, detail=str(error))
                 raise HTTPException(status_code=502, detail=str(error)) from error
         finally:
             for service, slot, ticket in reversed(managed):
                 in_flight.leave(service.name, ticket)
                 limiter.release(slot)
                 last_use.touch(service.name)
+            jobs.finish(job, ok=succeeded)
         role = "worker" if result.accepted else "lead"
         return {
             "id": f"nmesh-delegate-{int(time.time() * 1000)}",
