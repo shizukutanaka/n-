@@ -44,6 +44,20 @@ def test_bench_runs_rejects_zero() -> None:
         cli.main(["bench", "--runs", "0"])
 
 
+def test_bench_rejects_unknown_service(monkeypatch, capsys) -> None:
+    plan = _plan()
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(
+        cli,
+        "runtime_status",
+        lambda: pytest.fail("unknown service must fail before runtime access"),
+    )
+    assert cli.main(["bench", "--service", "typo"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "typo" in captured.err
+
+
 def test_bench_measures_embedding_service(monkeypatch, capsys) -> None:
     plan = _plan()
     service = replace(plan.services[0], name="embed", roles=["embed"])

@@ -221,6 +221,8 @@ _CONTEXT_CATEGORIES = (
     "context.update",
 )
 
+_WATCH_SOURCES = frozenset({"zenn", "qiita", "github", "arxiv", "hf", "x"})
+
 
 def _console() -> Console:
     return Console(legacy_windows=False)
@@ -2027,7 +2029,11 @@ def _bench(args: argparse.Namespace) -> int:
     plan = load_plan()
     if plan is None or not plan.services:
         return 1
-    service = next((item for item in plan.services if item.name == args.service), plan.services[0])
+    service = next((item for item in plan.services if item.name == args.service), None)
+    if service is None:
+        print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
+              file=sys.stderr)
+        return 1
     running = runtime_status()
     if not _service_running(service, running):
         print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
@@ -3875,6 +3881,16 @@ def _watch(args: argparse.Namespace) -> int:
     )
     if not requested:
         requested = ("zenn", "qiita")
+    unknown_sources = [item for item in requested if item not in _WATCH_SOURCES]
+    if unknown_sources:
+        print(
+            i18n.t(
+                "err.watch_unknown_source", language,
+                source=", ".join(unknown_sources),
+            ),
+            file=sys.stderr,
+        )
+        return 2
     if args.unit:
         filename, text, command = watch_unit(args.interval_hours)
         payload = {
