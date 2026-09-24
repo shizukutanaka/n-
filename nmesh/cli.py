@@ -1731,7 +1731,12 @@ def _models_scan(args: argparse.Namespace) -> int:
         return 0
     language = i18n.lang()
     table = Table(title=i18n.t("models.scan", language))
-    for column in ("Store", "Model", "Quant", "Label", "GiB", "Tags", "Planned", "Group"):
+    for column in (
+        i18n.t("label.store", language), i18n.t("label.model", language),
+        i18n.t("label.quant", language), i18n.t("label.label", language),
+        i18n.t("label.gib", language), i18n.t("label.tags", language),
+        i18n.t("label.planned", language), i18n.t("label.group", language),
+    ):
         table.add_column(column)
     for artifact, item in zip(artifacts, artifact_payloads, strict=True):
         label = artifact.label or "-"
@@ -1840,7 +1845,12 @@ def _models(args: argparse.Namespace) -> int:
             _print_json(items)
         else:
             table = Table(title=i18n.t("models.local", i18n.lang()))
-            for column in ("Path", "Bytes", "Quant", "Label", "Planned"):
+            language = i18n.lang()
+            for column in (
+                i18n.t("engine.path", language), i18n.t("label.bytes", language),
+                i18n.t("label.quant", language), i18n.t("label.label", language),
+                i18n.t("label.planned", language),
+            ):
                 table.add_column(column)
             for item in items:
                 table.add_row(

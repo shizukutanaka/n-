@@ -55,3 +55,16 @@ def test_version_reports_package_and_evidence_versions(
     assert "nmesh 0.1.0" in output
     assert f"bench={cli.BENCH_HARNESS_VERSION}" in output
     assert "probe_rules=" in output
+
+
+def test_models_local_table_headers_localized(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    model_dir = tmp_path / "models"
+    model_dir.mkdir()
+    (model_dir / "fake.gguf").write_bytes(b"junk")
+    monkeypatch.setattr(cli.i18n, "lang", lambda: "ja")
+    monkeypatch.setattr(cli, "load_plan", lambda: None)
+    args = argparse.Namespace(models_command="local", json=False)
+    assert cli._models(args) == 0
+    out = capsys.readouterr().out
+    assert "パス" in out and "計画済み" in out
