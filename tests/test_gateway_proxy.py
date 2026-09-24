@@ -1045,3 +1045,58 @@ def test_gateway_injects_usage_for_vllm_and_ollama_streams(monkeypatch) -> None:
         _UsageHandler.request_body = {}
         upstream.shutdown()
         upstream.server_close()
+
+
+class _PassthroughStreamHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.rfile.read(length)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        for chunk in (
+            # model already matches the request — must pass through verbatim
+            b'data: {"model" :"upstream-model", "choices":[{"delta":{"content":"x"}}]}\n\n',
+            # different model — must be rewritten canonically
+            b'data: {"model":"other","choices":[{"delta":{"content":"y"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ):
+            self.wfile.write(chunk)
+            self.wfile.flush()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def test_gateway_stream_skips_reserialize_when_model_matches() -> None:
+    """Per-token SSE chunks with an already-correct model must not pay a
+    json.dumps reserialization — they pass through byte-identical."""
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _PassthroughStreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec("compat-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "upstream-model",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        # matching chunk kept byte-identical (non-canonical spacing preserved)
+        assert (
+            b'data: {"model" :"upstream-model", '
+            b'"choices":[{"delta":{"content":"x"}}]}\n'
+        ) in response.content
+        # differing chunk still rewritten to canonical JSON
+        assert (
+            b'data: {"model":"upstream-model",'
+            b'"choices":[{"delta":{"content":"y"}}]}\n'
+        ) in response.content
+        assert b"data: [DONE]\n\n" in response.content
+    finally:
+        upstream.shutdown()
+        upstream.server_close()

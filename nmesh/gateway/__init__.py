@@ -1373,14 +1373,25 @@ def create_app(
                         isinstance(nested_message, dict) and "model" in nested_message
                     ):
                         client_model = request.get("model", service.model_id)
-                        if "model" in payload:
-                            payload["model"] = client_model
-                        if isinstance(nested_message, dict) and "model" in nested_message:
-                            nested_message["model"] = client_model
-                        content = (
-                            b"data: "
-                            + json.dumps(payload, separators=(",", ":")).encode()
+                        # Most chunks already carry the right model — skip the
+                        # per-token reserialization unless the value differs.
+                        differs = (
+                            ("model" in payload and payload["model"] != client_model)
+                            or (
+                                isinstance(nested_message, dict)
+                                and "model" in nested_message
+                                and nested_message["model"] != client_model
+                            )
                         )
+                        if differs:
+                            if "model" in payload:
+                                payload["model"] = client_model
+                            if isinstance(nested_message, dict) and "model" in nested_message:
+                                nested_message["model"] = client_model
+                            content = (
+                                b"data: "
+                                + json.dumps(payload, separators=(",", ":")).encode()
+                            )
                     return content + ending
 
                 try:
