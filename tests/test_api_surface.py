@@ -552,6 +552,47 @@ def test_run_surfaces_upstream_error_body(monkeypatch, capsys) -> None:
     assert "logits computation" in err
 
 
+def test_run_reads_prompt_from_stdin(monkeypatch) -> None:
+    import io
+
+    captured: dict[str, object] = {}
+
+    class Response:
+        def read(self):
+            return json.dumps(
+                {"choices": [{"message": {"content": "ok"}}]}
+            ).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, *args, **kwargs):
+        captured["body"] = json.loads(request.data.decode())
+        return Response()
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("sys.stdin", io.StringIO("piped text"))
+    result = cli._run_prompt(
+        SimpleNamespace(prompt="-", role="chat", json=False, port=18000)
+    )
+    assert result == 0
+    assert captured["body"]["messages"][0]["content"] == "piped text"
+
+
+def test_run_rejects_empty_stdin(monkeypatch, capsys) -> None:
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("   \n"))
+    result = cli._run_prompt(
+        SimpleNamespace(prompt="-", role="chat", json=False, port=18000)
+    )
+    assert result == 1
+    assert "prompt" in capsys.readouterr().err
+
+
 def test_serve_returns_nonzero_for_failed_gateway(monkeypatch) -> None:
     process = SimpleNamespace(pid=123, wait=lambda: 1)
     monkeypatch.setattr(cli, "_launch_gateway", lambda _port, detach: (process, None))

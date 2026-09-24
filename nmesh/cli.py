@@ -4063,10 +4063,25 @@ def _watch(args: argparse.Namespace) -> int:
 
 
 def _run_prompt(args: argparse.Namespace) -> int:
+    prompt = args.prompt
+    if prompt is None or prompt == "-":
+        if sys.stdin.isatty():
+            print(
+                i18n.t("err.run_prompt_required", i18n.lang()),
+                file=sys.stderr,
+            )
+            return 1
+        prompt = sys.stdin.read()
+    if not prompt.strip():
+        print(
+            i18n.t("err.run_prompt_required", i18n.lang()),
+            file=sys.stderr,
+        )
+        return 1
     stream = bool(getattr(args, "stream", False)) and not args.json
     payload = json.dumps({
         "model": f"nmesh-{args.role}",
-        "messages": [{"role": "user", "content": args.prompt}],
+        "messages": [{"role": "user", "content": prompt}],
         "stream": stream,
     }).encode()
     headers = {"Content-Type": "application/json", **_gateway_headers()}
@@ -4295,7 +4310,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         item.add_argument("--json", action="store_true")
         item.add_argument("--port", type=int, default=18000)
     run_parser = sub.add_parser("run")
-    run_parser.add_argument("prompt")
+    run_parser.add_argument("prompt", nargs="?", default=None,
+                            help="prompt text; reads stdin when omitted or '-'")
     run_parser.add_argument("--role", default="chat")
     run_parser.add_argument("--port", type=int, default=18000)
     run_parser.add_argument("--json", action="store_true")
