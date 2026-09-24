@@ -514,10 +514,110 @@ def test_embedding_multi_input_is_marked_unverified(monkeypatch) -> None:
         with _client(monkeypatch, upstream) as client:
             response = client.post(
                 "/v1/embeddings",
-                json={"model": "nmesh-auto", "input": ["first", "second"]},
+                json={"model": "nmesh-auto", "input": ["first", {"a": 1}]},
             )
         assert response.status_code == 200
         assert response.headers["X-Nmesh-Embedding-Truncation"] == "unverified"
+        assert len(_EmbeddingHandler.request_bodies) == 1
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_embedding_multi_input_clean_elements_pass_unflagged(monkeypatch) -> None:
+    upstream = _start_autochunk_upstream()
+    try:
+        with _client(monkeypatch, upstream) as client:
+            response = client.post(
+                "/v1/embeddings",
+                json={"model": "nmesh-auto", "input": [
+                    " ".join(["word"] * 1500), " ".join(["word"] * 1500),
+                ]},
+            )
+        assert response.status_code == 200
+        assert "X-Nmesh-Embedding-Truncation" not in response.headers
+        # Original request plus one probe per over-cap-bytes element.
+        assert len(_AutoChunkHandler.request_bodies) == 3
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_embedding_multi_input_truncating_element_returns_error(
+    monkeypatch,
+) -> None:
+    upstream = _start_autochunk_upstream()
+    try:
+        with _client(monkeypatch, upstream) as client:
+            response = client.post(
+                "/v1/embeddings",
+                json={"model": "nmesh-auto", "input": [
+                    "ok", " ".join(["word"] * 3000),
+                ]},
+            )
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert error["type"] == "invalid_request_error"
+        assert error["code"] == "context_length_exceeded"
+        assert "2048" in error["message"]
+        assert "3000" in error["message"]
+        assert "[1]" in error["message"]
+        assert len(_AutoChunkHandler.request_bodies) == 2
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_embedding_multi_input_many_suspects_is_marked_unverified(
+    monkeypatch,
+) -> None:
+    upstream = _start_autochunk_upstream()
+    try:
+        with _client(monkeypatch, upstream) as client:
+            response = client.post(
+                "/v1/embeddings",
+                json={"model": "nmesh-auto", "input": [
+                    " ".join(["word"] * 2500) for _ in range(9)
+                ]},
+            )
+        assert response.status_code == 200
+        assert response.headers["X-Nmesh-Embedding-Truncation"] == "unverified"
+        assert len(_AutoChunkHandler.request_bodies) == 1
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_embedding_token_array_over_cap_returns_error(monkeypatch) -> None:
+    upstream = _start_upstream()
+    try:
+        with _client(monkeypatch, upstream) as client:
+            response = client.post(
+                "/v1/embeddings",
+                json={"model": "nmesh-auto", "input": [0] * 3000},
+            )
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert error["code"] == "context_length_exceeded"
+        assert "3000" in error["message"]
+        assert len(_EmbeddingHandler.request_bodies) == 1
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_embedding_token_array_batch_over_cap_returns_error(monkeypatch) -> None:
+    upstream = _start_upstream()
+    try:
+        with _client(monkeypatch, upstream) as client:
+            response = client.post(
+                "/v1/embeddings",
+                json={"model": "nmesh-auto", "input": [[0] * 3000, [1, 2]]},
+            )
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert error["code"] == "context_length_exceeded"
+        assert "[0]" in error["message"]
         assert len(_EmbeddingHandler.request_bodies) == 1
     finally:
         upstream.shutdown()

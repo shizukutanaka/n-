@@ -443,8 +443,16 @@ specific to this host, artifact, and Ollama version.
 For a proven cap, the gateway confirms saturation for a single string (or a
 one-element input list) and returns an OpenAI-shaped `context_length_exceeded`
 error when the backend would silently truncate it. Multi-element input lists
-remain a known gap because aggregate usage cannot identify which element was
-truncated; saturated requests receive
+are verified per element: BPE tokens each span at least one byte, so only
+elements over `cap` bytes can be truncated; each such element is probed by
+re-issuing it as a list of <=`cap`-byte pieces whose summed `prompt_tokens`
+bounds its real count. A proven element returns the same
+`context_length_exceeded` error naming its `input[i]` index; batches proven
+clean pass unflagged, so many-chunk inputs no longer trigger a false alarm.
+Token-array inputs need no probe since their length is the count, and a list
+of bare integers is treated as one token array per the OpenAI schema. When
+verification is infeasible — a non-string non-token element, too many
+suspects to probe, or a failed probe — the request still receives
 `X-Nmesh-Embedding-Truncation: unverified` instead.
 Served length is not the same as usable retrieval length. On the measured
 llama.cpp b10831 `--embeddings --pooling cls -c 8192 -b 8192 -ub 8192`
