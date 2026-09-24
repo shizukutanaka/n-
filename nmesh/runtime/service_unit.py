@@ -157,16 +157,16 @@ def watch_unit(
 </plist>
 """
         return f"{label}.plist", text, f"launchctl load ~/Library/LaunchAgents/{label}.plist"
-    text = f"""[Unit]
+    service = unit_install_path("nmesh-watch.service", current)
+    timer = unit_install_path("nmesh-watch.timer", current)
+    text = f"""# {service}
+[Unit]
 Description=nmesh watch
 
 [Service]
 ExecStart={shlex.join((executable, "-m", "nmesh.cli", "watch"))}
 
-[Install]
-WantedBy=default.target
-
-# nmesh-watch.timer
+# {timer}
 [Unit]
 Description=Run nmesh watch periodically
 
@@ -178,6 +178,5 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 """
-    install = unit_install_path("nmesh-watch.timer", current)
-    command = f"systemctl --user enable --now {install}"
+    command = f"systemctl --user enable --now {timer}"
     return "nmesh-watch.service + nmesh-watch.timer", text, command

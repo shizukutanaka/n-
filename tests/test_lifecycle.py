@@ -20,7 +20,7 @@ from nmesh.runtime import service_unit as service_unit_module
 from nmesh.runtime import supervisor as supervisor_module
 from nmesh.runtime.acquisition import Acquired
 from nmesh.runtime.logs import log_path, open_log, tail
-from nmesh.runtime.service_unit import launcher_script, service_unit
+from nmesh.runtime.service_unit import launcher_script, service_unit, watch_unit
 from nmesh.runtime.supervisor import Supervisor
 
 from .test_planner import profile
@@ -1314,6 +1314,25 @@ def test_service_units_are_pure_and_platform_specific(monkeypatch, tmp_path: Pat
     assert filename.endswith(".cmd")
     assert "schtasks" in text
     assert "nmesh-gateway-launcher.cmd" in text
+
+
+def test_watch_unit_names_both_systemd_files(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(service_unit_module, "nmesh_home", lambda: tmp_path)
+    config_home = tmp_path / "xdg-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+    filename, text, command = watch_unit(6, "posix")
+
+    service = config_home / "systemd" / "user" / "nmesh-watch.service"
+    timer = config_home / "systemd" / "user" / "nmesh-watch.timer"
+    assert "nmesh-watch.service" in filename and "nmesh-watch.timer" in filename
+    # Both files must land in the unit directory — a single .timer blob left
+    # nmesh-watch.service missing, so the timer activated a nonexistent unit.
+    assert f"# {service}" in text
+    assert f"# {timer}" in text
+    assert "[Service]" in text and "[Timer]" in text
+    assert "OnUnitActiveSec=6h" in text
+    assert command.endswith(str(timer))
 
 
 def test_autostart_install_writes_launcher_and_preserves_environment(

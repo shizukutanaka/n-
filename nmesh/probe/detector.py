@@ -294,6 +294,15 @@ def _detect_backends(
                 version = f"{version}{suffix}" if version else suffix.strip()
         if version:
             backends[name] = version
+        else:
+            # The binary exists but could not answer `--version` — a broken
+            # wrapper or shim. Without a warning the planner silently treats
+            # it as not installed and emits a misleading install hint.
+            _append_warning(
+                warnings, warning_params,
+                "warn.backend_version_unresponsive",
+                backend=name, path=str(executable),
+            )
         if name == "llamacpp":
             caps = llamacpp_caps(str(executable))
             if caps is not None:

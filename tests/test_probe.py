@@ -82,6 +82,32 @@ def test_missing_backend_env_binary_does_not_fall_back_to_path(
     assert {"backend": "llamacpp", "path": missing} in params
 
 
+def test_silent_version_probe_warns_instead_of_silent_skip(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    binary = tmp_path / "llama-server.exe"
+    binary.write_text("", encoding="utf-8")
+    monkeypatch.delenv("NMESH_LLAMACPP_BIN", raising=False)
+    monkeypatch.setattr(
+        detector.shutil,
+        "which",
+        lambda value: str(binary) if value == "llama-server" else None,
+    )
+    monkeypatch.setattr(detector, "_run", lambda command: (None, None))
+    monkeypatch.setattr(detector, "llamacpp_caps", lambda path: None)
+
+    warnings: list[str] = []
+    params: list[dict[str, str]] = []
+    backends, _, paths, _ = detector._detect_backends(warnings, params)
+
+    assert backends["llamacpp"] is None
+    assert paths["llamacpp"] == str(binary.resolve())
+    assert "warn.backend_version_unresponsive" in warnings
+    assert {
+        "backend": "llamacpp", "path": str(binary.resolve()),
+    } in params
+
+
 def test_backend_binary_is_found_in_nmesh_home_bin(monkeypatch, tmp_path: Path) -> None:
     binary = tmp_path / "bin" / "llama-server.exe"
     binary.parent.mkdir()
