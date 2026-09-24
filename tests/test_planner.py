@@ -797,6 +797,7 @@ def test_catalog_sliding_window_models(catalog: list[ModelSpec]) -> None:
         if model.sliding_window
     }
     assert fields == {
+        "gemma-3-1b-it": (512, 6),
         "gemma2-2b": (4096, 2),
         "gemma2-9b": (4096, 2),
         "gpt-oss-20b": (128, 2),

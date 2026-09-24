@@ -381,6 +381,28 @@
     hf_gguf: "bartowski/gemma-2-9b-it-GGUF"
     hf: "google/gemma-2-9b-it"
     hf_mlx: "mlx-community/gemma-2-9b-it-4bit"
+- id: gemma-3-1b-it
+  family: gemma3
+  params: 1000000000
+  n_layers: 26
+  n_heads: 4
+  n_kv_heads: 1
+  head_dim: 256
+  hidden_size: 1152
+  vocab_size: 262144
+  head_layout: shared
+  sliding_window: 512
+  sliding_window_pattern: 6
+  max_context: 32768
+  roles: [chat]
+  quality: 60
+  license: gemma
+  languages: [en]
+  sources:
+    ollama: "gemma3:1b"
+    hf_gguf: "bartowski/google_gemma-3-1b-it-GGUF"
+    hf: "google/gemma-3-1b-it"
+    hf_mlx: "mlx-community/gemma-3-1b-it-4bit"
 - id: mistral-7b-instruct
   family: mistral
   params: 7240000000
