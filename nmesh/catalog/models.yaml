@@ -277,6 +277,24 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: seed-oss-36b-instruct
+  family: seed-oss
+  params: 36200000000
+  n_layers: 64
+  n_heads: 80
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 5120
+  vocab_size: 155136
+  head_layout: separate
+  max_context: 524288
+  roles: [chat]
+  quality: 74
+  license: apache-2.0
+  languages: [en, zh]
+  sources:
+    hf_gguf: "ggml-org/Seed-OSS-36B-Instruct-GGUF"
+    hf: "ByteDance-Seed/Seed-OSS-36B-Instruct"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
