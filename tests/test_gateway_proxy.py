@@ -948,9 +948,9 @@ def test_gateway_retries_once_after_connect_error(monkeypatch) -> None:
                 "messages": [{"role": "user", "content": "hello"}],
             })
             assert client.get("/metrics").json()["concurrency"][service.name]["in_flight"] == 0
-    assert response.status_code == 502
+    assert response.status_code == 504
     assert response.json()["error"]["type"] == "server_error"
-    assert response.json()["error"]["code"] == 502
+    assert response.json()["error"]["code"] == 504
     assert len(calls) == 1
     assert calls[0] == (service.name, isolated_plan)
 
@@ -982,7 +982,7 @@ def test_gateway_retries_once_after_connect_timeout(monkeypatch) -> None:
             "model": "nmesh-auto",
             "messages": [{"role": "user", "content": "hello"}],
         })
-    assert response.status_code == 502
+    assert response.status_code == 504
     assert len(calls) == 1
     assert calls[0] == (service.name, plan)
 

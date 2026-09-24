@@ -625,6 +625,21 @@ async def _record_prompt_calibration(
         pass
 
 
+def _upstream_status(error: httpx.HTTPError) -> int:
+    """Client-facing status for an upstream transport failure.
+
+    Timeouts — connect or otherwise — are 504 (the engine was too slow to
+    answer; in httpx `ConnectTimeout` is a `TimeoutException` sibling of
+    `ConnectError`, not a subclass). Refused connections are 503 (the
+    engine is unavailable — retry after it recovers), anything else 502.
+    """
+    if isinstance(error, httpx.TimeoutException):
+        return 504
+    if isinstance(error, httpx.ConnectError):
+        return 503
+    return 502
+
+
 def _completion_not_supported(
     path: str, status_code: int, backend: str
 ) -> HTTPException | None:
@@ -1285,7 +1300,9 @@ def create_app(
                     limiter.release(slot_token)
                 if job is not None:
                     jobs.finish(job, ok=False, detail=str(error))
-                raise HTTPException(status_code=502, detail=str(error)) from error
+                raise HTTPException(
+                    status_code=_upstream_status(error), detail=str(error)
+                ) from error
             if upstream.status_code >= 400:
                 content = await upstream.aread()
                 await upstream.aclose()
@@ -1397,7 +1414,9 @@ def create_app(
                             yield output
                     stream_completed = True
                 except httpx.HTTPError as error:
-                    raise HTTPException(status_code=502, detail=str(error)) from error
+                    raise HTTPException(
+                        status_code=_upstream_status(error), detail=str(error)
+                    ) from error
                 finally:
                     await upstream.aclose()
                     await client.aclose()
@@ -1619,10 +1638,16 @@ def create_app(
                     return Response(content=content, status_code=response.status_code,
                                     media_type=response.headers.get("content-type"))
                 data = json.loads(content)
-        except (httpx.HTTPError, json.JSONDecodeError) as error:
+        except json.JSONDecodeError as error:
             if job is not None:
                 jobs.finish(job, ok=False, detail=str(error))
             raise HTTPException(status_code=502, detail=str(error)) from error
+        except httpx.HTTPError as error:
+            if job is not None:
+                jobs.finish(job, ok=False, detail=str(error))
+            raise HTTPException(
+                status_code=_upstream_status(error), detail=str(error)
+            ) from error
         finally:
             await client.aclose()
             in_flight_peak = in_flight.leave(service.name, ticket)
@@ -1811,8 +1836,12 @@ def create_app(
 
             try:
                 result = await asyncio.to_thread(run)
-            except (httpx.HTTPError, ValueError) as error:
+            except ValueError as error:
                 raise HTTPException(status_code=502, detail=str(error)) from error
+            except httpx.HTTPError as error:
+                raise HTTPException(
+                    status_code=_upstream_status(error), detail=str(error)
+                ) from error
         finally:
             for service, slot, ticket in reversed(managed):
                 in_flight.leave(service.name, ticket)

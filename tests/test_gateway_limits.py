@@ -9,6 +9,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
+import httpx
 from fastapi.testclient import TestClient
 
 import nmesh.gateway as gateway_module
@@ -275,6 +276,56 @@ def test_unlimited_ollama_requests_are_not_serialized(monkeypatch) -> None:
                 thread.join(timeout=5)
             assert len(results) == 2
             assert all(response.status_code == 200 for response in results)
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_upstream_transport_errors_classify_status(monkeypatch) -> None:
+    assert gateway_module._upstream_status(httpx.ReadTimeout("t")) == 504
+    assert gateway_module._upstream_status(httpx.ConnectTimeout("t")) == 504
+    assert gateway_module._upstream_status(httpx.ConnectError("c")) == 503
+    assert gateway_module._upstream_status(httpx.RemoteProtocolError("r")) == 502
+
+    upstream = _limit_upstream()
+    try:
+        plan = _llama_plan(1)
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        with TestClient(create_app(plan)) as client:
+            def raise_timeout(*_args, **_kwargs):
+                raise httpx.ReadTimeout("slow upstream")
+
+            monkeypatch.setattr(httpx.AsyncClient, "post", raise_timeout)
+            response = client.post(
+                "/v1/chat/completions", json={"messages": []}
+            )
+            assert response.status_code == 504
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_upstream_connect_refused_maps_to_503(monkeypatch) -> None:
+    upstream = _limit_upstream()
+    try:
+        plan = _llama_plan(1)
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        with TestClient(create_app(plan)) as client:
+            def raise_connect(*_args, **_kwargs):
+                raise httpx.ConnectError("refused")
+
+            monkeypatch.setattr(httpx.AsyncClient, "post", raise_connect)
+            # Restart path still runs; keep it a no-op so the second
+            # ConnectError classifies to 503.
+            monkeypatch.setattr(
+                gateway_module, "ensure_running", lambda *a, **k: None
+            )
+            response = client.post(
+                "/v1/chat/completions", json={"messages": []}
+            )
+            assert response.status_code == 503
     finally:
         upstream.shutdown()
         upstream.server_close()
