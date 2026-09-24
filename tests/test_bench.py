@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from typing import Self
 
-from nmesh.bench import BenchRecord, merge_measurement, runner
+from nmesh.bench import BenchRecord, load_records, merge_measurement, runner, save_records
 from nmesh.bench.runner import BenchResult, measure, measure_controlled
 
 
@@ -185,3 +185,35 @@ def test_bench_harness_change_does_not_preserve_rejected_stable_evidence() -> No
     assert record.stable is False
     assert record.sessions == (5.0,)
     assert record.rejected == (5.0,)
+
+
+def test_load_records_caches_by_mtime(tmp_path) -> None:
+    """The delegation gate calls load_cache() per request — an unchanged
+    records file must not be re-parsed on every call."""
+    target = tmp_path / "bench.json"
+    save_records(
+        {"key": BenchRecord(
+            10.0, 9.0, 11.0, 3, 2, 1.0, True, "m", "bench-v2", (10.0,),
+        )},
+        path=target,
+    )
+    first = load_records(target)
+    assert first["key"].tps == 10.0
+
+    # Unchanged file hits the cache — even unreadable it returns the
+    # cached parse (stat only needs directory permissions).
+    target.chmod(0)
+    try:
+        second = load_records(target)
+    finally:
+        target.chmod(0o600)
+    assert second["key"].tps == 10.0
+
+    # A rewrite invalidates the cache.
+    save_records(
+        {"key": BenchRecord(
+            20.0, 19.0, 21.0, 3, 2, 1.0, True, "m", "bench-v2", (20.0,),
+        )},
+        path=target,
+    )
+    assert load_records(target)["key"].tps == 20.0
