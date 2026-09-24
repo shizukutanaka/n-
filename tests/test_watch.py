@@ -596,3 +596,31 @@ def test_cli_state_deduplication_and_all_override(tmp_path: Path, monkeypatch, c
     assert main(["watch", "--offline", str(items), "--all", "--json"]) == 0
     third = json.loads(capsys.readouterr().out)
     assert third["new_findings"] == 1
+
+
+def test_extract_parallel_matches_serial_output() -> None:
+    """Pool-based extraction must produce identical, ordered results to the
+    serial path — mention order and per-key URL lists are item-order driven."""
+    bodies = [
+        ("setup:\nllama-server --ctx-size 8192 --threads 8\n"
+         "weights: huggingface.co/ggml-org/Qwen3-0.6B-Q8_0-GGUF Q4_K_M "
+         "/v1/chat/completions"),
+        ("benchmark Q4_K_M and IQ4_XS results\nllama-cli --no-warmup\n"
+         "see huggingface.co/ggml-org/Qwen3-0.6B-Q8_0-GGUF"),
+        ("routing table mentions /v1/embeddings and /v1/chat/completions, "
+         "plus hf.co/bartowski/Llama-3.2-3B-GGUF fp16"),
+        "fourth article repeats /v1/chat/completions and Q4_K_M",
+    ]
+    items = tuple(
+        SourceItem("qiita", f"https://example/{i}", f"t{i}", body, "")
+        for i, body in enumerate(bodies)
+    )
+    mentions = extract(items)
+    key = {(m.kind, m.value): (m.count, m.sources) for m in mentions}
+    assert key[("quant", "Q4_K_M")][0] == 3
+    assert key[("model_repo", "ggml-org/Qwen3-0.6B-Q8_0-GGUF")][0] == 2
+    assert key[("route", "/v1/chat/completions")][0] == 3
+    assert key[("flag", "--ctx-size")][0] == 1
+    assert mentions == tuple(sorted(
+        mentions, key=lambda m: (-m.count, m.value)
+    ))

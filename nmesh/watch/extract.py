@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from .sources import SourceItem
@@ -60,13 +61,31 @@ def _matches(kind: str, body: str) -> tuple[str, ...]:
     return tuple(_ROUTE_RE.findall(body))
 
 
+_KINDS = ("flag", "model_repo", "quant", "route")
+
+
 def extract(items: Sequence[SourceItem]) -> tuple[Mention, ...]:
-    """Extract and aggregate reproducible mentions from source item bodies."""
+    """Extract and aggregate reproducible mentions from source item bodies.
+
+    Regex work per item is independent and `re` releases the GIL, so a thread
+    pool parallelizes extraction across items; aggregation stays ordered."""
+    workers = min(8, len(items))
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            all_matches = list(pool.map(
+                lambda item: tuple(_matches(kind, item.body) for kind in _KINDS),
+                items,
+            ))
+    else:
+        all_matches = [
+            tuple(_matches(kind, item.body) for kind in _KINDS)
+            for item in items
+        ]
     counts: dict[tuple[str, str], int] = defaultdict(int)
     urls: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for item in items:
-        for kind in ("flag", "model_repo", "quant", "route"):
-            for value in _matches(kind, item.body):
+    for item, item_matches in zip(items, all_matches):
+        for kind, values in zip(_KINDS, item_matches):
+            for value in values:
                 key = (kind, value)
                 counts[key] += 1
                 if item.url not in urls[key] and len(urls[key]) < 5:
