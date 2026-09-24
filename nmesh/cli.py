@@ -926,11 +926,12 @@ def _print_plan_failure(plan: Plan, *, json_output: bool = False) -> None:
         _print_json(_plan_json_data(plan))
 
 
+# Flags that a saved plan renders inert — warn the user they are ignored.
+# --lang/--model/--ignore-eval-evidence are NOT listed: the up handler
+# honors them by rebuilding the plan below, so warning would be a lie.
 _UP_PLAN_FLAG_DEFAULTS: tuple[tuple[str, object, str], ...] = (
     ("roles", None, "--roles"),
     ("kv_quant", "f16", "--kv-quant"),
-    ("model", None, "--model"),
-    ("ignore_eval_evidence", False, "--ignore-eval-evidence"),
     ("allow_download_gb", 60.0, "--allow-download-gb"),
     ("spec", "none", "--spec"),
     ("spec_draft", "", "--spec-draft"),
