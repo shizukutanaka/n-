@@ -277,6 +277,25 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: falcon3-10b-instruct
+  family: falcon
+  params: 10300000000
+  n_layers: 40
+  n_heads: 12
+  n_kv_heads: 4
+  head_dim: 256
+  hidden_size: 3072
+  vocab_size: 131072
+  head_layout: separate
+  max_context: 32768
+  roles: [chat]
+  quality: 60
+  license: tii-falcon-license
+  languages: [en, fr, de, es, pt]
+  sources:
+    ollama: "falcon3:10b"
+    hf_gguf: "bartowski/Falcon3-10B-Instruct-GGUF"
+    hf: "tiiuae/Falcon3-10B-Instruct"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
