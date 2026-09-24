@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 
 import httpx
+import pytest
 
 from nmesh import cli
 from nmesh.bench.retrieval import (
@@ -12,6 +13,7 @@ from nmesh.bench.retrieval import (
     RetrievalLimit,
     RetrievalRecord,
     RetrievalRung,
+    _cosine,
     load_retrieval_cache,
     measure_retrieval,
     measure_retrieval_chunk_arm,
@@ -50,6 +52,12 @@ def _ladder(
         RetrievalRung(index, tokens, count, 8, flag)
         for index, (tokens, count, flag) in enumerate(zip(served, hits, flags), 1)
     )
+
+
+def test_cosine_rejects_mismatched_dimensions() -> None:
+    with pytest.raises(ValueError):
+        _cosine([1.0, 0.0], [1.0, 0.0, 0.0])
+    assert _cosine([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)
 
 
 def test_retrieval_properties_follow_conservative_ladder() -> None:

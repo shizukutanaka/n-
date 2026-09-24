@@ -457,7 +457,7 @@ def _embed_inputs(
 
 
 def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
-    dot = sum(a * b for a, b in zip(left, right))
+    dot = sum(a * b for a, b in zip(left, right, strict=True))
     left_norm = math.sqrt(sum(value * value for value in left))
     right_norm = math.sqrt(sum(value * value for value in right))
     return dot / (left_norm * right_norm) if left_norm and right_norm else 0.0
