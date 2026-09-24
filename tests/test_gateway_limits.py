@@ -9,6 +9,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
+import httpx
 from fastapi.testclient import TestClient
 
 import nmesh.gateway as gateway_module
@@ -498,3 +499,44 @@ def test_job_registry_cancel() -> None:
     assert registry.cancel(running) is False
     listed = [j.id for j in registry.list()]
     assert queued.id in listed and running.id in listed
+
+
+def test_upstream_circuit_breaker_fails_fast(monkeypatch) -> None:
+    """CIRCUIT_THRESHOLD consecutive transport failures open the service's
+    circuit — callers then get an immediate 503 + Retry-After instead of
+    paying a connect timeout and a revive attempt on every request."""
+    model = ModelSpec(
+        "circuit-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"},
+    )
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        memory=replace(plan.services[0].memory, parallel_slots=1),
+    )
+    plan = replace(plan, services=[service])
+    attempts: list[int] = []
+
+    async def fake_post(*_args: object, **_kwargs: object) -> httpx.Response:
+        attempts.append(1)
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(
+        gateway_module, "ensure_running", lambda _name, _plan: None
+    )
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    body = {
+        "model": "nmesh-auto",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    with TestClient(create_app(plan)) as client:
+        for _ in range(gateway_module.CIRCUIT_THRESHOLD):
+            assert (
+                client.post("/v1/chat/completions", json=body).status_code
+                == 502
+            )
+        opened = client.post("/v1/chat/completions", json=body)
+        assert opened.status_code == 503
+        assert opened.headers["retry-after"]
+        # The open circuit shorted the request — no new upstream attempt.
+        assert len(attempts) == 2 * gateway_module.CIRCUIT_THRESHOLD
