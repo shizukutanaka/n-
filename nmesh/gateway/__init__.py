@@ -2020,7 +2020,7 @@ def create_app(
 
     @app.get("/v1/jobs")
     async def list_jobs(limit: int = 50) -> dict[str, object]:
-        entries = jobs.list(limit)
+        entries = jobs.list(max(0, limit))
         progress = await _slot_progress(plan_state.snapshot()[0].services, entries)
         return {
             "jobs": [
