@@ -1950,6 +1950,15 @@ def _engine(args: argparse.Namespace) -> int:
     return 1
 
 
+def _select_service(plan: Plan, name: str | None) -> PlannedService | None:
+    if name is not None:
+        return next((item for item in plan.services if item.name == name), None)
+    return next(
+        (item for item in plan.services if item.name == "chat"),
+        plan.services[0] if plan.services else None,
+    )
+
+
 def _service_running(service: PlannedService, runtime: RuntimeStatus) -> bool:
     if not any(item.get("service") == service.name and item.get("running", True)
                for item in runtime.services):
@@ -4413,6 +4422,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     watch_parser.add_argument("--unit", action="store_true")
     watch_parser.add_argument("--interval-hours", type=_positive_int, default=24)
     auto = sub.add_parser("autotune")
+    auto.add_argument("--service")
     auto.add_argument("--json", action="store_true")
     autostart = sub.add_parser("autostart")
     autostart.add_argument("--port", type=int, default=18000)
@@ -4491,7 +4501,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         saved_plan = load_plan()
         if saved_plan is None or not saved_plan.services:
             return 1
-        service = saved_plan.services[0]
+        service = _select_service(saved_plan, args.service)
+        if service is None:
+            print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
+                  file=sys.stderr)
+            return 1
         if service.roles == ["embed"]:
             print(
                 i18n.t(

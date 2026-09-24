@@ -136,6 +136,13 @@ def test_autotune_rejects_embedding_service_before_runtime(monkeypatch, capsys) 
     assert "embedding service" in captured.err
 
 
+def test_autotune_unknown_service_errors(monkeypatch, capsys) -> None:
+    plan = _plan()
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    assert cli.main(["autotune", "--service", "nosuch"]) == 1
+    assert "nosuch" in capsys.readouterr().err
+
+
 def test_autotune_pauses_detached_gateway_watchdog(monkeypatch, capsys) -> None:
     """The detached gateway's watchdog respawns killed services between
     autotune cells and steals the port mid-restart — the gateway must be
