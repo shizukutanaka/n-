@@ -116,6 +116,23 @@ def test_plan_table_renders_not_applicable_decode_as_dash(monkeypatch) -> None:
     assert "—" in console.export_text()
 
 
+def test_plan_table_renders_residency_column(monkeypatch) -> None:
+    console = Console(record=True, color_system=None, width=120)
+    monkeypatch.setattr(cli, "_console", lambda: console)
+    plan = _plan()
+    resident = replace(plan.services[0], name="lead", resident=True)
+    swap = replace(plan.services[0], name="worker", resident=False)
+    sleeper = replace(
+        plan.services[0], name="sleeper", resident=True, sleep_mode=True
+    )
+    cli._render_plan(replace(plan, services=[resident, swap, sleeper]))
+    output = console.export_text()
+    assert "Residency" in output
+    assert "resident" in output
+    assert "swap" in output
+    assert "sleep" in output
+
+
 def test_autotune_rejects_embedding_service_before_runtime(monkeypatch, capsys) -> None:
     plan = _plan()
     service = replace(plan.services[0], name="embed", roles=["embed"], decode_tps=None)

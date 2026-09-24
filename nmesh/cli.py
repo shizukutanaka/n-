@@ -867,14 +867,18 @@ def _render_plan(result: Plan) -> None:
         i18n.t("label.model", language), i18n.t("label.backend", language),
         i18n.t("label.context", language), i18n.t("label.slots", language),
         i18n.t("label.gpu_layers", language), i18n.t("label.languages", language),
-        i18n.t("label.tps", language),
+        i18n.t("label.residency", language), i18n.t("label.tps", language),
     ):
         table.add_column(column)
     for service in result.services:
+        residency = (
+            "sleep" if getattr(service, "sleep_mode", False)
+            else ("resident" if getattr(service, "resident", True) else "swap")
+        )
         table.add_row(service.name, ",".join(service.roles), service.model_id, service.backend,
                       str(service.context), str(service.memory.parallel_slots),
                       "-" if service.n_gpu_layers is None else str(service.n_gpu_layers),
-                      ",".join(service.languages),
+                      ",".join(service.languages), residency,
                       "—" if service.decode_tps is None
                       else (f"~{service.decode_tps:.1f}" if service.estimated
                             else f"{service.decode_tps:.1f}"))
