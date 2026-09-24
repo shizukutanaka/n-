@@ -1950,6 +1950,41 @@ def _engine(args: argparse.Namespace) -> int:
     return 1
 
 
+def _services_ready(plan: Plan, runtime: RuntimeStatus) -> bool:
+    if not runtime.running:
+        return False
+    gateway = next(
+        (item for item in runtime.services if item.get("service") == "gateway"),
+        None,
+    )
+    if gateway is not None and not gateway.get("running"):
+        return False
+    return all(_service_running(service, runtime) for service in plan.services)
+
+
+def _wait(args: argparse.Namespace) -> int:
+    language = i18n.lang()
+    plan = load_plan()
+    if plan is None or not plan.services:
+        print(i18n.t("err.no_plan", language), file=sys.stderr)
+        return 1
+    deadline = time.monotonic() + args.timeout
+    while True:
+        if _services_ready(plan, runtime_status()):
+            if args.json:
+                _print_json({"ready": True})
+            else:
+                _console().print(i18n.t("label.ready", language))
+            return 0
+        if time.monotonic() >= deadline:
+            print(
+                i18n.t("err.wait_timeout", language, seconds=args.timeout),
+                file=sys.stderr,
+            )
+            return 1
+        time.sleep(0.5)
+
+
 def _service_running(service: PlannedService, runtime: RuntimeStatus) -> bool:
     if not any(item.get("service") == service.name and item.get("running", True)
                for item in runtime.services):
@@ -4394,6 +4429,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     jobs_parser.add_argument("--cancel", metavar="JOB_ID",
                              help="cancel a queued job (running jobs cannot be interrupted)")
     jobs_parser.add_argument("--json", action="store_true")
+    wait_parser = sub.add_parser(
+        "wait", help="block until the gateway and all planned services are healthy"
+    )
+    wait_parser.add_argument("--timeout", type=float, default=120.0)
+    wait_parser.add_argument("--json", action="store_true")
     watch_parser = sub.add_parser("watch")
     watch_parser.add_argument(
         "--sources",
@@ -4459,6 +4499,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _reload(args)
     if args.command == "unload":
         return _unload(args)
+    if args.command == "wait":
+        return _wait(args)
     if args.command in {"up", "down", "status", "serve"}:
         if args.command == "up":
             args.dry_run = args.dry_run or args.global_dry_run

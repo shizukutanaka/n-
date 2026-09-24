@@ -16,6 +16,7 @@ import pytest
 from nmesh import cli
 from nmesh.catalog import load_catalog
 from nmesh.planner import Policy, build_plan
+from nmesh.runtime import RuntimeStatus
 from nmesh.runtime import service_unit as service_unit_module
 from nmesh.runtime import supervisor as supervisor_module
 from nmesh.runtime.acquisition import Acquired
@@ -1810,3 +1811,37 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_wait_returns_zero_when_services_ready(monkeypatch, capsys) -> None:
+    service = SimpleNamespace(
+        name="chat", launch=SimpleNamespace(health_url=None),
+    )
+    plan = SimpleNamespace(services=[service])
+    runtime = RuntimeStatus(
+        True,
+        [{"service": "gateway", "running": True},
+         {"service": "chat", "running": True}],
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda *a, **k: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: runtime)
+    assert cli.main(["wait", "--timeout", "5"]) == 0
+    assert "ready" in capsys.readouterr().out
+
+
+def test_wait_times_out_when_services_not_ready(monkeypatch, capsys) -> None:
+    service = SimpleNamespace(
+        name="chat", launch=SimpleNamespace(health_url=None),
+    )
+    plan = SimpleNamespace(services=[service])
+    runtime = RuntimeStatus(False, [])
+    monkeypatch.setattr(cli, "load_plan", lambda *a, **k: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: runtime)
+    assert cli.main(["wait", "--timeout", "0"]) == 1
+    assert "did not become ready" in capsys.readouterr().err
+
+
+def test_wait_requires_plan(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli, "load_plan", lambda *a, **k: None)
+    assert cli.main(["wait"]) == 1
+    assert "No plan" in capsys.readouterr().err
