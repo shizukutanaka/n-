@@ -201,6 +201,30 @@ def test_gateway_rerank_proxies_to_rerank_service() -> None:
         upstream.server_close()
 
 
+def test_gateway_rerank_honors_explicit_service_model() -> None:
+    model = ModelSpec("rerank-model", "test", 500_000_000, 24, 16, 2, 64,
+                      1024, 4096, ["rerank"], 80.0, "test",
+                      {"hf_gguf": "test/repo"})
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _RerankHandler)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    try:
+        plan = build_plan(
+            profile(64, (24,)), [model], Policy(roles=["rerank"]),
+        )
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        client = TestClient(create_app(plan))
+        response = client.post("/v1/rerank", json={
+            "model": service.name, "query": "q", "documents": ["a"],
+        })
+        assert response.status_code == 200
+        assert _RerankHandler.request_body["model"] == service.model_ref
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+
 def test_gateway_rerank_501_without_rerank_service() -> None:
     model = ModelSpec("embed-model", "test", 500_000_000, 24, 16, 2, 64,
                       1024, 4096, ["embed"], 80.0, "test",

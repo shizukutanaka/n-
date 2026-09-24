@@ -2117,7 +2117,9 @@ def create_app(
         selected, telemetry_keys = plan_state.snapshot()
         # llama.cpp serves rerank OR embeddings per instance (single pooling
         # mode), so rerank needs its own service in the plan.
-        name = selected.routing.role_to_service.get("rerank")
+        name = _explicit(request.get("model"), selected) or (
+            selected.routing.role_to_service.get("rerank")
+        )
         if not name:
             raise HTTPException(
                 status_code=501,
