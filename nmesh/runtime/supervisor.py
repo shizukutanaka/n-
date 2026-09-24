@@ -200,6 +200,7 @@ class RuntimeStatus:
     running: bool
     services: list[dict[str, object]]
     warnings: list[str] = field(default_factory=list)
+    created_at: str | None = None
 
 
 class Supervisor:
@@ -1767,7 +1768,11 @@ class Supervisor:
             ) if self.active_plan is not None else 1,
         } for name, reason in self.failed.items() if name not in names)
         return RuntimeStatus(
-            any(bool(item.get("running", False)) for item in entries), entries
+            any(bool(item.get("running", False)) for item in entries), entries,
+            created_at=(
+                getattr(self.active_plan, "created_at", None)
+                if self.active_plan is not None else None
+            ),
         )
 
     def heartbeat(self) -> RuntimeStatus:
