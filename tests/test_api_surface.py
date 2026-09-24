@@ -247,6 +247,22 @@ def test_cors_preflight_and_response_headers(monkeypatch) -> None:
         assert "Access-Control-Allow-Origin" not in plain.headers
 
 
+def test_cors_headers_on_auth_failure(monkeypatch) -> None:
+    monkeypatch.setenv("NMESH_API_KEY", "test-secret")
+    plan = _completion_plan(1)
+    with TestClient(create_app(plan)) as client:
+        denied = client.get(
+            "/v1/models",
+            headers={"Origin": "http://localhost:3000"},
+        )
+        assert denied.status_code == 401
+        assert (
+            denied.headers["Access-Control-Allow-Origin"]
+            == "http://localhost:3000"
+        )
+        assert denied.headers["WWW-Authenticate"] == "Bearer"
+
+
 def test_api_key_authentication(monkeypatch) -> None:
     monkeypatch.delenv("NMESH_API_KEY", raising=False)
     plan = _completion_plan(1)

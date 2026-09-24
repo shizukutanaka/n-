@@ -1233,7 +1233,7 @@ def create_app(
             prefix = "Bearer "
             presented = authorization[len(prefix):] if authorization.startswith(prefix) else ""
             if not secrets.compare_digest(presented.encode("latin-1"), api_key_bytes):
-                return Response(
+                response = Response(
                     content=json.dumps({
                         "error": {
                             "message": "Invalid or missing API key",
@@ -1245,6 +1245,10 @@ def create_app(
                     media_type="application/json",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
+                if origin and path.startswith("/v1/"):
+                    response.headers["Access-Control-Allow-Origin"] = origin
+                    response.headers["Vary"] = "Origin"
+                return response
         response = await call_next(request)
         if origin and path.startswith("/v1/"):
             response.headers["Access-Control-Allow-Origin"] = origin
