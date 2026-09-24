@@ -1446,6 +1446,9 @@ def _jobs(args: argparse.Namespace) -> int:
     for job in job_list:
         age = now - float(job.get("queued_at") or now)
         state = str(job.get("state") or "")
+        position = job.get("position")
+        if state == "queued" and isinstance(position, int):
+            state = f"queued #{position}"
         progress = job.get("progress")
         if state == "running" and isinstance(progress, dict):
             decoded = progress.get("decoded")

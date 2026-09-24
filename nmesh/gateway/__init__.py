@@ -2024,7 +2024,15 @@ def create_app(
         progress = await _slot_progress(plan_state.snapshot()[0].services, entries)
         return {
             "jobs": [
-                {**job.as_dict(), **({"progress": p} if (p := progress.get(job.id)) else {})}
+                {
+                    **job.as_dict(),
+                    **(
+                        {"position": jobs.position(job)}
+                        if job.state == "queued"
+                        else {}
+                    ),
+                    **({"progress": p} if (p := progress.get(job.id)) else {}),
+                }
                 for job in entries
             ],
             "counts": jobs.counts(),
@@ -2037,6 +2045,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="job not found")
         progress = await _slot_progress(plan_state.snapshot()[0].services, [job])
         data = job.as_dict()
+        if job.state == "queued":
+            data["position"] = jobs.position(job)
         if job_id in progress:
             data["progress"] = progress[job_id]
         return data

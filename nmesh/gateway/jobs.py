@@ -18,6 +18,21 @@ class Job:
     detail: str | None = None
 
     def as_dict(self) -> dict[str, object]:
+        now = time.time()
+        wait_end = (
+            self.started_at
+            if self.started_at is not None
+            else self.finished_at if self.finished_at is not None else now
+        )
+        run_s = (
+            round(
+                (self.finished_at if self.finished_at is not None else now)
+                - self.started_at,
+                3,
+            )
+            if self.started_at is not None
+            else None
+        )
         return {
             "id": self.id,
             "service": self.service,
@@ -26,6 +41,8 @@ class Job:
             "queued_at": self.queued_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "wait_s": round(wait_end - self.queued_at, 3),
+            "run_s": run_s,
             "detail": self.detail,
         }
 

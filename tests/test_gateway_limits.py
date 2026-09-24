@@ -498,3 +498,24 @@ def test_job_registry_cancel() -> None:
     assert registry.cancel(running) is False
     listed = [j.id for j in registry.list()]
     assert queued.id in listed and running.id in listed
+
+
+def test_job_as_dict_reports_wait_and_run_seconds() -> None:
+    from nmesh.gateway.jobs import JobRegistry
+
+    registry = JobRegistry()
+    queued = registry.submit("chat", "/v1/chat/completions")
+    running = registry.submit("chat", "/v1/chat/completions")
+    registry.start(running)
+    finished = registry.submit("chat", "/v1/chat/completions")
+    registry.start(finished)
+    registry.finish(finished, ok=True)
+
+    queued_view = queued.as_dict()
+    assert queued_view["run_s"] is None
+    assert queued_view["wait_s"] >= 0
+    running_view = running.as_dict()
+    assert running_view["run_s"] >= 0
+    finished_view = finished.as_dict()
+    assert finished_view["wait_s"] >= 0
+    assert finished_view["run_s"] >= 0
