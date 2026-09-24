@@ -1378,6 +1378,51 @@ def _unload(args: argparse.Namespace) -> int:
     return 0
 
 
+def _restart(args: argparse.Namespace) -> int:
+    path = "/admin/restart"
+    if args.service is not None:
+        path += f"/{quote(args.service, safe='')}"
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{args.port}{path}",
+        method="POST",
+        headers=_gateway_headers(),
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            data = json.loads(response.read().decode())
+    except HTTPError as error:
+        if error.code == 404 and args.service is not None:
+            print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
+                  file=sys.stderr)
+        else:
+            print(i18n.t("err.gateway_restart", i18n.lang(), error=error), file=sys.stderr)
+        return 1
+    except (OSError, json.JSONDecodeError) as error:
+        print(i18n.t("err.gateway_restart", i18n.lang(), error=error), file=sys.stderr)
+        return 1
+    restarted = data.get("restarted", [])
+    failed = [
+        result for result in data.get("results", [])
+        if isinstance(result, dict) and not result.get("restarted")
+    ]
+    if failed:
+        for result in failed:
+            service = str(result.get("service"))
+            if result.get("reason") == "shared":
+                print(i18n.t("err.restart_shared", i18n.lang(), service=service),
+                      file=sys.stderr)
+            else:
+                print(i18n.t("err.restart_failed", i18n.lang(), service=service,
+                             error=result.get("error", "unknown")), file=sys.stderr)
+    if args.json:
+        _print_json(data)
+    else:
+        print(i18n.t("label.restarted", i18n.lang(),
+                     services=", ".join(restarted) if restarted else
+                     i18n.t("label.none", i18n.lang())))
+    return 1 if failed and not restarted else 0
+
+
 def _jobs(args: argparse.Namespace) -> int:
     language = i18n.lang()
     if args.cancel:
@@ -4290,6 +4335,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     unload_parser.add_argument("service", nargs="?")
     unload_parser.add_argument("--port", type=int, default=18000)
     unload_parser.add_argument("--json", action="store_true")
+    restart_parser = sub.add_parser("restart")
+    restart_parser.add_argument("service", nargs="?")
+    restart_parser.add_argument("--port", type=int, default=18000)
+    restart_parser.add_argument("--json", action="store_true")
     for name in ("status", "down"):
         item = sub.add_parser(name)
         item.add_argument("--json", action="store_true")
@@ -4459,6 +4508,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _reload(args)
     if args.command == "unload":
         return _unload(args)
+    if args.command == "restart":
+        return _restart(args)
     if args.command in {"up", "down", "status", "serve"}:
         if args.command == "up":
             args.dry_run = args.dry_run or args.global_dry_run

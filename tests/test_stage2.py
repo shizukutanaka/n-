@@ -1281,3 +1281,65 @@ def test_swap_switch_falls_back_to_kill_when_ram_short(
     assert supervisor.sleeping == set()
     assert "alpha" not in supervisor.processes
     supervisor.down()
+
+
+def test_supervisor_restart_respawns_one_service(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = build_plan(
+        profile(64, (24,)), catalog, Policy(roles=["chat", "code"])
+    )
+    plan = replace(
+        plan,
+        services=[
+            replace(
+                service, launch=replace(service.launch, health_url=None)
+            )
+            for service in plan.services
+        ],
+    )
+    processes: list[_RecoverProcess] = []
+    supervisor = Supervisor(
+        lambda _service: processes.append(_RecoverProcess()) or processes[-1],
+        tmp_path / "restart.json",
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    supervisor.up(plan, no_download=True, admit=False)
+    assert len(processes) == 2
+
+    results = supervisor.restart("chat")
+    assert results == [{"service": "chat", "restarted": True}]
+    assert len(processes) == 3  # stopped chat, respawned; code untouched
+    assert processes[0].exit_code == 0  # terminated
+    assert processes[1].exit_code is None  # code still running
+    supervisor.down()
+
+
+def test_supervisor_restart_unknown_service_raises(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    supervisor = Supervisor(
+        lambda _service: _RecoverProcess(),
+        tmp_path / "restart-unknown.json",
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    supervisor.up(plan, no_download=True, admit=False)
+    try:
+        supervisor.restart("nope")
+        raise AssertionError("expected KeyError")
+    except KeyError:
+        pass
+    supervisor.down()

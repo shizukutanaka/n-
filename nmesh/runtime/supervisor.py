@@ -1500,6 +1500,65 @@ class Supervisor:
             self._persist(selected)
             return self.status()
 
+    def restart(self, service_name: str | None = None) -> list[dict[str, object]]:
+        """Stop then respawn one planned service — or every owned service —
+        without touching the gateway or unrelated services.
+
+        Shared daemons and externally-adopted servers are never signalled:
+        restarting them would take down services the caller did not name.
+        """
+        with self._lock:
+            selected = self.active_plan if self.active_plan is not None else load_plan()
+            if selected is None:
+                raise FileNotFoundError(i18n.t("err.no_plan", i18n.lang()))
+            self.active_plan = selected
+            planned = {service.name for service in selected.services}
+            if service_name is not None:
+                if service_name not in planned:
+                    raise KeyError(i18n.t(
+                        "err.unknown_service", i18n.lang(), service=service_name
+                    ))
+                names = [service_name]
+            else:
+                names = [
+                    service.name
+                    for service in selected.services
+                    if service.name in self.processes or service.name in self.adopted
+                ]
+            restartable: list[str] = []
+            results_by_name: dict[str, dict[str, object]] = {}
+            for name in names:
+                if name in self.shared_services or name in self.external_shared:
+                    results_by_name[name] = {
+                        "service": name, "restarted": False, "reason": "shared",
+                    }
+                else:
+                    restartable.append(name)
+            self._stop_processes(
+                [name for name in restartable if name in self.processes]
+            )
+            for name in restartable:
+                record = self.adopted.pop(name, None)
+                if record is not None:
+                    pid = record.get("pid")
+                    if isinstance(pid, int) and not isinstance(pid, bool):
+                        self._terminator(pid)
+                self.idle.discard(name)
+                self.sleeping.discard(name)
+                self.failed.pop(name, None)
+            for name in restartable:
+                try:
+                    self.ensure_running(name, selected)
+                except Exception as error:  # noqa: BLE001
+                    results_by_name[name] = {
+                        "service": name, "restarted": False,
+                        "reason": "error", "error": str(error),
+                    }
+                else:
+                    results_by_name[name] = {"service": name, "restarted": True}
+            self._persist(selected)
+            return [results_by_name[name] for name in names]
+
     def unload(self, service_name: str) -> bool:
         with self._lock:
             if service_name in self.shared_services or service_name in self.external_shared:
@@ -1569,31 +1628,59 @@ class Supervisor:
         with self._lock:
             return set(self.idle)
 
-    def _stop_process(self, service_name: str) -> None:
+    def _forget_process(self, service_name: str) -> ProcessLike | None:
         process = self.processes.pop(service_name, None)
         self.launched_argv.pop(service_name, None)
         self.notes.pop(service_name, None)
         self.sleeping.discard(service_name)
+        return process
+
+    @staticmethod
+    def _signal_stop(process: ProcessLike) -> None:
+        if is_windows():
+            process.terminate()
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                process.terminate()
+
+    @staticmethod
+    def _wait_stop(process: ProcessLike) -> None:
+        try:
+            process.wait(timeout=10)
+        except (subprocess.TimeoutExpired, TimeoutError):
+            if not is_windows():
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    process.kill()
+            else:
+                process.kill()
+
+    def _stop_process(self, service_name: str) -> None:
+        process = self._forget_process(service_name)
         if process is None:
             return
         if process.poll() is None:
-            if is_windows():
-                process.terminate()
-            else:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except OSError:
-                    process.terminate()
-            try:
-                process.wait(timeout=10)
-            except (subprocess.TimeoutExpired, TimeoutError):
-                if not is_windows():
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except OSError:
-                        process.kill()
-                else:
-                    process.kill()
+            self._signal_stop(process)
+            self._wait_stop(process)
+
+    def _stop_processes(self, service_names: list[str]) -> None:
+        """Batch stop: SIGTERM every process before waiting on any.
+
+        Sequential _stop_process waits serially, so N stubborn exits cost
+        N×10s; signalling first lets them exit concurrently and the waits
+        only observe the slowest one.
+        """
+        pending: list[ProcessLike] = []
+        for name in service_names:
+            process = self._forget_process(name)
+            if process is not None and process.poll() is None:
+                self._signal_stop(process)
+                pending.append(process)
+        for process in pending:
+            self._wait_stop(process)
 
     def status(self) -> RuntimeStatus:
         def planned(name: str) -> PlannedService | None:
@@ -1910,6 +1997,10 @@ def up(plan: Plan | None = None, no_download: bool = False, dry_run: bool = Fals
 
 def down(foreign: bool = False, gateway_port: int | None = None) -> RuntimeStatus:
     return _default.down(foreign=foreign, gateway_port=gateway_port)
+
+
+def restart(service_name: str | None = None) -> list[dict[str, object]]:
+    return _default.restart(service_name)
 
 
 def unload(service_name: str) -> bool:

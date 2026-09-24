@@ -11,6 +11,7 @@ from .supervisor import (
     heartbeat,
     idle_services,
     record_gateway,
+    restart,
     status,
     stop_gateway,
     unload,
@@ -20,6 +21,6 @@ from .supervisor import (
 __all__ = [
     "Acquired", "RuntimeStatus", "Supervisor", "clear_gateway", "disarm_atexit", "down",
     "ensure_running", "gateway_health", "gateway_listener_pid", "heartbeat",
-    "idle_services", "record_gateway", "status",
+    "idle_services", "record_gateway", "restart", "status",
     "stop_gateway", "unload", "up",
 ]

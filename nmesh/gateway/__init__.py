@@ -36,7 +36,15 @@ from nmesh.orchestrate import (
     load_cache,
 )
 from nmesh.planner import PLAN_PATH, Plan, PlannedService, load_plan
-from nmesh.runtime import ensure_running, heartbeat, idle_services, unload
+from nmesh.runtime import (
+    ensure_running,
+    heartbeat,
+    idle_services,
+    unload,
+)
+from nmesh.runtime import (
+    restart as runtime_restart,
+)
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime.logs import log_path
 from nmesh.runtime.logs import tail as tail_log
@@ -1944,6 +1952,39 @@ def create_app(
         return {
             "unloaded": [service] if result["unloaded"] else [],
             "results": [result],
+        }
+
+    @app.post("/admin/restart")
+    async def restart_all() -> dict[str, object]:
+        plan_state.maybe_reload()
+        results = await asyncio.to_thread(runtime_restart)
+        if any(result.get("restarted") for result in results):
+            gate.invalidate()
+        return {
+            "restarted": [
+                str(result["service"])
+                for result in results
+                if result.get("restarted")
+            ],
+            "results": results,
+        }
+
+    @app.post("/admin/restart/{service}")
+    async def restart_one(service: str) -> dict[str, object]:
+        plan_state.maybe_reload()
+        selected, _ = plan_state.snapshot()
+        if service not in {item.name for item in selected.services}:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown service: {service}"
+            )
+        results = await asyncio.to_thread(runtime_restart, service)
+        if any(result.get("restarted") for result in results):
+            gate.invalidate()
+        return {
+            "restarted": [service]
+            if results and results[0].get("restarted")
+            else [],
+            "results": results,
         }
 
     @app.get("/admin/running")

@@ -2,6 +2,7 @@
 
 ## 未リリース
 ### Added
+- **`nmesh restart [service]` を追加**: サービス単位の再起動コマンド（`POST /admin/restart[/{service}]`）。従来は個別サービスの再起動に `nmesh down && nmesh up`（ゲートウェイ含め全停止）しかなく、ハングした1台の復帰でも全サービスが落ちていました。実装は `_stop_processes` で対象へ SIGTERM を先行送出してから `ensure_running` で順次復帰 — 他サービス・ゲートウェイ・スワップ整合は無傷。共有/外部デーモンはシグナル対象外（`shared` 理由で結果報告）。引数なしは全所有サービスを一括再起動
 
 - **`lfm2-24b-a2b` をカタログに追加**: LiquidAI の LFM2-24B-A2B（lfm1.0 ライセンス、24B 総・2.3B active）。ハイブリッド conv/attention バックボーン（40 層中 attention は 10 層のみなので `kv_layers: 10`）+ 残り 38 層が 64 エキスパートの MoE で、`--n-cpu-moe` エキスパートオフロード経路の本命モデル — 密テンソルは小さく、~23B のルーテッドエキスパートは RAM 側へ流せます。`LiquidAI/LFM2-24B-A2B-GGUF` を取得対象、ネイティブ 32k コンテキスト
 - **`nmesh watch` に `hf` ソースを追加**: `--sources hf` で HF Hub API の `gguf` タグ付き新着モデル（`lastModified` 降順）を取得し、各モデルカードの README を抽出→検証パイプラインへ投入します。新しいコミュニティ量子化や GGUF 化がいち早く `catalog_gap` 候補として浮上します。`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN` で認証可能、取得失敗時は到達不能として正直に報告します
