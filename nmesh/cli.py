@@ -328,7 +328,7 @@ def _non_negative_int(value: str) -> int:
 
 
 def _print_json(value: object) -> None:
-    print(json.dumps(value, indent=2, default=str))
+    print(json.dumps(value, indent=2, default=str, ensure_ascii=False))
 
 
 def _print_runtime_status(result: RuntimeStatus, language: str) -> None:
@@ -4080,7 +4080,7 @@ def _run_prompt(args: argparse.Namespace) -> int:
             if not stream:
                 payload = json.loads(response.read().decode())
                 if args.json:
-                    print(json.dumps(payload, indent=2))
+                    print(json.dumps(payload, indent=2, ensure_ascii=False))
                 else:
                     print(payload["choices"][0]["message"]["content"])
                 return 0
