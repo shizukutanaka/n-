@@ -167,6 +167,9 @@ class _LastUse:
 
     def ensure(self, services: Sequence[PlannedService]) -> None:
         stamp = time.monotonic()
+        names = {service.name for service in services}
+        for stale in set(self._values) - names:
+            self._values.pop(stale, None)
         for service in services:
             self._values.setdefault(service.name, stamp)
 
@@ -1078,6 +1081,11 @@ def create_app(
         plan_state.maybe_reload()
         current, _ = plan_state.snapshot()
         last_use.ensure(current.services)
+        # Services dropped by a replan never see another request — prune
+        # their revive locks too, or the map grows with name churn.
+        names = {service.name for service in current.services}
+        for stale in set(revive_locks) - names:
+            revive_locks.pop(stale, None)
         runtime = await asyncio.to_thread(runtime_status)
         now = time.monotonic()
         for item in runtime.services:
