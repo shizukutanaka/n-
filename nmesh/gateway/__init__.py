@@ -75,6 +75,12 @@ try:
 except ValueError:
     CONNECT_TIMEOUT = 10.0
 
+# Backends whose OpenAI-compat stream accepts stream_options.include_usage.
+# The gateway injects it so decode telemetry uses the upstream's exact
+# completion_tokens instead of an approximation; mlx is excluded because its
+# server does not document the field and would reject the request.
+_STREAM_USAGE_BACKENDS = {"llamacpp", "vllm", "ollama"}
+
 if TYPE_CHECKING:
     import httpx
     from fastapi import FastAPI, HTTPException
@@ -1236,7 +1242,10 @@ def create_app(
                 isinstance(stream_options, Mapping)
                 and bool(stream_options.get("include_usage"))
             )
-            if service.backend == "llamacpp" and not path.startswith("/v1/messages"):
+            if (
+                service.backend in _STREAM_USAGE_BACKENDS
+                and not path.startswith("/v1/messages")
+            ):
                 upstream_stream_options = (
                     dict(stream_options) if isinstance(stream_options, Mapping) else {}
                 )
@@ -1417,7 +1426,10 @@ def create_app(
                             usage is not None
                             and usage_completion is not None
                             and "completion_tokens" in usage
-                            and (service.backend == "llamacpp" or request_wants_usage)
+                            and (
+                                service.backend in _STREAM_USAGE_BACKENDS
+                                or request_wants_usage
+                            )
                         )
                         completion_tokens = (
                             usage_completion if exact and usage_completion is not None
