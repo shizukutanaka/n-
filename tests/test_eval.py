@@ -4,6 +4,7 @@ import inspect
 import json
 import re
 import threading
+import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
@@ -190,6 +191,52 @@ def test_runner_reports_each_outcome_via_callback() -> None:
         server.server_close()
     assert seen == ["one", "two"]
     assert len(result.outcomes) == 2
+
+
+def test_runner_parallel_runs_tasks_concurrently_in_order(monkeypatch) -> None:
+    inflight = 0
+    max_inflight = 0
+    lock = threading.Lock()
+
+    class Response:
+        def raise_for_status(self) -> None:
+            return
+
+        def json(self) -> dict[str, object]:
+            return {
+                "choices": [{
+                    "message": {"content": "yes"},
+                    "finish_reason": "stop",
+                }],
+            }
+
+    def post(self, url, *, json, timeout):
+        nonlocal inflight, max_inflight
+        with lock:
+            inflight += 1
+            max_inflight = max(max_inflight, inflight)
+        time.sleep(0.15)
+        with lock:
+            inflight -= 1
+        return Response()
+
+    monkeypatch.setattr(httpx.Client, "post", post)
+    tasks = tuple(
+        Task(f"task{i}", "instruction", f"prompt{i}", 8, lambda text: True)
+        for i in range(4)
+    )
+    reported: list[str] = []
+    result = run(
+        tasks,
+        "http://example.test",
+        "model",
+        parallel=4,
+        on_outcome=lambda outcome: reported.append(outcome.id),
+    )
+    expected = [f"task{i}" for i in range(4)]
+    assert max_inflight > 1
+    assert [outcome.id for outcome in result.outcomes] == expected
+    assert reported == expected
 
 
 def test_runner_marks_transport_failures_and_derives_timeout(monkeypatch) -> None:
