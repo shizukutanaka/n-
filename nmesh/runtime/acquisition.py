@@ -317,17 +317,37 @@ def _artifact_warning(
     return " ".join(warnings) or None
 
 
-def _enable_hf_transfer() -> None:
-    """Enable hf_transfer (Rust multi-range downloader) when installed.
+def _hf_hub_removed_hf_transfer() -> bool:
+    """Whether the installed huggingface_hub removed hf_transfer (>=1.0).
 
-    huggingface_hub gates it behind ``HF_HUB_ENABLE_HF_TRANSFER``; the env var
-    wins over the module default so an explicit user override (including "0")
-    is respected, and the already-imported constants module is patched because
-    the flag may have been read at import time.
+    The removal deleted the ``constants.HF_HUB_ENABLE_HF_TRANSFER`` symbol
+    along with every code path that read it, so the flag's absence is the
+    reliable marker — hf_xet is a required dependency there and drives
+    downloads by default.
+    """
+    try:
+        from huggingface_hub import constants
+    except ImportError:
+        return False
+    return not hasattr(constants, "HF_HUB_ENABLE_HF_TRANSFER")
+
+
+def _enable_hf_transfer() -> None:
+    """Enable hf_transfer where the installed huggingface_hub supports it.
+
+    huggingface_hub<1.0 gates the optional multi-range downloader behind
+    ``HF_HUB_ENABLE_HF_TRANSFER``; the env var wins over the module default so
+    an explicit user override (including "0") is respected, and the
+    already-imported constants module is patched because the flag may have
+    been read at import time. On huggingface_hub>=1.0 the knob is ignored, so
+    it is left unset rather than exported into spawned engine processes where
+    it only emits a deprecation warning.
     """
     if os.environ.get("HF_HUB_ENABLE_HF_TRANSFER") is not None:
         return
     if importlib.util.find_spec("hf_transfer") is None:
+        return
+    if _hf_hub_removed_hf_transfer():
         return
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
     constants = sys.modules.get("huggingface_hub.constants")

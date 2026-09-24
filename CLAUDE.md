@@ -45,15 +45,21 @@ CLAUDE.md → README.md → nmesh/planner/core.py → 対象モジュール → 
 ```
 nmesh/cli.py            エントリポイント・全サブコマンド
   ├─ nmesh/planner/     ハードウェア profile→配置計画（core.py が中心、LAUNCH_REVISION/見積もり/argv生成）
-  ├─ nmesh/runtime/     supervisor(プロセス監視・スワップ・health)・acquisition(取得)・service_unit・logs
-  ├─ nmesh/gateway/     FastAPI アプリ・プロキシ・SSE 翻訳・jobs/limit/gate/tokens
+  ├─ nmesh/runtime/     supervisor(プロセス監視・スワップ・health)・acquisition(取得)・engine・service_unit・logs
+  ├─ nmesh/gateway/     FastAPI アプリ・プロキシ・SSE 翻訳・jobs/limit/gate/tokens・server(起動エントリ)
   ├─ nmesh/catalog/     models.yaml（モデルカタログ）とローダ
-  ├─ nmesh/bench/       実測ベンチ（cache/history/epoch/embed/retrieval）
-  ├─ nmesh/eval/        決定的マイクロ評価・統計（fisher/wilson/paired power）
-  ├─ nmesh/orchestrate/ リード/ワーカー委譲（delegate/endpoint/ledger）
-  ├─ nmesh/spec/        投機デコード腕比較（draft/ngram）
-  ├─ nmesh/probe.py     HW 検出・tier 分類・HardwareProfile
-  ├─ nmesh/artifact.py  GGUF/ollama フィンガープリント・ollama_base_url
+  ├─ nmesh/bench/       実測ベンチ（runner/cache/epoch/embed/retrieval）
+  ├─ nmesh/eval/        決定的マイクロ評価・統計（suite/hard/generated/depth/context/select/stats/runner/cache）
+  ├─ nmesh/orchestrate/ リード/ワーカー委譲（measure/protocol/record/aggregate）
+  ├─ nmesh/spec/        投機デコード腕比較（measure/engine/record）
+  ├─ nmesh/watch/       外部ソース定期ウォッチ（sources/extract/verify/draft/state）
+  ├─ nmesh/probe/       HW 検出・tier 分類（detector/models/generic_gpu/caps/serialize）
+  ├─ nmesh/artifact.py  GGUF ヘッダ解析・モデル/サービスフィンガープリント
+  ├─ nmesh/artifacts.py 取得済みアーティファクトのサイズキャッシュ（artifacts.json）
+  ├─ nmesh/evidence.py  証拠述語（refutes）
+  ├─ nmesh/evidence_inventory.py  bench/eval/spec 証拠の収集（nmesh evidence）
+  ├─ nmesh/inventory.py ローカルモデル走査・重複/バリアント検出（models scan/local）
+  ├─ nmesh/telemetry.py リクエストレイテンシ・トークン統計の収集
   ├─ nmesh/paths.py     nmesh_home()（NMESH_HOME or ~/.nmesh）
   └─ nmesh/i18n.py      en/ja メッセージ表
 ```

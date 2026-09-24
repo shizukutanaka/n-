@@ -517,6 +517,9 @@ def test_enable_hf_transfer_sets_env_and_patches_loaded_constants(
     monkeypatch.setattr(
         acquisition.importlib.util, "find_spec", lambda name: object()
     )
+    monkeypatch.setattr(
+        acquisition, "_hf_hub_removed_hf_transfer", lambda: False
+    )
     constants = SimpleNamespace(HF_HUB_ENABLE_HF_TRANSFER=False)
     monkeypatch.setitem(
         acquisition.sys.modules, "huggingface_hub.constants", constants
@@ -524,6 +527,29 @@ def test_enable_hf_transfer_sets_env_and_patches_loaded_constants(
     acquisition._enable_hf_transfer()
     assert acquisition.os.environ["HF_HUB_ENABLE_HF_TRANSFER"] == "1"
     assert constants.HF_HUB_ENABLE_HF_TRANSFER is True
+
+
+def test_enable_hf_transfer_noop_when_hub_removed_it(monkeypatch) -> None:
+    monkeypatch.delenv("HF_HUB_ENABLE_HF_TRANSFER", raising=False)
+    monkeypatch.setattr(
+        acquisition.importlib.util, "find_spec", lambda name: object()
+    )
+    monkeypatch.setattr(
+        acquisition, "_hf_hub_removed_hf_transfer", lambda: True
+    )
+    acquisition._enable_hf_transfer()
+    assert "HF_HUB_ENABLE_HF_TRANSFER" not in acquisition.os.environ
+
+
+def test_hf_hub_removed_hf_transfer_detects_flag_symbol(monkeypatch) -> None:
+    monkeypatch.setattr(
+        huggingface_hub,
+        "constants",
+        SimpleNamespace(HF_HUB_ENABLE_HF_TRANSFER=False),
+    )
+    assert acquisition._hf_hub_removed_hf_transfer() is False
+    monkeypatch.setattr(huggingface_hub, "constants", SimpleNamespace())
+    assert acquisition._hf_hub_removed_hf_transfer() is True
 
 
 def test_enable_hf_transfer_respects_user_env(monkeypatch) -> None:
