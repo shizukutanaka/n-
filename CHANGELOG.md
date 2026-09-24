@@ -2,6 +2,7 @@
 
 ## 未リリース
 ### Added
+- リプラン時の計画外採用サービス（adopted orphan）の終了を並列化（`_drop_unplanned` が各 `_terminator` 呼び出しをスレッド実行 — 複数の外部起動エンジンが残っている場合の切替時間が合算ではなく最遅1台分に短縮）
 
 - **`lfm2-24b-a2b` をカタログに追加**: LiquidAI の LFM2-24B-A2B（lfm1.0 ライセンス、24B 総・2.3B active）。ハイブリッド conv/attention バックボーン（40 層中 attention は 10 層のみなので `kv_layers: 10`）+ 残り 38 層が 64 エキスパートの MoE で、`--n-cpu-moe` エキスパートオフロード経路の本命モデル — 密テンソルは小さく、~23B のルーテッドエキスパートは RAM 側へ流せます。`LiquidAI/LFM2-24B-A2B-GGUF` を取得対象、ネイティブ 32k コンテキスト
 - **`nmesh watch` に `hf` ソースを追加**: `--sources hf` で HF Hub API の `gguf` タグ付き新着モデル（`lastModified` 降順）を取得し、各モデルカードの README を抽出→検証パイプラインへ投入します。新しいコミュニティ量子化や GGUF 化がいち早く `catalog_gap` 候補として浮上します。`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN` で認証可能、取得失敗時は到達不能として正直に報告します

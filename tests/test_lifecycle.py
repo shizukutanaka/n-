@@ -1810,3 +1810,31 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_drop_unplanned_terminates_adopted_concurrently(
+    tmp_path: Path,
+) -> None:
+    """Several adopted leftovers must not cost the sum of their shutdown
+    waits: _drop_unplanned fires each terminator call in parallel."""
+    calls: list[float] = []
+
+    def slow_terminator(_pid: int) -> None:
+        calls.append(time.monotonic())
+        time.sleep(0.2)
+
+    supervisor = Supervisor(
+        lambda _item: _KillableProcess(),
+        tmp_path / "state.json",
+        terminator=slow_terminator,
+    )
+    supervisor.adopted["a"] = {"pid": 123450001}
+    supervisor.adopted["b"] = {"pid": 123450002}
+
+    start = time.monotonic()
+    assert supervisor._drop_unplanned(SimpleNamespace(services=[])) is True
+    elapsed = time.monotonic() - start
+
+    assert len(calls) == 2
+    assert elapsed < 0.35  # serial would take >= 0.4s
+    assert not supervisor.adopted

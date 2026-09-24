@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import RLock
@@ -571,15 +572,27 @@ class Supervisor:
             self._stop_process(name)
             self.idle.discard(name)
             dropped = True
+        terminated_adopted: list[int] = []
         for name, record in list(self.adopted.items()):
             if name in planned or name in self.external_shared:
                 continue
             pid = record.get("pid")
             if isinstance(pid, int) and not isinstance(pid, bool):
-                self._terminator(pid)
+                terminated_adopted.append(pid)
             self.adopted.pop(name, None)
             self.idle.discard(name)
             dropped = True
+        # Terminate adopted leftovers concurrently: _terminator bundles
+        # signal+wait per pid, so sequential calls cost the sum of every
+        # wait while each engine could be exiting in parallel.
+        if len(terminated_adopted) > 1:
+            with ThreadPoolExecutor(
+                max_workers=len(terminated_adopted)
+            ) as pool:
+                list(pool.map(self._terminator, terminated_adopted))
+        else:
+            for pid in terminated_adopted:
+                self._terminator(pid)
         if dropped:
             for name in [name for name in self.failed if name not in planned]:
                 self.failed.pop(name, None)
