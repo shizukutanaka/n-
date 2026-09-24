@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import RLock
@@ -230,6 +231,7 @@ class Supervisor:
         self.launched_argv: dict[str, list[str]] = {}
         self.active_plan: Plan | None = None
         self._loaded_plan_stamp: tuple[float, int] | None = None
+        self._sleep_probe: dict[str, bool] | None = None
         self._boot_recovery = False
         self.notes: dict[str, str] = {}
         self._lock = RLock()
@@ -305,7 +307,7 @@ class Supervisor:
             return False
 
     @staticmethod
-    def _engine_sleeping(service: PlannedService) -> bool:
+    def _probe_sleep(service: PlannedService) -> bool:
         """GET /is_sleeping on a sleep-capable engine; any failure means the
         engine is not parked (or not sleep-capable at all)."""
         try:
@@ -316,6 +318,34 @@ class Supervisor:
         except (OSError, ValueError):
             return False
         return bool(isinstance(payload, dict) and payload.get("is_sleeping"))
+
+    def _probe_sleeping(self, services: Sequence[PlannedService]) -> dict[str, bool]:
+        """One parallel /is_sleeping pass over unowned sleep-capable services.
+        Without it each _adopt pays up to two serial 2s probes per service —
+        N parked members cost up to 4N seconds inside the up() lock."""
+        candidates = [
+            service
+            for service in services
+            if getattr(service, "sleep_mode", False)
+            and service.name not in self.processes
+            and service.port is not None
+        ]
+        if len(candidates) < 2:
+            return {}
+        with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
+            results = pool.map(
+                lambda service: (service.name, self._probe_sleep(service)),
+                candidates,
+            )
+        return dict(results)
+
+    def _engine_sleeping(self, service: PlannedService) -> bool:
+        """is_sleeping consult — prefers the per-pass probe snapshot when one
+        is primed (up()); otherwise probes live."""
+        probe = self._sleep_probe
+        if probe is not None and service.name in probe:
+            return probe[service.name]
+        return self._probe_sleep(service)
 
     def _park(self, service: PlannedService) -> bool:
         """Put a sleep-capable swap member to sleep instead of killing it.
@@ -1107,6 +1137,7 @@ class Supervisor:
             self.active_plan = current
             self._drop_unplanned(current)
             for attempt in range(1, 4):
+                self._sleep_probe = self._probe_sleeping(current.services)
                 try:
                     for index in range(len(current.services)):
                         service = current.services[index]
@@ -1222,6 +1253,8 @@ class Supervisor:
                     if attempt == 3:
                         raise
                     current = self._fallback(current, attempt)
+                finally:
+                    self._sleep_probe = None
             raise RuntimeError(i18n.t("err.runtime_start", i18n.lang()))
 
     def down(self, foreign: bool = False, gateway_port: int | None = None) -> RuntimeStatus:

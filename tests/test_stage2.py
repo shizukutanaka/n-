@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from dataclasses import replace
 
@@ -1280,4 +1281,60 @@ def test_swap_switch_falls_back_to_kill_when_ram_short(
     assert posts == []
     assert supervisor.sleeping == set()
     assert "alpha" not in supervisor.processes
+    supervisor.down()
+
+
+def test_up_primes_sleeping_probes_in_parallel(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    """Each unowned sleep-capable engine's /is_sleeping consult costs a
+    serial 2s urlopen inside up()'s lock — the pass primes them
+    concurrently instead."""
+    plan = _sleep_swap_plan(catalog)
+    beta = replace(plan.services[1], backend="vllm", sleep_mode=True)
+    plan = replace(plan, services=[plan.services[0], beta])
+    supervisor = Supervisor(
+        lambda service: _RecoverProcess(),
+        tmp_path / "sleep-prime.json",
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    barrier = threading.Barrier(2)
+    probed: list[str] = []
+
+    def fake_probe(service) -> bool:
+        probed.append(service.name)
+        barrier.wait(timeout=10)  # serial probing would deadlock here
+        return service.name == "alpha"
+
+    monkeypatch.setattr(Supervisor, "_probe_sleep", staticmethod(fake_probe))
+    supervisor.up(plan, no_download=True, admit=False)
+    assert sorted(probed) == ["alpha", "beta"]
+    # The pass-scoped snapshot is discarded — later consults probe live.
+    assert supervisor._sleep_probe is None
+    supervisor.down()
+
+
+def test_engine_sleeping_consults_primed_probe(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    plan = _sleep_swap_plan(catalog)
+    supervisor = Supervisor(
+        lambda service: _RecoverProcess(),
+        tmp_path / "sleep-consult.json",
+        health_timeout=0.01,
+    )
+    supervisor._sleep_probe = {"alpha": True}
+
+    def _boom(_service) -> bool:
+        raise AssertionError("primed snapshot must short-circuit the probe")
+
+    supervisor._probe_sleep = _boom
+    assert supervisor._engine_sleeping(plan.services[0]) is True
+    supervisor._sleep_probe = None
     supervisor.down()
