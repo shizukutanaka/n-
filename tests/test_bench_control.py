@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import ClassVar
 
+import pytest
+
 import nmesh.planner.core as planner_core
 from nmesh.bench import benchmark_key, runner
 from nmesh.bench.cache import (
@@ -285,6 +287,38 @@ def test_bench_request_cache_prompt_and_ttft_cached_token_fallback(monkeypatch) 
     assert _BenchClient.requests[-1]["cache_prompt"] is True
     assert no_cache.prefill_tps == 100 / 2
     assert no_cache.prefill_source == "ttft"
+
+
+def test_measure_once_rejects_physically_impossible_decode_rate(monkeypatch) -> None:
+    service = type("Service", (), {"model_ref": "model"})()
+    _BenchClient.lines = [
+        'data: {"choices": [{"delta": {"content": "a"}}]}',
+        'data: {"choices": [{"delta": {"content": "b"}}]}',
+        'data: {"choices": [], "usage": {"completion_tokens": 3}}',
+        "data: [DONE]",
+    ]
+    monkeypatch.setattr(runner.httpx, "Client", _BenchClient)
+    # All chunks arriving at one instant means a buffered transport: the
+    # implied rate (~2e6 tok/s) is physically impossible, not a measurement.
+    monkeypatch.setattr(
+        runner.time, "perf_counter", iter((0.0, 1.0, 1.0)).__next__
+    )
+    with pytest.raises(RuntimeError):
+        runner._measure_once(service, "http://test", 100, 8)
+
+    _BenchClient.lines = [
+        'data: {"choices": [{"delta": {"content": "a"}}]}',
+        (
+            'data: {"choices": [{"delta": {"content": "b"}}], '
+            '"timings": {"predicted_n": 100, "predicted_ms": 0.01}}'
+        ),
+        "data: [DONE]",
+    ]
+    monkeypatch.setattr(
+        runner.time, "perf_counter", iter((0.0, 1.0, 2.0)).__next__
+    )
+    with pytest.raises(RuntimeError):
+        runner._measure_once(service, "http://test", 100, 8)
 
 
 def test_bench_prompt_nonce_leads_filler() -> None:

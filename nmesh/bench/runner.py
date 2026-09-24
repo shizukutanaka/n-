@@ -18,6 +18,11 @@ if TYPE_CHECKING:
 # A decode rate needs at least one decode step; llama.cpp reports predicted_ms
 # over the n-1 steps after prefill, so a single served token measures nothing.
 MIN_DECODE_TOKENS = 2
+# One request cannot decode faster than memory bandwidth: even a ~100 MB
+# model on a ~1 TB/s machine stays under ~10^4 tok/s. A reported rate beyond
+# that means the transport burst-delivered chunks (e.g. a buffering proxy)
+# or the server reported nonsense — either way it is not a measurement.
+MAX_MEASURED_DECODE_TPS = 10_000.0
 
 
 @dataclass(frozen=True)
@@ -181,6 +186,10 @@ def _measure_once(
         decode_tps = max(chunks - 1, 0) / elapsed
     else:
         decode_tps = 0.0
+    if decode_tps > MAX_MEASURED_DECODE_TPS:
+        raise RuntimeError(
+            f"decode rate of {decode_tps:.0f} tok/s exceeds the physical bound"
+        )
     decode_tokens_served = (
         completion_count
         if completion_count is not None
