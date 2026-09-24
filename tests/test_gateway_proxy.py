@@ -987,6 +987,45 @@ def test_gateway_retries_once_after_connect_timeout(monkeypatch) -> None:
     assert calls[0] == (service.name, plan)
 
 
+def test_gateway_logs_upstream_failure_with_context(monkeypatch, caplog) -> None:
+    """Upstream transport failures must leave a server-side record — the
+    client gets a classified status but cause/service/endpoint context has
+    to reach gateway.log for operators to see why requests fail."""
+    model = ModelSpec("log-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        memory=replace(plan.services[0].memory, parallel_slots=1),
+    )
+    plan = replace(plan, services=[service])
+
+    monkeypatch.setattr(gateway_module, "ensure_running", lambda *_a, **_k: None)
+
+    async def fake_post(*args: object, **kwargs: object) -> httpx.Response:
+        raise httpx.ConnectTimeout("timed out")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    import logging as _logging
+    with (
+        caplog.at_level(_logging.WARNING, logger="nmesh.gateway"),
+        TestClient(create_app(plan)) as client,
+    ):
+        response = client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+    assert response.status_code == 502
+    records = [
+        r for r in caplog.records
+        if r.name == "nmesh.gateway" and r.levelno >= _logging.WARNING
+    ]
+    assert any(
+        service.name in r.getMessage() and "/v1/chat/completions" in r.getMessage()
+        for r in records
+    ), "upstream failure did not reach the nmesh.gateway log"
+
+
 def test_gateway_revive_failure_returns_503(monkeypatch) -> None:
     """A service whose restart budget is exhausted must surface the reason as
     503 — the request path may not resurrect it behind the circuit breaker."""

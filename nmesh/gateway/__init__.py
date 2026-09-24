@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import secrets
@@ -100,6 +101,24 @@ else:
         Response = None
         StreamingResponse = None
         Request = object
+
+
+_log = logging.getLogger("nmesh.gateway")
+
+
+def _log_request_failure(service: str, path: str, exc: BaseException | None) -> None:
+    if exc is None or isinstance(exc, (GeneratorExit, asyncio.CancelledError)):
+        return
+    if isinstance(exc, HTTPException):
+        status = getattr(exc, "status_code", 500)
+        detail = getattr(exc, "detail", str(exc))
+        level = logging.WARNING if status >= 500 else logging.DEBUG
+        _log.log(
+            level, "request %s %s -> %d: %s",
+            service, path, status, detail,
+        )
+        return
+    _log.error("request %s %s failed: %s", service, path, exc, exc_info=exc)
 
 
 def _get(request: Mapping[str, object], key: str, default: object = None) -> object:
@@ -1407,6 +1426,7 @@ def create_app(
                         gate.release()
                     if limit_slots:
                         limiter.release(slot_token)
+                    _log_request_failure(service.name, path, sys.exc_info()[1])
                     if job is not None:
                         jobs.finish(
                             job,
@@ -1631,6 +1651,7 @@ def create_app(
                 gate.release()
             if limit_slots:
                 limiter.release(slot_token)
+            _log_request_failure(service.name, path, sys.exc_info()[1])
             if job is not None and sys.exc_info()[1] is not None:
                 jobs.finish(job, ok=False, detail=str(sys.exc_info()[1]))
         if isinstance(data, dict) and "model" in data:
