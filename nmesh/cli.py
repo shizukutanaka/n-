@@ -1999,7 +1999,17 @@ def _bench(args: argparse.Namespace) -> int:
     plan = load_plan()
     if plan is None or not plan.services:
         return 1
-    service = next((item for item in plan.services if item.name == args.service), plan.services[0])
+    service = next((item for item in plan.services if item.name == args.service), None)
+    if service is None:
+        if args.service is None:
+            service = next(
+                (item for item in plan.services if item.name == "chat"),
+                plan.services[0],
+            )
+        else:
+            print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
+                  file=sys.stderr)
+            return 1
     running = runtime_status()
     if not _service_running(service, running):
         print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
@@ -4304,7 +4314,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="print tokens as they are generated (ignored with --json)",
     )
     bench_parser = sub.add_parser("bench")
-    bench_parser.add_argument("--service", default="chat")
+    bench_parser.add_argument("--service")
+
     bench_parser.add_argument("--tokens", type=int, default=128)
     bench_parser.add_argument("--runs", type=_positive_int, default=3)
     bench_parser.add_argument("--passes", type=_positive_int, default=2)

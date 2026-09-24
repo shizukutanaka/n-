@@ -44,6 +44,13 @@ def test_bench_runs_rejects_zero() -> None:
         cli.main(["bench", "--runs", "0"])
 
 
+def test_bench_unknown_service_errors(monkeypatch, capsys) -> None:
+    plan = _plan()
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    assert cli.main(["bench", "--service", "nosuch"]) == 1
+    assert "nosuch" in capsys.readouterr().err
+
+
 def test_bench_measures_embedding_service(monkeypatch, capsys) -> None:
     plan = _plan()
     service = replace(plan.services[0], name="embed", roles=["embed"])
