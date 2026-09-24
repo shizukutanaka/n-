@@ -1858,6 +1858,22 @@ class Supervisor:
                     self.adopted.pop(service.name, None)
                     self.external_shared.discard(service.name)
                     changed = True
+                if service.name in self.sleeping and not (
+                    self._alive(service.name)
+                    or service.name in self.adopted
+                    or service.name in self.external_shared
+                ):
+                    # A parked (sleep-mode) engine that died holds no
+                    # weights — letting the restart path below resurrect it
+                    # would commit its full VRAM while another swap member
+                    # is active. Drop the bookkeeping; ensure_running()
+                    # cold-launches it on the next request, the same
+                    # degrade its failed /wake_up already takes.
+                    self.processes.pop(service.name, None)
+                    self.launched_argv.pop(service.name, None)
+                    self.sleeping.discard(service.name)
+                    changed = True
+                    continue
                 if (
                     service.name in self.active_plan.swap_group
                     and service.name not in self.processes
