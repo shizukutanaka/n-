@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -596,3 +598,39 @@ def test_cli_state_deduplication_and_all_override(tmp_path: Path, monkeypatch, c
     assert main(["watch", "--offline", str(items), "--all", "--json"]) == 0
     third = json.loads(capsys.readouterr().out)
     assert third["new_findings"] == 1
+
+
+def test_watch_fetches_sources_concurrently(monkeypatch, capsys) -> None:
+    """Each requested source is an independent remote fetch — _watch runs
+    them concurrently instead of serially, preserving the requested order."""
+    in_flight = [0]
+    max_in_flight = [0]
+    lock = threading.Lock()
+
+    def fake(source: str):
+        def call(**kwargs):
+            with lock:
+                in_flight[0] += 1
+                max_in_flight[0] = max(max_in_flight[0], in_flight[0])
+            try:
+                time.sleep(0.05)
+            finally:
+                with lock:
+                    in_flight[0] -= 1
+            return SourceStatus(source, False, 0, False, False, "down"), ()
+        return call
+
+    for name in ("zenn", "qiita", "github", "arxiv", "hf"):
+        monkeypatch.setattr(f"nmesh.cli.fetch_{name}", fake(name))
+    monkeypatch.setattr(
+        "nmesh.cli.fetch_x", lambda *args, **kwargs: (
+            SourceStatus("x", False, 0, False, False, "down"), (),
+        )
+    )
+    sources = "zenn,qiita,github,arxiv,hf,x"
+    assert main(["watch", "--sources", sources, "--json"]) == 1
+    assert max_in_flight[0] >= 2
+    payload = json.loads(capsys.readouterr().out)
+    assert [entry["name"] for entry in payload["sources"]] == [
+        "zenn", "qiita", "github", "arxiv", "hf", "x",
+    ]

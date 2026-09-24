@@ -14,6 +14,7 @@ import time
 import urllib.request
 import zipfile
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -3860,24 +3861,42 @@ def _watch(args: argparse.Namespace) -> int:
             if args.offline:
                 statuses, items = _offline_items(args.offline, requested)
             else:
-                results: dict[str, tuple[SourceStatus, tuple[SourceItem, ...]]] = {}
-                for source in requested:
+                def dispatch(
+                    source: str,
+                ) -> tuple[SourceStatus, tuple[SourceItem, ...]] | None:
                     if source == "zenn":
-                        results[source] = fetch_zenn(limit=args.limit, client=client)
-                    elif source == "qiita":
-                        results[source] = fetch_qiita(limit=args.limit, client=client)
-                    elif source == "github":
-                        results[source] = fetch_github(limit=args.limit, client=client)
-                    elif source == "arxiv":
-                        results[source] = fetch_arxiv(limit=args.limit, client=client)
-                    elif source == "hf":
-                        results[source] = fetch_hf(limit=args.limit, client=client)
-                    elif source == "x":
-                        results[source] = fetch_x(
+                        return fetch_zenn(limit=args.limit, client=client)
+                    if source == "qiita":
+                        return fetch_qiita(limit=args.limit, client=client)
+                    if source == "github":
+                        return fetch_github(limit=args.limit, client=client)
+                    if source == "arxiv":
+                        return fetch_arxiv(limit=args.limit, client=client)
+                    if source == "hf":
+                        return fetch_hf(limit=args.limit, client=client)
+                    if source == "x":
+                        return fetch_x(
                             "llm OR ollama OR llama.cpp OR vllm OR gguf",
                             args.limit,
                             client,
                         )
+                    return None
+
+                # Each source fetch is independent remote I/O — run them
+                # concurrently (httpx.Client is thread-safe) and merge the
+                # per-source results back in the requested order.
+                if len(requested) > 1:
+                    with ThreadPoolExecutor(
+                        max_workers=min(6, len(requested))
+                    ) as pool:
+                        fetched = list(pool.map(dispatch, requested))
+                else:
+                    fetched = [dispatch(source) for source in requested]
+                results: dict[str, tuple[SourceStatus, tuple[SourceItem, ...]]] = {
+                    source: result
+                    for source, result in zip(requested, fetched)
+                    if result is not None
+                }
                 statuses = tuple(result[0] for result in results.values())
                 items = tuple(item for result in results.values() for item in result[1])
             mentions = extract_mentions(items)
