@@ -277,6 +277,25 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: solar-10.7b-instruct
+  family: solar
+  params: 10700000000
+  n_layers: 48
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 32000
+  head_layout: separate
+  max_context: 4096
+  roles: [chat]
+  quality: 58
+  license: cc-by-nc-4.0
+  languages: [en]
+  sources:
+    ollama: "solar:10.7b-instruct-v1"
+    hf_gguf: "bartowski/SOLAR-10.7B-Instruct-v1.0-GGUF"
+    hf: "upstage/SOLAR-10.7B-Instruct-v1.0"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
