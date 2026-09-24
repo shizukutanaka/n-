@@ -277,6 +277,26 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: codestral-22b-instruct
+  family: codestral
+  params: 22200000000
+  n_layers: 56
+  n_heads: 48
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 6144
+  vocab_size: 32768
+  head_layout: separate
+  max_context: 32768
+  roles: [code]
+  quality: 72
+  license: mistral-non-production
+  languages: [en]
+  sources:
+    ollama: "codestral:22b"
+    hf_gguf: "bartowski/Codestral-22B-v0.1-GGUF"
+    hf: "mistralai/Codestral-22B-v0.1"
+    hf_mlx: "mlx-community/Codestral-22B-v0.1-4bit"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
