@@ -1526,6 +1526,23 @@ def test_eval_cli_json_includes_note(monkeypatch, capsys) -> None:
     ]
 
 
+def test_eval_rejects_unknown_category(monkeypatch, capsys) -> None:
+    service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: RuntimeStatus(
+        True, [{"service": service_plan.services[0].name, "running": True}],
+    ))
+    monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
+    called: list[bool] = []
+    monkeypatch.setattr(cli, "eval_run", lambda *a, **kw: called.append(True))
+    assert cli.main([
+        "eval", "--service", service_plan.services[0].name,
+        "--categories", "arithhmetic,format",
+    ]) == 1
+    assert "arithhmetic" in capsys.readouterr().err
+    assert called == []
+
+
 def test_planner_deduplicates_multi_role_eval_override_warning() -> None:
     models = [replace(model, roles=["chat", "code"]) for model in _quality_models()]
     plan = build_plan(

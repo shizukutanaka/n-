@@ -2627,6 +2627,18 @@ def _eval(args: argparse.Namespace) -> int:
         else {item.strip() for item in args.categories.split(",") if item.strip()}
     )
     base_tasks = SUITES[args.suite]
+    if requested:
+        unknown = requested - {task.category for task in base_tasks}
+        if unknown:
+            print(
+                i18n.t(
+                    "err.eval_unknown_categories",
+                    i18n.lang(),
+                    categories=", ".join(sorted(unknown)),
+                ),
+                file=sys.stderr,
+            )
+            return 1
     tasks = (
         base_tasks if requested is None
         else tuple(task for task in base_tasks if task.category in requested)
