@@ -28,6 +28,43 @@ def test_rocm_smi_parser() -> None:
     assert gpus[0].total_vram_bytes == 8589934592
 
 
+def test_rocm_smi_multi_gpu_indices() -> None:
+    text = (
+        '{"GPU[0]": {"VRAM Total Memory (B)": 8589934592, '
+        '"VRAM Total Used Memory (B)": 2147483648}, '
+        '"GPU[1]": {"VRAM Total Memory (B)": 17179869184, '
+        '"VRAM Total Used Memory (B)": 4294967296}}'
+    )
+    gpus = parse_rocm_smi(text)
+    assert [gpu.index for gpu in gpus] == [0, 1]
+    assert gpus[1].total_vram_bytes == 17179869184
+
+
+def test_rocm_smi_free_vram_is_total_minus_used_when_unreported() -> None:
+    # rocm-smi's vram payload reports total and used but no free field; the
+    # detector must not present a busy card as fully free (N2 budget overrun).
+    text = (
+        '{"GPU[0]": {"VRAM Total Memory (B)": 8589934592, '
+        '"VRAM Total Used Memory (B)": 6442450944}}'
+    )
+    gpus = parse_rocm_smi(text)
+    assert gpus[0].free_vram_bytes == 2147483648
+
+
+def test_rocm_smi_reported_free_wins_including_zero() -> None:
+    text = (
+        '{"GPU[0]": {"VRAM Total Memory (B)": 8589934592, '
+        '"VRAM Total Used Memory (B)": 1073741824, '
+        '"VRAM Free Memory (B)": 7516192768}, '
+        '"GPU[1]": {"VRAM Total Memory (B)": 8589934592, '
+        '"VRAM Free Memory (B)": 0}}'
+    )
+    gpus = parse_rocm_smi(text)
+    assert gpus[0].free_vram_bytes == 7516192768
+    # An explicitly reported free of zero stays zero — a busy card is honest.
+    assert gpus[1].free_vram_bytes == 0
+
+
 def test_tier_boundaries() -> None:
     gpu = GPUInfo(0, "GPU", "nvidia", 4 * 1024**3, 4 * 1024**3, None, False)
     assert classify_tier([gpu]) == Tier.T1_LOW
