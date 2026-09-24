@@ -277,6 +277,32 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: dots-llm1-inst
+  family: dots1
+  params: 142000000000
+  n_layers: 62
+  n_heads: 32
+  n_kv_heads: 32
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 152064
+  head_layout: separate
+  # Sparse MoE: first layer dense, MoE on the last 61 of 62 layers
+  # (first_k_dense_replace=1) routing top-6 of 128 experts plus 2 shared
+  # experts (3x4096x1408 params each) — 14B active of 142B total per the
+  # vendor, so dense tensors fit small GPUs while ~135B of routed
+  # experts stream from RAM under --n-cpu-moe.
+  active_params: 14000000000
+  moe_expert_params: 135352991744
+  n_moe_layers: 61
+  max_context: 32768
+  roles: [chat]
+  quality: 73
+  license: mit
+  languages: [en, zh]
+  sources:
+    hf_gguf: "bartowski/rednote-hilab_dots.llm1.inst-GGUF"
+    hf: "rednote-hilab/dots.llm1.inst"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
