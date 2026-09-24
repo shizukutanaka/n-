@@ -75,6 +75,14 @@ try:
 except ValueError:
     CONNECT_TIMEOUT = 10.0
 
+# Upstream circuit breaker: after CIRCUIT_THRESHOLD transport failures inside
+# CIRCUIT_WINDOW seconds a service is presumed down and requests fail fast
+# with 503 for CIRCUIT_COOLDOWN seconds, rather than every caller paying a
+# full connect timeout plus a revive attempt against a dead engine.
+CIRCUIT_WINDOW = 60.0
+CIRCUIT_THRESHOLD = 3
+CIRCUIT_COOLDOWN = 30.0
+
 # Backends whose OpenAI-compat stream accepts stream_options.include_usage.
 # The gateway injects it so decode telemetry uses the upstream's exact
 # completion_tokens instead of an approximation; mlx is excluded because its
@@ -659,6 +667,35 @@ def _split_embedding_input(value: str) -> tuple[str, str] | None:
     return head, tail
 
 
+def _circuit_open(state: _PlanState, service: str) -> float | None:
+    """Seconds the service's upstream circuit stays open, or None when closed.
+    An open circuit means the engine recently failed CIRCUIT_THRESHOLD
+    consecutive transports — requests fail fast instead of re-paying a
+    connect timeout and a revive attempt against a dead engine."""
+    until = state.circuit_open_until.get(service)
+    if until is None or until <= time.monotonic():
+        return None
+    return until - time.monotonic()
+
+
+def _circuit_record_failure(state: _PlanState, service: str) -> None:
+    now = time.monotonic()
+    failures = [
+        stamp
+        for stamp in state.circuit_failures.get(service, [])
+        if now - stamp < CIRCUIT_WINDOW
+    ]
+    failures.append(now)
+    state.circuit_failures[service] = failures
+    if len(failures) >= CIRCUIT_THRESHOLD:
+        state.circuit_open_until[service] = now + CIRCUIT_COOLDOWN
+
+
+def _circuit_record_success(state: _PlanState, service: str) -> None:
+    state.circuit_failures.pop(service, None)
+    state.circuit_open_until.pop(service, None)
+
+
 async def _confirm_embedding_truncation(
     body: Mapping[str, object],
     url: str,
@@ -871,6 +908,8 @@ class _PlanState:
         self._mtime_ns: int | None = None
         self.embed_input_caps: dict[tuple[str, str, str], int] = {}
         self.embed_chunk_plans: dict[tuple[str, str, str], EmbedChunkPlan] = {}
+        self.circuit_failures: dict[str, list[float]] = {}
+        self.circuit_open_until: dict[str, float] = {}
         self._explicit = explicit
         self._gate = gate
         self._limiter = limiter
@@ -1252,6 +1291,16 @@ def create_app(
                 upstream_stream_options["include_usage"] = True
                 body["stream_options"] = upstream_stream_options
             try:
+                open_for = _circuit_open(plan_state, service.name)
+                if open_for is not None:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            f"upstream circuit open for {service.name} "
+                            f"({open_for:.0f}s remaining)"
+                        ),
+                        headers={"Retry-After": str(int(open_for) + 1)},
+                    )
                 upstream_request = client.build_request("POST", url, json=body)
                 try:
                     upstream = await client.send(upstream_request, stream=True)
@@ -1264,6 +1313,7 @@ def create_app(
                         "POST", f"{_base_url(service)}{path}", json=body
                     )
                     upstream = await client.send(upstream_request, stream=True)
+                _circuit_record_success(plan_state, service.name)
             except HTTPException:
                 await client.aclose()
                 in_flight.leave(service.name, ticket)
@@ -1276,6 +1326,7 @@ def create_app(
                     jobs.finish(job, ok=False, detail="upstream_unreachable")
                 raise
             except httpx.HTTPError as error:
+                _circuit_record_failure(plan_state, service.name)
                 await client.aclose()
                 in_flight.leave(service.name, ticket)
                 last_use.touch(service.name)
@@ -1465,8 +1516,18 @@ def create_app(
             )
         try:
             async def post_upstream(payload: Mapping[str, object]) -> httpx.Response:
+                open_for = _circuit_open(plan_state, service.name)
+                if open_for is not None:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            f"upstream circuit open for {service.name} "
+                            f"({open_for:.0f}s remaining)"
+                        ),
+                        headers={"Retry-After": str(int(open_for) + 1)},
+                    )
                 try:
-                    return await client.post(url, json=payload)
+                    response = await client.post(url, json=payload)
                 except (httpx.ConnectError, httpx.ConnectTimeout):
                     try:
                         await asyncio.to_thread(
@@ -1474,9 +1535,11 @@ def create_app(
                         )
                     except Exception as error:
                         raise HTTPException(status_code=502, detail=str(error)) from error
-                    return await client.post(
+                    response = await client.post(
                         f"{_base_url(service)}{path}", json=payload
                     )
+                _circuit_record_success(plan_state, service.name)
+                return response
 
             chunk_plan = (
                 plan_state.embed_chunk_plans.get((
@@ -1620,6 +1683,8 @@ def create_app(
                                     media_type=response.headers.get("content-type"))
                 data = json.loads(content)
         except (httpx.HTTPError, json.JSONDecodeError) as error:
+            if isinstance(error, httpx.HTTPError):
+                _circuit_record_failure(plan_state, service.name)
             if job is not None:
                 jobs.finish(job, ok=False, detail=str(error))
             raise HTTPException(status_code=502, detail=str(error)) from error
