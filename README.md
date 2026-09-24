@@ -391,6 +391,12 @@ embed model on a second llama.cpp process with `--reranking`). Without it,
 a Cohere-style `{query, documents}` body and returns `results` with
 `relevance_score`s.
 
+`POST /v1/tokenize` and `POST /v1/detokenize` expose the backend tokenizer
+for prompt inspection and client-side token counting. They proxy to the
+chat service's upstream `/tokenize` and `/detokenize` endpoints (llama.cpp
+and vLLM both serve them; other backends report their own error). An
+explicit `nmesh-<service>` model ID targets a specific service's tokenizer.
+
 The gateway also passes through the Anthropic Messages API when the backend
 serves it (llama.cpp does): `POST /v1/messages` and
 `POST /v1/messages/count_tokens`. Requests route through the same planner
