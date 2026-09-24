@@ -44,6 +44,13 @@ def test_bench_runs_rejects_zero() -> None:
         cli.main(["bench", "--runs", "0"])
 
 
+def test_bench_tokens_rejects_nonpositive() -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["bench", "--tokens", "0"])
+    with pytest.raises(SystemExit):
+        cli.main(["bench", "--tokens", "-1"])
+
+
 def test_bench_measures_embedding_service(monkeypatch, capsys) -> None:
     plan = _plan()
     service = replace(plan.services[0], name="embed", roles=["embed"])
