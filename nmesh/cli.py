@@ -327,6 +327,16 @@ def _non_negative_int(value: str) -> int:
     return parsed
 
 
+def _non_negative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be a number of at least 0") from error
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be at least 0")
+    return parsed
+
+
 def _print_json(value: object) -> None:
     print(json.dumps(value, indent=2, default=str))
 
@@ -4238,22 +4248,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--explain", action="store_true")
     plan.add_argument("--prefer", choices=("quality", "speed", "balanced"), default="balanced")
     plan.add_argument("--roles", default=None)
-    plan.add_argument("--context", type=int)
+    plan.add_argument("--context", type=_positive_int)
     plan.add_argument("--budget", choices=("total", "free"), default="total")
     plan.add_argument("--kv-quant", choices=("f16", "q8_0"), default="f16")
-    plan.add_argument("--parallel-slots", type=int)
+    plan.add_argument("--parallel-slots", type=_positive_int)
     plan.add_argument("--model", help="comma-separated model IDs")
     plan.add_argument("--ignore-eval-evidence", action="store_true")
     plan.add_argument("--spec", choices=("none", "ngram", "draft"), default="none")
     plan.add_argument("--spec-draft", default="")
-    plan.add_argument("--spec-n-max", type=int, default=3)
-    plan.add_argument("--sleep-idle-seconds", type=int, default=0)
-    plan.add_argument("--cache-reuse", type=int, default=0)
+    plan.add_argument("--spec-n-max", type=_positive_int, default=3)
+    plan.add_argument("--sleep-idle-seconds", type=_non_negative_int, default=0)
+    plan.add_argument("--cache-reuse", type=_non_negative_int, default=0)
     plan.add_argument("--context-shift", action="store_true")
     plan.add_argument("--ignore-spec-evidence", action="store_true")
-    plan.add_argument("--allow-download-gb", type=float, default=60.0,
+    plan.add_argument("--allow-download-gb", type=_non_negative_float, default=60.0,
                       help="warn when planned downloads exceed this many GiB")
-    plan.add_argument("--min-decode-tps", type=float, default=8.0,
+    plan.add_argument("--min-decode-tps", type=_non_negative_float, default=8.0,
                       help="minimum decode throughput (tok/s) a service must sustain")
     plan.add_argument("--lang")
     plan.add_argument("--profile")
@@ -4263,7 +4273,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--no-download", action="store_true")
     up_parser.add_argument("--kv-quant", choices=("f16", "q8_0"), default="f16")
     up_parser.add_argument("--detach", action="store_true")
-    up_parser.add_argument("--port", type=int, default=18000)
+    up_parser.add_argument("--port", type=_positive_int, default=18000)
     up_parser.add_argument("--ignore-free-memory", action="store_true")
     up_parser.add_argument("--lang")
     up_parser.add_argument("--roles", default=None)
@@ -4271,33 +4281,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--ignore-eval-evidence", action="store_true")
     up_parser.add_argument("--spec", choices=("none", "ngram", "draft"), default="none")
     up_parser.add_argument("--spec-draft", default="")
-    up_parser.add_argument("--spec-n-max", type=int, default=3)
-    up_parser.add_argument("--sleep-idle-seconds", type=int, default=0)
-    up_parser.add_argument("--cache-reuse", type=int, default=0)
+    up_parser.add_argument("--spec-n-max", type=_positive_int, default=3)
+    up_parser.add_argument("--sleep-idle-seconds", type=_non_negative_int, default=0)
+    up_parser.add_argument("--cache-reuse", type=_non_negative_int, default=0)
     up_parser.add_argument("--context-shift", action="store_true")
     up_parser.add_argument("--ignore-spec-evidence", action="store_true")
-    up_parser.add_argument("--allow-download-gb", type=float, default=60.0,
+    up_parser.add_argument("--allow-download-gb", type=_non_negative_float, default=60.0,
                            help="warn when planned downloads exceed this many GiB")
-    up_parser.add_argument("--min-decode-tps", type=float, default=8.0,
+    up_parser.add_argument("--min-decode-tps", type=_non_negative_float, default=8.0,
                            help="minimum decode throughput (tok/s) a service must sustain")
     serve_parser = sub.add_parser("serve")
-    serve_parser.add_argument("--port", type=int, default=18000)
+    serve_parser.add_argument("--port", type=_positive_int, default=18000)
     serve_parser.add_argument("--roles", default=None)
     reload_parser = sub.add_parser("reload")
-    reload_parser.add_argument("--port", type=int, default=18000)
+    reload_parser.add_argument("--port", type=_positive_int, default=18000)
     reload_parser.add_argument("--json", action="store_true")
     unload_parser = sub.add_parser("unload")
     unload_parser.add_argument("service", nargs="?")
-    unload_parser.add_argument("--port", type=int, default=18000)
+    unload_parser.add_argument("--port", type=_positive_int, default=18000)
     unload_parser.add_argument("--json", action="store_true")
     for name in ("status", "down"):
         item = sub.add_parser(name)
         item.add_argument("--json", action="store_true")
-        item.add_argument("--port", type=int, default=18000)
+        item.add_argument("--port", type=_positive_int, default=18000)
     run_parser = sub.add_parser("run")
     run_parser.add_argument("prompt")
     run_parser.add_argument("--role", default="chat")
-    run_parser.add_argument("--port", type=int, default=18000)
+    run_parser.add_argument("--port", type=_positive_int, default=18000)
     run_parser.add_argument("--json", action="store_true")
     run_parser.add_argument(
         "--stream", action="store_true",
@@ -4305,7 +4315,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     bench_parser = sub.add_parser("bench")
     bench_parser.add_argument("--service", default="chat")
-    bench_parser.add_argument("--tokens", type=int, default=128)
+    bench_parser.add_argument("--tokens", type=_positive_int, default=128)
     bench_parser.add_argument("--runs", type=_positive_int, default=3)
     bench_parser.add_argument("--passes", type=_positive_int, default=2)
     bench_parser.add_argument("--no-reference", action="store_true")
@@ -4338,7 +4348,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     measure_parser.add_argument("--worker", default="worker")
     measure_parser.add_argument("--lead-url")
     measure_parser.add_argument("--worker-url")
-    measure_parser.add_argument("--reasoning-allowance", type=int, default=0)
+    measure_parser.add_argument("--reasoning-allowance", type=_non_negative_int, default=0)
     measure_parser.add_argument("--repeats", type=_positive_int, default=2)
     measure_parser.add_argument("--limit", type=_positive_int)
     measure_parser.add_argument("--no-reference", action="store_true")
@@ -4350,8 +4360,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     spec_measure = spec_commands.add_parser("measure")
     spec_measure.add_argument("--kind", choices=("ngram", "draft"), required=True)
     spec_measure.add_argument("--draft")
-    spec_measure.add_argument("--repeats", type=int, default=3)
-    spec_measure.add_argument("--n-max", type=int, default=3)
+    spec_measure.add_argument("--repeats", type=_positive_int, default=3)
+    spec_measure.add_argument("--n-max", type=_positive_int, default=3)
     spec_measure.add_argument("--service")
     spec_measure.add_argument("--no-reference", action="store_true")
     spec_measure.add_argument("--json", action="store_true")
@@ -4389,7 +4399,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logs_parser.add_argument("--lines", type=_positive_int, default=50)
     logs_parser.add_argument("--json", action="store_true")
     jobs_parser = sub.add_parser("jobs", help="list queued and running gateway jobs")
-    jobs_parser.add_argument("--port", type=int, default=18000)
+    jobs_parser.add_argument("--port", type=_positive_int, default=18000)
     jobs_parser.add_argument("--limit", type=_positive_int, default=50)
     jobs_parser.add_argument("--cancel", metavar="JOB_ID",
                              help="cancel a queued job (running jobs cannot be interrupted)")
@@ -4415,7 +4425,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     auto = sub.add_parser("autotune")
     auto.add_argument("--json", action="store_true")
     autostart = sub.add_parser("autostart")
-    autostart.add_argument("--port", type=int, default=18000)
+    autostart.add_argument("--port", type=_positive_int, default=18000)
     autostart.add_argument("--install", action="store_true")
     autostart.add_argument("--json", action="store_true")
     models = sub.add_parser("models")

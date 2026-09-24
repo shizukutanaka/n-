@@ -45,6 +45,29 @@ def test_every_top_level_command_help_exits_successfully(
         assert error.value.code == 0
 
 
+def test_numeric_flags_reject_negative_and_zero_values() -> None:
+    for argv in (
+        ["plan", "--context", "-1"],
+        ["plan", "--parallel-slots", "0"],
+        ["plan", "--allow-download-gb", "-0.5"],
+        ["up", "--spec-n-max", "0"],
+        ["up", "--sleep-idle-seconds", "-1"],
+        ["up", "--cache-reuse", "-1"],
+        ["up", "--min-decode-tps", "-1"],
+        ["serve", "--port", "0"],
+        ["run", "--port", "-1", "prompt"],
+        ["bench", "--tokens", "0"],
+        ["jobs", "--port", "0"],
+        ["orchestrate", "measure", "--reasoning-allowance", "-1"],
+        ["orchestrate", "measure", "--repeats", "0"],
+        ["spec", "measure", "--kind", "ngram", "--repeats", "-1"],
+        ["spec", "measure", "--kind", "ngram", "--n-max", "0"],
+    ):
+        with pytest.raises(SystemExit) as error:
+            cli.main(list(argv))
+        assert error.value.code == 2
+
+
 def test_version_reports_package_and_evidence_versions(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
