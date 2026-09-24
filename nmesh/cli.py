@@ -342,14 +342,21 @@ def _print_runtime_status(result: RuntimeStatus, language: str) -> None:
     table.add_column(i18n.t("label.model", language))
     table.add_column(i18n.t("label.backend", language))
     for item in result.services:
+        state = i18n.t(
+            "status.failed" if item.get("failed")
+            else "status.running" if item.get("running")
+            else "status.stopped",
+            language,
+        )
+        restarts = item.get("restarts")
+        if isinstance(restarts, int) and restarts > 0:
+            state = f"{state} ×{restarts}"
+        note = item.get("failed") or item.get("note")
+        if isinstance(note, str) and note:
+            state = f"{state} ({note})"
         table.add_row(
             str(item.get("service") or ""),
-            i18n.t(
-                "status.failed" if item.get("failed")
-                else "status.running" if item.get("running")
-                else "status.stopped",
-                language,
-            ),
+            state,
             str(item.get("port") or ""),
             Path(str(item.get("model_ref") or "")).name,
             str(item.get("backend") or ""),
