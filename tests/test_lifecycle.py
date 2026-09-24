@@ -20,7 +20,7 @@ from nmesh.runtime import service_unit as service_unit_module
 from nmesh.runtime import supervisor as supervisor_module
 from nmesh.runtime.acquisition import Acquired
 from nmesh.runtime.logs import log_path, open_log, tail
-from nmesh.runtime.service_unit import launcher_script, service_unit
+from nmesh.runtime.service_unit import launcher_script, service_unit, watch_unit
 from nmesh.runtime.supervisor import Supervisor
 
 from .test_planner import profile
@@ -1314,6 +1314,20 @@ def test_service_units_are_pure_and_platform_specific(monkeypatch, tmp_path: Pat
     assert filename.endswith(".cmd")
     assert "schtasks" in text
     assert "nmesh-gateway-launcher.cmd" in text
+
+
+def test_watch_unit_marks_systemd_service_and_timer_files() -> None:
+    filename, text, command = watch_unit(12, "posix")
+    assert filename == "nmesh-watch.service + nmesh-watch.timer"
+    first = text.index("# Save as ")
+    second = text.index("# Save as ", first + 1)
+    service_block, timer_block = text[first:second], text[second:]
+    assert "nmesh-watch.service" in service_block.split("\n", 1)[0]
+    assert "nmesh-watch.timer" in timer_block.split("\n", 1)[0]
+    assert "[Service]" in service_block and "ExecStart=" in service_block
+    assert "[Timer]" in timer_block
+    assert "OnUnitActiveSec=12h" in timer_block
+    assert "nmesh-watch.timer" in command
 
 
 def test_autostart_install_writes_launcher_and_preserves_environment(
