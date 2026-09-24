@@ -285,6 +285,15 @@ swap モードでは gateway がリクエストを直列化（`asyncio.Lock`）�
 | `nmesh run "プロンプト"` [--role code] | ワンショット実行（gateway 経由） |
 | `nmesh bench` / `nmesh autotune` | 実測・自動調整 |
 | `nmesh models [--role code]` | カタログ表示（このPCで動くものに ✓ ） |
+| `nmesh models local` / `scan` / `rm` | ローカル GGUF の一覧・ストア走査・削除 |
+| `nmesh eval [--service chat]` | コア評価スイートの実行 |
+| `nmesh orchestrate measure` / `show` | 委譲計測・記録表示 |
+| `nmesh spec measure` / `show` / `evidence` | 投機的デコードの計測・記録・エビデンス |
+| `nmesh serve` / `reload` / `unload` | gateway のみ起動 / plan 再読込 / サービス停止 |
+| `nmesh logs` / `nmesh jobs` | サービスログ表示 / ゲートウェイジョブ一覧・キャンセル |
+| `nmesh watch` | 外部情報ソースの巡回（Zenn/Qiita/GitHub/arXiv/HF/X） |
+| `nmesh autostart` | OS 自動起動スクリプトの生成 |
+| `nmesh engine list` / `install` / `use` / `remove` | llama.cpp エンジンの管理 |
 
 出力は `rich` で表組み。`--json` で機械可読。
 
