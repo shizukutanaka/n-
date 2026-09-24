@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 import socket
 import statistics
@@ -4124,6 +4125,56 @@ def _run_prompt(args: argparse.Namespace) -> int:
     return 1
 
 
+def _embed_text(args: argparse.Namespace) -> int:
+    payload = json.dumps({
+        "model": f"nmesh-{args.role}",
+        "input": args.text,
+    }).encode()
+    headers = {"Content-Type": "application/json", **_gateway_headers()}
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{getattr(args, 'port', 18000)}/v1/embeddings",
+        payload,
+        headers,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = json.loads(response.read().decode())
+    except HTTPError as error:
+        detail = ""
+        try:
+            upstream = json.loads(error.read().decode())
+            detail = str(upstream.get("error", {}).get("message") or "")
+        except (OSError, json.JSONDecodeError):
+            detail = ""
+        print(i18n.t("err.gateway_http", i18n.lang(), code=error.code,
+                     detail=detail or str(error)), file=sys.stderr)
+        return 1
+    except (OSError, json.JSONDecodeError) as error:
+        print(i18n.t("err.gateway_unavailable", i18n.lang(), error=error),
+              file=sys.stderr)
+        print(i18n.t("err.gateway_unavailable.hint", i18n.lang()), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(body, indent=2))
+        return 0
+    data = body.get("data") if isinstance(body, dict) else None
+    vector = (
+        data[0].get("embedding")
+        if isinstance(data, list) and data and isinstance(data[0], dict)
+        else None
+    )
+    usage = body.get("usage") if isinstance(body, dict) else None
+    tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+    if not isinstance(vector, list):
+        print(json.dumps(body, indent=2))
+        return 0
+    norm = math.sqrt(sum(float(item) ** 2 for item in vector))
+    print(i18n.t("label.embed_summary", i18n.lang(),
+                 dims=len(vector), norm=f"{norm:.4f}",
+                 tokens=str(tokens) if tokens is not None else "-"))
+    return 0
+
+
 def _evidence(args: argparse.Namespace) -> int:
     payload = collect_evidence()
     if args.json:
@@ -4303,6 +4354,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--stream", action="store_true",
         help="print tokens as they are generated (ignored with --json)",
     )
+    embed_parser = sub.add_parser(
+        "embed", help="smoke-test the embed service with a text input"
+    )
+    embed_parser.add_argument("text")
+    embed_parser.add_argument("--role", default="embed")
+    embed_parser.add_argument("--port", type=int, default=18000)
+    embed_parser.add_argument("--json", action="store_true")
     bench_parser = sub.add_parser("bench")
     bench_parser.add_argument("--service", default="chat")
     bench_parser.add_argument("--tokens", type=int, default=128)
@@ -4691,6 +4749,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "run":
         return _run_prompt(args)
+    if args.command == "embed":
+        return _embed_text(args)
     parser.print_help()
     return 0
 
