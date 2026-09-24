@@ -320,6 +320,10 @@ def _explicit(model: object, plan: Plan) -> str | None:
 def _service(plan: Plan, name: str) -> PlannedService:
     service = next((item for item in plan.services if item.name == name), None)
     if service is None:
+        if not name:
+            # route() yields "" when the plan has no service at all for the
+            # request — that is "service unavailable", not "model not found".
+            raise HTTPException(status_code=503, detail="No service available")
         raise HTTPException(status_code=404, detail=f"Unknown service: {name}")
     return service
 

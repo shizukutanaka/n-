@@ -301,6 +301,16 @@ def test_jobs_endpoint_tracks_request_lifecycle() -> None:
         upstream.server_close()
 
 
+def test_empty_plan_returns_503_not_empty_404() -> None:
+    plan = _llama_plan(1)
+    empty = replace(plan, services=[],
+                    routing=replace(plan.routing, role_to_service={}))
+    with TestClient(create_app(empty)) as client:
+        response = client.post("/v1/chat/completions", json={"messages": []})
+        assert response.status_code == 503
+        assert response.json()["error"]["message"] == "No service available"
+
+
 def test_jobs_report_decode_progress_from_llamacpp_slots(monkeypatch) -> None:
     upstream = _limit_upstream()
     try:
