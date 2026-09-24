@@ -557,3 +557,15 @@ def test_serve_returns_nonzero_for_failed_gateway(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_launch_gateway", lambda _port, detach: (process, None))
     monkeypatch.setattr(cli, "clear_gateway", lambda _pid: None)
     assert cli._runtime(SimpleNamespace(command="serve", port=18000)) == 1
+
+
+def test_last_use_ensure_prunes_services_dropped_by_replan() -> None:
+    """Replans remove services; _LastUse/revive bookkeeping must not grow
+    monotonically with name churn — ensure() now drops stale entries."""
+    last_use = gateway_module._LastUse(_completion_plan(1).services)
+    last_use.touch("retired-svc")
+    last_use.touch("chat")
+    assert last_use.age("retired-svc") is not None
+    last_use.ensure(_completion_plan(1).services)
+    assert last_use.age("retired-svc") is None
+    assert last_use.age("chat") is not None
