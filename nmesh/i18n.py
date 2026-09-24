@@ -258,6 +258,7 @@ MESSAGES = {
         "label.eval_progress": "eval {index}/{total}: {task}",
 
         "err.eval_save": "evaluation failed to save: {error}",
+        "err.watch_unknown_sources": "unknown watch sources: {sources}",
         "err.eval_categories": "No evaluation tasks match the requested categories.",
         "err.autotune_measure": "Autotune failed: {error}",
         "err.autotune_restore": "failed to restore original autotune configuration: {error}",
@@ -827,6 +828,7 @@ MESSAGES["ja"].update({
     "err.eval_run": "\u8a55\u4fa1\u306b\u5931\u6557\u3057\u307e\u3057\u305f: {error}",
     "err.eval_save": "\u8a55\u4fa1\u306e\u4fdd\u5b58\u306b\u5931\u6557\u3057\u307e\u3057\u305f: {error}",
     "err.eval_categories": "\u6307\u5b9a\u3057\u305f\u30ab\u30c6\u30b4\u30ea\u306b\u4e00\u81f4\u3059\u308b\u8a55\u4fa1\u30bf\u30b9\u30af\u304c\u3042\u308a\u307e\u305b\u3093\u3002",
+    "err.watch_unknown_sources": "\u4e0d\u660e\u306awatch\u30bd\u30fc\u30b9: {sources}",
     "note.gpu_pinned": "{service}: GPU {indices} \u306b\u30d4\u30f3\u7559\u3081\u3057\u307e\u3057\u305f\uff08\u63a8\u5b9a\u914d\u7f6e\u30fb\u30c7\u30d0\u30a4\u30b9\u53ef\u8996\u6027\u3067\u5206\u96e2\uff09",
     "note.tps_estimate": "~ = \u30ab\u30bf\u30ed\u30b0\u4e0a\u306e\u63a8\u5b9a\u5024\u3067\u3001\u3053\u306e\u30de\u30b7\u30f3\u3067\u306e\u5b9f\u6e2c\u5024\u3067\u306f\u3042\u308a\u307e\u305b\u3093\u3002`nmesh bench` \u3067\u5b9f\u6e2c\u5024\u306b\u7f6e\u304d\u63db\u308f\u308a\u307e\u3059\u3002",
     "note.eval_scope": "\u5b9f\u65bd\u3059\u308b{tasks}\u554f\u306e\u6c7a\u5b9a\u7684\u30de\u30a4\u30af\u30ed\u8a55\u4fa1\u3067\u3059\uff08\u6307\u793a\u8ffd\u5f93\u30fb\u51fa\u529b\u5f62\u5f0f\u30fb\u62bd\u51fa\u30fb\u7ffb\u8a33\u65b9\u5411\uff09\u3002\u77e5\u8b58\u30d9\u30f3\u30c1\u30de\u30fc\u30af\u3067\u306f\u306a\u304f\u3001MMLU\u578b\u30b9\u30b3\u30a2\u3068\u6bd4\u8f03\u3057\u306a\u3044\u3067\u304f\u3060\u3055\u3044\u3002",

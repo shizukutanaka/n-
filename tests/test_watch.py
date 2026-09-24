@@ -596,3 +596,8 @@ def test_cli_state_deduplication_and_all_override(tmp_path: Path, monkeypatch, c
     assert main(["watch", "--offline", str(items), "--all", "--json"]) == 0
     third = json.loads(capsys.readouterr().out)
     assert third["new_findings"] == 1
+
+
+def test_watch_rejects_unknown_source(capsys) -> None:
+    assert main(["watch", "--sources", "zen,qiita", "--json"]) == 1
+    assert "zen" in capsys.readouterr().err

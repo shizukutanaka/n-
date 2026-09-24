@@ -3855,6 +3855,17 @@ def _watch(args: argparse.Namespace) -> int:
                 f"{text}\n{i18n.t('label.watch_install', language)}:\n{command}"
             )
         return 0
+    unknown = set(requested) - {"zenn", "qiita", "github", "arxiv", "hf", "x"}
+    if unknown:
+        print(
+            i18n.t(
+                "err.watch_unknown_sources",
+                language,
+                sources=", ".join(sorted(unknown)),
+            ),
+            file=sys.stderr,
+        )
+        return 1
     try:
         with httpx.Client(timeout=10.0, follow_redirects=True) as client:
             if args.offline:
