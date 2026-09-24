@@ -2,6 +2,11 @@
 
 ## 未リリース
 ### Added
+
+- `minicpm-2b-sft` をモデルカタログに追加 — OpenBMB MiniCPM 2B会話
+  モデル（40層、MHA 36/36、head_dim 64、4096コンテキスト、
+  tied embeddings、Apache-2.0）。roles: [chat]
+  （openbmb/MiniCPM-2B-sft-bf16 config.json 基準）
 - **`nmesh eval --limit`**: カテゴリ選択後のタスクを先頭 N 件に制限（`orchestrate measure --limit` と同規約）。104 タスクの拡張スイートを全量走らせずスモーク確認できる
 - **`up()` の sleep エンジン `/is_sleeping` プローブを並列プリプローブ化**: 未所有の sleep-capable エンジンの採用判定がサービスごとに最大2回の2秒 urlopen を直列発行しており、N 台駐車時は最大4N秒ロック保持でした。パス先頭で対象を1回並列プローブし `_adopt` の判定はスナップショット参照に — 非パス経路は従来どおりライブプローブ
 

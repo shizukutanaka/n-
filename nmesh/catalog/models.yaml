@@ -277,6 +277,25 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: minicpm-2b-sft
+  family: minicpm
+  params: 2400000000
+  n_layers: 40
+  n_heads: 36
+  n_kv_heads: 36
+  head_dim: 64
+  hidden_size: 2304
+  vocab_size: 122753
+  head_layout: shared
+  max_context: 4096
+  roles: [chat]
+  quality: 55
+  license: apache-2.0
+  languages: [en, zh]
+  sources:
+    ollama: "minicpm2:2b"
+    hf_gguf: "bartowski/MiniCPM-2B-sft-bf16-GGUF"
+    hf: "openbmb/MiniCPM-2B-sft-bf16"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
