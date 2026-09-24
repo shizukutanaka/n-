@@ -277,6 +277,26 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: granite-3.3-8b-instruct
+  family: granite
+  params: 8170000000
+  n_layers: 40
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 49159
+  head_layout: shared
+  max_context: 131072
+  roles: [chat, tool]
+  quality: 70
+  license: apache-2.0
+  languages: [en, ja, zh, ko, de, es, fr, pt, it, nl, ar, cs]
+  sources:
+    ollama: "granite3.3:8b"
+    hf_gguf: "bartowski/granite-3.3-8b-instruct-GGUF"
+    hf: "ibm-granite/granite-3.3-8b-instruct"
+    hf_mlx: "mlx-community/granite-3.3-8b-instruct-4bit"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
