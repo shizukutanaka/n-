@@ -258,6 +258,32 @@
     hf_gguf: "Qwen/Qwen3-8B-GGUF"
     hf: "Qwen/Qwen3-8B"
     hf_mlx: "mlx-community/Qwen3-8B-4bit"
+- id: qwen3-30b-a3b-instruct
+  family: qwen3
+  params: 30500000000
+  n_layers: 48
+  n_heads: 32
+  n_kv_heads: 4
+  head_dim: 128
+  hidden_size: 2048
+  vocab_size: 151936
+  head_layout: separate
+  # MoE: 128 experts/layer (3x2048x768 params each) on all 48 layers,
+  # top-8 routed per token — ~3.3B active of 30.5B total
+  # (Qwen/Qwen3-30B-A3B-Instruct-2507).
+  active_params: 3300000000
+  moe_expert_params: 28991029248
+  n_moe_layers: 48
+  max_context: 262144
+  roles: [chat, code, tool]
+  quality: 79
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    ollama: "qwen3:30b"
+    hf_gguf: "Qwen/Qwen3-30B-A3B-Instruct-2507-GGUF"
+    hf: "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    hf_mlx: "mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit"
 - id: smollm3-3b
   family: smollm3
   params: 3080000000
