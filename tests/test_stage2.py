@@ -1092,6 +1092,41 @@ def test_supervisor_admission_leaves_roomy_plan_unchanged(
     supervisor.down()
 
 
+def test_supervisor_fallback_reaches_gpu_layer_rung(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    """The documented quantization/context/GPU-layer ladder needs a fourth
+    attempt — otherwise the layer-reduction rung is unreachable."""
+    plan = build_plan(profile(64, (24,)), catalog, Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url=None),
+    )
+    plan = replace(plan, services=[service])
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    argv_seen: list[list[str]] = []
+
+    def launcher(item) -> _AdmissionProcess:
+        argv_seen.append(list(item.launch.argv))
+        if len(argv_seen) < 4:
+            raise RuntimeError("synthetic startup failure")
+        return _AdmissionProcess()
+
+    supervisor = Supervisor(
+        launcher, tmp_path / "ladder.json", health_timeout=0.01
+    )
+    result = supervisor.up(plan, no_download=True, admit=False)
+    assert result.running
+    assert len(argv_seen) == 4
+    ngl_seen = [argv[argv.index("-ngl") + 1] for argv in argv_seen]
+    assert ngl_seen == ["48", "48", "48", "36"]
+    supervisor.down()
+
+
 def test_supervisor_admission_excludes_already_up_services(
     tmp_path, catalog: list[ModelSpec]
 ) -> None:
