@@ -162,8 +162,13 @@ def fetch_zenn(
                 if not path:
                     continue
                 url = f"https://zenn.dev{path}"
-                page = session.get(url)
-                page.raise_for_status()
+                try:
+                    page = session.get(url)
+                    page.raise_for_status()
+                except httpx.HTTPError:
+                    # A removed or members-only article must not take down the
+                    # whole source; the list endpoint already succeeded.
+                    continue
                 items.append(SourceItem(
                     "zenn",
                     url,
@@ -366,8 +371,15 @@ def fetch_hf(
             if not model_id:
                 continue
             url = f"https://huggingface.co/{model_id}"
-            card = session.get(f"{url}/raw/main/README.md", headers=headers)
-            body = card.text[:_HF_CARD_BYTES] if card.status_code == 200 else ""
+            try:
+                card = session.get(f"{url}/raw/main/README.md", headers=headers)
+            except httpx.HTTPError:
+                card = None
+            body = (
+                card.text[:_HF_CARD_BYTES]
+                if card is not None and card.status_code == 200
+                else ""
+            )
             if body:
                 cards += 1
             items.append(SourceItem(
