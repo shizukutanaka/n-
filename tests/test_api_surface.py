@@ -526,6 +526,34 @@ def test_run_sends_nmesh_api_key_when_set(monkeypatch) -> None:
     assert captured["authorization"] == "Bearer test-key-1"
 
 
+def test_jobs_cancel_sends_authorization_header(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        def read(self):
+            return json.dumps({"id": "job-1", "state": "cancelled"}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, *args, **kwargs):
+        captured["authorization"] = request.headers.get("Authorization")
+        captured["method"] = request.get_method()
+        return Response()
+
+    monkeypatch.setenv("NMESH_API_KEY", "test-key-1")
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    result = cli._jobs(
+        SimpleNamespace(cancel="job-1", json=True, port=18000, limit=50)
+    )
+    assert result == 0
+    assert captured["authorization"] == "Bearer test-key-1"
+    assert captured["method"] == "DELETE"
+
+
 def test_gateway_headers_empty_without_api_key(monkeypatch) -> None:
     monkeypatch.delenv("NMESH_API_KEY", raising=False)
     assert cli._gateway_headers() == {}
