@@ -72,6 +72,21 @@ def test_worker_role_warns_when_no_coresident_candidate(
     )
 
 
+def test_unknown_role_warns(
+    catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(
+        profile(64, (24,)),
+        catalog,
+        Policy(roles=["chat", "chta"], min_decode_tps=0),
+    )
+    assert any(
+        "unknown role" in warning.lower() and "chta" in warning
+        for warning in result.warnings
+    )
+    assert any("chat" in service.roles for service in result.services)
+
+
 def test_worker_role_omits_larger_model_than_small_lead(
     catalog: list[ModelSpec],
 ) -> None:
