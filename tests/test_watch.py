@@ -538,6 +538,7 @@ def test_cli_offline_json_shape_and_all_sources_unreachable(
     assert set(payload) == {
         "sources",
         "items",
+        "new_items",
         "mentions",
         "findings",
         "new_findings",
@@ -590,9 +591,12 @@ def test_cli_state_deduplication_and_all_override(tmp_path: Path, monkeypatch, c
     assert main(["watch", "--offline", str(items), "--json"]) == 0
     first = json.loads(capsys.readouterr().out)
     assert first["new_findings"] == 1
+    assert first["new_items"] == 1
     assert main(["watch", "--offline", str(items), "--json"]) == 0
     second = json.loads(capsys.readouterr().out)
     assert second["new_findings"] == 0
+    assert second["new_items"] == 0
     assert main(["watch", "--offline", str(items), "--all", "--json"]) == 0
     third = json.loads(capsys.readouterr().out)
     assert third["new_findings"] == 1
+    assert third["new_items"] == 1

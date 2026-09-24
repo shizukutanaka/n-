@@ -4019,6 +4019,11 @@ def _watch(args: argparse.Namespace) -> int:
     output = {
         "sources": [asdict(status) for status in statuses],
         "items": len(items),
+        "new_items": (
+            len({item.url for item in items})
+            if args.all
+            else len({item.url for item in items if item.url not in state.seen_items})
+        ),
         "mentions": len(mentions),
         "findings": [asdict(finding) for finding in findings],
         "new_findings": len(new_keys),
