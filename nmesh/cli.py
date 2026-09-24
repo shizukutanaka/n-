@@ -13,7 +13,7 @@ import tempfile
 import time
 import urllib.request
 import zipfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1320,7 +1320,45 @@ def _logs(args: argparse.Namespace) -> int:
     else:
         for line in lines:
             _console().print(line)
+    if args.follow:
+        return _follow_log(path)
     return 0
+
+
+def _follow_log(
+    path: Path,
+    *,
+    stop: Callable[[], bool] | None = None,
+    interval: float = 0.5,
+) -> int:
+    """Stream lines appended to ``path`` until interrupted — `tail -f` for
+    service logs. Copytruncate rotation (size shrinking) rewinds to the start
+    of the truncated file."""
+    out = sys.stdout
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            offset = handle.tell()
+            while True:
+                if stop is not None and stop():
+                    return 0
+                time.sleep(interval)
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                if size < offset:
+                    offset = 0
+                handle.seek(offset)
+                chunk = handle.read()
+                offset = handle.tell()
+                if chunk:
+                    out.write(chunk.decode("utf-8", errors="replace"))
+                    out.flush()
+    except OSError:
+        return 1
+    except KeyboardInterrupt:
+        return 0
 
 
 def _gateway_headers() -> dict[str, str]:
@@ -4388,6 +4426,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     logs_parser.add_argument("service", nargs="?")
     logs_parser.add_argument("--lines", type=_positive_int, default=50)
     logs_parser.add_argument("--json", action="store_true")
+    logs_parser.add_argument(
+        "-f", "--follow", action="store_true",
+        help="keep printing appended lines until interrupted (tail -f)",
+    )
     jobs_parser = sub.add_parser("jobs", help="list queued and running gateway jobs")
     jobs_parser.add_argument("--port", type=int, default=18000)
     jobs_parser.add_argument("--limit", type=_positive_int, default=50)

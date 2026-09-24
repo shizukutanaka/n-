@@ -1810,3 +1810,53 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_logs_follow_streams_appends(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    target = log_path("chat")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("first\n", encoding="utf-8")
+
+    appended: list[str] = []
+    calls = 0
+
+    def stop() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write("second\n")
+            return False
+        return len(appended) > 0 or calls > 4
+
+    real_write = sys.stdout.write
+
+    def counting_write(text):
+        appended.append(text)
+        return real_write(text)
+
+    monkeypatch.setattr(sys.stdout, "write", counting_write)
+    assert cli._follow_log(target, stop=stop, interval=0) == 0
+    assert any("second" in chunk for chunk in appended)
+
+
+def test_logs_follow_recovers_after_copytruncate(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    target = tmp_path / "svc.log"
+    target.write_text("a\nb\nc\n", encoding="utf-8")
+    written: list[str] = []
+    calls = 0
+
+    def stop() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # copytruncate: shrink the file in place with new content.
+            target.write_text("rotated\n", encoding="utf-8")
+            return False
+        return any("rotated" in chunk for chunk in written) or calls > 4
+
+    monkeypatch.setattr(sys.stdout, "write", written.append)
+    assert cli._follow_log(target, stop=stop, interval=0) == 0
