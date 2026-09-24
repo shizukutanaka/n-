@@ -118,6 +118,26 @@
     hf_gguf: "Qwen/Qwen2.5-32B-Instruct-GGUF"
     hf: "Qwen/Qwen2.5-32B-Instruct"
     hf_mlx: "mlx-community/Qwen2.5-32B-Instruct-4bit"
+- id: qwen2.5-72b-instruct
+  family: qwen2.5
+  params: 72700000000
+  n_layers: 80
+  n_heads: 64
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 8192
+  vocab_size: 152064
+  head_layout: separate
+  max_context: 131072
+  roles: [chat, code]
+  quality: 84
+  license: qwen
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    ollama: "qwen2.5:72b-instruct"
+    hf_gguf: "bartowski/Qwen2.5-72B-Instruct-GGUF"
+    hf: "Qwen/Qwen2.5-72B-Instruct"
+    hf_mlx: "mlx-community/Qwen2.5-72B-Instruct-4bit"
 - id: qwen2.5-coder-1.5b
   family: qwen2.5-coder
   params: 1540000000
