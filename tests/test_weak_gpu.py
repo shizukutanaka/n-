@@ -78,6 +78,21 @@ def test_linux_generic_gpu_reads_amd_vram_and_does_not_invent_intel_vram(tmp_pat
     assert gpus[1].vram_source == "unknown"
 
 
+def test_linux_sysfs_ignores_connector_directories_in_card_indexes(tmp_path) -> None:
+    card0 = tmp_path / "card0" / "device"
+    card0.mkdir(parents=True)
+    (card0 / "vendor").write_text("0x8086\n", encoding="ascii")
+    for connector in ("card0-eDP-1", "card0-HDMI-A-1"):
+        (tmp_path / connector).mkdir(parents=True)
+    card1 = tmp_path / "card1" / "device"
+    card1.mkdir(parents=True)
+    (card1 / "vendor").write_text("0x1002\n", encoding="ascii")
+    (card1 / "mem_info_vram_total").write_text(str(8 * GIB), encoding="ascii")
+    gpus = detect_linux_sysfs(tmp_path)
+    assert [gpu.index for gpu in gpus] == [0, 1]
+    assert gpus[1].vendor == "amd"
+
+
 def test_known_cpu_only_llamacpp_forces_cpu_placement() -> None:
     model = next(item for item in load_catalog() if item.id == "qwen2.5-1.5b-instruct")
     profile = replace(
