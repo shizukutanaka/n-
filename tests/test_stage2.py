@@ -636,6 +636,90 @@ def test_supervisor_adopts_recorded_pid_and_unloads_it(
     assert payload["services"] == []
 
 
+def test_supervisor_rejects_adopted_engine_with_drifted_argv(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    plan = replace(plan, services=[service])
+    state_path = tmp_path / "drifted.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "services": [{
+                "service": "chat",
+                "pid": os.getpid(),
+                "create_time": psutil.Process(os.getpid()).create_time(),
+                "port": 18010,
+                "argv": ["llama-server", "-m", "/old/model.gguf", "-c", "2048"],
+            }],
+        }),
+        encoding="utf-8",
+    )
+    launched: list[str] = []
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda item: launched.append(item.name) or _AdmissionProcess(),
+        state_path,
+        health_timeout=0.01,
+        terminator=terminated.append,
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+    monkeypatch.setattr(
+        supervisor_module, "engine_listener_pid", lambda _port: os.getpid()
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+
+    supervisor.ensure_running("chat", plan)
+
+    assert "chat" not in supervisor.adopted
+    assert terminated == [os.getpid()]
+    assert launched == ["chat"]
+
+
+def test_supervisor_adopts_engine_with_matching_argv(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    plan = replace(plan, services=[service])
+    state_path = tmp_path / "matching.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "services": [{
+                "service": "chat",
+                "pid": os.getpid(),
+                "create_time": psutil.Process(os.getpid()).create_time(),
+                "port": 18010,
+                "argv": list(service.launch.argv),
+            }],
+        }),
+        encoding="utf-8",
+    )
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("matching process should be adopted"),
+        state_path,
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+
+    supervisor.ensure_running("chat", plan)
+
+    assert supervisor.adopted["chat"]["pid"] == os.getpid()
+    assert supervisor.adopted["chat"]["argv"] == list(service.launch.argv)
+
+
 def test_supervisor_heartbeat_relaunches_dead_adopted_service(
     tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:

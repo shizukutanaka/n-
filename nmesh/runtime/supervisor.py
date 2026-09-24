@@ -542,8 +542,27 @@ class Supervisor:
                     if engine_listener_pid(service.port) == pid:
                         self._terminator(int(pid))
                     return False
+            recorded_argv = entry.get("argv")
+            if not isinstance(recorded_argv, list) or not recorded_argv:
+                recorded_argv = None
+            if recorded_argv is not None and list(recorded_argv[1:]) != list(
+                service.launch.argv[1:]
+            ):
+                # Same drift check _spec_drift applies to self-spawned
+                # processes: the plan changed flags under an engine a prior
+                # supervisor recorded. Entries without argv (written before
+                # the field existed) fall back to model/exe identity only.
+                if engine_listener_pid(service.port) == pid:
+                    self._terminator(int(pid))
+                return False
             create_time = entry.get("create_time")
             port = entry.get("port")
+            carried_argv: object = recorded_argv
+            if carried_argv is None:
+                try:
+                    carried_argv = psutil.Process(int(pid)).cmdline()
+                except (psutil.Error, OSError):
+                    carried_argv = None
             self.adopted[service.name] = {
                 "pid": pid,
                 "create_time": (
@@ -557,6 +576,7 @@ class Supervisor:
                     if isinstance(port, int) and not isinstance(port, bool)
                     else None
                 ),
+                "argv": carried_argv,
             }
             if getattr(service, "sleep_mode", False) and self._engine_sleeping(service):
                 # Entry-verified engine parked by an earlier supervisor —
@@ -938,6 +958,7 @@ class Supervisor:
                 "started_at": time.time(),
                 "create_time": self._create_time(process.pid),
                 "exe": _entry_exe(process),
+                "argv": self.launched_argv.get(name),
                 "shared": False,
                 "external": False,
                 "parallel_slots": _slots(plan, name),
@@ -967,6 +988,7 @@ class Supervisor:
                 "started_at": time.time(),
                 "create_time": record.get("create_time"),
                 "exe": record.get("exe"),
+                "argv": record.get("argv"),
                 "shared": False,
                 "external": True,
                 "adopted": True,
