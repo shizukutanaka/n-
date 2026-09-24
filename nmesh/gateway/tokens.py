@@ -53,6 +53,11 @@ class Sums:
 
 
 _LOCK = threading.Lock()
+# mtime-gated parse cache: callers hold _LOCK, so a stat() per call is all
+# that is needed to know the file did not change — record() rewrites the
+# file every request, and routing previously re-read and re-parsed it
+# several times per request.
+_CACHED: tuple[int, int, dict[str, Sums]] | None = None
 
 
 def _defaults(samples: int = 0) -> Calibration:
@@ -156,16 +161,32 @@ def _coerce_sums(value: object) -> Sums:
 
 
 def _read() -> dict[str, Sums]:
+    global _CACHED
+    try:
+        stamp = _path().stat()
+    except OSError:
+        _CACHED = None
+        return {}
+    if (
+        _CACHED is not None
+        and _CACHED[0] == stamp.st_mtime_ns
+        and _CACHED[1] == stamp.st_size
+    ):
+        return _CACHED[2]
     try:
         payload = json.loads(_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        _CACHED = (stamp.st_mtime_ns, stamp.st_size, {})
         return {}
     if not isinstance(payload, dict) or not isinstance(payload.get("models"), dict):
+        _CACHED = (stamp.st_mtime_ns, stamp.st_size, {})
         return {}
-    return {
+    values = {
         str(name): _coerce_sums(value)
         for name, value in payload["models"].items()
     }
+    _CACHED = (stamp.st_mtime_ns, stamp.st_size, values)
+    return values
 
 
 def _write(values: dict[str, Sums]) -> None:

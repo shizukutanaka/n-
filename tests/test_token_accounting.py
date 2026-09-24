@@ -309,3 +309,35 @@ def test_prompt_calibration_uses_text_key_for_prompt_requests(monkeypatch) -> No
         {"prompt_tokens": 5},
     ))
     assert calls == [(calibration_key(service.model_id, False), "hello", 5)]
+
+
+def test_load_sums_stats_file_instead_of_reparsing(monkeypatch, tmp_path) -> None:
+    import json as _json
+    from pathlib import Path as _Path
+
+    from nmesh.gateway import tokens as _tokens
+
+    target = tmp_path / "cal.json"
+    target.write_text(_json.dumps({"models": {}}))
+    monkeypatch.setattr(_tokens, "_path", lambda: target)
+    _tokens._CACHED = None
+
+    calls: list[int] = []
+    original = _Path.read_text
+
+    def counting(self, *args, **kwargs):
+        calls.append(1)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(_Path, "read_text", counting)
+    _tokens.load_sums("m")
+    _tokens.load_sums("m")
+    assert len(calls) == 1
+
+    full = {name: 0.0 for name in
+            ("s_cc", "s_co", "s_oo", "s_ct", "s_ot", "s_c", "s_o", "s_t")}
+    full["n"] = 3
+    target.write_text(_json.dumps({"models": {"m": full}}))
+    assert _tokens.load_sums("m").n == 3
+    assert len(calls) == 2
+    _tokens._CACHED = None
