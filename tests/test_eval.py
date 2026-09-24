@@ -2130,3 +2130,31 @@ def test_eval_cli_warns_when_artifact_changes(monkeypatch, capsys) -> None:
     assert output["artifact"] == "new-artifact"
     assert output["artifact_warning"].count("old-artifact") == 1
     assert output["artifact_warning"].count("new-artifact") == 1
+
+
+def test_load_eval_cache_memoizes_unchanged_file(tmp_path, monkeypatch) -> None:
+    """Replan passes call load_eval_cache (and sibling caches) repeatedly —
+    an unchanged file must parse once, not per call."""
+    from nmesh.eval import cache as eval_cache
+    from nmesh.eval.cache import load_eval_cache
+
+    calls = 0
+    real_loads = eval_cache.json.loads
+
+    def counting(text):
+        nonlocal calls
+        calls += 1
+        return real_loads(text)
+
+    target = tmp_path / "eval.json"
+    target.write_text('{"results": {"k": {"x": 1}}}', encoding="utf-8")
+    monkeypatch.setattr(eval_cache.json, "loads", counting)
+
+    load_eval_cache(target)
+    load_eval_cache(target)
+    assert calls == 1
+
+    # A rewrite invalidates and parses again.
+    target.write_text('{"results": {"k": {"x": 1, "y": 2}}}', encoding="utf-8")
+    load_eval_cache(target)
+    assert calls == 2

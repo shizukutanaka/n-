@@ -6,6 +6,7 @@ import math
 import os
 import random
 import statistics
+import threading
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from itertools import pairwise
@@ -332,20 +333,38 @@ def _record(data: object) -> RetrievalRecord | None:
         return None
 
 
+# Called on every replan pass (sometimes several times in one); parse
+# only when the file's (mtime_ns, size) actually changed.
+_retrieval_records_cache: dict[Path, tuple[int, int, dict[str, RetrievalRecord]]] = {}
+_retrieval_records_lock = threading.Lock()
+
+
 def load_retrieval_cache(path: Path | None = None) -> dict[str, RetrievalRecord]:
     target = path or (nmesh_home() / "retrieval.json")
     try:
+        info = target.stat()
+        stamp = (info.st_mtime_ns, info.st_size)
+    except OSError:
+        stamp = (-1, 0)
+    with _retrieval_records_lock:
+        cached = _retrieval_records_cache.get(target)
+        if cached is not None and cached[0] == stamp[0] and cached[1] == stamp[1]:
+            return dict(cached[2])
+    records: dict[str, RetrievalRecord] = {}
+    try:
         payload = json.loads(target.read_text(encoding="utf-8"))
         results = payload.get("results", {}) if isinstance(payload, dict) else {}
-        if not isinstance(results, dict):
-            return {}
-        return {
-            str(key): record
-            for key, value in results.items()
-            if (record := _record(value)) is not None
-        }
+        if isinstance(results, dict):
+            records = {
+                str(key): record
+                for key, value in results.items()
+                if (record := _record(value)) is not None
+            }
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return {}
+        pass
+    with _retrieval_records_lock:
+        _retrieval_records_cache[target] = (stamp[0], stamp[1], records)
+    return dict(records)
 
 
 def save_retrieval(
