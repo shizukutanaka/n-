@@ -1648,7 +1648,7 @@ def _models_scan(args: argparse.Namespace) -> int:
         root_path = Path(root).expanduser()
         if not root_path.is_dir():
             print(
-                f"model root is not an existing directory: {root_path}",
+                i18n.t("err.models_root_not_dir", i18n.lang(), path=root_path),
                 file=sys.stderr,
             )
             return 1
@@ -1731,7 +1731,16 @@ def _models_scan(args: argparse.Namespace) -> int:
         return 0
     language = i18n.lang()
     table = Table(title=i18n.t("models.scan", language))
-    for column in ("Store", "Model", "Quant", "Label", "GiB", "Tags", "Planned", "Group"):
+    for column in (
+        i18n.t("label.store", language),
+        i18n.t("label.model", language),
+        i18n.t("label.quant", language),
+        i18n.t("label.label", language),
+        i18n.t("label.gib", language),
+        i18n.t("label.tags", language),
+        i18n.t("label.planned", language),
+        i18n.t("label.group", language),
+    ):
         table.add_column(column)
     for artifact, item in zip(artifacts, artifact_payloads, strict=True):
         label = artifact.label or "-"
@@ -1786,7 +1795,10 @@ def _models(args: argparse.Namespace) -> int:
                 candidate = model_root / candidate
             candidate = candidate.resolve()
             if not candidate.is_file() or candidate.suffix.lower() != ".gguf":
-                print(f"model not found: {args.name}", file=sys.stderr)
+                print(
+                    i18n.t("err.models_not_found", i18n.lang(), name=args.name),
+                    file=sys.stderr,
+                )
                 return 1
             plan = load_plan()
             planned = {
@@ -1807,7 +1819,10 @@ def _models(args: argparse.Namespace) -> int:
             try:
                 candidate.unlink()
             except OSError as error:
-                print(f"unable to remove model: {error}", file=sys.stderr)
+                print(
+                    i18n.t("err.models_remove_failed", i18n.lang(), error=error),
+                    file=sys.stderr,
+                )
                 return 1
             if args.json:
                 _print_json({"removed": str(candidate), "forced": bool(args.force)})
@@ -1839,8 +1854,15 @@ def _models(args: argparse.Namespace) -> int:
         if args.json:
             _print_json(items)
         else:
-            table = Table(title=i18n.t("models.local", i18n.lang()))
-            for column in ("Path", "Bytes", "Quant", "Label", "Planned"):
+            language = i18n.lang()
+            table = Table(title=i18n.t("models.local", language))
+            for column in (
+                i18n.t("label.path", language),
+                i18n.t("label.bytes", language),
+                i18n.t("label.quant", language),
+                i18n.t("label.label", language),
+                i18n.t("label.planned", language),
+            ):
                 table.add_column(column)
             for item in items:
                 table.add_row(
@@ -1857,8 +1879,14 @@ def _models(args: argparse.Namespace) -> int:
         return 0
     language = i18n.lang()
     table = Table(title=i18n.t("label.models", language))
-    for column in ("ID", "Family", "Params", i18n.t("label.roles", language),
-                   i18n.t("label.context", language), i18n.t("label.languages", language)):
+    for column in (
+        i18n.t("label.id", language),
+        i18n.t("label.family", language),
+        i18n.t("label.params", language),
+        i18n.t("label.roles", language),
+        i18n.t("label.context", language),
+        i18n.t("label.languages", language),
+    ):
         table.add_column(column)
     for model in models:
         table.add_row(model.id, model.family, str(model.params), ",".join(model.roles),
@@ -3761,7 +3789,12 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                 language,
                 count=len(demoted),
             ))
-        print(f"decision: {decision} ({reason})")
+        print(i18n.t(
+            "label.spec_decision",
+            i18n.lang(),
+            decision=decision,
+            reason=reason,
+        ))
     return 0
 
 
@@ -4680,7 +4713,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.json:
             _print_json(data)
         else:
-            print(f"Filename: {filename}\n\n{text}\nInstall with:\n{install_command}")
+            print(
+                i18n.t(
+                    "label.autostart_display",
+                    i18n.lang(),
+                    filename=filename,
+                    text=text,
+                    install_command=install_command,
+                )
+            )
             if args.install:
                 print(i18n.t("label.launcher_written", i18n.lang(), path=launcher_path))
                 print(i18n.t("label.gateway_env", i18n.lang(), path=env_path))
