@@ -70,6 +70,30 @@ class _CompatStreamHandler(BaseHTTPRequestHandler):
         return
 
 
+class _MidstreamDieHandler(BaseHTTPRequestHandler):
+    """Sends one SSE chunk then drops the connection mid-body (declared
+    Content-Length unsatisfied) — httpx raises RemoteProtocolError during
+    iteration, which is the mid-stream upstream-death path."""
+
+    protocol_version = "HTTP/1.1"
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.rfile.read(length)
+        chunk = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(chunk) * 4))
+        self.end_headers()
+        self.wfile.write(chunk)
+        self.wfile.flush()
+        self.connection.shutdown(socket.SHUT_RDWR)
+        self.connection.close()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 class _UsageHandler(BaseHTTPRequestHandler):
     request_body: ClassVar[dict[str, object]] = {}
     request_bodies: ClassVar[list[dict[str, object]]] = []
@@ -332,6 +356,39 @@ def test_gateway_stream_rewrites_model_and_preserves_sse_frames() -> None:
             and line != "data: {not-json}"
         ]
         assert payloads[0]["model"] == "client-model"
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_stream_surfaces_midstream_upstream_death_as_error_event() -> None:
+    """An upstream dying mid-body must not look like a clean stream end —
+    the client gets a terminal SSE error event instead of silent truncation."""
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _MidstreamDieHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec("die-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "client-model",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        error_events = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: ") and '"error"' in line
+        ]
+        assert len(error_events) == 1
+        assert error_events[0]["error"]["type"] == "server_error"
+        assert error_events[0]["error"]["code"] == 502
+        # Real content still precedes the error event.
+        assert response.text.index('"ok"') < response.text.index('"error"')
     finally:
         upstream.shutdown()
         upstream.server_close()

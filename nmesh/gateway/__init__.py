@@ -1397,7 +1397,24 @@ def create_app(
                             yield output
                     stream_completed = True
                 except httpx.HTTPError as error:
-                    raise HTTPException(status_code=502, detail=str(error)) from error
+                    # The response line already went out as 200 — a bare abort
+                    # is indistinguishable from a clean stream end for SSE
+                    # clients, so surface the failure as an error event first.
+                    yield (
+                        b"data: "
+                        + json.dumps(
+                            {
+                                "error": {
+                                    "message": str(error),
+                                    "type": "server_error",
+                                    "code": 502,
+                                }
+                            },
+                            separators=(",", ":"),
+                        ).encode()
+                        + b"\n\n"
+                    )
+                    return
                 finally:
                     await upstream.aclose()
                     await client.aclose()
