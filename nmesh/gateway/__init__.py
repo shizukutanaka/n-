@@ -1045,6 +1045,16 @@ def create_app(
 
     app = FastAPI(title="nmesh gateway", lifespan=lifespan)
 
+    @app.middleware("http")
+    async def request_id_middleware(request: Request, call_next: Callable) -> Response:
+        # OpenAI-compatible x-request-id: echo the caller's value when
+        # present, otherwise mint one — either way every response carries
+        # an id clients can log for correlation.
+        request_id = request.headers.get("x-request-id") or secrets.token_hex(16)
+        response = await call_next(request)
+        response.headers["x-request-id"] = request_id
+        return response
+
     @app.exception_handler(HTTPException)
     async def http_exception_handler(
         _request: Request, error: HTTPException

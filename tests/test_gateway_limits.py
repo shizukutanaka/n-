@@ -498,3 +498,13 @@ def test_job_registry_cancel() -> None:
     assert registry.cancel(running) is False
     listed = [j.id for j in registry.list()]
     assert queued.id in listed and running.id in listed
+
+
+def test_gateway_echoes_or_generates_request_id() -> None:
+    plan = _llama_plan(1)
+    with TestClient(create_app(plan)) as client:
+        generated = client.get("/health")
+        assert generated.status_code == 200
+        assert generated.headers["x-request-id"]
+        echoed = client.get("/health", headers={"x-request-id": "req_abc123"})
+        assert echoed.headers["x-request-id"] == "req_abc123"
