@@ -1810,3 +1810,49 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_status_probes_each_shared_url_once(monkeypatch, tmp_path: Path) -> None:
+    url = "http://127.0.0.1:9/"
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    calls: list[str] = []
+
+    def fake_urlopen(probed_url, *_args, **_kwargs):
+        calls.append(probed_url)
+        return Response()
+
+    monkeypatch.setattr(
+        supervisor_module.urllib.request, "urlopen", fake_urlopen
+    )
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({
+            "services": [
+                {"service": "chat", "pid": None, "shared": True,
+                 "health_url": url},
+                {"service": "embed", "pid": None, "shared": True,
+                 "health_url": "http://127.0.0.1:10/"},
+            ],
+        })
+    )
+    supervisor = Supervisor(state_path=state_path)
+    supervisor.adopted["chat"] = {
+        "service": "chat", "pid": None, "model_ref": "m", "port": 8001,
+        "health_url": url, "shared": True, "adopted": True,
+    }
+
+    status = supervisor.status()
+
+    # The adopted record and its persisted twin share one health_url:
+    # one deduped probe pass, not two serial urlopens per pass.
+    assert sorted(calls) == ["http://127.0.0.1:10/", url]
+    assert status.running is True

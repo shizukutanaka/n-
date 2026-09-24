@@ -10,7 +10,9 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from threading import RLock
 from typing import Protocol
@@ -232,6 +234,11 @@ class Supervisor:
         self._loaded_plan_stamp: tuple[float, int] | None = None
         self._boot_recovery = False
         self.notes: dict[str, str] = {}
+        # Probe cache for one status()/heartbeat pass: shared and external
+        # daemons are re-probed in parallel up front so a wedged listener
+        # cannot stall the pass by its timeout once per service. Outside
+        # those passes it stays None and every call probes live.
+        self._url_probes: dict[str, bool] | None = None
         self._lock = RLock()
         self._atexit_armed = False
         self._terminator = terminator or self._terminate_pid
@@ -335,8 +342,7 @@ class Supervisor:
         # copy at PCIe speed, well inside this timeout.
         return self._sleep_post(service, "sleep?level=1", timeout=120.0)
 
-    @classmethod
-    def _entry_alive(cls, entry: Mapping[str, object]) -> bool:
+    def _entry_alive(self, entry: Mapping[str, object]) -> bool:
         pid = entry.get("pid")
         if pid is not None:
             if not isinstance(pid, (int, float, str)):
@@ -352,7 +358,14 @@ class Supervisor:
             except (TypeError, ValueError):
                 return False
         if entry.get("shared") or entry.get("external"):
-            return cls._health_url_alive(entry.get("health_url"))
+            url = entry.get("health_url")
+            if (
+                self._url_probes is not None
+                and isinstance(url, str)
+                and url in self._url_probes
+            ):
+                return self._url_probes[url]
+            return self._health_url_alive(url)
         return False
 
     def _load_state(self) -> dict[str, object] | None:
@@ -456,17 +469,19 @@ class Supervisor:
             return self._alive(service.name)
         adopted = self.adopted.get(service.name)
         if adopted is not None:
-            if self._entry_alive(adopted) and self._healthy(service):
+            if self._entry_alive(adopted) and self._service_healthy(service):
                 return True
             self.adopted.pop(service.name, None)
         if service.name in self.external_shared:
-            if service.launch.health_url is not None and self._healthy(service):
+            if service.launch.health_url is not None and self._service_healthy(
+                service
+            ):
                 return True
             self.external_shared.discard(service.name)
         return (
             service.launch.shared_daemon
             and service.launch.health_url is not None
-            and self._healthy(service)
+            and self._service_healthy(service)
         )
 
     def _alive(self, name: str) -> bool:
@@ -491,7 +506,7 @@ class Supervisor:
             and not isinstance(pid, bool)
             and isinstance(entry, dict)
             and self._entry_alive(entry)
-            and self._healthy(service)
+            and self._service_healthy(service)
         ):
             recorded_model = entry.get("model_ref")
             if recorded_model is not None and recorded_model != service.model_ref:
@@ -545,7 +560,7 @@ class Supervisor:
             # sleeping engine answers endpoints but cannot serve.
             self.external_shared.add(service.name)
             return True
-        if self._healthy(service):
+        if self._service_healthy(service):
             orphan_pid = engine_listener_pid(service.port)
             if orphan_pid is not None and not _pid_serves_model(
                 orphan_pid, service.model_ref
@@ -859,13 +874,24 @@ class Supervisor:
         return self._with_log_tail(service_name, message)
 
     def _healthy(self, service: PlannedService) -> bool:
-        if service.launch.health_url is None:
+        url = service.launch.health_url
+        if url is None:
             return True
         try:
-            with urllib.request.urlopen(service.launch.health_url, timeout=2) as response:
+            with urllib.request.urlopen(url, timeout=2) as response:
                 return 200 <= response.status < 500
         except (OSError, ValueError):
             return False
+
+    def _service_healthy(self, service: PlannedService) -> bool:
+        url = service.launch.health_url
+        if (
+            self._url_probes is not None
+            and isinstance(url, str)
+            and url in self._url_probes
+        ):
+            return self._url_probes[url]
+        return self._healthy(service)
 
     def _wait_health(self, service: PlannedService, timeout: float | None = None) -> bool:
         timeout = self.health_timeout if timeout is None else timeout
@@ -1595,7 +1621,59 @@ class Supervisor:
                 else:
                     process.kill()
 
+    def _prime_status_probes(
+        self, payload: dict[str, object] | None
+    ) -> dict[str, bool]:
+        """Probe every URL status() may liveness-check, in parallel — the
+        merged entry list below otherwise pays serial urlopen(2s) per
+        shared/external service, and /status polls re-pay it every call."""
+        targets: dict[str, Callable[[], bool]] = {}
+        if self.active_plan is not None:
+            for service in self.active_plan.services:
+                url = service.launch.health_url
+                if (
+                    isinstance(url, str)
+                    and service.name not in self.processes
+                    and service.name not in self.idle
+                ):
+                    targets.setdefault(url, partial(self._healthy, service))
+        url_entries: list[object] = list(self.adopted.values())
+        persisted = payload.get("services") if isinstance(payload, dict) else None
+        if isinstance(persisted, list):
+            url_entries.extend(persisted)
+        for entry in url_entries:
+            if isinstance(entry, dict):
+                url = entry.get("health_url")
+                if isinstance(url, str):
+                    targets.setdefault(
+                        url, partial(self._health_url_alive, url)
+                    )
+
+        def run_probe(probe: Callable[[], bool]) -> bool:
+            return probe()
+
+        if len(targets) > 1:
+            with ThreadPoolExecutor(
+                max_workers=min(8, len(targets))
+            ) as pool:
+                return dict(zip(
+                    targets, pool.map(run_probe, targets.values()),
+                    strict=True,
+                ))
+        if targets:
+            (url, probe), = targets.items()
+            return {url: probe()}
+        return {}
+
     def status(self) -> RuntimeStatus:
+        payload = self._load_state() if self.state_path.exists() else None
+        self._url_probes = self._prime_status_probes(payload)
+        try:
+            return self._build_status(payload)
+        finally:
+            self._url_probes = None
+
+    def _build_status(self, payload: dict[str, object] | None) -> RuntimeStatus:
         def planned(name: str) -> PlannedService | None:
             if self.active_plan is None:
                 return None
@@ -1675,7 +1753,6 @@ class Supervisor:
         } for name in self.idle if name not in self.processes
         and name not in self.shared_services
         and name not in self.external_shared)
-        payload = self._load_state() if self.state_path.exists() else None
         gateway = payload.get("gateway") if payload else None
         gateway_entry = None
         gateway_running = False
