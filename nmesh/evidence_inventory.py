@@ -159,7 +159,10 @@ def _depth_verdict(
     depth_evidence = evidence.get(key)
     if depth_evidence is None:
         return ""
-    if depth_evidence.lost >= served:
+    # `lost` is the shallowest depth where retrieval was observed failing, so
+    # only a record at or beyond it sits in known-broken territory; `lost == 0`
+    # is the no-loss sentinel.
+    if 0 < depth_evidence.lost <= served:
         return "lost"
     if depth_evidence.verified >= served:
         return "verified"

@@ -186,6 +186,34 @@ def test_evidence_table_folds_reasons_and_remeasure_at_narrow_width(
     assert "verified" in output
 
 
+def test_depth_verdict_marks_only_depths_at_or_beyond_loss_onset(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    def probe(
+        requested: int, served: int, passed: int, of: int, at: float
+    ) -> ContextRecord:
+        return ContextRecord(
+            "model", "f16", "llamacpp", "core", requested, served,
+            suite_digest(needle_tasks(requested, "core")),
+            (FamilyResult("literal", passed, of, of, of),),
+            at,
+        )
+
+    _write_records(tmp_path, "context.json", {
+        "shallow": probe(5000, 5000, 8, 8, 1.0),
+        "onset": probe(10000, 10000, 6, 8, 2.0),
+        "deeper": probe(15000, 15000, 5, 8, 3.0),
+    })
+
+    rows = {row["requested_depth"]: row for row in _rows("depth")}
+    assert rows[5000]["verdict"] == "verified"
+    assert rows[10000]["verdict"] == "lost"
+    assert rows[15000]["verdict"] == "lost"
+
+
 def test_superseded_records_are_explained_and_all_unusable_rows_have_reasons(
     tmp_path,
     monkeypatch,
