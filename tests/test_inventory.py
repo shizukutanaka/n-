@@ -178,3 +178,36 @@ def test_cli_scan_and_local_report_header_metadata(
     missing = tmp_path / "missing"
     assert cli.main(["models", "scan", "--json", "--root", str(missing)]) == 1
     assert "not an existing directory" in capsys.readouterr().err
+
+
+def test_scan_parses_gguf_headers_concurrently(monkeypatch, tmp_path: Path) -> None:
+    """Each candidate costs a GGUF header read+parse — fan out across files
+    so a large model store does not serialize the scans."""
+    import threading
+    import time
+
+    store = tmp_path / "models"
+    store.mkdir()
+    for index in range(3):
+        (store / f"model-{index}.gguf").write_bytes(_synthetic_gguf())
+
+    lock = threading.Lock()
+    in_flight = 0
+    max_in_flight = 0
+    real = inventory.gguf_info
+
+    def slow_info(path):
+        nonlocal in_flight, max_in_flight
+        with lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+        time.sleep(0.05)
+        with lock:
+            in_flight -= 1
+        return real(path)
+
+    monkeypatch.setattr(inventory, "gguf_info", slow_info)
+    artifacts = inventory.scan({"test": store})
+
+    assert max_in_flight == 3
+    assert len(artifacts) == 3
