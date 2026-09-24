@@ -4003,7 +4003,9 @@ def _watch(args: argparse.Namespace) -> int:
         for status in statuses:
             table.add_row(
                 status.name,
-                str(status.reachable),
+                i18n.t(
+                    "label.yes" if status.reachable else "label.no", language
+                ),
                 str(status.items),
                 status.detail,
             )
