@@ -951,6 +951,47 @@ def _ignored_up_plan_flags(args: argparse.Namespace) -> list[str]:
     ]
 
 
+def _plan_hardware_drift(plan: Plan, args: argparse.Namespace) -> list[str]:
+    """Hardware changes between the saved plan's profile and the machine.
+
+    `nmesh up` reuses the saved plan; when the GPU set or budgets moved since
+    `nmesh plan` built it, the planned placements may no longer be possible
+    (a missing GPU index, or commitments that no longer fit — llamacpp would
+    crash or OOM at launch). Volatile readings (free VRAM/RAM/disk) are not
+    compared. When `--profile` is given, compare against that file so a
+    simulated-hardware plan doesn't warn on every `up`.
+    """
+    try:
+        current = (
+            _load_profile(args.profile)
+            if getattr(args, "profile", None)
+            else detect_hardware()
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return []
+    old_gpus = {gpu.index: gpu for gpu in plan.profile.gpus}
+    new_gpus = {gpu.index: gpu for gpu in current.gpus}
+    changes: list[str] = []
+    removed = sorted(set(old_gpus) - set(new_gpus))
+    added = sorted(set(new_gpus) - set(old_gpus))
+    if removed:
+        changes.append(f"GPU(s) removed: {', '.join(map(str, removed))}")
+    if added:
+        changes.append(f"GPU(s) added: {', '.join(map(str, added))}")
+    for index in sorted(set(old_gpus) & set(new_gpus)):
+        old = old_gpus[index].total_vram_bytes
+        new = new_gpus[index].total_vram_bytes
+        if old and abs(new - old) / old > 0.05:
+            changes.append(
+                f"GPU {index} VRAM {old / 2**30:.0f} -> {new / 2**30:.0f} GiB"
+            )
+    old_ram = plan.profile.total_ram_bytes
+    new_ram = current.total_ram_bytes
+    if old_ram and abs(new_ram - old_ram) / old_ram > 0.10:
+        changes.append(f"RAM {old_ram / 2**30:.0f} -> {new_ram / 2**30:.0f} GiB")
+    return changes
+
+
 def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
     plan = load_plan()
     if plan is not None and plan.services and plan.runnable:
@@ -967,6 +1008,16 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
         if plan.launch_revision < LAUNCH_REVISION:
             print(
                 i18n.t("warn.plan_stale", i18n.lang()),
+                file=sys.stderr,
+            )
+        changes = _plan_hardware_drift(plan, args)
+        if changes:
+            print(
+                i18n.t(
+                    "warn.plan_hardware_drift",
+                    i18n.lang(),
+                    changes="; ".join(changes),
+                ),
                 file=sys.stderr,
             )
         return plan
