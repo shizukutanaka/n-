@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -103,19 +104,36 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
         return None
 
 
+# Catalog parses are pure: callers that invoke load_catalog per service
+# (plan/up/replan paths) would otherwise re-read and re-validate both YAML
+# files each time. Keyed by path + (mtime_ns, size), refreshed on change.
+_models_cache: dict[Path, tuple[int, int, list[ModelSpec]]] = {}
+_models_cache_lock = threading.Lock()
+
+
 def _read_models(path: Path) -> list[ModelSpec]:
+    try:
+        info = path.stat()
+        stamp = (info.st_mtime_ns, info.st_size)
+    except OSError:
+        stamp = (-1, 0)
+    with _models_cache_lock:
+        cached = _models_cache.get(path)
+        if cached is not None and cached[0] == stamp[0] and cached[1] == stamp[1]:
+            return list(cached[2])
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
-        return []
-    if not isinstance(payload, list):
-        return []
+        payload = None
     models: list[ModelSpec] = []
-    for item in payload:
-        model = _model_from_mapping(item)
-        if model is not None:
-            models.append(model)
-    return models
+    if isinstance(payload, list):
+        for item in payload:
+            model = _model_from_mapping(item)
+            if model is not None:
+                models.append(model)
+    with _models_cache_lock:
+        _models_cache[path] = (stamp[0], stamp[1], models)
+    return list(models)
 
 
 def load_catalog(

@@ -170,3 +170,48 @@ def test_speed_saturation_warning_requires_a_faster_candidate(tmp_path) -> None:
     assert _speed_saturation_warning(
         "chat", chosen, [chosen], Policy(roles=["chat"], prefer="speed"),
     ) is None
+
+
+YAML = (
+    "- id: custom-model\n"
+    "  family: test\n"
+    "  params: 1\n"
+    "  n_layers: 1\n"
+    "  n_heads: 1\n"
+    "  n_kv_heads: 1\n"
+    "  head_dim: 1\n"
+    "  hidden_size: 1\n"
+    "  max_context: 1024\n"
+    "  roles: [chat]\n"
+    "  quality: 0.5\n"
+    "  license: test\n"
+    "  sources: {h: x}\n"
+)
+
+
+def test_load_catalog_caches_by_mtime(tmp_path) -> None:
+    """load_catalog runs per service on plan/up/replan paths — it must not
+    re-parse the YAML files on every call."""
+    user_yaml = tmp_path / "models.yaml"
+    user_yaml.write_text(YAML, encoding="utf-8")
+    first = load_catalog(user_path=user_yaml)
+    assert any(model.id == "custom-model" for model in first)
+
+    # An unchanged file hits the cache: even though it is now unreadable
+    # the cached parse is returned (stat still works under chmod 0).
+    user_yaml.chmod(0)
+    try:
+        second = load_catalog(user_path=user_yaml)
+    finally:
+        user_yaml.chmod(0o600)
+    assert any(model.id == "custom-model" for model in second)
+
+    # A changed file invalidates: rewrite with different content.
+    user_yaml.write_text(YAML + "  vocab_size: 1\n", encoding="utf-8")
+    third = load_catalog(user_path=user_yaml)
+    assert any(model.id == "custom-model" for model in third)
+
+    # A removed file invalidates too.
+    user_yaml.unlink()
+    fourth = load_catalog(user_path=user_yaml)
+    assert all(model.id != "custom-model" for model in fourth)
