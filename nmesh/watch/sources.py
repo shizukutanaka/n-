@@ -12,6 +12,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
@@ -356,8 +357,7 @@ def fetch_hf(
         payload = response.json()
         if not isinstance(payload, list):
             raise TypeError("Hugging Face response was not a list")
-        items: list[SourceItem] = []
-        cards = 0
+        entries: list[tuple[str, str, str]] = []
         for raw in payload:
             entry = _mapping(raw)
             if entry is None:
@@ -365,18 +365,29 @@ def fetch_hf(
             model_id = _text(entry.get("id") or entry.get("modelId"))
             if not model_id:
                 continue
-            url = f"https://huggingface.co/{model_id}"
-            card = session.get(f"{url}/raw/main/README.md", headers=headers)
-            body = card.text[:_HF_CARD_BYTES] if card.status_code == 200 else ""
-            if body:
-                cards += 1
-            items.append(SourceItem(
-                "hf",
-                url,
+            entries.append((
                 model_id,
-                body,
+                f"https://huggingface.co/{model_id}",
                 _text(entry.get("lastModified") or entry.get("last_modified")),
             ))
+
+        def fetch_card(url: str) -> str:
+            card = session.get(f"{url}/raw/main/README.md", headers=headers)
+            return card.text[:_HF_CARD_BYTES] if card.status_code == 200 else ""
+
+        workers = min(8, len(entries))
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                bodies = list(pool.map(fetch_card, (url for _, url, _ in entries)))
+        else:
+            bodies = [fetch_card(url) for _, url, _ in entries]
+
+        items: list[SourceItem] = []
+        cards = 0
+        for (model_id, url, published), body in zip(entries, bodies):
+            if body:
+                cards += 1
+            items.append(SourceItem("hf", url, model_id, body, published))
         selected = _unique_items(items)
         return SourceStatus(
             "hf",

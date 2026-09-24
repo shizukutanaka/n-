@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -596,3 +598,36 @@ def test_cli_state_deduplication_and_all_override(tmp_path: Path, monkeypatch, c
     assert main(["watch", "--offline", str(items), "--all", "--json"]) == 0
     third = json.loads(capsys.readouterr().out)
     assert third["new_findings"] == 1
+
+
+def test_hf_fetches_model_cards_concurrently() -> None:
+    """Each HF model card README is an independent GET; serial fetches
+    stacked a round trip per model in the listing."""
+    in_flight = 0
+    max_in_flight = 0
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, max_in_flight
+        if request.url.path == "/api/models":
+            return httpx.Response(200, json=[
+                {"id": f"org/model-{i}", "lastModified": "2026-01-01"}
+                for i in range(4)
+            ])
+        with lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+        time.sleep(0.05)
+        with lock:
+            in_flight -= 1
+        return httpx.Response(200, text=f"# card {request.url.path}")
+
+    status, items = fetch_hf(limit=4, client=_client(handler))
+    assert max_in_flight >= 2
+    assert status.reachable is True
+    assert status.items == 4
+    assert status.body_available is True
+    assert [item.title for item in items] == [
+        f"org/model-{i}" for i in range(4)
+    ]
+    assert all(item.body.startswith("# card") for item in items)
