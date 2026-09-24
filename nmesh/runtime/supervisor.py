@@ -833,7 +833,17 @@ class Supervisor:
         if os.environ.get("NMESH_BACKEND_LOG") != "0":
             try:
                 handle = open_log(service.name)
-            except OSError:
+            except (OSError, ValueError) as error:
+                note = i18n.t(
+                    "warn.backend_log_unavailable",
+                    i18n.lang(),
+                    service=service.name,
+                    error=error,
+                )
+                prior = self.notes.get(service.name)
+                self.notes[service.name] = (
+                    f"{prior} {note}" if prior else note
+                )
                 handle = None
         stdout = handle
         stderr = subprocess.STDOUT if handle is not None else None

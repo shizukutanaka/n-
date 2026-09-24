@@ -17,7 +17,18 @@ def _safe(name: str) -> bool:
 
 
 def _max_bytes() -> int:
-    return int(os.environ.get("NMESH_LOG_MAX_BYTES", LOG_MAX_BYTES))
+    raw = os.environ.get("NMESH_LOG_MAX_BYTES")
+    if raw is None:
+        return LOG_MAX_BYTES
+    try:
+        parsed = int(raw)
+    except ValueError as error:
+        raise ValueError(
+            f"NMESH_LOG_MAX_BYTES must be an integer, got {raw!r}"
+        ) from error
+    if parsed < 1:
+        raise ValueError(f"NMESH_LOG_MAX_BYTES must be positive, got {parsed}")
+    return parsed
 
 
 def log_dir() -> Path:
