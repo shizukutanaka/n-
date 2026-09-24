@@ -42,6 +42,8 @@ STATE_PATH = nmesh_home() / "state.json"
 HEALTH_TIMEOUT = 120.0
 MAX_RESTARTS = 3
 RESTART_WINDOW = 300.0
+RESTART_BACKOFF_BASE = 30.0
+RESTART_BACKOFF_MAX = 120.0
 GIB = 1024**3
 STATE_VERSION = 2
 PID_CREATE_TIME_TOLERANCE = 2.0
@@ -594,6 +596,23 @@ class Supervisor:
 
     def _record_restart(self, name: str) -> None:
         self.restarts.setdefault(name, []).append(time.monotonic())
+
+    def _restart_backoff_remaining(self, name: str) -> float:
+        """Seconds until the watchdog may revive this service again.
+
+        Automatic revives are spaced exponentially from the last recorded
+        restart — each failed spawn reloads GB of weights, so an instant
+        retry loop is the most expensive crash cycle possible. User-driven
+        paths (up, ensure_running) skip this gate deliberately.
+        """
+        attempts = self.restarts.get(name, [])
+        if not attempts:
+            return 0.0
+        delay = min(
+            RESTART_BACKOFF_BASE * (2 ** (len(attempts) - 1)),
+            RESTART_BACKOFF_MAX,
+        )
+        return max(0.0, attempts[-1] + delay - time.monotonic())
 
     def _spec_drift(self, service: PlannedService) -> bool:
         """True when a process we spawned still runs but the plan's launch
@@ -1845,6 +1864,8 @@ class Supervisor:
                 ):
                     continue
                 if service.name in self.failed:
+                    continue
+                if self._restart_backoff_remaining(service.name) > 0:
                     continue
                 if service.name in self.processes:
                     self.processes.pop(service.name, None)

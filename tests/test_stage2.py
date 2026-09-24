@@ -463,9 +463,17 @@ def test_supervisor_heartbeat_restart_budget_marks_failure(
         lambda _service, local_only=False: Acquired(None, None, False),
     )
     supervisor._wait_health = lambda _service, timeout=None: True
+    real = time.monotonic
+    offset = [0.0]
+    monkeypatch.setattr(
+        supervisor_module.time, "monotonic", lambda: real() + offset[0]
+    )
     supervisor.up(plan, no_download=True, admit=False)
-    for _ in range(4):
+    # Backoff-ready revive times that keep three attempts inside the 300 s
+    # restart window so the fourth is denied by the budget, not the backoff.
+    for step in (80.0, 80.0, 60.0, 120.0):
         processes[-1].exit_code = 137
+        offset[0] += step
         supervisor.heartbeat()
     assert len(processes) == 4
     failed = next(item for item in supervisor.status().services if item["service"] == "chat")
@@ -1280,4 +1288,42 @@ def test_swap_switch_falls_back_to_kill_when_ram_short(
     assert posts == []
     assert supervisor.sleeping == set()
     assert "alpha" not in supervisor.processes
+    supervisor.down()
+
+
+def test_supervisor_heartbeat_backoff_delays_crash_revive(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    """Automatic watchdog revives are exponentially spaced: after a revive
+    crashes, the next heartbeat defers instead of instantly reloading GB of
+    weights into a still-broken engine."""
+    plan = _recovery_plan(catalog)
+    processes: list[_RecoverProcess] = []
+    supervisor = Supervisor(
+        lambda _service: processes.append(_RecoverProcess()) or processes[-1],
+        tmp_path / "backoff.json",
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    supervisor.up(plan, no_download=True, admit=False)
+
+    processes[0].exit_code = 137
+    supervisor.heartbeat()
+    assert len(processes) == 2  # first revive runs immediately
+
+    processes[1].exit_code = 137
+    supervisor.heartbeat()
+    assert len(processes) == 2  # backoff defers the next revive
+
+    real = time.monotonic
+    monkeypatch.setattr(
+        supervisor_module.time, "monotonic", lambda: real() + 40.0
+    )
+    supervisor.heartbeat()
+    assert len(processes) == 3  # past the delay, revive proceeds
     supervisor.down()
