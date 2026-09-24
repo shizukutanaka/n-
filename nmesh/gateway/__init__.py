@@ -304,8 +304,21 @@ def route(
         estimate_tokens(content, calibration) if token_hint is None else token_hint
     )
     if chat and token_count + reserved > chat.context * 0.8:
-        return max(plan.services, key=lambda item: item.context, default=chat).name
-    return chat_name or (plan.services[0].name if plan.services else "")
+        generative = [
+            item for item in plan.services
+            if set(item.roles) & {"chat", "code", "worker"}
+        ]
+        return max(generative, key=lambda item: item.context, default=chat).name
+    if chat_name:
+        return chat_name
+    generative_name = next(
+        (
+            item.name for item in plan.services
+            if set(item.roles) & {"chat", "code", "worker"}
+        ),
+        None,
+    )
+    return generative_name or (plan.services[0].name if plan.services else "")
 
 
 def _explicit(model: object, plan: Plan) -> str | None:
