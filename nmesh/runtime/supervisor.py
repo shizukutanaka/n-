@@ -232,6 +232,10 @@ class Supervisor:
         self._loaded_plan_stamp: tuple[float, int] | None = None
         self._boot_recovery = False
         self.notes: dict[str, str] = {}
+        # mtime-gated parse cache for state.json — _adopt/status/down read it
+        # repeatedly per pass; a stat() is enough to spot every write
+        # (including ours via os.replace) while skipping the re-parse.
+        self._state_cache: tuple[int, int, dict[str, object] | None] | None = None
         self._lock = RLock()
         self._atexit_armed = False
         self._terminator = terminator or self._terminate_pid
@@ -357,10 +361,20 @@ class Supervisor:
 
     def _load_state(self) -> dict[str, object] | None:
         try:
+            stamp = self.state_path.stat()
+        except OSError:
+            self._state_cache = None
+            return None
+        cached = self._state_cache
+        if cached is not None and cached[0] == stamp.st_mtime_ns and cached[1] == stamp.st_size:
+            return dict(cached[2]) if cached[2] is not None else None
+        try:
             payload = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return None
-        return payload if isinstance(payload, dict) else None
+            payload = None
+        payload = payload if isinstance(payload, dict) else None
+        self._state_cache = (stamp.st_mtime_ns, stamp.st_size, payload)
+        return dict(payload) if payload is not None else None
 
     def _write_state(self, payload: Mapping[str, object]) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)

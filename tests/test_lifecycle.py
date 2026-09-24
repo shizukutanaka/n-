@@ -1810,3 +1810,27 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_load_state_stats_file_instead_of_reparsing(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "state.json"
+    target.write_text(json.dumps({"services": [{"service": "chat"}]}))
+    supervisor = Supervisor(state_path=target)
+
+    calls: list[int] = []
+    original = Path.read_text
+
+    def counting(self, *args, **kwargs):
+        calls.append(1)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting)
+    first = supervisor._load_state()
+    assert first == {"services": [{"service": "chat"}]}
+    supervisor._load_state()
+    assert len(calls) == 1
+
+    target.write_text(json.dumps({"services": [{"service": "embed"}]}))
+    second = supervisor._load_state()
+    assert second == {"services": [{"service": "embed"}]}
+    assert len(calls) == 2
