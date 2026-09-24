@@ -996,6 +996,35 @@ def test_eval_cli_reports_transport_failures(monkeypatch, capsys) -> None:
     assert output["failed"][0]["failure_kind"] == "transport"
 
 
+def test_eval_cli_limit_truncates_task_list(monkeypatch, capsys) -> None:
+    service_plan = build_plan(
+        profile(8), _quality_models()[:1], Policy(roles=["chat"])
+    )
+    result = EvalRun(
+        "prior-high", "q4_k_m", "llamacpp", 2, 2, 1.0,
+        {"instruction": 1.0},
+        [TaskOutcome("one", "instruction", True, "yes")],
+        3.0,
+    )
+    seen: dict[str, int] = {}
+
+    def fake_run(tasks, base_url, model_ref, **kwargs):
+        seen["count"] = len(list(tasks))
+        return result
+
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(
+        cli,
+        "runtime_status",
+        lambda: RuntimeStatus(True, [{"service": "chat", "running": True}]),
+    )
+    monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
+    monkeypatch.setattr(cli, "eval_run", fake_run)
+    monkeypatch.setattr(cli, "save_eval", lambda value: None)
+    assert cli.main(["eval", "--json", "--limit", "2"]) == 0
+    assert seen["count"] == 2
+
+
 def test_runner_all_transport_failures_raise() -> None:
     tasks = (Task("one", "instruction", "one", 8, lambda text: True),)
     _EvalHandler.responses = {}
