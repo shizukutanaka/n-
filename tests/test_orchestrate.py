@@ -11,7 +11,7 @@ import pytest
 import nmesh.orchestrate.protocol as protocol_module
 from nmesh import cli
 from nmesh.bench import EPOCH_MIN_RATIO, EpochSample
-from nmesh.eval import Task
+from nmesh.eval import SUITES, Task, suite_digest
 from nmesh.orchestrate import (
     ALLOW,
     CHEAPER,
@@ -78,7 +78,7 @@ def _record_run() -> measure_module.DelegationRun:
         lead=lead,
         worker=worker,
         suite="hard",
-        digest="digest",
+        digest=suite_digest(SUITES["hard"]),
         n_tasks=2,
         worker_passed=1,
         lead_passed=1,
@@ -257,7 +257,7 @@ def test_record_round_trip_and_gate(tmp_path: Path) -> None:
         lead=lead,
         worker=worker,
         suite="hard",
-        digest="digest",
+        digest=suite_digest(SUITES["hard"]),
         n_tasks=2,
         worker_passed=1,
         lead_passed=1,
@@ -292,7 +292,8 @@ def test_gate_rejects_non_superior_records(tmp_path: Path) -> None:
     lead = RoleIdentity("lead", "q4", "llamacpp")
     worker = RoleIdentity("worker", "q4", "llamacpp")
     run = measure_module.DelegationRun(
-        lead=lead, worker=worker, suite="hard", digest="digest", n_tasks=2,
+        lead=lead, worker=worker, suite="hard",
+        digest=suite_digest(SUITES["hard"]), n_tasks=2,
         worker_passed=1, lead_passed=2, delegated_passed=1, ceiling_passed=2,
         delegated_vs_lead=measure_module.Comparison(0, 1, 0.9),
         ceiling_vs_lead=measure_module.Comparison(0, 1, 0.9),
@@ -305,6 +306,29 @@ def test_gate_rejects_non_superior_records(tmp_path: Path) -> None:
     assert decide(record) == (NOT_SUPERIOR, NOT_SUPERIOR)
     assert best_for({record.digest: record}, lead, worker, PROTOCOL_VERSION) == record
     assert decide(None) == (NO_EVIDENCE, NO_EVIDENCE)
+
+
+def test_best_for_ignores_foreign_measurements() -> None:
+    lead = RoleIdentity("lead", "q4", "llamacpp")
+    worker = RoleIdentity("worker", "q4", "llamacpp")
+    current = from_run(replace(_record_run(), at=1.0))
+    stale_digest = from_run(replace(_record_run(), digest="superseded", at=9.0))
+    allowance = from_run(replace(_record_run(), reasoning_allowance=512, at=8.0))
+    unknown_suite = from_run(replace(_record_run(), suite="custom", at=7.0))
+    cache = {
+        key: record
+        for key, record in {
+            "current": current,
+            "stale": stale_digest,
+            "allowance": allowance,
+            "foreign": unknown_suite,
+        }.items()
+    }
+    # The newest matching record is stale or measured under a different token
+    # budget — the older current record still wins.
+    assert best_for(cache, lead, worker, PROTOCOL_VERSION) == current
+    for record in (stale_digest, allowance, unknown_suite):
+        assert best_for({"only": record}, lead, worker, PROTOCOL_VERSION) is None
 
 
 def test_quality_gate_is_independent_of_host_epoch() -> None:
