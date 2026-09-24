@@ -1895,7 +1895,9 @@ def _engine(args: argparse.Namespace) -> int:
             for item in entries:
                 table.add_row(
                     item.tag, item.variant, item.version_line or "-",
-                    "yes" if active is not None and active.tag == item.tag else "",
+                    i18n.t("engine.active_marker", i18n.lang())
+                    if active is not None and active.tag == item.tag
+                    else "",
                     str(item.exe),
                 )
             _console().print(table)
