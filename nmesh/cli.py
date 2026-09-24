@@ -1786,7 +1786,10 @@ def _models(args: argparse.Namespace) -> int:
                 candidate = model_root / candidate
             candidate = candidate.resolve()
             if not candidate.is_file() or candidate.suffix.lower() != ".gguf":
-                print(f"model not found: {args.name}", file=sys.stderr)
+                print(
+                    i18n.t("err.model_not_found", i18n.lang(), name=args.name),
+                    file=sys.stderr,
+                )
                 return 1
             plan = load_plan()
             planned = {
@@ -1807,7 +1810,10 @@ def _models(args: argparse.Namespace) -> int:
             try:
                 candidate.unlink()
             except OSError as error:
-                print(f"unable to remove model: {error}", file=sys.stderr)
+                print(
+                    i18n.t("err.model_remove", i18n.lang(), error=error),
+                    file=sys.stderr,
+                )
                 return 1
             if args.json:
                 _print_json({"removed": str(candidate), "forced": bool(args.force)})
@@ -3761,7 +3767,9 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                 language,
                 count=len(demoted),
             ))
-        print(f"decision: {decision} ({reason})")
+        print(i18n.t(
+            "label.decision", language, decision=decision, reason=reason
+        ))
     return 0
 
 
@@ -4680,7 +4688,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.json:
             _print_json(data)
         else:
-            print(f"Filename: {filename}\n\n{text}\nInstall with:\n{install_command}")
+            print(
+                f"{i18n.t('label.watch_filename', i18n.lang())}: {filename}\n\n"
+                f"{text}\n{i18n.t('label.watch_install', i18n.lang())}:\n"
+                f"{install_command}"
+            )
             if args.install:
                 print(i18n.t("label.launcher_written", i18n.lang(), path=launcher_path))
                 print(i18n.t("label.gateway_env", i18n.lang(), path=env_path))
