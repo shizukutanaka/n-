@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
@@ -130,8 +131,15 @@ class _AutoChunkHandler(BaseHTTPRequestHandler):
     varying_dimensions: ClassVar[bool] = False
     short_response: ClassVar[bool] = False
     prompt_tokens_override: ClassVar[int | None] = None
+    in_flight: ClassVar[int] = 0
+    max_in_flight: ClassVar[int] = 0
+    delay: ClassVar[float] = 0.0
 
     def do_POST(self) -> None:
+        type(self).in_flight += 1
+        type(self).max_in_flight = max(type(self).max_in_flight, type(self).in_flight)
+        if type(self).delay:
+            time.sleep(type(self).delay)
         length = int(self.headers["Content-Length"])
         body = json.loads(self.rfile.read(length))
         self.__class__.request_bodies.append(body)
@@ -165,6 +173,7 @@ class _AutoChunkHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+        type(self).in_flight -= 1
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -176,6 +185,9 @@ def _start_autochunk_upstream() -> ThreadingHTTPServer:
     _AutoChunkHandler.varying_dimensions = False
     _AutoChunkHandler.short_response = False
     _AutoChunkHandler.prompt_tokens_override = None
+    _AutoChunkHandler.in_flight = 0
+    _AutoChunkHandler.max_in_flight = 0
+    _AutoChunkHandler.delay = 0.0
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), _AutoChunkHandler)
     threading.Thread(target=upstream.serve_forever, daemon=True).start()
     return upstream
@@ -547,5 +559,28 @@ def test_non_embed_route_is_unchanged(monkeypatch) -> None:
         assert "X-Nmesh-Embedding-Truncation" not in response.headers
         assert len(_EmbeddingHandler.request_bodies) == 1
     finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_embedding_autochunk_sends_inputs_concurrently(monkeypatch) -> None:
+    """Each autochunked input cost one serial upstream round-trip — the pass
+    gathers them, so a multi-input request pays the slowest piece, not the sum."""
+    upstream = _start_autochunk_upstream()
+    try:
+        _AutoChunkHandler.delay = 0.15
+        monkeypatch.setenv("NMESH_EMBED_AUTOCHUNK", "1")
+        with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
+            value = " ".join(["word"] * 3500)
+            response = client.post("/v1/embeddings", json={
+                "model": "nmesh-auto",
+                "input": [value, value, value],
+            })
+        assert response.status_code == 200
+        assert len(response.json()["data"]) == 3
+        assert len(_AutoChunkHandler.request_bodies) == 3
+        assert _AutoChunkHandler.max_in_flight >= 2
+    finally:
+        _AutoChunkHandler.delay = 0.0
         upstream.shutdown()
         upstream.server_close()

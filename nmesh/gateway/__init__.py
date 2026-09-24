@@ -1529,10 +1529,20 @@ def create_app(
                         "usage": {},
                     }
                     try:
-                        for pieces in piece_groups:
-                            piece_body = dict(body)
-                            piece_body["input"] = pieces[0] if len(pieces) == 1 else pieces
-                            piece_response = await post_upstream(piece_body)
+                        # One upstream round-trip per input — issue them
+                        # concurrently; gather preserves piece_groups order.
+                        piece_responses = await asyncio.gather(
+                            *(
+                                post_upstream({
+                                    **body,
+                                    "input": (
+                                        pieces[0] if len(pieces) == 1 else pieces
+                                    ),
+                                })
+                                for pieces in piece_groups
+                            )
+                        )
+                        for pieces, piece_response in zip(piece_groups, piece_responses):
                             if piece_response.status_code >= 400:
                                 autochunk_data = None
                                 break
