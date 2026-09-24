@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tarfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -581,22 +582,62 @@ def installed() -> list[InstalledEngine]:
     return result
 
 
-def active() -> InstalledEngine | None:
-    path = engines_dir() / "active.json"
+# active() is consulted per adoption candidate inside the heartbeat and on
+# every detect_hardware() pass, and it reads two JSON files each time. The
+# manifest path lives inside active.json, so memoize the resolved pair and
+# re-validate both files' (mtime_ns, size) on each call.
+_active_memo: tuple[
+    Path,
+    tuple[int, int] | None,
+    Path | None,
+    tuple[int, int] | None,
+    InstalledEngine | None,
+] | None = None
+_active_lock = threading.Lock()
+
+
+def _file_stamp(path: Path) -> tuple[int, int] | None:
+    try:
+        info = path.stat()
+        return info.st_mtime_ns, info.st_size
+    except OSError:
+        return None
+
+
+def _read_active(path: Path) -> tuple[InstalledEngine | None, Path | None]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
-            return None
+            return None, None
         manifest = payload.get("manifest")
         if isinstance(manifest, str):
             candidate = Path(manifest)
         else:
             candidate = engines_dir() / str(payload["tag"]) / "manifest.json"
         if not candidate.exists():
-            return None
-        return _read_manifest(candidate)
+            # Keep the resolved path so a manifest that appears later
+            # invalidates the memo through its stamp changing.
+            return None, candidate
+        return _read_manifest(candidate), candidate
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-        return None
+        return None, None
+
+
+def active() -> InstalledEngine | None:
+    global _active_memo
+    path = engines_dir() / "active.json"
+    stamp = _file_stamp(path)
+    with _active_lock:
+        memo = _active_memo
+    if memo is not None and memo[0] == path and memo[1] == stamp:
+        manifest_path = memo[2]
+        if manifest_path is None or _file_stamp(manifest_path) == memo[3]:
+            return memo[4]
+    engine, manifest_path = _read_active(path)
+    manifest_stamp = _file_stamp(manifest_path) if manifest_path else None
+    with _active_lock:
+        _active_memo = (path, stamp, manifest_path, manifest_stamp, engine)
+    return engine
 
 
 def use(tag: str) -> InstalledEngine:

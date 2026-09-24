@@ -479,3 +479,59 @@ def test_engine_install_rejects_unknown_backend(capsys) -> None:
     with pytest.raises(SystemExit) as error:
         cli.main(["engine", "install", "vllm"])
     assert error.value.code == 2
+
+
+def test_active_memoizes_manifest_reads(monkeypatch, tmp_path: Path) -> None:
+    """active() is consulted per adoption candidate and every
+    detect_hardware() pass — an unchanged active.json/manifest pair must
+    not be re-read each call."""
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+
+    calls = 0
+    real_read_text = Path.read_text
+
+    def counting(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_read_text(self, *args, **kwargs)
+
+    manifest_dir = tmp_path / "b1"
+    manifest_dir.mkdir()
+    (manifest_dir / "manifest.json").write_text(
+        json.dumps({
+            "backend": "llamacpp", "tag": "b1", "variant": "cpu",
+            "exe": str(tmp_path / "llama-server"), "sha256": "x",
+            "asset": "a", "installed_at": 1.0, "flags": [],
+        }),
+        encoding="utf-8",
+    )
+    (tmp_path / "active.json").write_text(
+        json.dumps({"tag": "b1"}), encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "read_text", counting)
+
+    first = engine.active()
+    assert first is not None and first.tag == "b1"
+    engine.active()
+    assert calls == 2  # active.json + manifest.json, once
+
+
+def test_active_detects_manifest_created_later(monkeypatch, tmp_path: Path) -> None:
+    """A missing manifest that appears later must invalidate the memo."""
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    (tmp_path / "active.json").write_text(
+        json.dumps({"tag": "b2"}), encoding="utf-8",
+    )
+    assert engine.active() is None
+    manifest_dir = tmp_path / "b2"
+    manifest_dir.mkdir()
+    (manifest_dir / "manifest.json").write_text(
+        json.dumps({
+            "backend": "llamacpp", "tag": "b2", "variant": "cpu",
+            "exe": str(tmp_path / "llama-server"), "sha256": "x",
+            "asset": "a", "installed_at": 1.0, "flags": [],
+        }),
+        encoding="utf-8",
+    )
+    found = engine.active()
+    assert found is not None and found.tag == "b2"
