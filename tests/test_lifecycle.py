@@ -1715,7 +1715,9 @@ def test_heartbeat_stops_services_dropped_by_plan_swap(
     )
     terminated: list[int] = []
     leftover = _KillableProcess()
-    adopted_pid = os.getpid() + 1
+    # Must be a live pid — drop-kills now verify the recorded pid is still
+    # the recorded process (create_time/liveness) before signalling.
+    adopted_pid = os.getpid()
     supervisor = Supervisor(
         lambda _item: _KillableProcess(),
         tmp_path / "state.json",
