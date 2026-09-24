@@ -7,6 +7,7 @@ import os
 import random
 import statistics
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -572,12 +573,15 @@ def measure_retrieval(
             rng = random.Random(seed)
             code = f"{rng.randrange(16**6):06X}"
             documents, target = _documents(rng, words, code)
-            vectors: list[list[float]] = []
-            for index, document in enumerate(documents):
-                vector, served = _embed(client, url, model_ref, document)
-                vectors.append(vector)
-                if index == target:
-                    target_tokens.append(served)
+            # Independent document embeds are issued concurrently
+            # (order preserved); measured quality is unchanged.
+            with ThreadPoolExecutor(max_workers=len(documents)) as pool:
+                results = list(pool.map(
+                    lambda document: _embed(client, url, model_ref, document),
+                    documents,
+                ))
+            vectors = [vector for vector, _ in results]
+            target_tokens.append(results[target][1])
             query, _ = _embed(client, url, model_ref, _QUESTION)
             scores = [_cosine(query, vector) for vector in vectors]
             order = sorted(
