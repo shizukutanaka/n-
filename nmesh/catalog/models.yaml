@@ -277,6 +277,25 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: internlm2.5-7b-chat
+  family: internlm
+  params: 7700000000
+  n_layers: 32
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 92544
+  head_layout: separate
+  max_context: 32768
+  roles: [chat]
+  quality: 60
+  license: apache-2.0
+  languages: [en, zh]
+  sources:
+    hf_gguf: "bartowski/internlm2_5-7b-chat-GGUF"
+    hf: "internlm/internlm2_5-7b-chat"
+    hf_mlx: "mlx-community/internlm2_5-7b-chat-4bit"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
