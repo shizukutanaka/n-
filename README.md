@@ -155,6 +155,26 @@ the winning cell's launch arguments back to the saved plan, so later
 `nmesh up` starts with the tuned flags. The service must be running; a
 resident gateway is paused for the sweep and restarted afterwards.
 
+### `nmesh up` tuning flags
+
+`nmesh up` accepts the same planning flags as `nmesh plan` (`--roles`,
+`--prefer`, `--context`, `--budget`, `--kv-quant`, `--parallel-slots`,
+`--model`, `--spec`), plus runtime knobs forwarded to llama.cpp services:
+
+- `--sleep-idle-seconds N` — emit llama.cpp `--sleep-idle-seconds N` so an
+  idle engine releases its VRAM; warns when the installed build lacks the
+  flag.
+- `--cache-reuse N` — emit `--cache-reuse N` so the engine reuses
+  prompt-cache state across requests on the same service.
+- `--context-shift` — emit `--context-shift` so prompts longer than the
+  planned context keep generating (the window shifts) instead of failing;
+  the planner warns because output beyond the shifted window is dropped.
+- `--min-decode-tps X` (default `8.0`) — exclude plan candidates whose
+  decode throughput is below `X` tok/s; a stored benchmark below the bar
+  is only overridden when the estimate still meets it.
+- `--allow-download-gb X` (default `60`) — warn before acquiring when the
+  planned downloads would exceed `X` GiB.
+
 ### KV-cache precision measurement
 
 Speculative decoding is opt-in and evidence-gated. Measure n-gram or draft
