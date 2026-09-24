@@ -98,7 +98,7 @@ class JobRegistry:
                     return idx
             return 0
 
-    def list(self, limit: int = 50) -> list[Job]:
+    def list(self, limit: int = 50, service: str = "") -> list[Job]:
         with self._lock:
             active = [j for j in self._jobs.values()
                       if j.state in {"queued", "running"}]
@@ -106,7 +106,10 @@ class JobRegistry:
                     if j.state in {"done", "failed", "cancelled"}]
         active.sort(key=lambda j: j.queued_at)
         done.sort(key=lambda j: j.finished_at or 0.0, reverse=True)
-        return (active + done)[:limit]
+        entries = active + done
+        if service:
+            entries = [j for j in entries if j.service == service]
+        return entries[:limit]
 
     def counts(self) -> dict[str, dict[str, int]]:
         counts: dict[str, dict[str, int]] = {}

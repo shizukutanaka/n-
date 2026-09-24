@@ -301,6 +301,34 @@ def test_jobs_endpoint_tracks_request_lifecycle() -> None:
         upstream.server_close()
 
 
+def test_jobs_listing_filters_by_service() -> None:
+    upstream = _limit_upstream()
+    try:
+        plan = _llama_plan(1)
+        chat = replace(plan.services[0], name="chat",
+                       port=upstream.server_address[1])
+        code = replace(plan.services[0], name="code",
+                       port=upstream.server_address[1])
+        plan = replace(
+            plan,
+            services=[chat, code],
+            routing=replace(plan.routing,
+                            role_to_service={"chat": "chat", "code": "code"}),
+        )
+        with TestClient(create_app(plan)) as client:
+            client.post("/v1/chat/completions",
+                        json={"model": "nmesh-chat", "messages": []})
+            client.post("/v1/chat/completions",
+                        json={"model": "nmesh-code", "messages": []})
+            listing = client.get("/v1/jobs").json()["jobs"]
+            assert {j["service"] for j in listing} == {"chat", "code"}
+            filtered = client.get("/v1/jobs?service=code").json()["jobs"]
+            assert filtered and all(j["service"] == "code" for j in filtered)
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
 def test_jobs_report_decode_progress_from_llamacpp_slots(monkeypatch) -> None:
     upstream = _limit_upstream()
     try:
