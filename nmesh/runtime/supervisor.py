@@ -1178,11 +1178,24 @@ class Supervisor:
                             and admit
                             and not replan_done
                         ):
-                            current = self._admit(
-                                current,
-                                bench_cache,
-                                drop_unaffordable=True,
-                            )
+                            try:
+                                current = self._admit(
+                                    current,
+                                    bench_cache,
+                                    drop_unaffordable=True,
+                                )
+                            except Exception as error:  # noqa: BLE001
+                                current = replace(
+                                    current,
+                                    warnings=[
+                                        *current.warnings,
+                                        i18n.t(
+                                            "warn.free_admission_fallback",
+                                            i18n.lang(),
+                                            error=error,
+                                        ),
+                                    ],
+                                )
                             replan_done = True
                             refreshed = next(
                                 (
