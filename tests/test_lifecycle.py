@@ -1810,3 +1810,28 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_artifact_load_cache_stats_instead_of_reparsing(monkeypatch, tmp_path: Path) -> None:
+    from nmesh import artifacts as _artifacts
+
+    target = tmp_path / "artifacts.json"
+    target.write_text(json.dumps({"k|q": 7}))
+    _artifacts._CACHED = None
+
+    calls: list[int] = []
+    original = Path.read_text
+
+    def counting(self, *args, **kwargs):
+        calls.append(1)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting)
+    assert _artifacts.load_cache(target) == {"k|q": 7}
+    _artifacts.load_cache(target)
+    assert len(calls) == 1
+
+    target.write_text(json.dumps({"k|q": 8}))
+    assert _artifacts.load_cache(target) == {"k|q": 8}
+    assert len(calls) == 2
+    _artifacts._CACHED = None
