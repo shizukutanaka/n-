@@ -301,6 +301,15 @@ def test_jobs_endpoint_tracks_request_lifecycle() -> None:
         upstream.server_close()
 
 
+def test_jobs_list_clamps_nonpositive_limit() -> None:
+    plan = _llama_plan(1)
+    with TestClient(create_app(plan)) as client:
+        for limit in (-1, 0):
+            response = client.get(f"/v1/jobs?limit={limit}")
+            assert response.status_code == 200
+            assert response.json()["jobs"] == []
+
+
 def test_jobs_report_decode_progress_from_llamacpp_slots(monkeypatch) -> None:
     upstream = _limit_upstream()
     try:
