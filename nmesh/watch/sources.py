@@ -12,6 +12,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
@@ -90,8 +91,7 @@ def fetch_qiita(
         token = os.environ.get("QIITA_TOKEN")
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        items: list[SourceItem] = []
-        for tag in tags:
+        def fetch_tag(tag: str) -> list[SourceItem]:
             response = session.get(
                 "https://qiita.com/api/v2/items",
                 params={"per_page": limit, "query": f"tag:{tag}"},
@@ -101,6 +101,7 @@ def fetch_qiita(
             payload = response.json()
             if not isinstance(payload, list):
                 raise TypeError("Qiita response was not a list")
+            out: list[SourceItem] = []
             for raw in payload:
                 item = _mapping(raw)
                 if item is None:
@@ -108,13 +109,24 @@ def fetch_qiita(
                 url = _text(item.get("url"))
                 if not url:
                     continue
-                items.append(SourceItem(
+                out.append(SourceItem(
                     "qiita",
                     url,
                     _text(item.get("title")),
                     _text(item.get("body")),
                     _text(item.get("created_at")),
                 ))
+            return out
+
+        # Each tag listing is an independent read — fetch concurrently
+        # (httpx.Client is thread-safe), merging in the requested order.
+        workers = min(6, len(tags))
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                batches = list(pool.map(fetch_tag, tags))
+        else:
+            batches = [fetch_tag(tag) for tag in tags]
+        items: list[SourceItem] = [item for batch in batches for item in batch]
         selected = _unique_items(items)
         return SourceStatus("qiita", True, len(selected), True, False, ""), selected
     except (httpx.HTTPError, ValueError, TypeError) as error:
@@ -205,25 +217,24 @@ def fetch_github(
         token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        items: list[SourceItem] = []
-        yields: list[str] = []
-        for repo in repos:
+        def fetch_repo(
+            repo: str,
+        ) -> tuple[list[SourceItem] | None, str, str]:
+            """Fetch one repo's releases; items None marks a bare-IP 403."""
             response = session.get(
                 f"https://api.github.com/repos/{repo}/releases",
                 params={"per_page": min(max(limit, 1), 100)},
                 headers=headers,
             )
             if response.status_code == 403 and not token:
-                return _failure(
-                    "github",
-                    f"GitHub API 403 {response.headers.get('x-ratelimit-remaining', '')}; "
-                    "set GITHUB_TOKEN to authenticate",
+                return None, "", response.headers.get(
+                    "x-ratelimit-remaining", ""
                 )
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, list):
                 raise TypeError("GitHub response was not a list")
-            fetched = 0
+            out: list[SourceItem] = []
             for raw in payload:
                 release = _mapping(raw)
                 if release is None or release.get("draft"):
@@ -231,15 +242,42 @@ def fetch_github(
                 url = _text(release.get("html_url"))
                 if not url:
                     continue
-                items.append(SourceItem(
+                out.append(SourceItem(
                     "github",
                     url,
                     _text(release.get("name") or release.get("tag_name")),
                     _text(release.get("body")),
                     _text(release.get("published_at")),
                 ))
-                fetched += 1
-            yields.append(f"{repo}={fetched}")
+            return out, f"{repo}={len(out)}", ""
+
+        # Each repo's release listing is an independent read — fetch
+        # concurrently (httpx.Client is thread-safe), merging in order.
+        workers = min(6, len(repos))
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                fetched_list = list(pool.map(fetch_repo, repos))
+        else:
+            fetched_list = [fetch_repo(repo) for repo in repos]
+        # The serial loop bailed on the first unauthenticated 403 — keep that
+        # precedence (first repo order) after the pool joins.
+        rate_limited = next(
+            (remaining for batch, _, remaining in fetched_list
+             if batch is None),
+            None,
+        )
+        if rate_limited is not None:
+            return _failure(
+                "github",
+                f"GitHub API 403 {rate_limited}; "
+                "set GITHUB_TOKEN to authenticate",
+            )
+        items = [
+            item
+            for batch, _, _ in fetched_list
+            for item in (batch or ())
+        ]
+        yields = [yield_text for _, yield_text, _ in fetched_list]
         selected = _unique_items(items)
         return SourceStatus(
             "github",

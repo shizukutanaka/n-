@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -596,3 +598,59 @@ def test_cli_state_deduplication_and_all_override(tmp_path: Path, monkeypatch, c
     assert main(["watch", "--offline", str(items), "--all", "--json"]) == 0
     third = json.loads(capsys.readouterr().out)
     assert third["new_findings"] == 1
+
+
+def test_qiita_and_github_inner_loops_fetch_concurrently() -> None:
+    """Per-tag (qiita) and per-repo (github) listings are independent reads —
+    each fetcher resolves them concurrently, preserving the configured order."""
+    in_flight = [0]
+    max_in_flight = [0]
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        with lock:
+            in_flight[0] += 1
+            max_in_flight[0] = max(max_in_flight[0], in_flight[0])
+        try:
+            time.sleep(0.05)
+        finally:
+            with lock:
+                in_flight[0] -= 1
+        if "qiita" in str(request.url):
+            return httpx.Response(200, json=[{
+                "url": f"https://qiita.com/{request.url.params['query']}",
+                "title": "t",
+                "body": "b",
+                "created_at": "2026-01-01",
+            }])
+        return httpx.Response(200, json=[{
+            "html_url": f"https://github.com/{request.url.path}",
+            "tag_name": "v1",
+            "body": "notes",
+            "published_at": "2026-01-01",
+        }])
+
+    with _client(handler) as client:
+        status, items = fetch_qiita(("a", "b", "c"), 1, client)
+        assert status.reachable and len(items) == 3
+        assert max_in_flight[0] >= 2
+        max_in_flight[0] = 0
+        status, items = fetch_github(("r/one", "r/two", "r/three"), 1, client)
+        assert status.reachable and len(items) == 3
+        assert max_in_flight[0] >= 2
+        assert status.detail == "r/one=1; r/two=1; r/three=1"
+
+
+def test_github_rate_limit_still_reports_after_parallel_fetch(monkeypatch) -> None:
+    """A bare-IP 403 still maps to the 'set GITHUB_TOKEN' failure."""
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, headers={"x-ratelimit-remaining": "0"})
+
+    with _client(handler) as client:
+        status, items = fetch_github(("r/a", "r/b"), 1, client)
+    assert not status.reachable
+    assert "GITHUB_TOKEN" in status.detail
+    assert items == ()
