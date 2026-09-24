@@ -277,6 +277,36 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: lfm2-8b-a1b
+  family: lfm2-moe
+  params: 8300000000
+  n_layers: 24
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 64
+  hidden_size: 2048
+  vocab_size: 65536
+  head_layout: separate
+  # Hybrid conv/attention backbone: layer_types lists 6 full_attention
+  # layers out of 24 (LiquidAI/LFM2-8B-A1B config.json), so only those
+  # carry a KV cache; the 18 conv blocks' small recurrent state is not
+  # yet accounted.
+  kv_layers: 6
+  # MoE on the last 22 of 24 layers (num_dense_layers=2): 32 routed
+  # experts (3x2048x1792 params each), top-4 routed — 1.5B active of
+  # 8.3B total per the vendor, so dense tensors fit small GPUs while
+  # ~7.8B of experts stream from RAM under --n-cpu-moe.
+  active_params: 1500000000
+  moe_expert_params: 7751073792
+  n_moe_layers: 22
+  max_context: 32768
+  roles: [chat, code, tool]
+  quality: 68
+  license: lfm1.0
+  languages: [en, es, fr, de, ja, ko, zh, ar]
+  sources:
+    hf_gguf: "bartowski/LiquidAI_LFM2-8B-A1B-GGUF"
+    hf: "LiquidAI/LFM2-8B-A1B"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000

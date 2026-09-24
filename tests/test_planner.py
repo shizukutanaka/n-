@@ -602,7 +602,9 @@ def test_cpu_case(catalog: list[ModelSpec]) -> None:
     assert result.tier == Tier.T0_CPU
     assert result.services
     assert result.runnable
-    assert len(result.swap_group) == 1
+    # lfm2-8b-a1b (1.5B active of 8.3B MoE) fits resident in 8GB — the
+    # plan no longer needs a swap pair here.
+    assert len(result.swap_group) == 0
     assert result.services[0].n_gpu_layers == 0
     assert result.services[0].backend in {"ollama", "llamacpp"}
     assert result.services[0].gpu_indices == []

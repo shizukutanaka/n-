@@ -153,9 +153,9 @@ def test_speed_selection_regression_for_gpu_and_cpu_profiles(tmp_path) -> None:
     )
 
     assert gpu.services[0].model_id == "qwen2.5-32b-instruct"
-    # 24B total but only 2.3B active params: the fastest CPU decode the
+    # 8.3B total but only 1.5B active params: the fastest CPU decode the
     # catalog offers once the model's quality cleared the prior floor.
-    assert cpu.services[0].model_id == "lfm2-24b-a2b"
+    assert cpu.services[0].model_id == "lfm2-8b-a1b"
 
 
 def test_speed_saturation_warning_requires_a_faster_candidate(tmp_path) -> None:
