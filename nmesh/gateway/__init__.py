@@ -998,6 +998,12 @@ async def _slot_progress(
     return out
 
 
+async def _job_cancelled(job: Job) -> None:
+    """Wait until the job's state is cancelled (cooperative abort signal)."""
+    while job.state != "cancelled":
+        await asyncio.sleep(0.1)
+
+
 def create_app(
     plan: Plan | None = None,
     watchdog: bool = False,
@@ -1385,6 +1391,11 @@ def create_app(
 
                 try:
                     async for chunk in upstream.aiter_bytes():
+                        if job is not None and job.state == "cancelled":
+                            # Aborted mid-stream — the finally below closes
+                            # the upstream connection so the engine stops
+                            # decoding and frees its slot.
+                            break
                         buffer += chunk
                         while b"\n" in buffer:
                             line, buffer = buffer.split(b"\n", 1)
@@ -1465,8 +1476,34 @@ def create_app(
             )
         try:
             async def post_upstream(payload: Mapping[str, object]) -> httpx.Response:
+                if job is not None and job.state == "cancelled":
+                    raise HTTPException(
+                        status_code=503, detail=f"job {job.id} cancelled"
+                    )
                 try:
-                    return await client.post(url, json=payload)
+                    if job is None:
+                        return await client.post(url, json=payload)
+                    # Race the upstream call against job cancellation — an
+                    # in-flight decode otherwise holds its slot until the
+                    # engine finishes it.
+                    request_task = asyncio.create_task(
+                        client.post(url, json=payload)
+                    )
+                    cancel_task = asyncio.create_task(_job_cancelled(job))
+                    done, pending = await asyncio.wait(
+                        {request_task, cancel_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+                    if cancel_task in done:
+                        await asyncio.gather(
+                            request_task, return_exceptions=True
+                        )
+                        raise HTTPException(
+                            status_code=503, detail=f"job {job.id} cancelled"
+                        )
+                    return request_task.result()
                 except (httpx.ConnectError, httpx.ConnectTimeout):
                     try:
                         await asyncio.to_thread(
@@ -2051,7 +2088,7 @@ def create_app(
                 status_code=409,
                 detail=(
                     f"job {job.id} is {job.state}; "
-                    "only queued jobs can be cancelled"
+                    "only queued or running jobs can be cancelled"
                 ),
             )
         return job.as_dict()

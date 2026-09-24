@@ -66,9 +66,13 @@ class JobRegistry:
             self._evict()
 
     def cancel(self, job: Job) -> bool:
-        """Cancel a queued job. Returns False if it already started/finished."""
+        """Cancel a queued or running job. Returns False if already finished.
+
+        Running cancellation is cooperative: proxy paths poll ``job.state``
+        and abort the upstream call, so the engine's slot frees early.
+        """
         with self._lock:
-            if job.state != "queued":
+            if job.state not in {"queued", "running"}:
                 return False
             job.state = "cancelled"
             job.finished_at = time.time()
