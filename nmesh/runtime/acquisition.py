@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib.util
+import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -314,6 +317,26 @@ def _artifact_warning(
     return " ".join(warnings) or None
 
 
+def _enable_hf_transfer() -> None:
+    """Enable hf_transfer (Rust multi-range downloader) when installed.
+
+    huggingface_hub gates it behind ``HF_HUB_ENABLE_HF_TRANSFER``; the env var
+    wins over the module default so an explicit user override (including "0")
+    is respected, and the already-imported constants module is patched because
+    the flag may have been read at import time.
+    """
+    if os.environ.get("HF_HUB_ENABLE_HF_TRANSFER") is not None:
+        return
+    if importlib.util.find_spec("hf_transfer") is None:
+        return
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+    constants = sys.modules.get("huggingface_hub.constants")
+    if constants is not None:
+        # huggingface_hub caches the env read at import; patch the live module.
+        # ModuleType assignment is untyped; the constant exists at runtime.
+        constants.HF_HUB_ENABLE_HF_TRANSFER = True  # type: ignore[attr-defined]
+
+
 def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
     """Resolve *service*'s artifact to a real path.
 
@@ -352,6 +375,7 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
             )
         return Acquired(None, None, False, model_ref=name)
     if service.backend in {"vllm", "mlx"}:
+        _enable_hf_transfer()
         from huggingface_hub import snapshot_download
 
         return Acquired(
@@ -412,6 +436,7 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
         if repo_id is None:
             raise RuntimeError("No Hugging Face GGUF repository configured")
         chosen, files, total_bytes = _resolve_gguf(repo_id, service.quant)
+        _enable_hf_transfer()
         from huggingface_hub import hf_hub_download
 
         paths = [

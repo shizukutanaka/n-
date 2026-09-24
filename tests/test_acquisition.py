@@ -508,3 +508,37 @@ def test_local_only_ollama_skips_pull(tmp_path, monkeypatch) -> None:
     acquisition.acquire(_ollama_service(), local_only=True)
 
     assert [argv[1] for argv in calls] == ["create"]
+
+
+def test_enable_hf_transfer_sets_env_and_patches_loaded_constants(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("HF_HUB_ENABLE_HF_TRANSFER", raising=False)
+    monkeypatch.setattr(
+        acquisition.importlib.util, "find_spec", lambda name: object()
+    )
+    constants = SimpleNamespace(HF_HUB_ENABLE_HF_TRANSFER=False)
+    monkeypatch.setitem(
+        acquisition.sys.modules, "huggingface_hub.constants", constants
+    )
+    acquisition._enable_hf_transfer()
+    assert acquisition.os.environ["HF_HUB_ENABLE_HF_TRANSFER"] == "1"
+    assert constants.HF_HUB_ENABLE_HF_TRANSFER is True
+
+
+def test_enable_hf_transfer_respects_user_env(monkeypatch) -> None:
+    monkeypatch.setenv("HF_HUB_ENABLE_HF_TRANSFER", "0")
+    monkeypatch.setattr(
+        acquisition.importlib.util, "find_spec", lambda name: object()
+    )
+    acquisition._enable_hf_transfer()
+    assert acquisition.os.environ["HF_HUB_ENABLE_HF_TRANSFER"] == "0"
+
+
+def test_enable_hf_transfer_noop_without_package(monkeypatch) -> None:
+    monkeypatch.delenv("HF_HUB_ENABLE_HF_TRANSFER", raising=False)
+    monkeypatch.setattr(
+        acquisition.importlib.util, "find_spec", lambda name: None
+    )
+    acquisition._enable_hf_transfer()
+    assert "HF_HUB_ENABLE_HF_TRANSFER" not in acquisition.os.environ
