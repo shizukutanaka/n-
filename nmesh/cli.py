@@ -1128,7 +1128,10 @@ def _runtime(args: argparse.Namespace) -> int:
                 finally:
                     clear_gateway(process.pid)
     elif args.command == "down":
-        result = runtime_down(foreign=True, gateway_port=args.port)
+        result = runtime_down(
+            foreign=True, gateway_port=args.port,
+            dry_run=getattr(args, "dry_run", False),
+        )
     else:
         result = runtime_status()
         gateway = next(
@@ -4294,6 +4297,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         item = sub.add_parser(name)
         item.add_argument("--json", action="store_true")
         item.add_argument("--port", type=int, default=18000)
+        if name == "down":
+            item.add_argument("--dry-run", action="store_true", dest="dry_run")
     run_parser = sub.add_parser("run")
     run_parser.add_argument("prompt")
     run_parser.add_argument("--role", default="chat")
@@ -4460,7 +4465,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "unload":
         return _unload(args)
     if args.command in {"up", "down", "status", "serve"}:
-        if args.command == "up":
+        if args.command in {"up", "down"}:
             args.dry_run = args.dry_run or args.global_dry_run
         return _runtime(args)
     if args.command == "models":
