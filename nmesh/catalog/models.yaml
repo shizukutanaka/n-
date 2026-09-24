@@ -277,6 +277,25 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: deepseek-r1-distill-qwen-7b
+  family: deepseek-r1-distill
+  params: 7620000000
+  n_layers: 28
+  n_heads: 28
+  n_kv_heads: 4
+  head_dim: 128
+  hidden_size: 3584
+  vocab_size: 152064
+  head_layout: separate
+  max_context: 131072
+  roles: [chat, math]
+  quality: 72
+  license: mit
+  languages: [en, zh]
+  sources:
+    hf_gguf: "bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF"
+    hf: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+    hf_mlx: "mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
