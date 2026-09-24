@@ -249,9 +249,27 @@ def ollama_fingerprint(
         return None
 
 
+# (backend, model_ref) -> (file mtime_ns, fingerprint). The gateway's
+# delegation gate calls this on every /v1/models request and every
+# nmesh-delegate call; a llamacpp fingerprint is a full GGUF header parse,
+# so memoize it keyed by the file's mtime. Weight files never change in
+# place without an mtime bump.
+_FINGERPRINT_CACHE: dict[tuple[str, str], tuple[int | None, str | None]] = {}
+
+
 def service_fingerprint(backend: str, model_ref: str) -> str | None:
     if backend == "llamacpp":
-        return gguf_fingerprint(Path(model_ref))
+        path = Path(model_ref)
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            stamp = None
+        cached = _FINGERPRINT_CACHE.get((backend, model_ref))
+        if cached is not None and cached[0] == stamp:
+            return cached[1]
+        result = gguf_fingerprint(path)
+        _FINGERPRINT_CACHE[(backend, model_ref)] = (stamp, result)
+        return result
     if backend == "ollama":
         return ollama_fingerprint(model_ref)
     return None

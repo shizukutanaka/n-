@@ -185,3 +185,32 @@ def test_service_fingerprint_dispatches_only_verified_backends(
     assert artifact.service_fingerprint("vllm", "qwen") is None
     assert calls[0][0] == "gguf"
     assert calls[1] == ("ollama", "qwen")
+
+
+def test_service_fingerprint_caches_gguf_parse_by_mtime(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """The delegation gate calls service_fingerprint on every /v1/models
+    request; a llamacpp fingerprint is a full GGUF header parse. Memoize by
+    file mtime so repeat calls cost one stat."""
+    path = tmp_path / "model.gguf"
+    path.write_bytes(_synthetic_gguf())
+    artifact._FINGERPRINT_CACHE.clear()
+    calls: list[Path] = []
+    real = artifact.gguf_fingerprint
+    monkeypatch.setattr(
+        artifact, "gguf_fingerprint",
+        lambda p: calls.append(p) or real(p),
+    )
+    first = artifact.service_fingerprint("llamacpp", str(path))
+    second = artifact.service_fingerprint("llamacpp", str(path))
+    assert first == second is not None
+    assert calls == [path]
+
+    # A changed file re-parses (mtime bumped), not a stale fingerprint.
+    path.write_bytes(_synthetic_gguf() + b"extra")
+    import os
+    os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 1))
+    third = artifact.service_fingerprint("llamacpp", str(path))
+    assert calls == [path, path]
+    assert third != first
