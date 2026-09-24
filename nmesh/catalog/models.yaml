@@ -277,6 +277,25 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: tulu-3-8b-instruct
+  family: tulu-3
+  params: 8030000000
+  n_layers: 32
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 128264
+  head_layout: separate
+  max_context: 131072
+  roles: [chat]
+  quality: 66
+  license: apache-2.0
+  languages: [en]
+  sources:
+    ollama: "tulu3:8b"
+    hf_gguf: "bartowski/Llama-3.1-Tulu-3-8B-GGUF"
+    hf: "allenai/Llama-3.1-Tulu-3-8B"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
