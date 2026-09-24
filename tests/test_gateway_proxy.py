@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import socket
@@ -1009,6 +1010,104 @@ def test_gateway_revive_failure_returns_503(monkeypatch) -> None:
     })
     assert response.status_code == 503
     assert "restart budget" in response.json()["error"]["message"]
+
+
+def test_gateway_revive_failure_releases_concurrency_slot(monkeypatch) -> None:
+    """A failed revive must release the queued slot: each leaked slot
+    permanently shrinks the concurrency budget until requests queue out."""
+    model = ModelSpec("revive-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        memory=replace(plan.services[0].memory, parallel_slots=1),
+    )
+    plan = replace(plan, services=[service])
+
+    def fake_ensure(name: str, snapshot: Plan) -> None:
+        raise RuntimeError(f"restart budget exhausted for {name}")
+
+    monkeypatch.setattr(gateway_module, "ensure_running", fake_ensure)
+    monkeypatch.setattr(
+        gateway_module, "idle_services", lambda: {service.name}
+    )
+    monkeypatch.setattr(gateway_module, "QUEUE_TIMEOUT", 0.1)
+    client = TestClient(create_app(plan))
+    request = {
+        "model": "nmesh-auto",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    first = client.post("/v1/chat/completions", json=request)
+    second = client.post("/v1/chat/completions", json=request)
+    assert first.status_code == 503
+    assert "restart budget" in first.json()["error"]["message"]
+    assert second.status_code == 503
+    assert "restart budget" in second.json()["error"]["message"]
+    metrics = client.get("/metrics").json()["concurrency"][service.name]
+    assert metrics["in_flight"] == 0
+
+
+def test_gateway_swap_ensure_failure_releases_concurrency_slot(
+    monkeypatch,
+) -> None:
+    """A swap member whose ensure fails inside the gate must release the
+    queued slot too — the leak is identical to the revive path."""
+    model = ModelSpec("swap-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        memory=replace(plan.services[0].memory, parallel_slots=1),
+    )
+    plan = replace(plan, services=[service], swap_group={service.name})
+
+    def fake_ensure(name: str, snapshot: Plan) -> None:
+        raise RuntimeError(f"restart budget exhausted for {name}")
+
+    monkeypatch.setattr(gateway_module, "ensure_running", fake_ensure)
+    monkeypatch.setattr(gateway_module, "QUEUE_TIMEOUT", 0.1)
+    client = TestClient(create_app(plan))
+    request = {
+        "model": "nmesh-auto",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    first = client.post("/v1/chat/completions", json=request)
+    second = client.post("/v1/chat/completions", json=request)
+    assert first.status_code == 503
+    assert "restart budget" in first.json()["error"]["message"]
+    assert second.status_code == 503
+    assert "restart budget" in second.json()["error"]["message"]
+    metrics = client.get("/metrics").json()["concurrency"][service.name]
+    assert metrics["in_flight"] == 0
+
+
+def test_gateway_stream_send_aborted_releases_resources(monkeypatch) -> None:
+    """A non-HTTP failure while connecting upstream (e.g. client disconnect)
+    must release client, ticket, gate, and slot — they were only released on
+    HTTPException/HTTPError."""
+    model = ModelSpec("abort-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        memory=replace(plan.services[0].memory, parallel_slots=1),
+    )
+    plan = replace(plan, services=[service])
+
+    async def cancelled(*args: object, **kwargs: object) -> httpx.Response:
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", cancelled)
+    client = TestClient(create_app(plan))
+    # BaseHTTPMiddleware surfaces the app-level CancelledError as a
+    # RuntimeError("No response returned.") through TestClient.
+    with pytest.raises((asyncio.CancelledError, RuntimeError)):
+        client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto", "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+    metrics = client.get("/metrics").json()["concurrency"][service.name]
+    assert metrics["in_flight"] == 0
 
 
 def test_gateway_injects_usage_for_vllm_and_ollama_streams(monkeypatch) -> None:
