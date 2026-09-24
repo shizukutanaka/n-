@@ -128,6 +128,44 @@ def test_measure_retrieval_estimate_counts_requests_and_scales_with_tps(
     assert abs(slow - 2 * fast) <= 1
 
 
+def test_measure_retrieval_chunk_arm_embeds_documents_concurrently() -> None:
+    import threading
+    import time
+
+    in_flight = 0
+    max_in_flight = 0
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, max_in_flight
+        with lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+        time.sleep(0.01)
+        with lock:
+            in_flight -= 1
+        input_value = json.loads(request.read())["input"]
+        count = len(input_value) if isinstance(input_value, list) else 1
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"embedding": [1.0, 0.0]}] * count,
+                "usage": {"prompt_tokens": 1},
+            },
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        measure_retrieval_chunk_arm(
+            client, "http://test", "embed",
+            doc_words=10, chunk_words=5, chunk_tokens=5, seeds=(11,),
+        )
+    finally:
+        client.close()
+    assert max_in_flight > 1
+
+
 def test_retrieval_control_failure_proves_nothing() -> None:
     record = _record(_ladder((7, 8, 8, 8, 8, 8, 2, 1)))
     assert record.control_passed is False

@@ -7,6 +7,7 @@ import os
 import random
 import statistics
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -514,16 +515,21 @@ def measure_retrieval_chunk_arm(
         rng = random.Random(seed)
         code = f"{rng.randrange(16**6):06X}"
         documents, target = _documents(rng, doc_words, code)
-        document_vectors: list[list[list[float]]] = []
-        for document in documents:
-            words = document.split()
-            chunks = [
+        document_chunks = [
+            [
                 " ".join(words[index:index + chunk_words])
                 for index in range(0, len(words), chunk_words)
             ]
-            document_vectors.append(
-                _embed_inputs(client, url, model_ref, chunks)
-            )
+            for words in (document.split() for document in documents)
+        ]
+        # Document embeds are independent round trips; issue them
+        # concurrently (order preserved) so each trial costs the
+        # slowest document instead of the sum.
+        with ThreadPoolExecutor(max_workers=len(document_chunks)) as pool:
+            document_vectors = list(pool.map(
+                lambda chunks: _embed_inputs(client, url, model_ref, chunks),
+                document_chunks,
+            ))
         query, _ = _embed(client, url, model_ref, _QUESTION)
         scores = [
             max(_cosine(query, vector) for vector in vectors)
