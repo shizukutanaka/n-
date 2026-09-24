@@ -13,6 +13,7 @@ the nmesh gateway itself.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -148,15 +149,19 @@ def read_verdict(text: str) -> bool | None:
     """Return the verifier's decision, or ``None`` when it did not answer.
 
     An unreadable verdict is not an acceptance: callers escalate instead, so a
-    verifier that emits prose can never silently pass a wrong answer.
+    verifier that emits prose can never silently pass a wrong answer. Matching
+    is per whole word — "MY EYES" or "YESTERDAY" contains the letters YES but
+    is not a verdict.
     """
-    upper = text.strip().upper()
-    if upper.startswith("YES"):
+    words = [word.upper() for word in re.findall(r"[A-Za-z]+", text)]
+    if not words:
+        return None
+    if words[0] == "YES":
         return True
-    if upper.startswith("NO"):
+    if words[0] == "NO":
         return False
-    yes = upper.count("YES")
-    no = upper.count("NO")
+    yes = words.count("YES")
+    no = words.count("NO")
     if yes == 1 and no == 0:
         return True
     if no == 1 and yes == 0:

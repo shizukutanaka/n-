@@ -188,6 +188,17 @@ def test_read_verdict_accepts_unambiguous_verdicts() -> None:
     assert read_verdict("") is None
 
 
+def test_read_verdict_requires_whole_words() -> None:
+    # Verdict letters inside other words are not a verdict — an unreadable
+    # reply must escalate rather than silently accept.
+    assert read_verdict("MY EYES") is None
+    assert read_verdict("YESTERDAY") is None
+    assert read_verdict("YESNO") is None
+    assert read_verdict("NOTES") is None
+    assert read_verdict("The answer is YES") is True
+    assert read_verdict("It is NO") is False
+
+
 def test_orchestrate_show_json_handles_empty_cache(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
