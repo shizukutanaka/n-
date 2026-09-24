@@ -111,8 +111,10 @@ gateway: the request's `model` is set to `nmesh-<role>`, so `--role` selects
 which planned service answers (default `chat`). `--stream` prints tokens as
 they are generated and `--json` prints the raw response object.
 `nmesh jobs` lists the gateway's queued and running jobs (running jobs show
-live decode progress when the backend exposes it), and
-`nmesh jobs --cancel <id>` withdraws a queued job.
+live decode progress when the backend exposes it),
+`nmesh jobs --service <name>` filters to one service, and
+`nmesh jobs --cancel <id>` withdraws a queued job. The underlying
+`GET /v1/jobs` accepts the same `service` query parameter.
 
 ### Managed llama.cpp engine
 

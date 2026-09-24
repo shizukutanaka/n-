@@ -1411,7 +1411,9 @@ def _jobs(args: argparse.Namespace) -> int:
     try:
         with urllib.request.urlopen(
             urllib.request.Request(
-                f"http://127.0.0.1:{args.port}/v1/jobs?limit={args.limit}",
+                f"http://127.0.0.1:{args.port}/v1/jobs?limit={args.limit}"
+                + (f"&service={quote(args.service, safe='')}"
+                   if args.service else ""),
                 headers=_gateway_headers(),
             ),
             timeout=10,
@@ -4391,6 +4393,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     jobs_parser = sub.add_parser("jobs", help="list queued and running gateway jobs")
     jobs_parser.add_argument("--port", type=int, default=18000)
     jobs_parser.add_argument("--limit", type=_positive_int, default=50)
+    jobs_parser.add_argument("--service", default="",
+                             help="only show jobs routed to this service")
     jobs_parser.add_argument("--cancel", metavar="JOB_ID",
                              help="cancel a queued job (running jobs cannot be interrupted)")
     jobs_parser.add_argument("--json", action="store_true")
