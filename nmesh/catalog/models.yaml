@@ -277,6 +277,24 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: codeqwen1.5-7b-chat
+  family: codeqwen
+  params: 7250000000
+  n_layers: 32
+  n_heads: 32
+  n_kv_heads: 4
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 92416
+  head_layout: separate
+  max_context: 65536
+  roles: [code]
+  quality: 58
+  license: apache-2.0
+  languages: [en, zh]
+  sources:
+    hf_gguf: "bartowski/CodeQwen1.5-7B-Chat-GGUF"
+    hf: "Qwen/CodeQwen1.5-7B-Chat"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
