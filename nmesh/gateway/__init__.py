@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, TypeGuard
 
 from nmesh import i18n
 from nmesh.artifact import service_fingerprint
@@ -694,11 +694,110 @@ async def _confirm_embedding_truncation(
     return tokens if tokens is not None and tokens > cap + 2 else None
 
 
-def _embedding_truncation_error(cap: int, lower_bound: int) -> Response:
+_EMBED_BATCH_PROBE_LIMIT = 8
+_EMBED_ELEMENT_MAX_PIECES = 64
+
+
+def _is_token_list(value: object) -> TypeGuard[list[int]]:
+    return isinstance(value, list) and all(
+        isinstance(item, int) and not isinstance(item, bool) for item in value
+    )
+
+
+def _byte_split_embedding_input(value: str, cap: int) -> list[str] | None:
+    # BPE tokens each span at least one byte, so a piece of <=cap bytes cannot
+    # itself be truncated; summing the pieces' measured tokens bounds the
+    # element's real count. None means the element cannot be probed this way.
+    words = value.split()
+    if not words:
+        return None
+    pieces: list[str] = []
+    current: list[str] = []
+    current_bytes = 0
+    for word in words:
+        width = len(word.encode("utf-8"))
+        if width > cap:
+            return None
+        if current and current_bytes + 1 + width > cap:
+            pieces.append(" ".join(current))
+            current, current_bytes = [], 0
+        current.append(word)
+        current_bytes += width + (1 if len(current) > 1 else 0)
+    if current:
+        pieces.append(" ".join(current))
+    if len(pieces) > _EMBED_ELEMENT_MAX_PIECES:
+        return None
+    return pieces
+
+
+async def _verify_embedding_batch(
+    body: Mapping[str, object],
+    url: str,
+    elements: list[object],
+    cap: int,
+) -> tuple[int | None, int] | Literal["unverified"] | None:
+    # (index, lower_bound) proves element[index] exceeds cap — index None means
+    # the input is a single token array; "unverified" means the check could not
+    # be completed honestly; None means every element is proven under the cap.
+    if _is_token_list(elements):
+        return (None, len(elements)) if len(elements) > cap else None
+    suspects: list[tuple[int, str]] = []
+    unverifiable = False
+    for index, element in enumerate(elements):
+        if isinstance(element, str):
+            if len(element.encode("utf-8")) > cap:
+                suspects.append((index, element))
+            continue
+        if _is_token_list(element):
+            if len(element) > cap:
+                return index, len(element)
+            continue
+        unverifiable = True
+    if len(suspects) > _EMBED_BATCH_PROBE_LIMIT:
+        return "unverified"
+    assert httpx is not None
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
+    ) as client:
+        for index, element in suspects:
+            pieces = _byte_split_embedding_input(element, cap)
+            if pieces is None:
+                return "unverified"
+            try:
+                response = await client.post(
+                    url, json={"model": body.get("model"), "input": pieces}
+                )
+            except httpx.HTTPError:
+                return "unverified"
+            if response.status_code >= 400:
+                return "unverified"
+            try:
+                payload = response.json()
+            except (TypeError, ValueError):
+                return "unverified"
+            usage = payload.get("usage") if isinstance(payload, dict) else None
+            tokens = (
+                _upstream_int(usage.get("prompt_tokens"))
+                if isinstance(usage, dict) else None
+            )
+            if tokens is None:
+                return "unverified"
+            # Splitting changes a count by at most ~one token per joint.
+            if tokens > cap + len(pieces):
+                return index, tokens
+    return "unverified" if unverifiable else None
+
+
+def _embedding_truncation_error(
+    cap: int, lower_bound: int, index: int | None = None
+) -> Response:
+    subject = (
+        "Embedding input" if index is None else f"Embedding input[{index}]"
+    )
     payload = {
         "error": {
             "message": (
-                f"Embedding input exceeds the measured served cap of {cap} "
+                f"{subject} exceeds the measured served cap of {cap} "
                 f"tokens; confirmation measured at least {lower_bound} tokens."
             ),
             "type": "invalid_request_error",
@@ -1657,8 +1756,29 @@ def create_app(
             )
             if prompt_tokens is not None and prompt_tokens >= embedding_cap:
                 input_text, multi_input = _embedding_input(request)
+                elements = request.get("input")
                 if multi_input:
-                    embedding_headers["X-Nmesh-Embedding-Truncation"] = "unverified"
+                    verdict = (
+                        await _verify_embedding_batch(
+                            body, url, elements, embedding_cap
+                        )
+                        if isinstance(elements, list)
+                        else "unverified"
+                    )
+                    if verdict == "unverified":
+                        embedding_headers[
+                            "X-Nmesh-Embedding-Truncation"
+                        ] = "unverified"
+                    elif verdict is not None:
+                        index, measured = verdict
+                        if job is not None:
+                            jobs.finish(
+                                job, ok=False,
+                                detail=f"truncation_guard_{embedding_cap}",
+                            )
+                        return _embedding_truncation_error(
+                            embedding_cap, measured, index
+                        )
                 elif input_text is not None:
                     lower_bound = await _confirm_embedding_truncation(
                         body, url, input_text, embedding_cap
@@ -1672,6 +1792,20 @@ def create_app(
                         return _embedding_truncation_error(
                             embedding_cap, lower_bound
                         )
+                elif (
+                    isinstance(elements, list)
+                    and len(elements) == 1
+                    and _is_token_list(elements[0])
+                    and len(elements[0]) > embedding_cap
+                ):
+                    if job is not None:
+                        jobs.finish(
+                            job, ok=False,
+                            detail=f"truncation_guard_{embedding_cap}",
+                        )
+                    return _embedding_truncation_error(
+                        embedding_cap, len(elements[0])
+                    )
         if instrument:
             usage = data.get("usage") if isinstance(data, dict) else None
             timings = data.get("timings") if isinstance(data, dict) else None
