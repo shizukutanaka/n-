@@ -861,11 +861,20 @@ class Supervisor:
     def _healthy(self, service: PlannedService) -> bool:
         if service.launch.health_url is None:
             return True
-        try:
-            with urllib.request.urlopen(service.launch.health_url, timeout=2) as response:
-                return 200 <= response.status < 500
-        except (OSError, ValueError):
-            return False
+        # One retry absorbs a transient blip — a single failed probe
+        # otherwise unadopts a live engine or restarts it outright.
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(
+                    service.launch.health_url, timeout=2
+                ) as response:
+                    if 200 <= response.status < 500:
+                        return True
+            except (OSError, ValueError):
+                pass
+            if attempt == 0:
+                time.sleep(0.3)
+        return False
 
     def _wait_health(self, service: PlannedService, timeout: float | None = None) -> bool:
         timeout = self.health_timeout if timeout is None else timeout

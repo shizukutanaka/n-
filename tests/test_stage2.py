@@ -1281,3 +1281,49 @@ def test_swap_switch_falls_back_to_kill_when_ram_short(
     assert supervisor.sleeping == set()
     assert "alpha" not in supervisor.processes
     supervisor.down()
+
+
+def test_supervisor_healthy_retries_once_on_blip(tmp_path, catalog, monkeypatch) -> None:
+    """A single failed probe unadopted a live engine or restarted it — the
+    retry absorbs transient blips before the service is judged unhealthy."""
+    plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
+    service = plan.services[0]
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+    calls: list[str] = []
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def fail_once_then_ok(url, timeout=0):
+        calls.append(url)
+        if len(calls) == 1:
+            raise OSError("blip")
+        return _Response()
+
+    monkeypatch.setattr(supervisor_module.urllib.request, "urlopen", fail_once_then_ok)
+    assert supervisor._healthy(service)
+    assert len(calls) == 2
+
+    def always_ok(url, timeout=0):
+        calls.append(url)
+        return _Response()
+
+    calls.clear()
+    monkeypatch.setattr(supervisor_module.urllib.request, "urlopen", always_ok)
+    assert supervisor._healthy(service)
+    assert len(calls) == 1
+
+    def always_fail(url, timeout=0):
+        calls.append(url)
+        raise OSError("down")
+
+    calls.clear()
+    monkeypatch.setattr(supervisor_module.urllib.request, "urlopen", always_fail)
+    assert not supervisor._healthy(service)
+    assert len(calls) == 2
