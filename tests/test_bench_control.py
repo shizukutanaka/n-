@@ -369,3 +369,29 @@ def test_unstable_record_isolated_and_stable_measurement_restores_evidence(
     assert loaded["unstable"].tps == 6.0
     assert loaded["unstable"].confirmations == 1
     assert load_cache(path) == {"unstable": 6.0, "other": 20.0}
+
+
+def test_load_spec_cache_memoizes_unchanged_file(tmp_path, monkeypatch) -> None:
+    """nmesh bench loads spec.json twice per run (demote+save, then the
+    report re-read) — an unchanged file must parse once."""
+    from nmesh.spec import record as spec_record
+
+    calls = 0
+    real_loads = spec_record.json.loads
+
+    def counting(text):
+        nonlocal calls
+        calls += 1
+        return real_loads(text)
+
+    target = tmp_path / "spec.json"
+    target.write_text('{"results": {}}', encoding="utf-8")
+    monkeypatch.setattr(spec_record.json, "loads", counting)
+
+    spec_record.load_cache(target)
+    spec_record.load_cache(target)
+    assert calls == 1
+
+    target.write_text('{"results": {"k": {}}}', encoding="utf-8")
+    spec_record.load_cache(target)
+    assert calls == 2
