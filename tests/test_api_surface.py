@@ -552,6 +552,57 @@ def test_run_surfaces_upstream_error_body(monkeypatch, capsys) -> None:
     assert "logits computation" in err
 
 
+def test_rerank_sends_query_and_documents(monkeypatch, capsys) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        def read(self):
+            return json.dumps({
+                "results": [
+                    {"index": 0, "relevance_score": 0.9},
+                    {"index": 1, "relevance_score": 0.1},
+                ],
+            }).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, *args, **kwargs):
+        captured["url"] = request.full_url
+        captured["payload"] = json.loads(request.data.decode())
+        return Response()
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    result = cli._rerank(
+        SimpleNamespace(
+            query="q", documents=["a", "b"],
+            role="rerank", json=False, port=18000,
+        )
+    )
+    assert result == 0
+    assert captured["url"] == "http://127.0.0.1:18000/v1/rerank"
+    assert captured["payload"]["query"] == "q"
+    assert captured["payload"]["documents"] == ["a", "b"]
+    out = capsys.readouterr().out
+    assert "0\t0.9" in out
+    assert "1\t0.1" in out
+
+
+def test_rerank_returns_failure_when_gateway_is_unavailable(monkeypatch) -> None:
+    def fail(*args, **kwargs):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fail)
+    result = cli._rerank(
+        SimpleNamespace(query="q", documents=["a"], role="rerank", json=False, port=18000)
+    )
+    assert result == 1
+
+
+
 def test_serve_returns_nonzero_for_failed_gateway(monkeypatch) -> None:
     process = SimpleNamespace(pid=123, wait=lambda: 1)
     monkeypatch.setattr(cli, "_launch_gateway", lambda _port, detach: (process, None))

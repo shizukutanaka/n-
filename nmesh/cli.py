@@ -4124,6 +4124,51 @@ def _run_prompt(args: argparse.Namespace) -> int:
     return 1
 
 
+def _rerank(args: argparse.Namespace) -> int:
+    payload = json.dumps({
+        "model": f"nmesh-{args.role}",
+        "query": args.query,
+        "documents": args.documents,
+    }).encode()
+    headers = {"Content-Type": "application/json", **_gateway_headers()}
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{getattr(args, 'port', 18000)}/v1/rerank",
+        payload,
+        headers,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = json.loads(response.read().decode())
+    except HTTPError as error:
+        detail = ""
+        try:
+            upstream = json.loads(error.read().decode())
+            detail = str(upstream.get("error", {}).get("message") or "")
+        except (OSError, json.JSONDecodeError):
+            detail = ""
+        print(i18n.t("err.gateway_http", i18n.lang(), code=error.code,
+                     detail=detail or str(error)), file=sys.stderr)
+        return 1
+    except (OSError, json.JSONDecodeError) as error:
+        print(i18n.t("err.gateway_unavailable", i18n.lang(), error=error),
+              file=sys.stderr)
+        print(i18n.t("err.gateway_unavailable.hint", i18n.lang()), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(body, indent=2))
+        return 0
+    results = body.get("results") if isinstance(body, dict) else None
+    if not isinstance(results, list):
+        print(json.dumps(body, indent=2))
+        return 0
+    for item in results:
+        if isinstance(item, dict):
+            index = item.get("index", "?")
+            score = item.get("relevance_score", "?")
+            print(f"{index}\t{score}")
+    return 0
+
+
 def _evidence(args: argparse.Namespace) -> int:
     payload = collect_evidence()
     if args.json:
@@ -4303,6 +4348,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--stream", action="store_true",
         help="print tokens as they are generated (ignored with --json)",
     )
+    rerank_parser = sub.add_parser(
+        "rerank", help="smoke-test the rerank service with a query and documents"
+    )
+    rerank_parser.add_argument("query")
+    rerank_parser.add_argument("documents", nargs="+")
+    rerank_parser.add_argument("--role", default="rerank")
+    rerank_parser.add_argument("--port", type=int, default=18000)
+    rerank_parser.add_argument("--json", action="store_true")
     bench_parser = sub.add_parser("bench")
     bench_parser.add_argument("--service", default="chat")
     bench_parser.add_argument("--tokens", type=int, default=128)
@@ -4691,6 +4744,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "run":
         return _run_prompt(args)
+    if args.command == "rerank":
+        return _rerank(args)
     parser.print_help()
     return 0
 
