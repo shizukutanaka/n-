@@ -401,6 +401,26 @@
     hf_gguf: "bartowski/Mistral-7B-Instruct-v0.3-GGUF"
     hf: "mistralai/Mistral-7B-Instruct-v0.3"
     hf_mlx: "mlx-community/Mistral-7B-Instruct-v0.3-4bit"
+- id: mistral-nemo-instruct
+  family: mistral
+  params: 12200000000
+  n_layers: 40
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 5120
+  vocab_size: 131072
+  head_layout: separate
+  max_context: 131072
+  roles: [chat, code]
+  quality: 74
+  license: apache-2.0
+  languages: [en, fr, de, es, it, pt, ru, zh, ja]
+  sources:
+    ollama: "mistral-nemo:12b"
+    hf_gguf: "bartowski/Mistral-Nemo-Instruct-2407-GGUF"
+    hf: "mistralai/Mistral-Nemo-Instruct-2407"
+    hf_mlx: "mlx-community/Mistral-Nemo-Instruct-2407-4bit"
 - id: nomic-embed-text-v1.5
   family: nomic-embed
   params: 137000000
