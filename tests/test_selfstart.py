@@ -273,6 +273,23 @@ def test_saved_plan_warns_when_up_flags_ignored(monkeypatch, capsys) -> None:
     assert "--context-shift" in capsys.readouterr().err
 
 
+def test_saved_plan_does_not_warn_flags_up_applies(monkeypatch, capsys) -> None:
+    """--model/--ignore-eval-evidence/--lang are honored by a plan rebuild in
+    the up handler — the ignored-flags warning must not name them."""
+    saved = SimpleNamespace(
+        services=[object()], runnable=True,
+        launch_revision=LAUNCH_REVISION,
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: saved)
+    assert cli._ensure_runnable_plan(
+        _up_args(model="foo", ignore_eval_evidence=True, kv_quant="q8_0")
+    ) is saved
+    err = capsys.readouterr().err
+    assert "--model" not in err
+    assert "--ignore-eval-evidence" not in err
+    assert "--kv-quant" in err
+
+
 def test_saved_plan_warns_when_launch_revision_stale(monkeypatch, capsys) -> None:
     saved = SimpleNamespace(
         services=[object()], runnable=True, launch_revision=0,
