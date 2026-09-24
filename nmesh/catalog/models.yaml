@@ -277,6 +277,31 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: phi-3.5-moe-instruct
+  family: phi-3.5-moe
+  params: 41900000000
+  n_layers: 32
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 32064
+  head_layout: separate
+  # Sparse MoE: all 32 layers route to 16 experts top-2
+  # (3x4096x6400 params each) — 6.6B active of 41.9B total per the
+  # vendor, so dense tensors fit small GPUs while ~40B of experts
+  # stream from RAM under --n-cpu-moe.
+  active_params: 6600000000
+  moe_expert_params: 40265318400
+  n_moe_layers: 32
+  max_context: 131072
+  roles: [chat]
+  quality: 70
+  license: mit
+  languages: [en]
+  sources:
+    hf_gguf: "bartowski/Phi-3.5-MoE-instruct-GGUF"
+    hf: "microsoft/Phi-3.5-MoE-instruct"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
