@@ -258,6 +258,46 @@
     hf_gguf: "Qwen/Qwen3-8B-GGUF"
     hf: "Qwen/Qwen3-8B"
     hf_mlx: "mlx-community/Qwen3-8B-4bit"
+- id: qwen3-14b
+  family: qwen3
+  params: 14800000000
+  n_layers: 40
+  n_heads: 40
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 5120
+  vocab_size: 151936
+  head_layout: separate
+  max_context: 32768
+  roles: [chat, code, tool]
+  quality: 78
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    ollama: "qwen3:14b"
+    hf_gguf: "Qwen/Qwen3-14B-GGUF"
+    hf: "Qwen/Qwen3-14B"
+    hf_mlx: "mlx-community/Qwen3-14B-4bit"
+- id: qwen3-32b
+  family: qwen3
+  params: 32800000000
+  n_layers: 64
+  n_heads: 64
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 5120
+  vocab_size: 151936
+  head_layout: separate
+  max_context: 32768
+  roles: [chat, code, tool]
+  quality: 86
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    ollama: "qwen3:32b"
+    hf_gguf: "Qwen/Qwen3-32B-GGUF"
+    hf: "Qwen/Qwen3-32B"
+    hf_mlx: "mlx-community/Qwen3-32B-4bit"
 - id: smollm3-3b
   family: smollm3
   params: 3080000000
