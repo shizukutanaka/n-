@@ -140,7 +140,10 @@ hardware detection. Use `nmesh engine list --available` to inspect build tags,
 `nmesh engine use <tag>` to switch installed builds, and
 `nmesh engine remove <tag>` to delete one. GGUF weights remain under
 `$NMESH_HOME/models`; inspect or remove them with `nmesh models local` and
-`nmesh models rm`.
+`nmesh models rm`. `nmesh models fetch <id>` pre-downloads a catalog model's
+artifact without launching services — it plans exactly what `nmesh up` would
+use for that model (backend, quantization, context) and fetches the same
+bytes, so a later `up` starts instantly.
 
 The llama.cpp release assets used here do not publish checksum files. The
 manifest SHA-256 is therefore the hash nmesh observed while downloading the

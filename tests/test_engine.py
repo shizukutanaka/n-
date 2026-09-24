@@ -388,6 +388,88 @@ def test_models_local_lists_downloaded_weights(monkeypatch, tmp_path: Path, caps
     assert str(model) in json.loads(capsys.readouterr().out)[0]["path"]
 
 
+def test_models_fetch_downloads_planned_services(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    model_path = tmp_path / "models" / "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+    service = type(
+        "Service",
+        (),
+        {
+            "model_id": "qwen2.5-0.5b-instruct",
+            "name": "chat",
+            "backend": "llamacpp",
+            "quant": "q4_k_m",
+            "model_ref": str(model_path),
+        },
+    )()
+    plan = type("Plan", (), {"services": [service], "warnings": []})()
+    acquired = type(
+        "Acquired",
+        (),
+        {"path": model_path, "model_ref": None, "warning": None},
+    )()
+    seen: list[object] = []
+
+    def fake_acquire(item: object) -> object:
+        seen.append(item)
+        return acquired
+
+    monkeypatch.setattr(cli, "_make_plan", lambda args: plan)
+    monkeypatch.setattr(cli, "acquire", fake_acquire)
+    args = type(
+        "Args",
+        (),
+        {
+            "models_command": "fetch",
+            "model": "qwen2.5-0.5b-instruct",
+            "json": True,
+        },
+    )()
+
+    assert cli._models(args) == 0
+    assert seen == [service]
+    out = json.loads(capsys.readouterr().out)
+    assert out[0]["model"] == "qwen2.5-0.5b-instruct"
+    assert out[0]["path"] == str(model_path)
+
+
+def test_models_fetch_rejects_unknown_model(capsys) -> None:
+    args = type(
+        "Args",
+        (),
+        {"models_command": "fetch", "model": "no-such-model", "json": False},
+    )()
+
+    assert cli._models(args) == 1
+    assert "no-such-model" in capsys.readouterr().err
+
+
+def test_models_fetch_reports_when_plan_cannot_place(
+    monkeypatch, capsys
+) -> None:
+    plan = type(
+        "Plan",
+        (),
+        {"services": [], "warnings": ["does not fit"]},
+    )()
+    monkeypatch.setattr(cli, "_make_plan", lambda args: plan)
+    args = type(
+        "Args",
+        (),
+        {
+            "models_command": "fetch",
+            "model": "qwen2.5-0.5b-instruct",
+            "json": False,
+        },
+    )()
+
+    assert cli._models(args) == 1
+    err = capsys.readouterr().err
+    assert "does not fit" in err
+    assert "qwen2.5-0.5b-instruct" in err
+
+
 def test_unload_empty_result_reports_reason(monkeypatch, capsys) -> None:
     class Response:
         def __enter__(self):

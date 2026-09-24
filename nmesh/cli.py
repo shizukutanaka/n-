@@ -168,7 +168,7 @@ from nmesh.runtime import down as runtime_down
 from nmesh.runtime import engine as engine_runtime
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime import up as runtime_up
-from nmesh.runtime.acquisition import parse_label
+from nmesh.runtime.acquisition import acquire, parse_label
 from nmesh.runtime.logs import available as available_logs
 from nmesh.runtime.logs import log_path
 from nmesh.runtime.logs import rotate as rotate_log
@@ -1775,7 +1775,118 @@ def _models_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _models_fetch(args: argparse.Namespace) -> int:
+    """Download a catalog model's artifact without launching services.
+
+    Builds the same plan ``up`` would (the model pinned via ``model_ids``)
+    so the bytes fetched are exactly what a later launch needs, then calls
+    ``acquire`` per planned service. A model the planner cannot place on
+    this hardware is reported with the plan's own warnings instead of
+    fetching an artifact that would never be selected.
+    """
+    language = i18n.lang()
+    catalog = load_catalog()
+    requested = [
+        item.strip() for item in str(args.model).split(",") if item.strip()
+    ]
+    known = {model.id for model in catalog}
+    unknown = [item for item in requested if item not in known]
+    if unknown or not requested:
+        print(
+            i18n.t(
+                "models.fetch_unknown",
+                language,
+                model=", ".join(unknown) or str(args.model),
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    plan_args = argparse.Namespace(
+        profile=getattr(args, "profile", None),
+        roles=None,
+        prefer="balanced",
+        context=None,
+        budget="total",
+        kv_quant="f16",
+        parallel_slots=None,
+        lang=None,
+        model=",".join(requested),
+        ignore_eval_evidence=False,
+        spec="none",
+        spec_draft="",
+        spec_n_max=3,
+        ignore_spec_evidence=False,
+        sleep_idle_seconds=0,
+        cache_reuse=0,
+        context_shift=False,
+        allow_download_gb=60.0,
+        min_decode_tps=8.0,
+    )
+    try:
+        result = _make_plan(plan_args)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        key = "err.profile_load" if plan_args.profile else "err.plan"
+        print(i18n.t(key, language, error=error), file=sys.stderr)
+        return 1
+    services = [
+        service
+        for service in result.services
+        if service.model_id in set(requested)
+    ]
+    if not services:
+        for warning in result.warnings:
+            print(f"warning: {warning}", file=sys.stderr)
+        print(
+            i18n.t(
+                "models.fetch_not_planned",
+                language,
+                model=", ".join(requested),
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    fetched: list[dict[str, object]] = []
+    try:
+        for service in services:
+            acquired = acquire(service)
+            fetched.append({
+                "model": service.model_id,
+                "service": service.name,
+                "backend": service.backend,
+                "quant": service.quant,
+                "ref": acquired.model_ref or service.model_ref,
+                "path": (
+                    str(acquired.path) if acquired.path is not None else None
+                ),
+            })
+            if acquired.warning:
+                print(f"warning: {acquired.warning}", file=sys.stderr)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        print(
+            i18n.t("models.fetch_failed", language, error=error),
+            file=sys.stderr,
+        )
+        return 1
+    if args.json:
+        _print_json(fetched)
+    else:
+        for item in fetched:
+            print(
+                i18n.t(
+                    "models.fetched",
+                    language,
+                    model=item["model"],
+                    backend=item["backend"],
+                    quant=item["quant"],
+                    ref=item["ref"],
+                )
+            )
+    return 0
+
+
 def _models(args: argparse.Namespace) -> int:
+    if getattr(args, "models_command", None) == "fetch":
+        return _models_fetch(args)
     if getattr(args, "models_command", None) == "scan":
         return _models_scan(args)
     if getattr(args, "models_command", None) in {"local", "rm"}:
@@ -4431,6 +4542,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     model_rm.add_argument("name")
     model_rm.add_argument("--force", action="store_true")
     model_rm.add_argument("--json", action="store_true")
+    model_fetch = model_commands.add_parser(
+        "fetch",
+        help="download a catalog model's artifact without starting services",
+    )
+    model_fetch.add_argument(
+        "model", help="catalog model id (comma-separated for several)",
+    )
+    model_fetch.add_argument("--profile")
+    model_fetch.add_argument("--json", action="store_true")
     engine = sub.add_parser("engine")
     engine_commands = engine.add_subparsers(dest="engine_command", required=True)
     engine_list = engine_commands.add_parser("list")
