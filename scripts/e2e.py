@@ -255,7 +255,17 @@ def main() -> int:
         started = True
         _run_step(env, "up", "up", "--detach", "--no-download", "--port", str(gateway_port), "--json")
         base = f"http://127.0.0.1:{gateway_port}"
-        _http("GET /v1/models", f"{base}/v1/models")
+        body = _http("GET /v1/models", f"{base}/v1/models")
+        model_ids = [
+            item.get("id")
+            for item in json.loads(body).get("data", [])
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        ]
+        if not model_ids:
+            _fail("GET /v1/models", "response lists no model ids")
+        body = _http("GET /v1/models/{id}", f"{base}/v1/models/{model_ids[0]}")
+        if json.loads(body).get("id") != model_ids[0]:
+            _fail("GET /v1/models/{id}", "returned id does not match requested id")
         chat = {
             "model": "nmesh-auto",
             "messages": [{"role": "user", "content": "Say hello briefly."}],
@@ -281,6 +291,9 @@ def main() -> int:
         body = _http("anthropic /v1/messages", f"{base}/v1/messages", anthropic)
         if json.loads(body).get("type") != "message":
             _fail("anthropic /v1/messages", "response was not an Anthropic message")
+        body = _http("GET /v1/jobs", f"{base}/v1/jobs")
+        if not json.loads(body).get("jobs"):
+            _fail("GET /v1/jobs", "no jobs registered after chat requests")
         _http("GET /metrics/prometheus", f"{base}/metrics/prometheus")
         _run_step(env, "bench", "bench", "--service", "chat", "--tokens", "16", "--json")
         _run_step(env, "status", "status", "--port", str(gateway_port), "--json")
