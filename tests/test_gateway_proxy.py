@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import threading
+import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
@@ -65,6 +66,24 @@ class _CompatStreamHandler(BaseHTTPRequestHandler):
         ):
             self.wfile.write(chunk)
             self.wfile.flush()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+class _SlowStreamHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.rfile.read(length)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        time.sleep(0.2)
+        self.wfile.write(
+            b'data: {"model":"upstream-model","choices":[{"delta":{"content":"ok"}}]}\n\n'
+        )
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -332,6 +351,30 @@ def test_gateway_stream_rewrites_model_and_preserves_sse_frames() -> None:
             and line != "data: {not-json}"
         ]
         assert payloads[0]["model"] == "client-model"
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_stream_emits_keepalive_during_upstream_silence(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_module, "_SSE_KEEPALIVE_SECONDS", 0.05)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _SlowStreamHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec("compat-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+        response = client.post("/v1/chat/completions", json={
+            "model": "client-model",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert b": keep-alive\n\n" in response.content
+        assert b'"content":"ok"' in response.content
     finally:
         upstream.shutdown()
         upstream.server_close()

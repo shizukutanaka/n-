@@ -81,6 +81,10 @@ except ValueError:
 # server does not document the field and would reject the request.
 _STREAM_USAGE_BACKENDS = {"llamacpp", "vllm", "ollama"}
 
+# Emit an SSE comment after this much upstream silence so slow prefills do
+# not trip idle-connection timeouts in front proxies (nginx default 60s).
+_SSE_KEEPALIVE_SECONDS = 15.0
+
 if TYPE_CHECKING:
     import httpx
     from fastapi import FastAPI, HTTPException
@@ -1384,7 +1388,22 @@ def create_app(
                     return content + ending
 
                 try:
-                    async for chunk in upstream.aiter_bytes():
+                    stream_iter = upstream.aiter_bytes()
+                    pending_chunk = asyncio.ensure_future(stream_iter.__anext__())
+                    while True:
+                        done, _ = await asyncio.wait(
+                            {pending_chunk}, timeout=_SSE_KEEPALIVE_SECONDS
+                        )
+                        if pending_chunk not in done:
+                            yield b": keep-alive\n\n"
+                            continue
+                        try:
+                            chunk = pending_chunk.result()
+                        except StopAsyncIteration:
+                            break
+                        pending_chunk = asyncio.ensure_future(
+                            stream_iter.__anext__()
+                        )
                         buffer += chunk
                         while b"\n" in buffer:
                             line, buffer = buffer.split(b"\n", 1)
