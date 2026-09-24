@@ -498,3 +498,25 @@ def test_job_registry_cancel() -> None:
     assert registry.cancel(running) is False
     listed = [j.id for j in registry.list()]
     assert queued.id in listed and running.id in listed
+
+
+def test_request_body_limit_returns_413(monkeypatch) -> None:
+    """A request declaring a body beyond NMESH_MAX_REQUEST_BYTES is rejected
+    before the body is buffered — protects the gateway from memory bombs."""
+    plan = _llama_plan(1)
+    monkeypatch.setattr(gateway_module, "MAX_REQUEST_BYTES", 16)
+    client = TestClient(create_app(plan))
+    response = client.post("/v1/chat/completions", json={
+        "messages": [{"role": "user", "content": "this body is longer than 16 bytes"}],
+    })
+    assert response.status_code == 413
+    body = response.json()
+    assert body["error"]["code"] == 413
+    assert "limit" in body["error"]["message"]
+    # the limit only gates oversized declarations — normal requests pass
+    monkeypatch.setattr(gateway_module, "MAX_REQUEST_BYTES", 64 * 1024 * 1024)
+    client2 = TestClient(create_app(plan))
+    response2 = client2.post("/v1/chat/completions", json={
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert response2.status_code != 413
