@@ -1857,7 +1857,8 @@ def _models(args: argparse.Namespace) -> int:
         return 0
     language = i18n.lang()
     table = Table(title=i18n.t("label.models", language))
-    for column in ("ID", "Family", "Params", i18n.t("label.roles", language),
+    for column in ("ID", i18n.t("label.family", language),
+                   i18n.t("label.params", language), i18n.t("label.roles", language),
                    i18n.t("label.context", language), i18n.t("label.languages", language)):
         table.add_column(column)
     for model in models:

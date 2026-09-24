@@ -41,6 +41,13 @@ def test_japanese_messages_survived_their_encoding() -> None:
     assert replacement_runs == {}
 
 
+def test_models_table_headers_are_localized() -> None:
+    assert t("label.family", "en") == "Family"
+    assert t("label.params", "en") == "Params"
+    assert t("label.family", "ja") == "ファミリー"
+    assert t("label.params", "ja") == "パラメータ"
+
+
 def test_translation_is_failure_tolerant() -> None:
     assert t("missing.key") == "missing.key"
     assert t("warn.language_coverage", "ja") != ""
