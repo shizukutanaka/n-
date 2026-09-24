@@ -2616,9 +2616,15 @@ def _eval(args: argparse.Namespace) -> int:
         return 1
     service = next((item for item in plan.services if item.name == args.service), None)
     if service is None:
-        print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
-              file=sys.stderr)
-        return 1
+        if args.service is None:
+            service = next(
+                (item for item in plan.services if item.name == "chat"),
+                plan.services[0],
+            )
+        else:
+            print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
+                  file=sys.stderr)
+            return 1
     if not _service_running(service, runtime_status()):
         print(i18n.t("err.eval_up", i18n.lang()), file=sys.stderr)
         return 1
@@ -4319,7 +4325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "before the ladder runs)",
     )
     eval_parser = sub.add_parser("eval")
-    eval_parser.add_argument("--service", default="chat")
+    eval_parser.add_argument("--service")
     eval_parser.add_argument("--json", action="store_true")
     eval_parser.add_argument(
         "--categories",

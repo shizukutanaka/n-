@@ -996,6 +996,52 @@ def test_eval_cli_reports_transport_failures(monkeypatch, capsys) -> None:
     assert output["failed"][0]["failure_kind"] == "transport"
 
 
+def test_eval_cli_unknown_service_errors(monkeypatch, capsys) -> None:
+    service_plan = build_plan(
+        profile(8), _quality_models()[:1], Policy(roles=["chat"])
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    assert cli.main(["eval", "--service", "typo-name"]) == 1
+    assert "typo-name" in capsys.readouterr().err
+
+
+def test_eval_cli_omitted_service_falls_back_to_first(
+    monkeypatch, capsys
+) -> None:
+    service_plan = build_plan(
+        profile(8), _quality_models()[:1], Policy(roles=["chat"])
+    )
+    service_plan = replace(
+        service_plan,
+        services=[replace(service_plan.services[0], name="worker")],
+    )
+    result = EvalRun(
+        "prior-high", "q4_k_m", "llamacpp", 1, 1, 1.0,
+        {"instruction": 1.0},
+        [TaskOutcome("one", "instruction", True, "yes")],
+        3.0,
+    )
+    seen: dict[str, str] = {}
+
+    def fake_run(tasks, base_url, model_ref, **kwargs):
+        seen["base_url"] = base_url
+        return result
+
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(
+        cli,
+        "runtime_status",
+        lambda: RuntimeStatus(True, [{"service": "worker", "running": True}]),
+    )
+    monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
+    monkeypatch.setattr(cli, "eval_run", fake_run)
+    monkeypatch.setattr(cli, "save_eval", lambda value: None)
+    assert cli.main(["eval", "--json"]) == 0
+    assert seen["base_url"] == (
+        f"http://127.0.0.1:{service_plan.services[0].port}"
+    )
+
+
 def test_runner_all_transport_failures_raise() -> None:
     tasks = (Task("one", "instruction", "one", 8, lambda text: True),)
     _EvalHandler.responses = {}
