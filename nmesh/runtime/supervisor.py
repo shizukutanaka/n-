@@ -10,7 +10,9 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from threading import RLock
 from typing import Protocol
@@ -232,6 +234,11 @@ class Supervisor:
         self._loaded_plan_stamp: tuple[float, int] | None = None
         self._boot_recovery = False
         self.notes: dict[str, str] = {}
+        # Heartbeat probe cache, populated per heartbeat pass: shared and
+        # external daemons are re-probed in parallel up front so a wedged
+        # listener cannot stall the loop by its timeout once per service.
+        # Outside heartbeat it stays None and every call probes live.
+        self._url_probes: dict[str, bool] | None = None
         self._lock = RLock()
         self._atexit_armed = False
         self._terminator = terminator or self._terminate_pid
@@ -277,7 +284,7 @@ class Supervisor:
             return None
 
     @staticmethod
-    def _health_url_alive(url: object) -> bool:
+    def _probe_url(url: object) -> bool:
         if not isinstance(url, str) or not url:
             return False
         try:
@@ -287,6 +294,14 @@ class Supervisor:
             return error.code < 500
         except (OSError, ValueError):
             return False
+
+    @staticmethod
+    def _health_url_alive(
+        url: object, probes: Mapping[str, bool] | None = None
+    ) -> bool:
+        if isinstance(url, str) and probes is not None and url in probes:
+            return probes[url]
+        return Supervisor._probe_url(url)
 
     @staticmethod
     def _sleep_post(
@@ -335,8 +350,7 @@ class Supervisor:
         # copy at PCIe speed, well inside this timeout.
         return self._sleep_post(service, "sleep?level=1", timeout=120.0)
 
-    @classmethod
-    def _entry_alive(cls, entry: Mapping[str, object]) -> bool:
+    def _entry_alive(self, entry: Mapping[str, object]) -> bool:
         pid = entry.get("pid")
         if pid is not None:
             if not isinstance(pid, (int, float, str)):
@@ -352,7 +366,14 @@ class Supervisor:
             except (TypeError, ValueError):
                 return False
         if entry.get("shared") or entry.get("external"):
-            return cls._health_url_alive(entry.get("health_url"))
+            url = entry.get("health_url")
+            if (
+                self._url_probes is not None
+                and isinstance(url, str)
+                and url in self._url_probes
+            ):
+                return self._url_probes[url]
+            return self._health_url_alive(url)
         return False
 
     def _load_state(self) -> dict[str, object] | None:
@@ -456,17 +477,19 @@ class Supervisor:
             return self._alive(service.name)
         adopted = self.adopted.get(service.name)
         if adopted is not None:
-            if self._entry_alive(adopted) and self._healthy(service):
+            if self._entry_alive(adopted) and self._service_healthy(service):
                 return True
             self.adopted.pop(service.name, None)
         if service.name in self.external_shared:
-            if service.launch.health_url is not None and self._healthy(service):
+            if service.launch.health_url is not None and self._service_healthy(
+                service
+            ):
                 return True
             self.external_shared.discard(service.name)
         return (
             service.launch.shared_daemon
             and service.launch.health_url is not None
-            and self._healthy(service)
+            and self._service_healthy(service)
         )
 
     def _alive(self, name: str) -> bool:
@@ -491,7 +514,7 @@ class Supervisor:
             and not isinstance(pid, bool)
             and isinstance(entry, dict)
             and self._entry_alive(entry)
-            and self._healthy(service)
+            and self._service_healthy(service)
         ):
             recorded_model = entry.get("model_ref")
             if recorded_model is not None and recorded_model != service.model_ref:
@@ -545,7 +568,7 @@ class Supervisor:
             # sleeping engine answers endpoints but cannot serve.
             self.external_shared.add(service.name)
             return True
-        if self._healthy(service):
+        if self._service_healthy(service):
             orphan_pid = engine_listener_pid(service.port)
             if orphan_pid is not None and not _pid_serves_model(
                 orphan_pid, service.model_ref
@@ -859,13 +882,24 @@ class Supervisor:
         return self._with_log_tail(service_name, message)
 
     def _healthy(self, service: PlannedService) -> bool:
-        if service.launch.health_url is None:
+        url = service.launch.health_url
+        if url is None:
             return True
         try:
-            with urllib.request.urlopen(service.launch.health_url, timeout=2) as response:
+            with urllib.request.urlopen(url, timeout=2) as response:
                 return 200 <= response.status < 500
         except (OSError, ValueError):
             return False
+
+    def _service_healthy(self, service: PlannedService) -> bool:
+        url = service.launch.health_url
+        if (
+            self._url_probes is not None
+            and isinstance(url, str)
+            and url in self._url_probes
+        ):
+            return self._url_probes[url]
+        return self._healthy(service)
 
     def _wait_health(self, service: PlannedService, timeout: float | None = None) -> bool:
         timeout = self.health_timeout if timeout is None else timeout
@@ -1816,81 +1850,130 @@ class Supervisor:
                         if isinstance(persisted, list)
                         else set()
                     )
-            for service in self.active_plan.services:
-                if service.name in self.idle:
-                    continue
-                adopted = self.adopted.get(service.name)
-                adopted_dead = adopted is not None and not self._entry_alive(adopted)
-                if adopted_dead:
-                    self.adopted.pop(service.name, None)
-                    self.external_shared.discard(service.name)
-                    changed = True
-                if (
-                    service.name in self.active_plan.swap_group
-                    and service.name not in self.processes
-                    and service.name not in self.external_shared
-                ):
-                    continue
-                if not adopted_dead and self._adopt(service):
-                    self.failed.pop(service.name, None)
-                    changed = True
-                    continue
-                if self._spec_drift(service):
-                    self._stop_process(service.name)
-                    changed = True
-                if self._already_up(service):
-                    continue
-                if boot_recovery and (
-                    not service.resident and service.name not in persisted_names
-                ):
-                    continue
-                if service.name in self.failed:
-                    continue
-                if service.name in self.processes:
-                    self.processes.pop(service.name, None)
-                try:
-                    self.active_plan, service, _, _ = self._apply_acquired(
-                        self.active_plan,
-                        service,
-                        acquire(service, local_only=True),
+            # Probe everything the loop below may consult, in parallel:
+            # serial urlopen(2s) per shared/external service lets one wedged
+            # daemon stall this heartbeat (and other services' revives) by
+            # timeout × count. Caches refresh every pass; _wait_health and
+            # non-heartbeat callers still probe live.
+            probe_services = [
+                service for service in self.active_plan.services
+                if service.name not in self.processes
+                and service.name not in self.idle
+                and isinstance(service.launch.health_url, str)
+            ]
+            probe_urls = {
+                str(entry.get("health_url"))
+                for entry in self.adopted.values()
+                if isinstance(entry.get("health_url"), str)
+            }
+            targets: dict[str, Callable[[], bool]] = {}
+            for probe_service in probe_services:
+                targets.setdefault(
+                    str(probe_service.launch.health_url),
+                    partial(self._healthy, probe_service),
+                )
+            for probe_url in probe_urls:
+                targets.setdefault(
+                    probe_url, partial(self._health_url_alive, probe_url)
+                )
+            url_probes: dict[str, bool] = {}
+
+            def run_probe(probe: Callable[[], bool]) -> bool:
+                return probe()
+
+            if len(targets) > 1:
+                with ThreadPoolExecutor(
+                    max_workers=min(8, len(targets))
+                ) as pool:
+                    url_probes = dict(zip(
+                        targets,
+                        pool.map(run_probe, targets.values()),
+                        strict=True,
+                    ))
+            elif targets:
+                (only_url, only_probe), = targets.items()
+                url_probes[only_url] = only_probe()
+            self._url_probes = url_probes
+            try:
+                for service in self.active_plan.services:
+                    if service.name in self.idle:
+                        continue
+                    adopted = self.adopted.get(service.name)
+                    adopted_dead = (
+                        adopted is not None and not self._entry_alive(adopted)
                     )
-                except Exception as error:  # noqa: BLE001
-                    # The watchdog never downloads — a plan can name an
-                    # artifact that was never fetched. Record why instead
-                    # of crash-looping the engine on a missing file.
-                    self.failed[service.name] = i18n.t(
-                        "err.artifact_missing", i18n.lang(),
-                        service=service.name, error=error,
-                    )
-                    changed = True
-                    continue
-                if not self._restart_budget(service.name):
-                    self.failed[service.name] = i18n.t(
-                        "err.restart_budget", i18n.lang(), service=service.name
-                    )
-                    changed = True
-                    continue
-                self._record_restart(service.name)
-                changed = True
-                try:
-                    self.processes[service.name] = self.launcher(service)
-                    self.launched_argv[service.name] = list(service.launch.argv)
-                    self._arm_atexit()
-                    if not self._wait_health(service, timeout=min(self.health_timeout, 30.0)):
+                    if adopted_dead:
+                        self.adopted.pop(service.name, None)
+                        self.external_shared.discard(service.name)
+                        changed = True
+                    if (
+                        service.name in self.active_plan.swap_group
+                        and service.name not in self.processes
+                        and service.name not in self.external_shared
+                    ):
+                        continue
+                    if not adopted_dead and self._adopt(service):
+                        self.failed.pop(service.name, None)
+                        changed = True
+                        continue
+                    if self._spec_drift(service):
                         self._stop_process(service.name)
-                        if not self._restart_budget(service.name):
-                            self.failed[service.name] = self._with_log_tail(
-                                service.name,
-                                i18n.t("warn.health_failed", i18n.lang(),
-                                       service=service.name),
-                            )
-                except Exception as error:  # noqa: BLE001
-                    self.processes.pop(service.name, None)
+                        changed = True
+                    if self._already_up(service):
+                        continue
+                    if boot_recovery and (
+                        not service.resident and service.name not in persisted_names
+                    ):
+                        continue
+                    if service.name in self.failed:
+                        continue
+                    if service.name in self.processes:
+                        self.processes.pop(service.name, None)
+                    try:
+                        self.active_plan, service, _, _ = self._apply_acquired(
+                            self.active_plan,
+                            service,
+                            acquire(service, local_only=True),
+                        )
+                    except Exception as error:  # noqa: BLE001
+                        # The watchdog never downloads — a plan can name an
+                        # artifact that was never fetched. Record why instead
+                        # of crash-looping the engine on a missing file.
+                        self.failed[service.name] = i18n.t(
+                            "err.artifact_missing", i18n.lang(),
+                            service=service.name, error=error,
+                        )
+                        changed = True
+                        continue
                     if not self._restart_budget(service.name):
-                        self.failed[service.name] = str(error)
-            if changed:
-                self._persist(self.active_plan)
-            return self.status()
+                        self.failed[service.name] = i18n.t(
+                            "err.restart_budget", i18n.lang(), service=service.name
+                        )
+                        changed = True
+                        continue
+                    self._record_restart(service.name)
+                    changed = True
+                    try:
+                        self.processes[service.name] = self.launcher(service)
+                        self.launched_argv[service.name] = list(service.launch.argv)
+                        self._arm_atexit()
+                        if not self._wait_health(service, timeout=min(self.health_timeout, 30.0)):
+                            self._stop_process(service.name)
+                            if not self._restart_budget(service.name):
+                                self.failed[service.name] = self._with_log_tail(
+                                    service.name,
+                                    i18n.t("warn.health_failed", i18n.lang(),
+                                           service=service.name),
+                                )
+                    except Exception as error:  # noqa: BLE001
+                        self.processes.pop(service.name, None)
+                        if not self._restart_budget(service.name):
+                            self.failed[service.name] = str(error)
+                if changed:
+                    self._persist(self.active_plan)
+                return self.status()
+            finally:
+                self._url_probes = None
 
 
 _default = Supervisor()

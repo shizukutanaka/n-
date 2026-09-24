@@ -1810,3 +1810,60 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_heartbeat_probes_external_services_concurrently(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Several external/shared services must not each pay a serial 2s probe
+    inside heartbeat: the pass probes every URL it may consult in parallel,
+    so one wedged daemon cannot delay unrelated revives by timeout×count."""
+    calls: list[str] = []
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+    def slow_urlopen(url: object, timeout: float = 0) -> _Response:
+        calls.append(str(url))
+        time.sleep(0.2)
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", slow_urlopen)
+
+    def service(name: str, port: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            name=name,
+            model_ref="m",
+            resident=True,
+            port=port,
+            quant="Q4_K_M",
+            backend="llamacpp",
+            memory=SimpleNamespace(parallel_slots=1),
+            launch=SimpleNamespace(
+                health_url=f"http://127.0.0.1:{port}/health",
+                shared_daemon=True,
+                argv=["x"],
+            ),
+        )
+
+    supervisor = Supervisor(
+        lambda _item: _KillableProcess(), tmp_path / "state.json"
+    )
+    supervisor.external_shared = {"a", "b"}
+    supervisor.active_plan = SimpleNamespace(
+        services=[service("a", 9001), service("b", 9002)],
+        swap_group=frozenset(),
+    )
+
+    start = time.monotonic()
+    supervisor.heartbeat()
+    elapsed = time.monotonic() - start
+
+    assert len(calls) == 2
+    assert elapsed < 0.35  # serial probing would take >= 0.4s
