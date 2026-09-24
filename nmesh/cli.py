@@ -4392,7 +4392,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     jobs_parser.add_argument("--port", type=int, default=18000)
     jobs_parser.add_argument("--limit", type=_positive_int, default=50)
     jobs_parser.add_argument("--cancel", metavar="JOB_ID",
-                             help="cancel a queued job (running jobs cannot be interrupted)")
+                             help="cancel a queued or running job (running cancellation aborts the upstream call)")
     jobs_parser.add_argument("--json", action="store_true")
     watch_parser = sub.add_parser("watch")
     watch_parser.add_argument(
