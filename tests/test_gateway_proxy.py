@@ -625,8 +625,9 @@ def test_bench_runner_uses_upstream_timings_and_unique_prompts() -> None:
         assert result.approximate is False
         assert result.cached_prompt_tokens == 0
         prompts = [body["messages"][0]["content"] for body in _UsageHandler.request_bodies]
-        assert len(prompts) == 3
-        assert len(set(prompts)) == 3
+        # 1 warm-up + 3 measured runs, each with a unique nonce prompt.
+        assert len(prompts) == 4
+        assert len(set(prompts)) == 4
         assert all(not prompt.startswith("benchmark filler text ") for prompt in prompts)
     finally:
         _UsageHandler.timings = None
@@ -700,7 +701,8 @@ def test_bench_runner_aggregates_decode_spread(monkeypatch) -> None:
     model = ModelSpec("spread-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
                       4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
     plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
-    values = iter((12.0, 30.0, 18.0))
+    # Discarded warm-up sample first, then the three measured runs.
+    values = iter((5.0, 12.0, 30.0, 18.0))
 
     def fake_measure_once(*_args, **_kwargs):
         decode_tps = next(values)

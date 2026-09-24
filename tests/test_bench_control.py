@@ -201,8 +201,9 @@ def test_measure_forwards_cache_prompt(monkeypatch) -> None:
             cache_prompts.append(kwargs["cache_prompt"]) or _result(40.0)
         ),
     )
+    # One discarded warm-up call, then the two measured runs.
     measure(object(), "http://test", runs=2, cache_prompt=True)
-    assert cache_prompts == [True, True]
+    assert cache_prompts == [True, True, True]
 
 
 class _BenchStream:
