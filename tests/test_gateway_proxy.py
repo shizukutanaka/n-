@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import threading
+import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
@@ -34,6 +35,8 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         self.wfile.write(b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n')
+        self.wfile.flush()
+        time.sleep(0.005)
         self.wfile.write(b'data: {"choices":[{"delta":{}}]}\n\n')
         self.wfile.write(b"data: [DONE]\n\n")
 
@@ -117,6 +120,7 @@ class _UsageHandler(BaseHTTPRequestHandler):
             payload = json.dumps(data).encode()
             self.wfile.write(b"data: " + payload + b"\n\n")
             self.wfile.flush()
+            time.sleep(0.002)
         usage = {"completion_tokens": 17}
         if self.__class__.prompt_tokens is not None:
             usage["prompt_tokens"] = self.__class__.prompt_tokens
