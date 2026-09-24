@@ -91,26 +91,33 @@ def _number(value: object) -> int:
     return 0
 
 
-def _find_vram(value: object) -> tuple[int, int]:
+def _find_vram(value: object) -> tuple[int, int, int | None]:
+    """Return (total, used, free) bytes; free is None when nothing reports it."""
+    total = 0
+    used = 0
+    free: int | None = None
     if isinstance(value, dict):
-        total = 0
-        free = 0
+        children = list(value.values())
         for key, item in value.items():
             lowered = key.lower()
             if "total" in lowered:
                 total = max(total, _number(item))
+            if "used" in lowered:
+                used = max(used, _number(item))
             if "free" in lowered or "avail" in lowered:
-                free = max(free, _number(item))
-            nested_total, nested_free = _find_vram(item)
-            total = max(total, nested_total)
-            free = max(free, nested_free)
-        return total, free
-    if isinstance(value, list):
-        totals = [_find_vram(item) for item in value]
-        return max((item[0] for item in totals), default=0), max(
-            (item[1] for item in totals), default=0
-        )
-    return 0, 0
+                found = _number(item)
+                free = found if free is None else max(free, found)
+    elif isinstance(value, list):
+        children = value
+    else:
+        return total, used, free
+    for child in children:
+        nested_total, nested_used, nested_free = _find_vram(child)
+        total = max(total, nested_total)
+        used = max(used, nested_used)
+        if nested_free is not None:
+            free = nested_free if free is None else max(free, nested_free)
+    return total, used, free
 
 
 def parse_rocm_smi(text: str) -> list[GPUInfo]:
@@ -122,17 +129,20 @@ def parse_rocm_smi(text: str) -> list[GPUInfo]:
         return []
     gpus: list[GPUInfo] = []
     for key, value in payload.items():
-        total, free = _find_vram(value)
+        total, used, free = _find_vram(value)
         if total == 0:
             continue
-        index = _number(key)
+        digits = re.search(r"\d+", key)
+        index = int(digits.group()) if digits else _number(key)
         gpus.append(
             GPUInfo(
                 index=index,
                 name=f"AMD GPU {index}",
                 vendor="amd",
                 total_vram_bytes=total,
-                free_vram_bytes=free or total,
+                free_vram_bytes=(
+                    free if free is not None else max(total - used, 0)
+                ),
                 compute_capability=None,
                 driving_display=False,
                 vram_source="smi",
