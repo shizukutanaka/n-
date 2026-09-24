@@ -277,6 +277,30 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: mixtral-8x7b-instruct
+  family: mixtral
+  params: 46700000000
+  n_layers: 32
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 32000
+  head_layout: separate
+  # MoE: 8 experts/layer top-2 (3x4096x14336 params each) on all 32 layers —
+  # ~45.1B routed params offloadable via --n-cpu-moe, ~12.9B active decode.
+  moe_expert_params: 45097156608
+  n_moe_layers: 32
+  max_context: 32768
+  roles: [chat]
+  quality: 65
+  license: apache-2.0
+  languages: [en, fr, de, es, it]
+  sources:
+    ollama: "mixtral:8x7b"
+    hf_gguf: "bartowski/Mixtral-8x7B-Instruct-v0.1-GGUF"
+    hf: "mistralai/Mixtral-8x7B-Instruct-v0.1"
+    hf_mlx: "mlx-community/Mixtral-8x7B-Instruct-v0.1-4bit"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
