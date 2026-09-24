@@ -549,3 +549,20 @@ def test_non_embed_route_is_unchanged(monkeypatch) -> None:
     finally:
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_embeddings_missing_role_returns_actionable_501(monkeypatch) -> None:
+    """A plan without an embed service routed POST /v1/embeddings to a bare
+    404 'Unknown service: ' — answer 501 with the plan fix, like /v1/rerank."""
+    upstream = _start_autochunk_upstream()
+    try:
+        monkeypatch.setattr(gateway_module, "idle_services", list)
+        with TestClient(create_app(_plan(["chat"], upstream.server_address[1]))) as client:
+            response = client.post(
+                "/v1/embeddings", json={"model": "nmesh-auto", "input": "hello"},
+            )
+        assert response.status_code == 501
+        assert "embed" in response.json()["error"]["message"]
+    finally:
+        upstream.shutdown()
+        upstream.server_close()

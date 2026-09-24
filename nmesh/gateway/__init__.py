@@ -2106,7 +2106,19 @@ def create_app(
     async def embeddings(request: dict[str, object]) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
-        service = _service(selected, selected.routing.role_to_service.get("embed", ""))
+        name = (
+            _explicit(_get(request, "model"), selected)
+            or selected.routing.role_to_service.get("embed", "")
+        )
+        if not name:
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "this plan has no embed service; re-run "
+                    "`nmesh plan --roles chat,embed`"
+                ),
+            )
+        service = _service(selected, name)
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/embeddings", instrument=False
         )
