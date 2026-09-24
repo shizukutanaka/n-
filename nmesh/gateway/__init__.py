@@ -75,6 +75,11 @@ try:
 except ValueError:
     CONNECT_TIMEOUT = 10.0
 
+try:
+    MAX_REQUEST_BYTES = int(os.environ.get("NMESH_MAX_REQUEST_BYTES", str(64 * 1024 * 1024)))
+except ValueError:
+    MAX_REQUEST_BYTES = 64 * 1024 * 1024
+
 # Backends whose OpenAI-compat stream accepts stream_options.include_usage.
 # The gateway injects it so decode telemetry uses the upstream's exact
 # completion_tokens instead of an approximation; mlx is excluded because its
@@ -1127,6 +1132,29 @@ def create_app(
                     "Vary": "Origin",
                 },
             )
+        # Reject oversized bodies before FastAPI buffers them — a multi-GB
+        # POST would otherwise be read fully into memory before routing.
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared = int(content_length)
+            except ValueError:
+                declared = 0
+            if declared > MAX_REQUEST_BYTES:
+                return Response(
+                    content=json.dumps({
+                        "error": {
+                            "message": (
+                                f"request body exceeds the "
+                                f"{MAX_REQUEST_BYTES}-byte limit"
+                            ),
+                            "type": "invalid_request_error",
+                            "code": 413,
+                        }
+                    }),
+                    status_code=413,
+                    media_type="application/json",
+                )
         if api_key_bytes is not None and path.startswith(
             ("/v1/", "/metrics", "/admin/", "/logs")
         ):
