@@ -1408,6 +1408,8 @@ def _jobs(args: argparse.Namespace) -> int:
         else:
             _console().print(i18n.t("jobs.cancelled", language, job=args.cancel))
         return 0
+    if args.wait:
+        return _wait_job(args, language)
     try:
         with urllib.request.urlopen(
             urllib.request.Request(
@@ -1463,6 +1465,52 @@ def _jobs(args: argparse.Namespace) -> int:
         )
     _console().print(table)
     return 0
+
+
+def _wait_job(args: argparse.Namespace, language: str) -> int:
+    """Poll a gateway job until it reaches a terminal state — the script
+    counterpart of `nmesh jobs --cancel` for CI and integration flows."""
+    deadline = time.monotonic() + args.timeout if args.timeout > 0 else None
+    terminal = {"done", "failed", "cancelled"}
+    while True:
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request(
+                    f"http://127.0.0.1:{args.port}/v1/jobs/{args.wait}",
+                    headers=_gateway_headers(),
+                ),
+                timeout=10,
+            ) as response:
+                data = json.loads(response.read().decode())
+        except HTTPError as error:
+            if error.code == 404:
+                print(i18n.t("err.jobs_missing", language, job=args.wait),
+                      file=sys.stderr)
+            else:
+                print(i18n.t("err.jobs_gateway", language, port=args.port),
+                      file=sys.stderr)
+            return 1
+        except (OSError, json.JSONDecodeError):
+            print(i18n.t("err.jobs_gateway", language, port=args.port),
+                  file=sys.stderr)
+            return 1
+        state = str(data.get("state") or "")
+        if state in terminal:
+            if args.json:
+                _print_json(data)
+            else:
+                _console().print(
+                    i18n.t("jobs.finished", language, job=args.wait, state=state)
+                )
+            return 0 if state == "done" else 1
+        if deadline is not None and time.monotonic() >= deadline:
+            print(
+                i18n.t("err.jobs_wait_timeout", language,
+                       job=args.wait, seconds=args.timeout),
+                file=sys.stderr,
+            )
+            return 1
+        time.sleep(0.5)
 
 
 class _GatewayProcess(Protocol):
@@ -4393,6 +4441,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     jobs_parser.add_argument("--limit", type=_positive_int, default=50)
     jobs_parser.add_argument("--cancel", metavar="JOB_ID",
                              help="cancel a queued job (running jobs cannot be interrupted)")
+    jobs_parser.add_argument("--wait", metavar="JOB_ID",
+                             help="poll a job until it finishes (exit 0 on done, 1 on failed/cancelled/timeout)")
+    jobs_parser.add_argument("--timeout", type=float, default=0.0,
+                             help="seconds to wait for --wait (0 = unlimited)")
     jobs_parser.add_argument("--json", action="store_true")
     watch_parser = sub.add_parser("watch")
     watch_parser.add_argument(

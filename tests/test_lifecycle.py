@@ -1810,3 +1810,63 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_jobs_cli_wait_polls_until_terminal(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    states = iter(["running", "running", "done"])
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps({"id": "job-9", "state": next(states)}).encode()
+
+    monkeypatch.setattr(
+        "nmesh.cli.urllib.request.urlopen", lambda *_a, **_k: _Response()
+    )
+    assert cli.main(["jobs", "--wait", "job-9"]) == 0
+    assert "job-9" in capsys.readouterr().out
+
+
+def test_jobs_cli_wait_fails_on_failed_state(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps({"id": "job-4", "state": "failed"}).encode()
+
+    monkeypatch.setattr(
+        "nmesh.cli.urllib.request.urlopen", lambda *_a, **_k: _Response()
+    )
+    assert cli.main(["jobs", "--wait", "job-4"]) == 1
+
+
+def test_jobs_cli_wait_times_out(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps({"id": "job-5", "state": "running"}).encode()
+
+    monkeypatch.setattr(
+        "nmesh.cli.urllib.request.urlopen", lambda *_a, **_k: _Response()
+    )
+    assert cli.main(["jobs", "--wait", "job-5", "--timeout", "0.01"]) == 1
+    assert "did not finish" in capsys.readouterr().err
