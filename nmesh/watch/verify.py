@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -49,13 +50,8 @@ def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _catalog_contains(repo: str) -> bool:
-    wanted = repo.casefold()
-    return any(
-        wanted == source.casefold()
-        for model in load_catalog()
-        for source in model.sources.values()
-    )
+def _catalog_contains(repo: str, catalog_sources: frozenset[str]) -> bool:
+    return repo.casefold() in catalog_sources
 
 
 def _quant_labels(names: Sequence[str]) -> tuple[str, ...]:
@@ -162,11 +158,12 @@ def _tree_weight_sets(repo: str, client: httpx.Client) -> dict[str, int]:
 def _model_finding(
     mention: Mention,
     client: httpx.Client,
+    catalog_sources: frozenset[str],
     stats: dict[str, int] | None = None,
 ) -> Finding | None:
     repo = mention.value
     try:
-        if _catalog_contains(repo):
+        if _catalog_contains(repo, catalog_sources):
             if stats is not None:
                 stats["in_catalog"] = stats.get("in_catalog", 0) + 1
             return None
@@ -314,9 +311,53 @@ def verify(
     flags_data = _caps_flags()
     flags = flags_data[0] if flags_data is not None else None
     routes = _gateway_routes()
-    for mention in mentions:
+    model_items = [
+        (index, mention)
+        for index, mention in enumerate(mentions)
+        if mention.kind == "model_repo"
+    ]
+    resolved: dict[int, Finding | None] = {}
+    if model_items:
+        # Each model_repo mention costs 1-4 Hugging Face API calls — resolve
+        # them concurrently (httpx.Client is thread-safe). Each worker gets
+        # its own stats dict so counters stay race-free; verify() merges
+        # them into the caller's catalog_stats after the join.
+        catalog_sources = frozenset(
+            source.casefold()
+            for model in load_catalog()
+            for source in model.sources.values()
+        )
+        per_call_stats: list[dict[str, int]] = [{} for _ in model_items]
+
+        def job(args: tuple[int, int]) -> Finding | None:
+            position, mention_index = args
+            return _model_finding(
+                mentions[mention_index],
+                client,
+                catalog_sources,
+                per_call_stats[position],
+            )
+
+        if len(model_items) == 1:
+            found = [job((0, model_items[0][0]))]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=min(8, len(model_items))
+            ) as pool:
+                found = list(
+                    pool.map(job, enumerate(index for index, _ in model_items))
+                )
+        resolved = {
+            model_items[position][0]: found[position]
+            for position in range(len(model_items))
+        }
+        if catalog_stats is not None:
+            for partial in per_call_stats:
+                for key, value in partial.items():
+                    catalog_stats[key] = catalog_stats.get(key, 0) + value
+    for index, mention in enumerate(mentions):
         if mention.kind == "model_repo":
-            finding = _model_finding(mention, client, catalog_stats)
+            finding = resolved.get(index)
             if finding is not None:
                 findings.append(finding)
         elif mention.kind == "flag" and flags is not None and mention.value not in flags:

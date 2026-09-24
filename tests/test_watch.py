@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -596,3 +598,37 @@ def test_cli_state_deduplication_and_all_override(tmp_path: Path, monkeypatch, c
     assert main(["watch", "--offline", str(items), "--all", "--json"]) == 0
     third = json.loads(capsys.readouterr().out)
     assert third["new_findings"] == 1
+
+
+def test_verify_resolves_model_mentions_concurrently(monkeypatch) -> None:
+    """Each model_repo mention costs several HF API calls; verify() resolves
+    them concurrently instead of serially, preserving mention order."""
+    in_flight = [0]
+    max_in_flight = [0]
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        with lock:
+            in_flight[0] += 1
+            max_in_flight[0] = max(max_in_flight[0], in_flight[0])
+        try:
+            time.sleep(0.05)
+            if request.url.path.startswith("/api/models/"):
+                return httpx.Response(200, json={"siblings": []})
+            return httpx.Response(404)
+        finally:
+            with lock:
+                in_flight[0] -= 1
+
+    monkeypatch.setattr("nmesh.watch.verify.load_catalog", lambda: ())
+    mentions = tuple(
+        Mention("model_repo", f"acme/m{i}", 1, ("u",)) for i in range(3)
+    )
+    with _client(handler) as client:
+        findings = verify(mentions, client)
+    assert max_in_flight[0] >= 2
+    assert [finding.value for finding in findings] == [
+        "acme/m0",
+        "acme/m1",
+        "acme/m2",
+    ]
