@@ -1270,7 +1270,7 @@ def create_app(
                 )
             if job.state == "cancelled":
                 if slot_token is not None:
-                    limiter.release(slot_token)
+                    await limiter.release(slot_token)
                     slot_token = None
                 raise HTTPException(
                     status_code=409,
@@ -1291,7 +1291,7 @@ def create_app(
                 )
         if not jobs.start(job):
             if slot_token is not None:
-                limiter.release(slot_token)
+                await limiter.release(slot_token)
             raise HTTPException(
                 status_code=409,
                 detail=f"job {job.id} cancelled while queued",
@@ -1384,7 +1384,7 @@ def create_app(
                 if locked:
                     gate.release()
                 if limit_slots:
-                    limiter.release(slot_token)
+                    await limiter.release(slot_token)
                 if job is not None:
                     jobs.finish(job, ok=False, detail="upstream_unreachable")
                 raise
@@ -1395,7 +1395,7 @@ def create_app(
                 if locked:
                     gate.release()
                 if limit_slots:
-                    limiter.release(slot_token)
+                    await limiter.release(slot_token)
                 if job is not None:
                     jobs.finish(job, ok=False, detail=str(error))
                 raise HTTPException(status_code=502, detail=str(error)) from error
@@ -1419,7 +1419,7 @@ def create_app(
                 if locked:
                     gate.release()
                 if limit_slots:
-                    limiter.release(slot_token)
+                    await limiter.release(slot_token)
                 unsupported = _completion_not_supported(
                     path, upstream.status_code, service.backend
                 )
@@ -1530,7 +1530,7 @@ def create_app(
                     if locked:
                         gate.release()
                     if limit_slots:
-                        limiter.release(slot_token)
+                        await limiter.release(slot_token)
                     if job is not None:
                         jobs.finish(
                             job,
@@ -1754,7 +1754,7 @@ def create_app(
             if locked:
                 gate.release()
             if limit_slots:
-                limiter.release(slot_token)
+                await limiter.release(slot_token)
             if job is not None and sys.exc_info()[1] is not None:
                 jobs.finish(job, ok=False, detail=str(sys.exc_info()[1]))
         if isinstance(data, dict) and "model" in data:
@@ -1975,7 +1975,7 @@ def create_app(
         finally:
             for service, slot, ticket in reversed(managed):
                 in_flight.leave(service.name, ticket)
-                limiter.release(slot)
+                await limiter.release(slot)
                 last_use.touch(service.name)
         role = "worker" if result.accepted else "lead"
         return {

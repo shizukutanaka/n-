@@ -118,10 +118,10 @@ def test_slot_limiter_enforces_limits_and_releases() -> None:
         assert limiter.metrics()[service.name]["waiting"] == 1
         assert await waiting is None
         assert limiter.metrics()[service.name]["in_flight"] == 1
-        limiter.release(first)
+        await limiter.release(first)
         second = await limiter.acquire(service, 1.0)
         assert second is not None
-        limiter.release(second)
+        await limiter.release(second)
         assert limiter.metrics()[service.name]["in_flight"] == 0
 
     asyncio.run(scenario())
@@ -137,13 +137,57 @@ def test_slot_limiter_releases_tokens_from_old_plan_after_resize() -> None:
         token = await limiter.acquire(old.services[0], 1.0)
         assert token is not None
         limiter.size(new)
-        limiter.release(token)
+        await limiter.release(token)
         assert limiter.metrics()[new.services[0].name]["in_flight"] == 0
         first = await limiter.acquire(new.services[0], 1.0)
         second = await limiter.acquire(new.services[0], 1.0)
         assert first is not None and second is not None
-        limiter.release(first)
-        limiter.release(second)
+        await limiter.release(first)
+        await limiter.release(second)
+
+    asyncio.run(scenario())
+
+
+def test_slot_limiter_blocks_new_acquires_while_stale_holders_outstanding() -> None:
+    old = _llama_plan(1)
+    new = _llama_plan(1)
+
+    async def scenario() -> None:
+        limiter = SlotLimiter()
+        limiter.size(old)
+        token = await limiter.acquire(old.services[0], 1.0)
+        assert token is not None
+        # A plan reload used to discard the entry wholesale: the stale holder's
+        # slot became invisible and a fresh permit was issued above the limit.
+        limiter.size(new)
+        assert await limiter.acquire(new.services[0], 0.01) is None
+        await limiter.release(token)
+        replacement = await limiter.acquire(new.services[0], 1.0)
+        assert replacement is not None
+        await limiter.release(replacement)
+
+    asyncio.run(scenario())
+
+
+def test_slot_limiter_honors_shrunken_limit_until_stale_holders_drain() -> None:
+    old = _llama_plan(2)
+    new = _llama_plan(1)
+
+    async def scenario() -> None:
+        limiter = SlotLimiter()
+        limiter.size(old)
+        first = await limiter.acquire(old.services[0], 1.0)
+        second = await limiter.acquire(old.services[0], 1.0)
+        assert first is not None and second is not None
+        limiter.size(new)
+        assert await limiter.acquire(new.services[0], 0.01) is None
+        await limiter.release(first)
+        # in_flight is still 1 against the new limit of 1.
+        assert await limiter.acquire(new.services[0], 0.01) is None
+        await limiter.release(second)
+        replacement = await limiter.acquire(new.services[0], 1.0)
+        assert replacement is not None
+        await limiter.release(replacement)
 
     asyncio.run(scenario())
 
