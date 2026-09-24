@@ -138,6 +138,26 @@
     hf_gguf: "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF"
     hf: "Qwen/Qwen2.5-Coder-1.5B-Instruct"
     hf_mlx: "mlx-community/Qwen2.5-Coder-1.5B-Instruct-4bit"
+- id: qwen2.5-coder-3b
+  family: qwen2.5-coder
+  params: 3090000000
+  n_layers: 36
+  n_heads: 16
+  n_kv_heads: 2
+  head_dim: 128
+  hidden_size: 2048
+  vocab_size: 151936
+  head_layout: duplicate
+  max_context: 32768
+  roles: [code]
+  quality: 64
+  license: apache-2.0
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th]
+  sources:
+    ollama: "qwen2.5-coder:3b"
+    hf_gguf: "Qwen/Qwen2.5-Coder-3B-Instruct-GGUF"
+    hf: "Qwen/Qwen2.5-Coder-3B-Instruct"
+    hf_mlx: "mlx-community/Qwen2.5-Coder-3B-Instruct-4bit"
 - id: qwen2.5-coder-7b
   family: qwen2.5-coder
   params: 7620000000
