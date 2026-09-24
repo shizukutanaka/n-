@@ -59,6 +59,45 @@ def test_retrieval_properties_follow_conservative_ladder() -> None:
     assert record.degraded_tokens == 3512
 
 
+def test_measure_retrieval_embeds_documents_concurrently() -> None:
+    import threading
+    import time
+
+    in_flight = 0
+    max_in_flight = 0
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, max_in_flight
+        with lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+        time.sleep(0.01)
+        with lock:
+            in_flight -= 1
+        input_value = json.loads(request.read())["input"]
+        text = input_value if isinstance(input_value, str) else ""
+        vector = [1.0, 0.0] if "Meridian" in text else [0.0, 1.0]
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"embedding": vector}],
+                "usage": {"prompt_tokens": len(text.split())},
+            },
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        measure_retrieval(
+            client, "http://test", "embed",
+            seeds=(11,), rung_words=(10,),
+        )
+    finally:
+        client.close()
+    assert max_in_flight > 1
+
+
 def test_measure_retrieval_uses_one_request_per_document_and_query() -> None:
     requests: list[dict[str, object]] = []
 
