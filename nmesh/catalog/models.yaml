@@ -337,6 +337,26 @@
     hf_gguf: "bartowski/phi-4-GGUF"
     hf: "microsoft/phi-4"
     hf_mlx: "mlx-community/phi-4-4bit"
+- id: phi-4-mini-instruct
+  family: phi-4
+  params: 3800000000
+  n_layers: 32
+  n_heads: 24
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 3072
+  vocab_size: 200064
+  head_layout: shared
+  max_context: 131072
+  roles: [chat]
+  quality: 70
+  license: mit
+  languages: [en, ar, zh, cs, da, nl, fi, fr, de, he, hu, it, ja, ko, no, pl, pt, ru, es, sv, th, tr, uk]
+  sources:
+    ollama: "phi4-mini:3.8b"
+    hf_gguf: "bartowski/microsoft_Phi-4-mini-instruct-GGUF"
+    hf: "microsoft/Phi-4-mini-instruct"
+    hf_mlx: "mlx-community/Phi-4-mini-instruct-4bit"
 - id: gemma2-2b
   family: gemma2
   params: 2610000000
