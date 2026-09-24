@@ -684,7 +684,6 @@ class Supervisor:
                     gpu_bytes=gpu_bytes,
                     cpu_bytes=cpu_bytes,
                     n_gpu_layers=layers,
-                    n_cpu_moe=service.n_cpu_moe,
                 )
                 if acquired.artifact_bytes > estimated_bytes * 1.10:
                     artifact_replanned = True
