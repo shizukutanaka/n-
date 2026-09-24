@@ -381,6 +381,54 @@
     hf_gguf: "bartowski/gemma-2-9b-it-GGUF"
     hf: "google/gemma-2-9b-it"
     hf_mlx: "mlx-community/gemma-2-9b-it-4bit"
+- id: gemma-3-12b-it
+  family: gemma3
+  params: 11770000000
+  n_layers: 48
+  n_heads: 16
+  n_kv_heads: 8
+  head_dim: 256
+  hidden_size: 3840
+  vocab_size: 262208
+  head_layout: shared
+  # Hybrid local/global attention: every 6th layer is full attention,
+  # the rest use a 1024-token sliding window (google/gemma-3-12b-it
+  # config.json, same layout as gemma-3-4b).
+  sliding_window: 1024
+  sliding_window_pattern: 6
+  max_context: 131072
+  roles: [chat]
+  quality: 77
+  license: gemma
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th, hi]
+  sources:
+    ollama: "gemma3:12b"
+    hf_gguf: "bartowski/google_gemma-3-12b-it-GGUF"
+    hf: "google/gemma-3-12b-it"
+    hf_mlx: "mlx-community/gemma-3-12b-it-4bit"
+- id: gemma-3-27b-it
+  family: gemma3
+  params: 27000000000
+  n_layers: 62
+  n_heads: 32
+  n_kv_heads: 16
+  head_dim: 128
+  hidden_size: 5376
+  vocab_size: 262208
+  head_layout: shared
+  # Same hybrid local/global pattern as the smaller Gemma 3 sizes.
+  sliding_window: 1024
+  sliding_window_pattern: 6
+  max_context: 131072
+  roles: [chat]
+  quality: 85
+  license: gemma
+  languages: [en, zh, ja, ko, fr, de, es, pt, it, ru, ar, vi, th, hi]
+  sources:
+    ollama: "gemma3:27b"
+    hf_gguf: "bartowski/google_gemma-3-27b-it-GGUF"
+    hf: "google/gemma-3-27b-it"
+    hf_mlx: "mlx-community/gemma-3-27b-it-4bit"
 - id: mistral-7b-instruct
   family: mistral
   params: 7240000000

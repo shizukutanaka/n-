@@ -121,11 +121,11 @@ def test_speed_preference_warns_when_speed_term_saturates(tmp_path) -> None:
     plan = build_plan(profile, catalog, Policy(roles=["chat"], prefer="speed"))
     service = plan.services[0]
 
-    assert service.model_id == "qwen2.5-32b-instruct"
+    assert service.model_id == "gemma-3-27b-it"
     warning = next(item for item in plan.warnings if "could not discriminate" in item)
-    assert "qwen2.5-32b-instruct" in warning
+    assert "gemma-3-27b-it" in warning
     assert "qwen2.5-0.5b-instruct" in warning
-    assert "38.5 tok/s" in warning
+    assert "39.3 tok/s" in warning
     assert "3654.6 tok/s" in warning
 
 
@@ -152,7 +152,7 @@ def test_speed_selection_regression_for_gpu_and_cpu_profiles(tmp_path) -> None:
         Policy(roles=["chat"], prefer="speed"),
     )
 
-    assert gpu.services[0].model_id == "qwen2.5-32b-instruct"
+    assert gpu.services[0].model_id == "gemma-3-27b-it"
     # 24B total but only 2.3B active params: the fastest CPU decode the
     # catalog offers once the model's quality cleared the prior floor.
     assert cpu.services[0].model_id == "lfm2-24b-a2b"
