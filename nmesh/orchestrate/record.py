@@ -104,11 +104,6 @@ class DelegationRecord:
             and self.unscorable == 0
         )
 
-    @property
-    def ceiling_resolvable(self) -> bool:
-        """Whether a perfect verifier could beat the lead on this suite."""
-        return self.ceiling_passed > self.lead_passed and self.ceiling_p < ALPHA
-
 
 def from_run(
     run: DelegationRun,
