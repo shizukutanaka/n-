@@ -314,7 +314,13 @@ def _explicit(model: object, plan: Plan) -> str | None:
     name = model.removeprefix("nmesh-")
     if any(item.name == name for item in plan.services):
         return name
-    return plan.routing.role_to_service.get(name) or None
+    if service := plan.routing.role_to_service.get(name):
+        return service
+    # Catalog model ids address the service running that model, the way
+    # clients address "llama3" or "qwen3-8b" on real OpenAI endpoints.
+    return next(
+        (item.name for item in plan.services if item.model_id == name), None
+    )
 
 
 def _service(plan: Plan, name: str) -> PlannedService:

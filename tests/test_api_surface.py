@@ -169,6 +169,18 @@ def test_completion_prompt_routing_uses_string_and_list_content() -> None:
     assert route({"prompt": ["x" * 200, "y" * 200]}, plan) == "large"
 
 
+def test_route_resolves_catalog_model_ids() -> None:
+    model = ModelSpec(
+        "routing-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"},
+    )
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = plan.services[0]
+    assert route({"model": service.model_id}, plan) == service.name
+    assert route({"model": f"nmesh-{service.model_id}"}, plan) == service.name
+    assert route({"model": "unknown-model"}, plan) != ""
+
+
 def test_completion_slot_limiter_matches_chat(monkeypatch) -> None:
     upstream = _completion_upstream()
     try:
