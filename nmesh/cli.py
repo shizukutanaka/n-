@@ -1648,7 +1648,7 @@ def _models_scan(args: argparse.Namespace) -> int:
         root_path = Path(root).expanduser()
         if not root_path.is_dir():
             print(
-                f"model root is not an existing directory: {root_path}",
+                i18n.t("err.models_root_missing", i18n.lang(), path=root_path),
                 file=sys.stderr,
             )
             return 1

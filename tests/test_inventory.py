@@ -153,6 +153,17 @@ def test_invalid_files_and_missing_roots_are_skipped(tmp_path: Path) -> None:
     assert artifacts == []
 
 
+def test_cli_scan_rejects_missing_root(
+    tmp_path: Path, monkeypatch, capsys,
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("NMESH_HOME", str(home))
+    monkeypatch.setattr(cli, "default_stores", lambda: {"nmesh": home / "models"})
+    missing = tmp_path / "nope"
+    assert cli.main(["models", "scan", "--root", str(missing)]) == 1
+    assert str(missing) in capsys.readouterr().err
+
+
 def test_cli_scan_and_local_report_header_metadata(
     tmp_path: Path, monkeypatch, capsys,
 ) -> None:
