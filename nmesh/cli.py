@@ -2631,6 +2631,8 @@ def _eval(args: argparse.Namespace) -> int:
         base_tasks if requested is None
         else tuple(task for task in base_tasks if task.category in requested)
     )
+    if args.limit is not None:
+        tasks = tasks[: args.limit]
     if not tasks:
         print(i18n.t("err.eval_categories", i18n.lang()), file=sys.stderr)
         return 1
@@ -4360,6 +4362,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     eval_parser.add_argument(
         "--suite", choices=("core", "extended", "hard"), default="core",
     )
+    eval_parser.add_argument("--limit", type=_positive_int)
     eval_parser.add_argument(
         "--depth",
         type=_non_negative_int,

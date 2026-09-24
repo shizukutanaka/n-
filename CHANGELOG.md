@@ -2,6 +2,7 @@
 
 ## 未リリース
 ### Added
+- **`nmesh eval --limit`**: カテゴリ選択後のタスクを先頭 N 件に制限（`orchestrate measure --limit` と同規約）。104 タスクの拡張スイートを全量走らせずスモーク確認できる
 - **`up()` の sleep エンジン `/is_sleeping` プローブを並列プリプローブ化**: 未所有の sleep-capable エンジンの採用判定がサービスごとに最大2回の2秒 urlopen を直列発行しており、N 台駐車時は最大4N秒ロック保持でした。パス先頭で対象を1回並列プローブし `_adopt` の判定はスナップショット参照に — 非パス経路は従来どおりライブプローブ
 
 - **`hf_transfer` が入っていればモデル取得を自動高速化**: huggingface_hub の Rust 製マルチレンジダウンローダ（HF 公式、GGUF のような数十 GB ファイル内で複数レンジを並列取得）を、インストール済みのとき `HF_HUB_ENABLE_HF_TRANSFER=1` で有効化 — vllm/mlx の `snapshot_download` と llamacpp GGUF の `hf_hub_download` 両方に効きます（パート間並列とは相補）。ユーザが同環境変数を設定済み（"0" を含む）の場合は尊重し、パッケージ不在時は従来の転送のまま
