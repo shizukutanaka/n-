@@ -277,6 +277,27 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: starcoder2-3b
+  family: starcoder2
+  params: 3020000000
+  n_layers: 30
+  n_heads: 24
+  n_kv_heads: 2
+  head_dim: 128
+  hidden_size: 3072
+  vocab_size: 49152
+  head_layout: shared
+  sliding_window: 4096
+  sliding_window_pattern: 1
+  max_context: 16384
+  roles: [code]
+  quality: 52
+  license: bigcode-openrail-m
+  languages: [en]
+  sources:
+    ollama: "starcoder2:3b"
+    hf_gguf: "bartowski/starcoder2-3b-GGUF"
+    hf: "bigcode/starcoder2-3b"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
