@@ -74,6 +74,14 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
         ) or ("en",)
         quality_value = item["quality"]
         quality = None if quality_value is None else float(quality_value)
+        # Fields the planner divides by must be strictly positive; a malformed
+        # entry would otherwise raise ZeroDivisionError mid-estimate.
+        for field in (
+            "params", "n_layers", "n_heads", "n_kv_heads",
+            "head_dim", "hidden_size", "max_context",
+        ):
+            if int(item[field]) <= 0:
+                return None
         return ModelSpec(
             id=str(item["id"]),
             family=str(item["family"]),

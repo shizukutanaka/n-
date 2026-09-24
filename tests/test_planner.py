@@ -410,6 +410,31 @@ def test_catalog_quality_null_is_explicit_and_invalid_quality_is_rejected() -> N
     assert _model_from_mapping(missing) is None
 
 
+def test_loader_rejects_nonpositive_dimensions() -> None:
+    base = {
+        "id": "candidate",
+        "family": "Candidate",
+        "params": 1,
+        "n_layers": 1,
+        "n_heads": 1,
+        "n_kv_heads": 1,
+        "head_dim": 1,
+        "hidden_size": 1,
+        "max_context": 1,
+        "roles": ["chat"],
+        "quality": None,
+        "license": "apache",
+        "sources": {"hf": "org/candidate"},
+    }
+    assert _model_from_mapping(base) is not None
+    for field in (
+        "params", "n_layers", "n_heads", "n_kv_heads",
+        "head_dim", "hidden_size", "max_context",
+    ):
+        assert _model_from_mapping({**base, field: 0}) is None, field
+        assert _model_from_mapping({**base, field: -1}) is None, field
+
+
 def test_unmeasured_models_require_explicit_selection() -> None:
     model = ModelSpec(
         "candidate", "test", 500_000_000, 24, 16, 2, 64, 1024,
