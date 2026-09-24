@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import RLock
@@ -333,6 +334,13 @@ class Supervisor:
             return False
         # /sleep returns once the engine finished parking; multi-GB weights
         # copy at PCIe speed, well inside this timeout.
+        return self._park_with_budget(service, free_ram)
+
+    def _park_with_budget(
+        self, service: PlannedService, free_ram: float
+    ) -> bool:
+        if free_ram < service.memory.weight_bytes:
+            return False
         return self._sleep_post(service, "sleep?level=1", timeout=120.0)
 
     @classmethod
@@ -1399,27 +1407,60 @@ class Supervisor:
             self.idle.discard(service_name)
             actualized = False
             if service_name in selected.swap_group:
-                for name in list(self.processes):
+                members = [
+                    name
+                    for name in list(self.processes)
                     if (
                         name != service_name
                         and name in selected.swap_group
                         and name not in self.sleeping
-                    ):
-                        parked = next(
-                            (
-                                item for item in selected.services
-                                if item.name == name
-                            ),
-                            None,
-                        )
-                        if (
-                            parked is not None
-                            and getattr(parked, "sleep_mode", False)
-                            and self._park(parked)
-                        ):
-                            self.sleeping.add(name)
-                        else:
-                            self._stop_process(name)
+                    )
+                ]
+                parkable: list[tuple[str, PlannedService]] = []
+                for name in members:
+                    parked = next(
+                        (
+                            item for item in selected.services
+                            if item.name == name
+                        ),
+                        None,
+                    )
+                    if parked is not None and getattr(parked, "sleep_mode", False):
+                        parkable.append((name, parked))
+                parked_names: set[str] = set()
+                if parkable:
+                    try:
+                        _, free_ram = free_budgets(self.probe())
+                    except (OSError, RuntimeError):
+                        free_ram = 0
+                    if len(parkable) == 1:
+                        if self._park_with_budget(parkable[0][1], free_ram):
+                            parked_names.add(parkable[0][0])
+                    else:
+                        # Each /sleep POST blocks until the engine finished
+                        # parking multi-GB weights — serial waits sum; run
+                        # them together against one hardware probe.
+                        with ThreadPoolExecutor(
+                            max_workers=len(parkable)
+                        ) as pool:
+                            outcomes = pool.map(
+                                lambda item: self._park_with_budget(
+                                    item[1], free_ram
+                                ),
+                                parkable,
+                            )
+                        parked_names = {
+                            name
+                            for (name, _), ok in zip(
+                                parkable, outcomes, strict=True
+                            )
+                            if ok
+                        }
+                for name in members:
+                    if name in parked_names:
+                        self.sleeping.add(name)
+                    else:
+                        self._stop_process(name)
             dead = service_name in self.processes and not self._alive(service_name)
             if dead:
                 self.processes.pop(service_name, None)

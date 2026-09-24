@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from dataclasses import replace
 
@@ -1247,6 +1248,46 @@ def test_swap_switch_parks_sleep_capable_member(
     assert posts == ["sleep?level=1", "wake_up"]
     assert supervisor.sleeping == set()
     assert launches == ["alpha", "beta"]
+    supervisor.down()
+
+
+def test_swap_switch_parks_members_in_parallel(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _sleep_swap_plan(catalog)
+    beta = replace(plan.services[1], sleep_mode=True)
+    gamma = replace(plan.services[1], name="gamma")
+    plan = replace(
+        plan, services=[plan.services[0], beta, gamma],
+        swap_group=["alpha", "beta", "gamma"],
+    )
+    launches: list[str] = []
+    supervisor = Supervisor(
+        lambda service: launches.append(service.name) or _RecoverProcess(),
+        tmp_path / "sleep-swap-parallel.json",
+        health_timeout=0.01,
+        probe=lambda: profile(64, (24,)),
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    barrier = threading.Barrier(2)
+    posts: list[str] = []
+
+    def sleep_post(_service, path, timeout=120.0):
+        posts.append(path)
+        if path.startswith("sleep"):
+            barrier.wait(timeout=10)  # serial parks deadlock here
+        return True
+
+    supervisor._sleep_post = sleep_post
+    supervisor.up(plan, no_download=True, admit=False)
+    supervisor.ensure_running("gamma")
+    assert posts == ["sleep?level=1", "sleep?level=1"]
+    assert supervisor.sleeping == {"alpha", "beta"}
     supervisor.down()
 
 
