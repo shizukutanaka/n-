@@ -2,6 +2,11 @@
 
 ## 未リリース
 ### Added
+
+- `hermes-3-llama-3.2-3b` をモデルカタログに追加 — NousResearch Hermes 3
+  3B指令モデル（Llama 3.2派生、28層、GQA 24/8、head_dim 128、
+  131072コンテキスト、tied embeddings、Llama 3.2ライセンス）。
+  roles: [chat, tool]（NousResearch/Hermes-3-Llama-3.2-3B config.json 基準）
 - **`nmesh eval --limit`**: カテゴリ選択後のタスクを先頭 N 件に制限（`orchestrate measure --limit` と同規約）。104 タスクの拡張スイートを全量走らせずスモーク確認できる
 - **`up()` の sleep エンジン `/is_sleeping` プローブを並列プリプローブ化**: 未所有の sleep-capable エンジンの採用判定がサービスごとに最大2回の2秒 urlopen を直列発行しており、N 台駐車時は最大4N秒ロック保持でした。パス先頭で対象を1回並列プローブし `_adopt` の判定はスナップショット参照に — 非パス経路は従来どおりライブプローブ
 

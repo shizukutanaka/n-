@@ -277,6 +277,24 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: hermes-3-llama-3.2-3b
+  family: hermes
+  params: 3210000000
+  n_layers: 28
+  n_heads: 24
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 3072
+  vocab_size: 128256
+  head_layout: shared
+  max_context: 131072
+  roles: [chat, tool]
+  quality: 58
+  license: llama3.2
+  languages: [en]
+  sources:
+    hf_gguf: "bartowski/Hermes-3-Llama-3.2-3B-GGUF"
+    hf: "NousResearch/Hermes-3-Llama-3.2-3B"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
