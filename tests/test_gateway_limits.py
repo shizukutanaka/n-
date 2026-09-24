@@ -9,6 +9,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
+import httpx
 from fastapi.testclient import TestClient
 
 import nmesh.gateway as gateway_module
@@ -275,6 +276,35 @@ def test_unlimited_ollama_requests_are_not_serialized(monkeypatch) -> None:
                 thread.join(timeout=5)
             assert len(results) == 2
             assert all(response.status_code == 200 for response in results)
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_stale_pooled_upstream_connection_retries(monkeypatch) -> None:
+    upstream = _limit_upstream()
+    try:
+        plan = _llama_plan(1)
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        with TestClient(create_app(plan)) as client:
+            pooled = gateway_module._upstream_client(plan.services[0], 300.0)
+            original = pooled.post
+            calls = {"count": 0}
+
+            async def flaky_post(*args, **kwargs):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    raise httpx.RemoteProtocolError("closed")
+                return await original(*args, **kwargs)
+
+            monkeypatch.setattr(pooled, "post", flaky_post)
+            response = client.post("/v1/chat/completions", json={"messages": []})
+            assert response.status_code == 200
+            assert calls["count"] == 1
+            key = (gateway_module._base_url(plan.services[0]), 300.0)
+            assert gateway_module._UPSTREAM_CLIENTS[key] is not pooled
+            assert pooled.is_closed
     finally:
         upstream.shutdown()
         upstream.server_close()
