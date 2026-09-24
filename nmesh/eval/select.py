@@ -44,11 +44,14 @@ def valid_eval_records(
 def planner_eval_records(
     records: Mapping[str, EvalRecord],
 ) -> dict[tuple[str, str, str], EvalRecord]:
-    valid, _ = valid_eval_records(records)
+    usable = {
+        key: record
+        for key, record in records.items()
+        if not (record.unscorable or record.transport_errors or record.depth > 0)
+    }
+    valid, _ = valid_eval_records(usable)
     latest: dict[tuple[str, str, str], EvalRecord] = {}
     for record in valid.values():
-        if record.unscorable or record.transport_errors or record.depth > 0:
-            continue
         key = (
             record.model_id.casefold(),
             record.quant.casefold(),
