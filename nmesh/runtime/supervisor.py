@@ -125,14 +125,59 @@ def gateway_listener_pid(port: int) -> int | None:
     return None
 
 
-def engine_listener_pid(port: int) -> int | None:
+def _all_listeners() -> dict[int, list[int]]:
+    """Port → listening pids for the whole TCP table in one scan.
+
+    One `psutil.net_connections` call (or one `lsof` where that needs extra
+    rights) serves every port lookup a sweep performs — per-port scans in a
+    loop re-enumerate the same table once per service.
+    """
+    result: dict[int, list[int]] = {}
+    try:
+        connections = psutil.net_connections(kind="tcp")
+    except (psutil.Error, OSError):
+        connections = None
+    if connections is not None:
+        for connection in connections:
+            if (
+                connection.laddr
+                and connection.status == "LISTEN"
+                and connection.pid is not None
+            ):
+                result.setdefault(connection.laddr.port, []).append(
+                    connection.pid
+                )
+        return result
+    try:
+        output = subprocess.run(
+            ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return result
+    pid: int | None = None
+    for line in output.stdout.splitlines():
+        if line.startswith("p") and line[1:].isdigit():
+            pid = int(line[1:])
+        elif line.startswith("n") and pid is not None:
+            port = line.rsplit(":", 1)[-1]
+            if port.isdigit():
+                result.setdefault(int(port), []).append(pid)
+    return result
+
+
+def engine_listener_pid(
+    port: int, listeners: Mapping[int, list[int]] | None = None
+) -> int | None:
     """Return the pid of an nmesh-managed engine listening on *port*, if any.
 
     Ownership is proven by the executable living under NMESH_HOME — a foreign
-    process that merely bound the port is never returned.
+    process that merely bound the port is never returned. Pass a precomputed
+    `_all_listeners()` map when sweeping several ports at once.
     """
     root = os.path.realpath(nmesh_home()) + os.sep
-    for pid in _listener_pids(port):
+    pids = _listener_pids(port) if listeners is None else listeners.get(port, [])
+    for pid in pids:
         try:
             exe = psutil.Process(pid).exe()
         except (psutil.Error, OSError):
@@ -232,6 +277,10 @@ class Supervisor:
         self._loaded_plan_stamp: tuple[float, int] | None = None
         self._boot_recovery = False
         self.notes: dict[str, str] = {}
+        # Listener snapshot shared across one heartbeat pass: _adopt probes
+        # the TCP table per service otherwise. Outside heartbeat it stays
+        # None and every lookup scans live.
+        self._listeners: dict[int, list[int]] | None = None
         self._lock = RLock()
         self._atexit_armed = False
         self._terminator = terminator or self._terminate_pid
@@ -473,6 +522,11 @@ class Supervisor:
         process = self.processes.get(name)
         return process is not None and process.poll() is None
 
+    def _engine_pid(self, port: int) -> int | None:
+        if self._listeners is None:
+            return engine_listener_pid(port)
+        return engine_listener_pid(port, self._listeners)
+
     def _adopt(self, service: PlannedService) -> bool:
         if service.name in self.processes or service.launch.health_url is None:
             return False
@@ -497,7 +551,7 @@ class Supervisor:
             if recorded_model is not None and recorded_model != service.model_ref:
                 # Stale process still bound to the port after a replan —
                 # do not adopt it; reclaim only if provably nmesh-managed.
-                if engine_listener_pid(service.port) == pid:
+                if self._engine_pid(service.port) == pid:
                     self._terminator(int(pid))
                 return False
             recorded_exe = entry.get("exe")
@@ -509,7 +563,7 @@ class Supervisor:
                 if running_exe != recorded_exe:
                     # Engine binary changed since the entry was recorded —
                     # the surviving pid is not what the plan would launch.
-                    if engine_listener_pid(service.port) == pid:
+                    if self._engine_pid(service.port) == pid:
                         self._terminator(int(pid))
                     return False
             create_time = entry.get("create_time")
@@ -546,7 +600,7 @@ class Supervisor:
             self.external_shared.add(service.name)
             return True
         if self._healthy(service):
-            orphan_pid = engine_listener_pid(service.port)
+            orphan_pid = self._engine_pid(service.port)
             if orphan_pid is not None and not _pid_serves_model(
                 orphan_pid, service.model_ref
             ):
@@ -1816,78 +1870,84 @@ class Supervisor:
                         if isinstance(persisted, list)
                         else set()
                     )
-            for service in self.active_plan.services:
-                if service.name in self.idle:
-                    continue
-                adopted = self.adopted.get(service.name)
-                adopted_dead = adopted is not None and not self._entry_alive(adopted)
-                if adopted_dead:
-                    self.adopted.pop(service.name, None)
-                    self.external_shared.discard(service.name)
-                    changed = True
-                if (
-                    service.name in self.active_plan.swap_group
-                    and service.name not in self.processes
-                    and service.name not in self.external_shared
-                ):
-                    continue
-                if not adopted_dead and self._adopt(service):
-                    self.failed.pop(service.name, None)
-                    changed = True
-                    continue
-                if self._spec_drift(service):
-                    self._stop_process(service.name)
-                    changed = True
-                if self._already_up(service):
-                    continue
-                if boot_recovery and (
-                    not service.resident and service.name not in persisted_names
-                ):
-                    continue
-                if service.name in self.failed:
-                    continue
-                if service.name in self.processes:
-                    self.processes.pop(service.name, None)
-                try:
-                    self.active_plan, service, _, _ = self._apply_acquired(
-                        self.active_plan,
-                        service,
-                        acquire(service, local_only=True),
-                    )
-                except Exception as error:  # noqa: BLE001
-                    # The watchdog never downloads — a plan can name an
-                    # artifact that was never fetched. Record why instead
-                    # of crash-looping the engine on a missing file.
-                    self.failed[service.name] = i18n.t(
-                        "err.artifact_missing", i18n.lang(),
-                        service=service.name, error=error,
-                    )
-                    changed = True
-                    continue
-                if not self._restart_budget(service.name):
-                    self.failed[service.name] = i18n.t(
-                        "err.restart_budget", i18n.lang(), service=service.name
-                    )
-                    changed = True
-                    continue
-                self._record_restart(service.name)
-                changed = True
-                try:
-                    self.processes[service.name] = self.launcher(service)
-                    self.launched_argv[service.name] = list(service.launch.argv)
-                    self._arm_atexit()
-                    if not self._wait_health(service, timeout=min(self.health_timeout, 30.0)):
+            # Snapshot the listener table once for this pass — _adopt
+            # otherwise re-scans it once per service.
+            self._listeners = _all_listeners()
+            try:
+                for service in self.active_plan.services:
+                    if service.name in self.idle:
+                        continue
+                    adopted = self.adopted.get(service.name)
+                    adopted_dead = adopted is not None and not self._entry_alive(adopted)
+                    if adopted_dead:
+                        self.adopted.pop(service.name, None)
+                        self.external_shared.discard(service.name)
+                        changed = True
+                    if (
+                        service.name in self.active_plan.swap_group
+                        and service.name not in self.processes
+                        and service.name not in self.external_shared
+                    ):
+                        continue
+                    if not adopted_dead and self._adopt(service):
+                        self.failed.pop(service.name, None)
+                        changed = True
+                        continue
+                    if self._spec_drift(service):
                         self._stop_process(service.name)
-                        if not self._restart_budget(service.name):
-                            self.failed[service.name] = self._with_log_tail(
-                                service.name,
-                                i18n.t("warn.health_failed", i18n.lang(),
-                                       service=service.name),
-                            )
-                except Exception as error:  # noqa: BLE001
-                    self.processes.pop(service.name, None)
+                        changed = True
+                    if self._already_up(service):
+                        continue
+                    if boot_recovery and (
+                        not service.resident and service.name not in persisted_names
+                    ):
+                        continue
+                    if service.name in self.failed:
+                        continue
+                    if service.name in self.processes:
+                        self.processes.pop(service.name, None)
+                    try:
+                        self.active_plan, service, _, _ = self._apply_acquired(
+                            self.active_plan,
+                            service,
+                            acquire(service, local_only=True),
+                        )
+                    except Exception as error:  # noqa: BLE001
+                        # The watchdog never downloads — a plan can name an
+                        # artifact that was never fetched. Record why instead
+                        # of crash-looping the engine on a missing file.
+                        self.failed[service.name] = i18n.t(
+                            "err.artifact_missing", i18n.lang(),
+                            service=service.name, error=error,
+                        )
+                        changed = True
+                        continue
                     if not self._restart_budget(service.name):
-                        self.failed[service.name] = str(error)
+                        self.failed[service.name] = i18n.t(
+                            "err.restart_budget", i18n.lang(), service=service.name
+                        )
+                        changed = True
+                        continue
+                    self._record_restart(service.name)
+                    changed = True
+                    try:
+                        self.processes[service.name] = self.launcher(service)
+                        self.launched_argv[service.name] = list(service.launch.argv)
+                        self._arm_atexit()
+                        if not self._wait_health(service, timeout=min(self.health_timeout, 30.0)):
+                            self._stop_process(service.name)
+                            if not self._restart_budget(service.name):
+                                self.failed[service.name] = self._with_log_tail(
+                                    service.name,
+                                    i18n.t("warn.health_failed", i18n.lang(),
+                                           service=service.name),
+                                )
+                    except Exception as error:  # noqa: BLE001
+                        self.processes.pop(service.name, None)
+                        if not self._restart_budget(service.name):
+                            self.failed[service.name] = str(error)
+            finally:
+                self._listeners = None
             if changed:
                 self._persist(self.active_plan)
             return self.status()

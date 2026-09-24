@@ -1810,3 +1810,51 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_heartbeat_scans_listener_table_once_per_pass(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """_adopt consults the TCP listener table once per heartbeat pass, not
+    once per unowned service — the pass shares one precomputed map."""
+    scans: list[int] = []
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor._all_listeners",
+        lambda: scans.append(1) or {},
+    )
+    seen: list[tuple[int, object]] = []
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.engine_listener_pid",
+        lambda port, listeners=None: seen.append((port, listeners)) or None,
+    )
+
+    def service(name: str, port: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            name=name,
+            model_ref="m",
+            resident=True,
+            port=port,
+            quant="Q4_K_M",
+            backend="llamacpp",
+            memory=SimpleNamespace(parallel_slots=1),
+            launch=SimpleNamespace(
+                health_url=f"http://127.0.0.1:{port}/health",
+                shared_daemon=True,
+                argv=["x"],
+            ),
+        )
+
+    supervisor = Supervisor(
+        lambda _item: _KillableProcess(), tmp_path / "state.json"
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+    supervisor.active_plan = SimpleNamespace(
+        services=[service("a", 9001), service("b", 9002)],
+        swap_group=frozenset(),
+    )
+
+    supervisor.heartbeat()
+
+    assert len(scans) == 1
+    assert len(seen) == 2
+    assert all(listeners == {} for _port, listeners in seen)
