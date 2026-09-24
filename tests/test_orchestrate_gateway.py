@@ -226,3 +226,40 @@ def test_swap_exclusive_pair_is_not_eligible(monkeypatch) -> None:
     message = response.json()["error"]["message"]
     assert "chat" in message and "worker" in message
     assert "mutually exclusive" in message
+
+
+def test_delegate_path_reuses_pooled_client(monkeypatch) -> None:
+    """Delegation ran a fresh httpx.Client per request — new TCP handshakes
+    to lead and worker every call. The pooled client must be shared across
+    requests and closed only at app shutdown."""
+    plan = _delegation_plan()
+    record = _record(plan)
+    monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": record})
+    seen: list[object] = []
+
+    def fake_delegate(client, prompt, max_tokens, *, lead, worker, ledger):
+        del prompt, max_tokens, lead, worker
+        seen.append(client)
+        ledger.worker.add(Call("worker", 3, 4, False, 0.0))
+        ledger.verify.add(Call("YES", 5, 1, False, 0.0))
+        return Delegation(
+            "worker",
+            True,
+            False,
+            False,
+            Call("worker", 3, 4, False, 0.0),
+            Call("YES", 5, 1, False, 0.0),
+        )
+
+    monkeypatch.setattr(gateway_module, "delegate", fake_delegate)
+    monkeypatch.setattr(gateway_module, "idle_services", list)
+    monkeypatch.setattr(gateway_module, "_DELEGATE_CLIENT", None)
+    payload = {
+        "model": "nmesh-delegate",
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    with TestClient(create_app(plan)) as client:
+        assert client.post("/v1/chat/completions", json=payload).status_code == 200
+        assert client.post("/v1/chat/completions", json=payload).status_code == 200
+    assert len(seen) == 2 and seen[0] is seen[1]
+    assert seen[0].is_closed  # closed at lifespan shutdown
