@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -100,6 +101,32 @@ else:
         Response = None
         StreamingResponse = None
         Request = object
+
+
+_DELEGATE_CLIENT: httpx.Client | None = None
+_DELEGATE_CLIENT_LOCK = threading.Lock()
+
+
+def _delegate_client() -> httpx.Client:
+    """Shared sync client for the delegation path. `delegate()` fans out to
+    both lead and worker from a worker thread; a pooled client keeps those
+    keep-alive connections warm across requests. Sync httpx.Client is
+    thread-safe."""
+    global _DELEGATE_CLIENT
+    with _DELEGATE_CLIENT_LOCK:
+        if _DELEGATE_CLIENT is None or _DELEGATE_CLIENT.is_closed:
+            _DELEGATE_CLIENT = httpx.Client(
+                timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
+            )
+        return _DELEGATE_CLIENT
+
+
+def _close_delegate_client() -> None:
+    global _DELEGATE_CLIENT
+    with _DELEGATE_CLIENT_LOCK:
+        if _DELEGATE_CLIENT is not None:
+            _DELEGATE_CLIENT.close()
+            _DELEGATE_CLIENT = None
 
 
 def _get(request: Mapping[str, object], key: str, default: object = None) -> object:
@@ -1042,6 +1069,7 @@ def create_app(
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            _close_delegate_client()
 
     app = FastAPI(title="nmesh gateway", lifespan=lifespan)
 
@@ -1797,17 +1825,15 @@ def create_app(
 
             def run() -> Delegation:
                 assert httpx is not None
-                with httpx.Client(
-                    timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
-                ) as client:
-                    return delegate(
-                        client,
-                        prompt,
-                        max(1, max_tokens),
-                        lead=Endpoint(_base_url(lead), lead.model_ref),
-                        worker=Endpoint(_base_url(worker), worker.model_ref),
-                        ledger=ledger,
-                    )
+                client = _delegate_client()
+                return delegate(
+                    client,
+                    prompt,
+                    max(1, max_tokens),
+                    lead=Endpoint(_base_url(lead), lead.model_ref),
+                    worker=Endpoint(_base_url(worker), worker.model_ref),
+                    ledger=ledger,
+                )
 
             try:
                 result = await asyncio.to_thread(run)
