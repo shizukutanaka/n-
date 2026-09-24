@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import statistics
+import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -180,20 +181,37 @@ def _record(value: object) -> BenchRecord | None:
     )
 
 
+# The delegation gate calls load_cache() per request; parsing the whole
+# records file each time is wasteful. Keyed by path + (mtime_ns, size) —
+# the file only changes on save_records, which replaces it atomically.
+_records_cache: dict[Path, tuple[int, int, dict[str, BenchRecord]]] = {}
+_records_lock = threading.Lock()
+
+
 def load_records(path: Path | None = None) -> dict[str, BenchRecord]:
     target = path or CACHE_PATH
     try:
+        info = target.stat()
+        stamp = (info.st_mtime_ns, info.st_size)
+    except OSError:
+        stamp = (-1, 0)
+    with _records_lock:
+        cached = _records_cache.get(target)
+        if cached is not None and cached[0] == stamp[0] and cached[1] == stamp[1]:
+            return dict(cached[2])
+    try:
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
+        payload = None
     records: dict[str, BenchRecord] = {}
-    for key, value in payload.items():
-        record = _record(value)
-        if record is not None:
-            records[str(key)] = record
-    return records
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            record = _record(value)
+            if record is not None:
+                records[str(key)] = record
+    with _records_lock:
+        _records_cache[target] = (stamp[0], stamp[1], records)
+    return dict(records)
 
 
 def save_records(records: dict[str, BenchRecord], path: Path | None = None) -> Path:
