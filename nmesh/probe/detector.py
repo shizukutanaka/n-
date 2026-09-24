@@ -6,13 +6,14 @@ import platform
 import re
 import shutil
 import subprocess
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import psutil
 
 from nmesh.paths import is_windows, nmesh_home
 
-from .caps import llamacpp_caps
+from .caps import BackendCaps, llamacpp_caps
 from .generic_gpu import detect_generic
 from .models import GPUInfo, HardwareProfile, OperatingSystem, classify_tier
 
@@ -276,37 +277,56 @@ def _detect_backends(
         "llamacpp": ["llama-server", "--version"],
         "vllm": ["vllm", "--version"],
     }
-    for name, command in commands.items():
-        executable = _resolve_backend_binary(
-            name, command[0], warnings, warning_params,
-        )
-        if executable is None:
-            continue
-        paths[name] = str(executable)
-        output, error = _run([str(executable), *command[1:]])
-        version = _version_line(output, error)
-        if name == "llamacpp":
-            from nmesh.runtime.engine import active as active_engine
+    # Every backend probe is an independent subprocess bounded by _run's 5s
+    # timeout; 'vllm --version' routinely takes seconds importing torch.
+    # Run them concurrently so detection costs the slowest probe, not the sum.
+    versions: dict[str, Future[tuple[str | None, str | None]]] = {}
+    caps_future: Future[BackendCaps | None] | None = None
+    mlx_future: Future[tuple[str | None, str | None]] | None = None
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        for name, command in commands.items():
+            executable = _resolve_backend_binary(
+                name, command[0], warnings, warning_params,
+            )
+            if executable is None:
+                continue
+            paths[name] = str(executable)
+            versions[name] = pool.submit(
+                _run, [str(executable), *command[1:]],
+            )
+            if name == "llamacpp":
+                caps_future = pool.submit(llamacpp_caps, str(executable))
+        python_executable = shutil.which("python") or shutil.which("python3")
+        if python_executable:
+            mlx_future = pool.submit(
+                _run,
+                [python_executable, "-c", "import mlx_lm; print('installed')"],
+            )
+        for name, future in versions.items():
+            output, error = future.result()
+            version = _version_line(output, error)
+            if name == "llamacpp":
+                from nmesh.runtime.engine import active as active_engine
 
-            managed = active_engine()
-            if managed is not None and executable == managed.exe:
-                suffix = f" [{managed.tag}/{managed.variant}]"
-                version = f"{version}{suffix}" if version else suffix.strip()
-        if version:
-            backends[name] = version
-        if name == "llamacpp":
-            caps = llamacpp_caps(str(executable))
-            if caps is not None:
-                flags[name] = tuple(sorted(caps.flags))
-                if caps.gpu_devices is not None:
-                    gpu_devices[name] = caps.gpu_devices
-    python_executable = shutil.which("python") or shutil.which("python3")
-    if python_executable:
-        output, error = _run([python_executable, "-c", "import mlx_lm; print('installed')"])
-        if output and "installed" in output:
-            backends["mlx"] = "installed"
-        elif error and "No module named" not in error:
-            _append_warning(warnings, warning_params, "warn.mlx_check")
+                managed = active_engine()
+                executable = Path(paths[name])
+                if managed is not None and executable == managed.exe:
+                    suffix = f" [{managed.tag}/{managed.variant}]"
+                    version = f"{version}{suffix}" if version else suffix.strip()
+            if version:
+                backends[name] = version
+            if name == "llamacpp" and caps_future is not None:
+                caps = caps_future.result()
+                if caps is not None:
+                    flags[name] = tuple(sorted(caps.flags))
+                    if caps.gpu_devices is not None:
+                        gpu_devices[name] = caps.gpu_devices
+        if mlx_future is not None:
+            output, error = mlx_future.result()
+            if output and "installed" in output:
+                backends["mlx"] = "installed"
+            elif error and "No module named" not in error:
+                _append_warning(warnings, warning_params, "warn.mlx_check")
     return backends, flags, paths, gpu_devices
 
 

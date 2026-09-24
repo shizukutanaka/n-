@@ -122,3 +122,41 @@ def test_backend_version_line_prefers_line_containing_version() -> None:
         "Warning: client version is 0.33.2\n",
         None,
     ) == "Warning: client version is 0.33.2"
+
+
+def test_backend_version_probes_run_concurrently(monkeypatch, tmp_path: Path) -> None:
+    """Backend --version subprocesses are independent; a slow probe (e.g.
+    'vllm --version' importing torch) must not stack its wait onto others."""
+    import threading
+    import time
+
+    binaries = {}
+    for name, command in (("ollama", "ollama"), ("vllm", "vllm")):
+        binary = tmp_path / command
+        binary.write_text("", encoding="utf-8")
+        binaries[command] = str(binary.resolve())
+        monkeypatch.setenv(f"NMESH_{name.upper()}_BIN", str(binary))
+
+    lock = threading.Lock()
+    in_flight = 0
+    max_in_flight = 0
+
+    def fake_run(command):
+        nonlocal in_flight, max_in_flight
+        with lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+        time.sleep(0.2)
+        with lock:
+            in_flight -= 1
+        return "version: test", ""
+
+    monkeypatch.setattr(detector, "_run", fake_run)
+    monkeypatch.setattr(detector.shutil, "which", lambda value: binaries.get(value))
+    monkeypatch.setattr(detector, "llamacpp_caps", lambda path: None)
+
+    backends, _, _, _ = detector._detect_backends([], [])
+
+    assert max_in_flight == 2
+    assert backends["ollama"] == "version: test"
+    assert backends["vllm"] == "version: test"
