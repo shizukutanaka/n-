@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -13,13 +14,9 @@ from nmesh.paths import nmesh_home
 if TYPE_CHECKING:
     from httpx import AsyncClient
 
-CJK_RANGES = (
-    (0x3000, 0x30FF),
-    (0x3400, 0x4DBF),
-    (0x4E00, 0x9FFF),
-    (0xF900, 0xFAFF),
-    (0xAC00, 0xD7AF),
-    (0xFF00, 0xFFEF),
+_CJK_RE = re.compile(
+    "[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff"
+    "\uf900-\ufaff\uac00-\ud7af\uff00-\uffef]"
 )
 DEFAULT_CJK_PER_CHAR = 1.0
 DEFAULT_OTHER_PER_CHAR = 0.25
@@ -65,10 +62,7 @@ def _defaults(samples: int = 0) -> Calibration:
 
 
 def split_chars(text: str) -> tuple[int, int]:
-    cjk = sum(
-        any(start <= ord(char) <= end for start, end in CJK_RANGES)
-        for char in text
-    )
+    cjk = len(_CJK_RE.findall(text))
     return cjk, len(text) - cjk
 
 
