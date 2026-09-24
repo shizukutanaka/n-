@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import BinaryIO
 
@@ -45,6 +46,30 @@ def open_log(name: str) -> BinaryIO:
     return path.open("ab")
 
 
+def rotate_live(path: Path) -> bool:
+    """Bound a log a running process still holds open.
+
+    A child's fd stays on the old inode, so `os.replace` rotation would only
+    move the growing file out of sight. Copytruncate instead: snapshot to
+    `.log.1`, then truncate in place. The writer resumes at its old offset,
+    leaving a sparse NUL hole — so growth is measured by `st_blocks`, not
+    `st_size`, and `tail` skips NUL-only lines.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    if stat.st_blocks * 512 < _max_bytes():
+        return False
+    try:
+        shutil.copyfile(path, Path(f"{path}.1"))
+        with path.open("r+b") as handle:
+            handle.truncate(0)
+    except OSError:
+        return False
+    return True
+
+
 def tail(name: str, lines: int = 20) -> list[str]:
     if lines <= 0:
         return []
@@ -59,7 +84,11 @@ def tail(name: str, lines: int = 20) -> list[str]:
         size = handle.tell()
         handle.seek(max(0, size - _TAIL_BYTES))
         content = handle.read().decode("utf-8", errors="replace")
-    non_empty = [line.strip() for line in content.splitlines() if line.strip()]
+    non_empty = [
+        line.strip("\x00").strip()
+        for line in content.splitlines()
+        if line.strip("\x00").strip()
+    ]
     return non_empty[-lines:]
 
 

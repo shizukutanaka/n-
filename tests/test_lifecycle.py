@@ -19,7 +19,7 @@ from nmesh.planner import Policy, build_plan
 from nmesh.runtime import service_unit as service_unit_module
 from nmesh.runtime import supervisor as supervisor_module
 from nmesh.runtime.acquisition import Acquired
-from nmesh.runtime.logs import log_path, open_log, tail
+from nmesh.runtime.logs import log_path, open_log, rotate_live, tail
 from nmesh.runtime.service_unit import launcher_script, service_unit
 from nmesh.runtime.supervisor import Supervisor
 
@@ -883,6 +883,44 @@ def test_runtime_log_tail_handles_missing_and_invalid_utf8(
     path.write_bytes(b"one\nbad \xff\n\nthree\n")
 
     assert tail("chat", 2) == ["bad \ufffd", "three"]
+
+
+def test_runtime_log_live_rotation_bounds_running_file(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "16")
+    path = log_path("chat")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"0123456789abcdef\noverflow\n")
+
+    assert rotate_live(path) is True
+    assert path.read_bytes() == b""
+    assert log_path("chat").with_name("chat.log.1").read_bytes() == (
+        b"0123456789abcdef\noverflow\n"
+    )
+    assert rotate_live(path) is False
+
+
+def test_supervisor_rotates_live_logs_in_heartbeat(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "16")
+    plan = build_plan(profile(64, (24,)), load_catalog(), Policy(roles=["chat"]))
+    service = plan.services[0]
+    path = log_path(service.name)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"0123456789abcdef\noverflow\n")
+
+    supervisor = Supervisor()
+    supervisor.active_plan = plan
+    supervisor._rotate_live_logs()
+
+    assert path.read_bytes() == b""
+    assert log_path(service.name).with_name(
+        f"{service.name}.log.1"
+    ).read_bytes() == b"0123456789abcdef\noverflow\n"
 
 
 def test_supervisor_captures_backend_output(monkeypatch, tmp_path: Path) -> None:

@@ -36,7 +36,7 @@ from nmesh.probe import HardwareProfile, detect_hardware
 from nmesh.runtime import engine
 
 from .acquisition import Acquired, acquire
-from .logs import log_path, open_log, tail
+from .logs import log_path, open_log, rotate_live, tail
 
 STATE_PATH = nmesh_home() / "state.json"
 HEALTH_TIMEOUT = 120.0
@@ -1770,6 +1770,23 @@ class Supervisor:
             any(bool(item.get("running", False)) for item in entries), entries
         )
 
+    def _rotate_live_logs(self) -> None:
+        # open_log rotates only on spawn — a service that stays up for weeks
+        # would otherwise grow its .log without bound. Copytruncate keeps the
+        # child's fd valid while bounding disk use.
+        names = [
+            service.name for service in (
+                self.active_plan.services if self.active_plan is not None else ()
+            )
+        ]
+        names.append("gateway")
+        for name in names:
+            try:
+                path = log_path(name)
+            except ValueError:
+                continue
+            rotate_live(path)
+
     def heartbeat(self) -> RuntimeStatus:
         with self._lock:
             boot_recovery = self._boot_recovery
@@ -1888,6 +1905,7 @@ class Supervisor:
                     self.processes.pop(service.name, None)
                     if not self._restart_budget(service.name):
                         self.failed[service.name] = str(error)
+            self._rotate_live_logs()
             if changed:
                 self._persist(self.active_plan)
             return self.status()
