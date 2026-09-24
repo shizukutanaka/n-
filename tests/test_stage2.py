@@ -82,6 +82,23 @@ def test_route_uses_script_aware_context_and_reserved_output(catalog) -> None:
     }, plan) == "large"
 
 
+def test_route_never_picks_embed_only_for_chat() -> None:
+    # An oversized prompt must not route to the plan's largest-context service
+    # when that service cannot decode — embed/rerank-only models cannot serve
+    # chat completions.
+    catalog = load_catalog()
+    plan = build_plan(profile(64, (24,)), catalog, Policy(roles=["chat", "embed"]))
+    embed = next(item for item in plan.services if item.roles == ["embed"])
+    chat_name = plan.routing.role_to_service.get("chat")
+    chat = next(item for item in plan.services if item.name == chat_name)
+    assert embed.context > chat.context
+    request = {"messages": [{"role": "user", "content": "word " * embed.context}]}
+    target = route(request, plan)
+    assert target != embed.name
+    target_service = next(item for item in plan.services if item.name == target)
+    assert set(target_service.roles) & {"chat", "code", "worker"}
+
+
 def test_bench_cache_round_trip(tmp_path) -> None:
     key = benchmark_key("model", "q4_k_m", "llamacpp", "cpu", 0)
     path = tmp_path / "bench.json"
