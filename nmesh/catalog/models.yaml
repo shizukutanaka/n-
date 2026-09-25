@@ -277,6 +277,24 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: marco-o1-7b
+  family: marco-o1
+  params: 7610000000
+  n_layers: 28
+  n_heads: 28
+  n_kv_heads: 4
+  head_dim: 128
+  hidden_size: 3584
+  vocab_size: 152064
+  head_layout: separate
+  max_context: 32768
+  roles: [chat]
+  quality: 56
+  license: apache-2.0
+  languages: [en, zh]
+  sources:
+    hf_gguf: "bartowski/Marco-o1-GGUF"
+    hf: "AIDC-AI/Marco-o1"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
