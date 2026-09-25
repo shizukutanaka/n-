@@ -250,6 +250,30 @@ def test_measure_reports_paired_arms_and_costs(monkeypatch: pytest.MonkeyPatch) 
     assert run.verifier.rejected_but_right == 0
 
 
+def test_measure_records_clamped_allowance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A negative allowance measures with the clamped budget — the record
+    must claim the same value, not the raw input."""
+    tasks = (Task("one", "test", "one", 8, lambda text: text == "good"),)
+    budgets: list[int] = []
+
+    def fake_complete(_client: object, endpoint: Endpoint, prompt: str, max_tokens: int) -> Call:
+        budgets.append(max_tokens)
+        return Call("good", 3, 2, False, 0.1)
+
+    monkeypatch.setattr(measure_module, "complete", fake_complete)
+    monkeypatch.setattr(protocol_module, "complete", fake_complete)
+    run = measure(
+        tasks,
+        lead=Endpoint("lead", "lead"),
+        worker=Endpoint("worker", "worker"),
+        lead_identity=RoleIdentity("lead", "q4", "llamacpp"),
+        worker_identity=RoleIdentity("worker", "q4", "llamacpp"),
+        reasoning_allowance=-3,
+    )
+    assert run.reasoning_allowance == 0
+    assert all(budget == 8 for budget in budgets)
+
+
 def test_record_round_trip_and_gate(tmp_path: Path) -> None:
     lead = RoleIdentity("lead", "q4", "llamacpp")
     worker = RoleIdentity("worker", "q4", "llamacpp")

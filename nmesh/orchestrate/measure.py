@@ -248,7 +248,9 @@ def measure(
         seconds_solo=solo.seconds,
         seconds_delegated=ledger.seconds,
         unscorable=sum(row.unscorable for row in rows),
-        reasoning_allowance=reasoning_allowance,
+        # The budget clamps negatives to 0 above — record the same value so a
+        # record never claims an allowance the run was not measured on.
+        reasoning_allowance=max(0, reasoning_allowance),
         protocol=PROTOCOL_VERSION,
         at=time.time(),
         rows=rows,
