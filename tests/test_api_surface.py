@@ -253,17 +253,22 @@ def test_api_key_authentication(monkeypatch) -> None:
     with TestClient(create_app(plan)) as client:
         assert client.get("/health").status_code == 200
         assert client.get("/metrics").status_code == 200
+        assert client.get("/status").status_code == 200
 
     secret = "test-secret"
     monkeypatch.setenv("NMESH_API_KEY", secret)
     with TestClient(create_app(plan)) as client:
         assert client.get("/health").status_code == 200
         missing = client.get("/metrics")
+        missing_status = client.get("/status")
         wrong = client.get("/v1/models", headers={"Authorization": "Bearer wrong"})
         right = client.get("/v1/models", headers={"Authorization": f"Bearer {secret}"})
+        right_status = client.get("/status", headers={"Authorization": f"Bearer {secret}"})
         assert missing.status_code == 401
+        assert missing_status.status_code == 401
         assert wrong.status_code == 401
         assert right.status_code == 200
+        assert right_status.status_code == 200
         assert missing.headers["WWW-Authenticate"] == "Bearer"
         assert missing.json() == {
             "error": {

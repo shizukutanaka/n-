@@ -1227,7 +1227,7 @@ def create_app(
                 },
             )
         if api_key_bytes is not None and path.startswith(
-            ("/v1/", "/metrics", "/admin/", "/logs")
+            ("/v1/", "/metrics", "/admin/", "/logs", "/status")
         ):
             authorization = request.headers.get("authorization", "")
             prefix = "Bearer "

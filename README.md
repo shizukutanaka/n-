@@ -409,8 +409,9 @@ and `GET /v1/jobs` / `GET /v1/jobs/{id}` expose the job registry behind
 `nmesh jobs`.
 
 Set `NMESH_API_KEY` before starting the gateway to require
-`Authorization: Bearer <key>` on `/v1/*` and `/metrics*`. `/health` remains
-unauthenticated for readiness probes. When the variable is unset, authentication
+`Authorization: Bearer <key>` on `/v1/*`, `/metrics*`, `/admin/*`, `/logs*`,
+and `/status`. `/health` remains unauthenticated for readiness probes. When
+the variable is unset, authentication
 is disabled. The key is compared securely and is never returned in errors,
 metrics, or logs.
 
