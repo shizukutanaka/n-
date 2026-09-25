@@ -676,6 +676,51 @@ def test_apple_mlx(catalog: list[ModelSpec]) -> None:
     assert result.services[0].backend == "mlx"
 
 
+def test_mlx_caps_kv_when_flag_supported(catalog: list[ModelSpec]) -> None:
+    machine = replace(
+        profile(
+            64,
+            (44,),
+            os_name="macos",
+            unified=True,
+            backends={"ollama": None, "llamacpp": None, "vllm": None, "mlx": "installed"},
+        ),
+        backend_flags={"mlx": ("--model", "--port", "--max-kv-size")},
+    )
+    result = build_plan(
+        machine,
+        catalog,
+        Policy(roles=["chat"], model_ids=("phi-4-14b",)),
+    )
+    service = result.services[0]
+    assert service.backend == "mlx"
+    argv = service.launch.argv
+    assert argv[argv.index("--max-kv-size") + 1] == str(service.context)
+    assert not any("max-kv-size" in warning for warning in result.warnings)
+
+
+def test_mlx_warns_when_kv_cap_unsupported(catalog: list[ModelSpec]) -> None:
+    machine = replace(
+        profile(
+            64,
+            (44,),
+            os_name="macos",
+            unified=True,
+            backends={"ollama": None, "llamacpp": None, "vllm": None, "mlx": "installed"},
+        ),
+        backend_flags={"mlx": ("--model", "--port")},
+    )
+    result = build_plan(
+        machine,
+        catalog,
+        Policy(roles=["chat"], model_ids=("phi-4-14b",)),
+    )
+    service = result.services[0]
+    assert service.backend == "mlx"
+    assert "--max-kv-size" not in service.launch.argv
+    assert any("max-kv-size" in warning for warning in result.warnings)
+
+
 def test_no_backend_still_plans(catalog: list[ModelSpec]) -> None:
     result = build_plan(profile(8, backends={"ollama": None, "llamacpp": None, "vllm": None, "mlx": None}),
                         catalog, Policy(roles=["chat"]))

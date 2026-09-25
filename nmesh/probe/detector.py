@@ -12,7 +12,7 @@ import psutil
 
 from nmesh.paths import is_windows, nmesh_home
 
-from .caps import llamacpp_caps
+from .caps import llamacpp_caps, parse_help
 from .generic_gpu import detect_generic
 from .models import GPUInfo, HardwareProfile, OperatingSystem, classify_tier
 
@@ -311,11 +311,26 @@ def _detect_backends(
                     gpu_devices[name] = caps.gpu_devices
     python_executable = shutil.which("python") or shutil.which("python3")
     if python_executable:
-        output, error = _run([python_executable, "-c", "import mlx_lm; print('installed')"])
-        if output and "installed" in output:
+        help_out, help_err = _run(
+            [python_executable, "-m", "mlx_lm.server", "--help"]
+        )
+        mlx_flags, _help_version = parse_help(
+            "\n".join(
+                line.lstrip()
+                for line in ((help_out or "") + "\n" + (help_err or "")).splitlines()
+            )
+        )
+        if mlx_flags:
             backends["mlx"] = "installed"
-        elif error and "No module named" not in error:
-            _append_warning(warnings, warning_params, "warn.mlx_check")
+            flags["mlx"] = tuple(sorted(mlx_flags))
+        else:
+            output, error = _run(
+                [python_executable, "-c", "import mlx_lm; print('installed')"]
+            )
+            if output and "installed" in output:
+                backends["mlx"] = "installed"
+            elif error and "No module named" not in error:
+                _append_warning(warnings, warning_params, "warn.mlx_check")
     return backends, flags, paths, gpu_devices
 
 
