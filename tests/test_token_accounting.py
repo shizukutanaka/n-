@@ -212,6 +212,42 @@ def test_routing_band_uses_exact_count_only_when_service_is_running(monkeypatch)
     assert gateway.route(request, plan, token_hint=selected) == "small"
 
 
+def test_runtime_probe_runs_off_the_event_loop(monkeypatch) -> None:
+    """runtime_status blocks on per-service health probes — the gateway must
+    run it in a worker thread, not on the event loop."""
+    plan = _routing_plan()
+    probe_threads: list[int] = []
+
+    def probe() -> RuntimeStatus:
+        probe_threads.append(threading.get_ident())
+        return RuntimeStatus(
+            True, [{"service": "small", "running": True, "backend": "llamacpp"}]
+        )
+
+    monkeypatch.setattr(gateway, "runtime_status", probe)
+    request = {"messages": [{"content": "x" * 200}]}
+    asyncio.run(gateway._routing_token_hint(request, plan))
+    assert probe_threads
+    assert all(tid != threading.get_ident() for tid in probe_threads)
+
+
+def test_slot_progress_probe_runs_off_the_event_loop(monkeypatch) -> None:
+    plan = _routing_plan()
+    probe_threads: list[int] = []
+
+    def probe() -> RuntimeStatus:
+        probe_threads.append(threading.get_ident())
+        return RuntimeStatus(False, [])
+
+    monkeypatch.setattr(gateway, "runtime_status", probe)
+    registry = gateway.JobRegistry()
+    job = registry.submit("small", "/v1/chat/completions")
+    assert registry.start(job)
+    asyncio.run(gateway._slot_progress(plan.services, [job]))
+    assert probe_threads
+    assert all(tid != threading.get_ident() for tid in probe_threads)
+
+
 def test_metrics_expose_default_token_calibration() -> None:
     plan = _routing_plan()
     with TestClient(gateway.create_app(plan)) as client:
