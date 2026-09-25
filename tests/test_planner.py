@@ -2049,6 +2049,95 @@ def test_full_gpu_spread_does_not_pin() -> None:
     assert "CUDA_VISIBLE_DEVICES" not in service.launch.env
 
 
+def test_shared_daemon_pins_to_union_of_assigned_gpus() -> None:
+    models = [
+        ModelSpec(
+            "bigcode", "bigcode", 10_000_000_000, 40, 32, 8, 128, 4096, 8192,
+            ["code"], 90.0, "apache", {"hf_gguf": "bigcode.gguf"},
+        ),
+        ModelSpec(
+            "olchat", "olchat", 1_000_000_000, 24, 16, 4, 128, 2048, 8192,
+            ["chat"], 80.0, "apache", {"ollama": "test:model"},
+        ),
+    ]
+    result = build_plan(
+        profile(64, (24, 24)),
+        models,
+        Policy(roles=["chat", "code"], min_decode_tps=0),
+    )
+    daemon_services = [
+        service for service in result.services if service.launch.shared_daemon
+    ]
+    assert daemon_services
+    union = sorted(
+        {index for service in daemon_services for index in service.gpu_indices}
+    )
+    assert union and set(union) < {0, 1}
+    expected = ",".join(str(index) for index in union)
+    for service in daemon_services:
+        assert service.launch.env["CUDA_VISIBLE_DEVICES"] == expected
+    other = next(
+        service for service in result.services
+        if not service.launch.shared_daemon
+    )
+    assert other.launch.env["CUDA_VISIBLE_DEVICES"] == ",".join(
+        str(index) for index in other.gpu_indices
+    )
+    assert any(
+        f"shared daemon: pinned to GPU(s) {expected}" in warning
+        for warning in result.warnings
+    )
+
+
+def test_shared_daemon_hides_gpus_when_plan_budgets_ram() -> None:
+    model = ModelSpec(
+        "olbig", "olbig", 10_000_000_000, 40, 32, 8, 128, 4096, 8192,
+        ["chat"], 90.0, "apache", {"ollama": "test:model"},
+    )
+    result = build_plan(
+        profile(64, (4, 4)),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    daemon_services = [
+        service for service in result.services if service.launch.shared_daemon
+    ]
+    assert daemon_services
+    assert all(not service.gpu_indices for service in daemon_services)
+    for service in daemon_services:
+        assert service.launch.env["CUDA_VISIBLE_DEVICES"] == ""
+    assert any("GPU visibility disabled" in warning
+               for warning in result.warnings)
+
+
+def test_shared_daemon_full_spread_does_not_pin() -> None:
+    models = [
+        ModelSpec(
+            "olchat", "olchat", 14_000_000_000, 24, 16, 4, 128, 2048, 8192,
+            ["chat"], 80.0, "apache", {"ollama": "test:chat"},
+        ),
+        ModelSpec(
+            "olcode", "olcode", 14_000_000_000, 24, 16, 4, 128, 2048, 8192,
+            ["code"], 80.0, "apache", {"ollama": "test:code"},
+        ),
+    ]
+    result = build_plan(
+        profile(64, (12, 12)),
+        models,
+        Policy(roles=["chat", "code"], min_decode_tps=0),
+    )
+    daemon_services = [
+        service for service in result.services if service.launch.shared_daemon
+    ]
+    assert len(daemon_services) == 2
+    union = {
+        index for service in daemon_services for index in service.gpu_indices
+    }
+    assert union == {0, 1}
+    for service in daemon_services:
+        assert "CUDA_VISIBLE_DEVICES" not in service.launch.env
+
+
 def test_download_budget_warning_reports_actual_totals(
     catalog: list[ModelSpec],
 ) -> None:

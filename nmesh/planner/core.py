@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -356,6 +356,37 @@ def _gpu_pin_env(
     if variable is None:
         return {}
     return {variable: ",".join(str(index) for index in assigned)}
+
+
+def _daemon_gpu_pin_env(
+    profile: HardwareProfile, assigned: Sequence[int],
+) -> dict[str, str]:
+    """Visibility env pinning a shared daemon to the union of assigned GPUs.
+
+    A shared daemon schedules its own placement across every GPU it can see,
+    so unlike _gpu_pin_env — a belt over argv-level placement — this must hide
+    vendor variables with no assigned GPU at all, or the daemon can consume
+    VRAM the plan reserved for other services. An empty assignment means a
+    CPU-only plan: every recognised variable is set empty.
+    """
+    if not profile.gpus:
+        return {}
+    all_indices = {gpu.index for gpu in profile.gpus}
+    if set(assigned) >= all_indices:
+        return {}
+    env: dict[str, str] = {}
+    for vendor, variable in (
+        ("nvidia", "CUDA_VISIBLE_DEVICES"),
+        ("amd", "HIP_VISIBLE_DEVICES"),
+    ):
+        indices = sorted(
+            index
+            for index in set(assigned)
+            if index in {gpu.index for gpu in profile.gpus if gpu.vendor == vendor}
+        )
+        if any(gpu.vendor == vendor for gpu in profile.gpus):
+            env[variable] = ",".join(str(index) for index in indices)
+    return env
 
 
 def _swa_layer_count(model: ModelSpec, kv_layers: int) -> int:
@@ -2089,6 +2120,31 @@ def _place_services(
         warn_cpu_fallback(current)
         placed[service.name] = current
         ram_used += current.memory.cpu_bytes
+    shared = [
+        service for service in placed.values() if service.launch.shared_daemon
+    ]
+    daemon_union = sorted(
+        {index for service in shared for index in service.gpu_indices}
+    )
+    daemon_pin = _daemon_gpu_pin_env(profile, daemon_union) if shared else {}
+    if daemon_pin:
+        for service in shared:
+            placed[service.name] = replace(
+                service,
+                launch=replace(
+                    service.launch,
+                    env={**service.launch.env, **daemon_pin},
+                ),
+            )
+        if daemon_union:
+            warnings.append(
+                t(
+                    "note.gpu_pinned_daemon", policy.lang,
+                    indices=",".join(str(index) for index in daemon_union),
+                )
+            )
+        else:
+            warnings.append(t("note.gpu_pinned_daemon_cpu", policy.lang))
     return [placed[service.name] for service in services]
 
 
