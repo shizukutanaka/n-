@@ -4695,6 +4695,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 if not is_windows():
                     env_path.chmod(0o600)
+            else:
+                # The stored file wins over the current environment — a key
+                # rotated since install would keep rejecting new credentials
+                # with no signal. Surface the drift instead.
+                stored_key = ""
+                try:
+                    for line in env_path.read_text(encoding="utf-8").splitlines():
+                        if line.startswith("NMESH_API_KEY="):
+                            stored_key = line.split("=", 1)[1]
+                except OSError:
+                    pass
+                current_key = os.environ.get("NMESH_API_KEY", "")
+                if stored_key != current_key:
+                    print(
+                        i18n.t(
+                            "warn.gateway_env_key_drift",
+                            i18n.lang(),
+                            path=env_path,
+                        ),
+                        file=sys.stderr,
+                    )
             unit_path = unit_install_path(filename, os_name)
             if unit_path is not None:
                 unit_path.parent.mkdir(parents=True, exist_ok=True)
