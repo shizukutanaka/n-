@@ -277,6 +277,24 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: exaone-3.5-2.4b-instruct
+  family: exaone
+  params: 2380000000
+  n_layers: 30
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 80
+  hidden_size: 2560
+  vocab_size: 102400
+  head_layout: shared
+  max_context: 32768
+  roles: [chat]
+  quality: 52
+  license: exaone-license
+  languages: [en, ko]
+  sources:
+    hf_gguf: "bartowski/EXAONE-3.5-2.4B-Instruct-GGUF"
+    hf: "LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
