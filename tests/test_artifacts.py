@@ -20,3 +20,11 @@ def test_artifact_cache_tolerates_missing_and_corrupt_files(tmp_path) -> None:
     assert load_cache(path) == {}
     path.write_text("{", encoding="utf-8")
     assert load_cache(path) == {}
+
+
+def test_default_artifact_cache_path_stays_in_session_home(tmp_path) -> None:
+    """CACHE_PATH is bound at import time; the shared conftest must rebind it
+    to the per-test NMESH_HOME or default-path calls touch the real home."""
+    record("org/model", "q4_k_m", 789)
+    assert (tmp_path / "artifacts.json").is_file()
+    assert load_cache() == {"org/model|q4_k_m": 789}
