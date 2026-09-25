@@ -277,6 +277,24 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: openchat-3.6-8b
+  family: openchat
+  params: 8030000000
+  n_layers: 32
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 128256
+  head_layout: separate
+  max_context: 8192
+  roles: [chat]
+  quality: 58
+  license: llama3
+  languages: [en]
+  sources:
+    hf_gguf: "bartowski/openchat-3.6-8b-20240522-GGUF"
+    hf: "openchat/openchat-3.6-8b-20240522"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
