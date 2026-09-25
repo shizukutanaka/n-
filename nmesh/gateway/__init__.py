@@ -23,6 +23,7 @@ from nmesh.bench.retrieval import (
     pool_embeddings,
     retrieval_digest,
 )
+from nmesh.net import local_async_client, local_client
 from nmesh.orchestrate import (
     PROTOCOL_VERSION,
     Delegation,
@@ -586,7 +587,7 @@ async def _routing_token_hint(
         and _service_is_running_llamacpp(chat)
     ):
         assert httpx is not None
-        client = httpx.AsyncClient()
+        client = local_async_client(timeout=5.0)
         try:
             exact = await exact_tokens(_base_url(chat), content, client)
             if exact is not None:
@@ -674,7 +675,7 @@ async def _confirm_embedding_truncation(
     }
     assert httpx is not None
     try:
-        async with httpx.AsyncClient(
+        async with local_async_client(
             timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
         ) as client:
             response = await client.post(url, json=probe)
@@ -756,7 +757,7 @@ async def _verify_embedding_batch(
     if len(suspects) > _EMBED_BATCH_PROBE_LIMIT:
         return "unverified"
     assert httpx is not None
-    async with httpx.AsyncClient(
+    async with local_async_client(
         timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
     ) as client:
         for index, element in suspects:
@@ -1061,7 +1062,7 @@ async def _slot_progress(
         if service is None or not _service_is_running_llamacpp(service):
             continue
         try:
-            async with httpx.AsyncClient(
+            async with local_async_client(
                 base_url=_base_url(service), timeout=0.8
             ) as client:
                 response = await client.get("/slots")
@@ -1336,7 +1337,7 @@ def create_app(
                 else None
             )
             assert httpx is not None
-            client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT))
+            client = local_async_client(timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT))
             ticket = in_flight.enter(service.name)
         except BaseException as error:
             # A failed acquire/revive must not keep the slot (or a held swap
@@ -1956,7 +1957,7 @@ def create_app(
 
             def run() -> Delegation:
                 assert httpx is not None
-                with httpx.Client(
+                with local_client(
                     timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
                 ) as client:
                     return delegate(

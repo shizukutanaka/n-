@@ -493,7 +493,7 @@ def test_run_returns_failure_when_gateway_is_unavailable(monkeypatch) -> None:
     def fail(*args, **kwargs):
         raise OSError("connection refused")
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(cli, "local_urlopen", fail)
     result = cli._run_prompt(
         SimpleNamespace(prompt="hello", role="chat", json=False, port=18000)
     )
@@ -520,7 +520,7 @@ def test_run_sends_nmesh_api_key_when_set(monkeypatch) -> None:
         return Response()
 
     monkeypatch.setenv("NMESH_API_KEY", "test-key-1")
-    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(cli, "local_urlopen", fake_urlopen)
     result = cli._run_prompt(SimpleNamespace(prompt="hi", role="chat", json=False))
     assert result == 0
     assert captured["authorization"] == "Bearer test-key-1"
@@ -544,7 +544,7 @@ def test_run_surfaces_upstream_error_body(monkeypatch, capsys) -> None:
             500, "Internal Server Error", {}, io.BytesIO(body),
         )
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(cli, "local_urlopen", fail)
     result = cli._run_prompt(SimpleNamespace(prompt="hi", role="embed", json=False))
     assert result == 1
     err = capsys.readouterr().err
