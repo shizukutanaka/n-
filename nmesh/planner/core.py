@@ -128,6 +128,10 @@ class Policy:
             raise ValueError("sleep_idle_seconds must be >= 0")
         if self.cache_reuse < 0:
             raise ValueError("cache_reuse must be >= 0")
+        if not math.isfinite(self.min_decode_tps) or self.min_decode_tps < 0:
+            raise ValueError("min_decode_tps must be a finite number >= 0")
+        if not math.isfinite(self.allow_download_gb) or self.allow_download_gb < 0:
+            raise ValueError("allow_download_gb must be a finite number >= 0")
 
 
 @dataclass(frozen=True)
