@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from nmesh.bench import (
     EPOCH_MIN_RATIO,
     BenchRecord,
@@ -105,6 +107,42 @@ def test_measure_reference_reads_llama_bench_json_without_shelling_out(monkeypat
         "llama-bench", "-m", "reference.gguf", "-p", "0", "-n", "32",
         "-r", "2", "-t", "8", "-o", "json",
     ]
+
+
+def test_measure_reference_rejects_non_finite_throughput(monkeypatch) -> None:
+    from nmesh.bench import epoch
+
+    def make_fake(payload):
+        def fake_run(command, **kwargs):
+            return type(
+                "Result", (),
+                {"returncode": 0, "stdout": payload, "stderr": ""},
+            )()
+        return fake_run
+
+    for payload in ('[{"avg_ts": NaN}]', '[{"avg_ts": Infinity}]'):
+        monkeypatch.setattr(epoch.subprocess, "run", make_fake(payload))
+        with pytest.raises(RuntimeError):
+            epoch.measure_reference(
+                Path("llama-bench"), Path("reference.gguf"),
+            )
+
+
+def test_history_skips_non_finite_samples(tmp_path) -> None:
+    path = tmp_path / "epoch.json"
+    history = {
+        "ref": (
+            EpochSample("ref", float("nan"), "now"),
+            EpochSample("ref", float("inf"), "now"),
+            EpochSample("ref", 40.0, "now"),
+        ),
+        "poisoned": (EpochSample("poisoned", float("nan"), "now"),),
+    }
+    save_history(history, path)
+    loaded = load_history(path)
+    assert [sample.tps for sample in loaded["ref"]] == [40.0]
+    assert baseline(loaded, "ref") == 40.0
+    assert "poisoned" not in loaded
 
 
 def _record(reference_id: str, reference_tps: float | None) -> BenchRecord:
