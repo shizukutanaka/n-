@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 import socket
 import statistics
@@ -324,6 +325,17 @@ def _non_negative_int(value: str) -> int:
         raise argparse.ArgumentTypeError("must be an integer of at least 0") from error
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be at least 0")
+    return parsed
+
+
+def _non_negative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "must be a number of at least 0") from error
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be a finite number of at least 0")
     return parsed
 
 
@@ -4286,9 +4298,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--cache-reuse", type=int, default=0)
     plan.add_argument("--context-shift", action="store_true")
     plan.add_argument("--ignore-spec-evidence", action="store_true")
-    plan.add_argument("--allow-download-gb", type=float, default=60.0,
+    plan.add_argument("--allow-download-gb", type=_non_negative_float, default=60.0,
                       help="warn when planned downloads exceed this many GiB")
-    plan.add_argument("--min-decode-tps", type=float, default=8.0,
+    plan.add_argument("--min-decode-tps", type=_non_negative_float, default=8.0,
                       help="minimum decode throughput (tok/s) a service must sustain")
     plan.add_argument("--lang")
     plan.add_argument("--profile")
@@ -4311,9 +4323,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--cache-reuse", type=int, default=0)
     up_parser.add_argument("--context-shift", action="store_true")
     up_parser.add_argument("--ignore-spec-evidence", action="store_true")
-    up_parser.add_argument("--allow-download-gb", type=float, default=60.0,
+    up_parser.add_argument("--allow-download-gb", type=_non_negative_float, default=60.0,
                            help="warn when planned downloads exceed this many GiB")
-    up_parser.add_argument("--min-decode-tps", type=float, default=8.0,
+    up_parser.add_argument("--min-decode-tps", type=_non_negative_float, default=8.0,
                            help="minimum decode throughput (tok/s) a service must sustain")
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=int, default=18000)
