@@ -2034,7 +2034,11 @@ def test_single_gpu_does_not_pin() -> None:
     assert "CUDA_VISIBLE_DEVICES" not in result.services[0].launch.env
 
 
-def test_full_gpu_spread_does_not_pin() -> None:
+def test_full_gpu_spread_pins_visibility_env() -> None:
+    # The pin must be emitted even on full coverage: services merge
+    # os.environ with launch.env, so a user-set CUDA_VISIBLE_DEVICES would
+    # otherwise leak in and narrow the visible set below the planned
+    # tensor-parallel count.
     big = ModelSpec(
         "huge", "huge", 60_000_000_000, 80, 40, 10, 128, 4096, 8192,
         ["chat"], 90.0, "apache", {"hf_gguf": "huge.gguf"},
@@ -2046,7 +2050,7 @@ def test_full_gpu_spread_does_not_pin() -> None:
     )
     service = result.services[0]
     assert sorted(service.gpu_indices) == [0, 1]
-    assert "CUDA_VISIBLE_DEVICES" not in service.launch.env
+    assert service.launch.env["CUDA_VISIBLE_DEVICES"] == "0,1"
 
 
 def test_download_budget_warning_reports_actual_totals(

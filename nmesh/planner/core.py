@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -336,14 +336,14 @@ def _gpu_pin_env(
 ) -> dict[str, str]:
     """Visibility env var that pins a service to its assigned GPUs.
 
-    Returns {} when the service spans every GPU (nothing to isolate) or when
-    the assigned GPUs have no known vendor variable — an unrecognised value
-    is simply ignored by the backend, matching today's spread behaviour.
+    The pin is emitted even when the service spans every GPU: a user-set
+    CUDA/HIP_VISIBLE_DEVICES would otherwise leak into the service env and
+    narrow the visible set below the planned tensor-parallel count.
+    Returns {} when the assigned GPUs have no known vendor variable — an
+    unrecognised value is simply ignored by the backend, matching today's
+    spread behaviour.
     """
     if not assigned or len(profile.gpus) <= 1:
-        return {}
-    all_indices = {gpu.index for gpu in profile.gpus}
-    if set(assigned) >= all_indices:
         return {}
     vendors = {
         gpu.vendor for gpu in profile.gpus if gpu.index in set(assigned)
