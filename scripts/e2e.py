@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from nmesh.paths import nmesh_home
 from nmesh.runtime import engine
+from nmesh.runtime.acquisition import parse_label
 
 SUCCESS = 0
 FAILURE = 1
@@ -106,15 +107,17 @@ def _model_source(model_id: str | None = None, quant: str | None = None) -> Path
         return None
     models = sorted(model_dir.glob("*.gguf"))
     if model_id:
-        models = [item for item in models if model_id in item.name]
+        # Real GGUF filenames are mixed-case (Qwen2.5-1.5B-...-Q4_K_M.gguf)
+        # while catalog ids/quants are lowercase — match case-insensitively
+        # or the filters silently select models[0].
+        models = [item for item in models if model_id.casefold() in item.name.casefold()]
     if quant:
-        aliases = {"f16": ("f16", "fp16"), "q4_k_m": ("q4_k_m",)}
-        matches = [item for item in models if any(alias in item.name for alias in aliases.get(quant, (quant,)))]
+        matches = [item for item in models if parse_label(item.name) == quant]
         if matches:
             models = matches
     preferred = [
         item for item in models
-        if "qwen2.5-1.5b-instruct-q4_k_m" in item.name
+        if "qwen2.5-1.5b-instruct-q4_k_m" in item.name.casefold()
     ]
     return (preferred or models)[0] if preferred or models else None
 

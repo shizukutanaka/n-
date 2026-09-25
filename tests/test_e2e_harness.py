@@ -85,3 +85,24 @@ def test_model_source_reads_configured_nmesh_home(
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
 
     assert harness._model_source("qwen2.5-1.5b-instruct", "q4_k_m") == model.resolve()
+
+
+def test_model_source_matches_real_mixed_case_filenames(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Upstream GGUF names are mixed case (…-Q4_K_M.gguf): the model-id and
+    quant filters must still apply instead of silently picking models[0]."""
+    harness = _harness()
+    models = tmp_path / "models"
+    models.mkdir()
+    decoy = models / "AAA-Other-Model-Q8_0.gguf"
+    wanted = models / "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
+    for model in (decoy, wanted):
+        model.write_text("", encoding="utf-8")
+    monkeypatch.delenv("NMESH_E2E_MODEL", raising=False)
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+
+    assert harness._model_source("qwen2.5-1.5b-instruct", "q4_k_m") == wanted.resolve()
+    assert harness._model_source(None, "q4_k_m") == wanted.resolve()
+    assert harness._model_source(None, None) == wanted.resolve()
