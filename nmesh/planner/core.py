@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -701,6 +701,16 @@ def _launch(
                 t("warn.parallel_unsupported", language)
             )
         argv += ["--port", str(port)]
+        # The logical batch size (-b) bounds how large a prompt llama.cpp
+        # accepts per call (default 2048); KV headroom does not raise it, so
+        # emit the plan's context to keep the full window usable.
+        batch_flag = None
+        if not known or "-b" in flags:
+            batch_flag = "-b"
+        elif "--batch-size" in flags:
+            batch_flag = "--batch-size"
+        if batch_flag is not None:
+            argv += [batch_flag, str(context)]
         if gpu_layers:
             argv += ["-ngl", str(layers)]
         elif warnings is not None and gpu_devices != ():
@@ -788,35 +798,17 @@ def _launch(
                     t("warn.embeddings_pooling_unknown", language, model=model.id)
                 )
             if context > 512:
-                if not known:
-                    logical_batch_flag = "-b"
-                    physical_batch_flag = "-ub"
-                else:
-                    logical_batch_flag = (
-                        "-b" if "-b" in flags else "--batch-size"
-                    )
-                    physical_batch_flag = (
-                        "-ub" if "-ub" in flags else "--ubatch-size"
-                    )
-                batch_supported = not known or (
-                    any(
-                        flag in flags
-                        for flag in ("-b", "--batch-size")
-                    )
-                    and any(
-                        flag in flags
-                        for flag in ("-ub", "--ubatch-size")
-                    )
+                physical_batch_supported = not known or any(
+                    flag in flags
+                    for flag in ("-ub", "--ubatch-size")
                 )
-                if batch_supported:
-                    argv.extend(
-                        [
-                            logical_batch_flag,
-                            str(context),
-                            physical_batch_flag,
-                            str(context),
-                        ]
+                if physical_batch_supported:
+                    physical_batch_flag = (
+                        "-ub"
+                        if not known or "-ub" in flags
+                        else "--ubatch-size"
                     )
+                    argv += [physical_batch_flag, str(context)]
                 elif warnings is not None:
                     warnings.append(
                         t(

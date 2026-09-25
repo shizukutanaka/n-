@@ -1757,9 +1757,12 @@ def test_embedding_launch_flags_are_role_aware(catalog: list[ModelSpec]) -> None
     assert embed.launch.argv[embed.launch.argv.index("--pooling") + 1] == "cls"
     assert embed.launch.argv[embed.launch.argv.index("-b") + 1] == str(embed.context)
     assert embed.launch.argv[embed.launch.argv.index("-ub") + 1] == str(embed.context)
+    # The logical batch cap (-b) bounds prompt size on every service —
+    # without it llama.cpp's 2048 default rejects prompts the plan sized KV for.
+    assert chat.launch.argv[chat.launch.argv.index("-b") + 1] == str(chat.context)
     assert not any(
         flag in chat.launch.argv
-        for flag in ("--embeddings", "--embedding", "--pooling", "-b", "-ub")
+        for flag in ("--embeddings", "--embedding", "--pooling", "-ub")
     )
 
 
