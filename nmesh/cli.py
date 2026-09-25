@@ -4373,7 +4373,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     measure_parser.add_argument("--worker", default="worker")
     measure_parser.add_argument("--lead-url")
     measure_parser.add_argument("--worker-url")
-    measure_parser.add_argument("--reasoning-allowance", type=int, default=0)
+    measure_parser.add_argument(
+        "--reasoning-allowance",
+        type=_non_negative_int,
+        default=0,
+    )
     measure_parser.add_argument("--repeats", type=_positive_int, default=2)
     measure_parser.add_argument("--limit", type=_positive_int)
     measure_parser.add_argument("--no-reference", action="store_true")
