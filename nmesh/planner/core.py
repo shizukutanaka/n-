@@ -717,6 +717,15 @@ def _launch(
             and _honors_kv_quant(backend, backend_flags)
         ):
             argv += ["--cache-type-k", kv_quant, "--cache-type-v", kv_quant]
+            if warnings is not None:
+                warnings.append(
+                    t(
+                        "warn.kv_quant_v_fa",
+                        language,
+                        model=model.id,
+                        kv_quant=kv_quant,
+                    )
+                )
         if backend == "llamacpp" and n_cpu_moe > 0:
             if not known or "--n-cpu-moe" in flags:
                 argv += ["--n-cpu-moe", str(n_cpu_moe)]

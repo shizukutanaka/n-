@@ -915,6 +915,27 @@ def test_supported_llamacpp_kv_quantization_is_launched(
     assert len(speed_warnings) == 1
 
 
+def test_kv_quant_emission_warns_v_needs_flash_attention(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={
+            "llamacpp": (
+                "--parallel", "-ngl", "--tensor-split",
+                "--cache-type-k", "--cache-type-v",
+            ),
+        },
+    )
+    result = build_plan(machine, [model], Policy(roles=["chat"], kv_quant="q8_0"))
+    assert "--cache-type-v" in result.services[0].launch.argv
+    assert any(
+        "requires llama.cpp flash attention" in warning
+        for warning in result.warnings
+    )
+
+
 def test_sleep_idle_seconds_is_launched_when_supported(
     catalog: list[ModelSpec],
 ) -> None:
