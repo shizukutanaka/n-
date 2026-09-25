@@ -7,6 +7,7 @@ measurements remain observed values and are never rescaled.
 from __future__ import annotations
 
 import json
+import math
 import os
 import statistics
 import subprocess
@@ -91,8 +92,8 @@ def measure_reference(
         value = float(rows[0]["avg_ts"])
     except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise RuntimeError("reference workload returned invalid JSON") from error
-    if value <= 0:
-        raise RuntimeError("reference workload returned non-positive throughput")
+    if not math.isfinite(value) or value <= 0:
+        raise RuntimeError("reference workload returned invalid throughput")
     return value
 
 
@@ -124,7 +125,11 @@ def load_history(path: Path | None = None) -> dict[str, tuple[EpochSample, ...]]
                 )
             except (KeyError, TypeError, ValueError):
                 continue
-            if sample.reference_id != str(key) or sample.tps <= 0:
+            if (
+                sample.reference_id != str(key)
+                or not math.isfinite(sample.tps)
+                or sample.tps <= 0
+            ):
                 continue
             samples.append(sample)
         if samples:
