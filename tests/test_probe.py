@@ -57,6 +57,61 @@ def test_backend_env_binary_wins_over_path(monkeypatch, tmp_path: Path) -> None:
     assert paths["llamacpp"] == str(binary.resolve())
 
 
+def test_mlx_help_probe_populates_backend_flags(monkeypatch) -> None:
+    monkeypatch.delenv("NMESH_LLAMACPP_BIN", raising=False)
+    monkeypatch.setattr(
+        detector.shutil,
+        "which",
+        lambda value: "/usr/bin/python3" if value == "python" else None,
+    )
+
+    help_text = (
+        "usage: server.py [-h] [--model MODEL]\n\n"
+        "options:\n"
+        "  -h, --help\n"
+        "  --model MODEL\n"
+        "  --port PORT\n"
+        "  --max-kv-size MAX_KV_SIZE\n"
+    )
+
+    def fake_run(command):
+        if command[1:] == ["-m", "mlx_lm.server", "--help"]:
+            return help_text, ""
+        return None, None
+
+    monkeypatch.setattr(detector, "_run", fake_run)
+    monkeypatch.setattr(detector, "llamacpp_caps", lambda path: None)
+
+    backends, flags, _, _ = detector._detect_backends([], [])
+
+    assert backends["mlx"] == "installed"
+    assert "--max-kv-size" in flags["mlx"]
+
+
+def test_mlx_falls_back_to_import_check(monkeypatch) -> None:
+    monkeypatch.delenv("NMESH_LLAMACPP_BIN", raising=False)
+    monkeypatch.setattr(
+        detector.shutil,
+        "which",
+        lambda value: "/usr/bin/python3" if value == "python" else None,
+    )
+
+    def fake_run(command):
+        if command[1:] == ["-m", "mlx_lm.server", "--help"]:
+            return None, None
+        if "import mlx_lm" in command[2]:
+            return "installed", ""
+        return None, None
+
+    monkeypatch.setattr(detector, "_run", fake_run)
+    monkeypatch.setattr(detector, "llamacpp_caps", lambda path: None)
+
+    backends, flags, _, _ = detector._detect_backends([], [])
+
+    assert backends["mlx"] == "installed"
+    assert "mlx" not in flags
+
+
 def test_missing_backend_env_binary_does_not_fall_back_to_path(
     monkeypatch,
 ) -> None:

@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -673,6 +673,15 @@ def _launch(
             )
     elif backend == "mlx":
         argv = ["python", "-m", "mlx_lm.server", "--model", ref, "--port", str(port)]
+        if "--max-kv-size" in (backend_flags or ()):
+            # mlx_lm.server grows each sequence's KV cache without bound; the
+            # cap makes it a rotating cache bounded at the plan's context, so
+            # long inputs drop oldest tokens instead of outgrowing memory.
+            argv += ["--max-kv-size", str(context)]
+        elif warnings is not None:
+            warnings.append(
+                t("warn.mlx_kv_unbounded", language, model=model.id)
+            )
         if embed_only and warnings is not None:
             warnings.append(
                 t("warn.embeddings_backend_unsupported", language, model=model.id)
