@@ -478,6 +478,27 @@ def test_draft_includes_verified_metadata_without_quality(tmp_path: Path) -> Non
     assert "# smallest_weight_bytes: 456" in text
 
 
+def test_draft_escapes_quotes_in_verified_strings(tmp_path: Path) -> None:
+    import yaml
+
+    finding = Finding(
+        "catalog_gap",
+        "acme/thing",
+        1,
+        ("u",),
+        {
+            "architectures": 'Thing"ForCausalLM',
+            "license": 'other"x',
+            "pipeline_tag": "text-generation",
+            "config_repo": "acme/thing",
+        },
+    )
+    text = write_draft(finding, tmp_path).read_text(encoding="utf-8")
+    parsed = yaml.safe_load(text)
+    assert parsed[0]["family"] == 'Thing"ForCausalLM'
+    assert parsed[0]["license"] == 'other"x'
+
+
 def test_candidate_fit_order_is_explicit() -> None:
     def finding(verified: dict[str, object]) -> Finding:
         return Finding("catalog_gap", "org/model", 1, ("u",), verified)
