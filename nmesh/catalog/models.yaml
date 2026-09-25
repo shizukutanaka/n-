@@ -277,6 +277,25 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: phi-3-mini-128k-instruct
+  family: phi-3
+  params: 3820000000
+  n_layers: 32
+  n_heads: 32
+  n_kv_heads: 32
+  head_dim: 96
+  hidden_size: 3072
+  vocab_size: 32064
+  head_layout: separate
+  max_context: 131072
+  roles: [chat]
+  quality: 55
+  license: mit
+  languages: [en]
+  sources:
+    ollama: "phi3:3.8b-mini-128k-instruct"
+    hf_gguf: "bartowski/Phi-3-mini-128k-instruct-GGUF"
+    hf: "microsoft/Phi-3-mini-128k-instruct"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
