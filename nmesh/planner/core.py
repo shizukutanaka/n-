@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -667,6 +667,13 @@ def _launch(
             argv += ["--tensor-parallel-size", str(tensor_parallel)]
         if gpu_fraction is not None:
             argv += ["--gpu-memory-utilization", f"{gpu_fraction:.3f}"]
+        if warnings is not None and os.environ.get("VLLM_API_KEY") is not None:
+            # VLLM_API_KEY makes vllm serve require bearer auth, which the
+            # gateway's unauthenticated loopback upstream cannot satisfy.
+            warnings.append(
+                t("warn.upstream_env_conflict", language,
+                  env="VLLM_API_KEY", service=model.id)
+            )
         if embed_only and warnings is not None:
             warnings.append(
                 t("warn.embeddings_backend_unverified", language, model=model.id)
@@ -700,7 +707,22 @@ def _launch(
             warnings.append(
                 t("warn.parallel_unsupported", language)
             )
-        argv += ["--port", str(port)]
+        argv += ["--port", str(port), "--host", "127.0.0.1"]
+        if backend == "llamacpp" and warnings is not None:
+            # LLAMA_ARG_* envs only apply to argv-unset options, and the
+            # gateway assumes an unauthenticated plain-HTTP loopback
+            # upstream — auth, a path prefix, or TLS all break that
+            # contract and have no argv negation, so warn instead.
+            for env_var in (
+                "LLAMA_ARG_API_KEY", "LLAMA_ARG_API_PREFIX",
+                "LLAMA_ARG_SSL_KEY_FILE", "LLAMA_ARG_SSL_CERT_FILE",
+            ):
+                value = os.environ.get(env_var)
+                if value is not None:
+                    warnings.append(
+                        t("warn.upstream_env_conflict", language,
+                          env=env_var, service=model.id)
+                    )
         if gpu_layers:
             argv += ["-ngl", str(layers)]
         elif warnings is not None and gpu_devices != ():

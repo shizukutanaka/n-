@@ -701,6 +701,78 @@ def test_ollama_only_model_never_uses_llamacpp(tmp_path, monkeypatch) -> None:
     assert result.services[0].backend == "ollama"
 
 
+def test_llamacpp_launch_pins_loopback_host() -> None:
+    model = ModelSpec(
+        "llamacpp-chat", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"hf_gguf": "repo"},
+    )
+    available = profile(
+        8,
+        backends={"ollama": None, "llamacpp": "installed",
+                  "vllm": None, "mlx": None},
+    )
+    result = build_plan(available, [model], Policy(roles=["chat"]))
+    argv = result.services[0].launch.argv
+    assert "--host" in argv
+    assert argv[argv.index("--host") + 1] == "127.0.0.1"
+
+
+def test_llamacpp_launch_warns_on_llama_arg_api_key(monkeypatch) -> None:
+    monkeypatch.setenv("LLAMA_ARG_API_KEY", "secret")
+    model = ModelSpec(
+        "llamacpp-chat", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"hf_gguf": "repo"},
+    )
+    available = profile(
+        8,
+        backends={"ollama": None, "llamacpp": "installed",
+                  "vllm": None, "mlx": None},
+    )
+    result = build_plan(available, [model], Policy(roles=["chat"]))
+    assert any(
+        "LLAMA_ARG_API_KEY" in warning for warning in result.warnings
+    )
+
+
+def test_vllm_launch_warns_on_vllm_api_key(monkeypatch) -> None:
+    monkeypatch.setenv("VLLM_API_KEY", "secret")
+    model = ModelSpec(
+        "oversized", "test", 150_000_000_000, 100, 100, 100, 128,
+        12800, 4096, ["chat"], 99.0, "test", {"hf": "test/model"},
+    )
+    result = build_plan(
+        profile(128, (80, 80), os_name="linux",
+                backends={"ollama": None, "llamacpp": None,
+                          "vllm": "installed", "mlx": None}),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert result.services[0].backend == "vllm"
+    assert any(
+        "VLLM_API_KEY" in warning for warning in result.warnings
+    )
+
+
+def test_no_upstream_env_warn_when_unset(monkeypatch) -> None:
+    for var in ("LLAMA_ARG_API_KEY", "LLAMA_ARG_API_PREFIX",
+                "LLAMA_ARG_SSL_KEY_FILE", "LLAMA_ARG_SSL_CERT_FILE",
+                "VLLM_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    model = ModelSpec(
+        "llamacpp-chat", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"hf_gguf": "repo"},
+    )
+    available = profile(
+        8,
+        backends={"ollama": None, "llamacpp": "installed",
+                  "vllm": None, "mlx": None},
+    )
+    result = build_plan(available, [model], Policy(roles=["chat"]))
+    assert not any(
+        "loopback upstream" in warning for warning in result.warnings
+    )
+
+
 def test_installed_lower_preference_backend_wins() -> None:
     model = ModelSpec(
         "both-sources", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
