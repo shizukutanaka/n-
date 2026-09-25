@@ -416,6 +416,24 @@ def test_state_round_trip_and_dedup(tmp_path: Path) -> None:
     assert load_state(tmp_path / "broken.json").seen_findings == {}
 
 
+def test_state_save_uses_pid_scoped_tmp(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "watch.json"
+    tmp_names: list[str] = []
+    original_replace = Path.replace
+
+    def spy(self: Path, target: Path) -> Path:
+        tmp_names.append(self.name)
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", spy)
+    monkeypatch.setattr("nmesh.watch.state.os.getpid", lambda: 1)
+    save_state(WatchState("a", {}, {}), path)
+    monkeypatch.setattr("nmesh.watch.state.os.getpid", lambda: 2)
+    save_state(WatchState("b", {}, {}), path)
+
+    assert tmp_names == [".watch.json.1.tmp", ".watch.json.2.tmp"]
+
+
 def test_draft_quality_is_null_and_missing_fields_are_explicit(tmp_path: Path) -> None:
     finding = Finding(
         "catalog_gap",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,7 +60,7 @@ def save_state(state: WatchState, path: Path | None = None) -> None:
         "seen_items": _bounded(state.seen_items),
         "seen_findings": _bounded(state.seen_findings),
     }
-    temporary = target.with_name(f".{target.name}.tmp")
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     temporary.replace(target)
 
