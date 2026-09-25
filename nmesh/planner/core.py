@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -651,9 +651,29 @@ def _launch(
     rerank_only = list(roles) == ["rerank"]
     ref = _source_for(backend, model, quant)
     if backend == "ollama":
+        env: dict[str, str] = {}
+        num_parallel = os.environ.get("OLLAMA_NUM_PARALLEL")
+        if num_parallel is None:
+            # The daemon auto-selects up to 4 parallel slots per model when
+            # memory allows, committing num_ctx * parallel KV — well beyond
+            # the single-slot context the plan accounts for.
+            env["OLLAMA_NUM_PARALLEL"] = "1"
+        else:
+            try:
+                parsed_parallel = int(num_parallel)
+            except ValueError:
+                parsed_parallel = -1
+            if parsed_parallel != 1 and warnings is not None:
+                warnings.append(
+                    t(
+                        "warn.ollama_num_parallel_env",
+                        language,
+                        parallel=num_parallel,
+                    )
+                )
         return LaunchSpec(
             [binary or "ollama", "serve"],
-            {},
+            env,
             "http://127.0.0.1:11434/api/tags",
             True,
         )

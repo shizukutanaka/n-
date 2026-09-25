@@ -701,6 +701,42 @@ def test_ollama_only_model_never_uses_llamacpp(tmp_path, monkeypatch) -> None:
     assert result.services[0].backend == "ollama"
 
 
+def _ollama_only_model() -> ModelSpec:
+    return ModelSpec(
+        "ollama-only", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"ollama": "test:model"},
+    )
+
+
+def test_ollama_daemon_env_pins_single_parallel_slot(monkeypatch) -> None:
+    # Ollama auto-selects up to 4 parallel slots per model; the plan
+    # accounts KV memory for one slot, so the daemon env pins it.
+    monkeypatch.delenv("OLLAMA_NUM_PARALLEL", raising=False)
+    result = build_plan(profile(8), [_ollama_only_model()], Policy(roles=["chat"]))
+    assert result.services[0].backend == "ollama"
+    assert result.services[0].launch.env["OLLAMA_NUM_PARALLEL"] == "1"
+
+
+def test_ollama_daemon_env_respects_user_parallel(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_NUM_PARALLEL", "4")
+    result = build_plan(profile(8), [_ollama_only_model()], Policy(roles=["chat"]))
+    assert "OLLAMA_NUM_PARALLEL" not in result.services[0].launch.env
+    assert any(
+        "OLLAMA_NUM_PARALLEL" in warning for warning in result.warnings
+    )
+
+
+def test_ollama_daemon_env_no_warn_when_user_parallel_matches(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OLLAMA_NUM_PARALLEL", "1")
+    result = build_plan(profile(8), [_ollama_only_model()], Policy(roles=["chat"]))
+    assert "OLLAMA_NUM_PARALLEL" not in result.services[0].launch.env
+    assert not any(
+        "OLLAMA_NUM_PARALLEL" in warning for warning in result.warnings
+    )
+
+
 def test_installed_lower_preference_backend_wins() -> None:
     model = ModelSpec(
         "both-sources", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
