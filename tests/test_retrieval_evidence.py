@@ -290,6 +290,30 @@ def test_usable_retrieval_record_does_not_nag_for_remeasure(
     assert row["remeasure"] == ""
 
 
+def test_retrieval_reason_legend_translates_stale_and_unmeasured(
+    tmp_path, monkeypatch,
+) -> None:
+    from nmesh import i18n
+
+    path = tmp_path / "retrieval.json"
+    stale = replace(_record(_ladder((8, 8, 8, 2))), digest="0" * 16)
+    unmeasured = replace(_record(_ladder((8, 8, 8, 8))), model_id="embed2")
+    save_retrieval(stale, path)
+    save_retrieval(unmeasured, path)
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    reasons = {
+        reason
+        for row in collect_evidence()["records"]
+        if row["kind"] == "retrieval"
+        for reason in row["reasons"]
+    }
+    assert {"stale_digest", "unmeasured"} <= reasons
+    for language in ("en", "ja"):
+        for reason in reasons:
+            key = f"evidence.reason.{reason}"
+            assert i18n.t(key, language) != key
+
+
 def test_nondefault_retrieval_digest_is_ignored_by_planner(tmp_path, monkeypatch) -> None:
     record = replace(
         _record(_ladder((8, 8, 8, 2))),
