@@ -1195,7 +1195,9 @@ def create_app(
 
     app.state.reap = _reap
     app.state.in_flight = in_flight
-    api_key = os.environ.get("NMESH_API_KEY")
+    # autostart writes `NMESH_API_KEY=` into gateway.env when unset — an empty
+    # value means no key configured, not "require the empty bearer".
+    api_key = os.environ.get("NMESH_API_KEY") or None
     api_key_bytes = api_key.encode("utf-8") if api_key is not None else None
 
     @app.middleware("http")
