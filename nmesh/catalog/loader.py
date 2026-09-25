@@ -39,8 +39,16 @@ class ModelSpec:
     n_moe_layers: int = 0
 
 
-def _model_from_mapping(item: object) -> ModelSpec | None:
+def _model_from_mapping(
+    item: object, problems: list[str] | None = None
+) -> ModelSpec | None:
+    def reject(reason: str) -> None:
+        if problems is not None:
+            label = item.get("id") if isinstance(item, dict) else None
+            problems.append(f"{label}: {reason}" if label else reason)
+
     if not isinstance(item, dict):
+        reject("entry is not a mapping")
         return None
     required = (
         "id",
@@ -57,12 +65,15 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
         "license",
         "sources",
     )
-    if any(key not in item for key in required):
+    missing = [key for key in required if key not in item]
+    if missing:
+        reject(f"missing required keys: {', '.join(missing)}")
         return None
     try:
         roles_value = item["roles"]
         sources_value = item["sources"]
         if not isinstance(roles_value, list) or not isinstance(sources_value, dict):
+            reject("roles must be a list and sources a mapping")
             return None
         languages_value = item.get("languages", ["en"])
         if not isinstance(languages_value, list):
@@ -99,30 +110,47 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
             moe_expert_params=int(item.get("moe_expert_params", 0)),
             n_moe_layers=int(item.get("n_moe_layers", 0)),
         )
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as error:
+        reject(str(error))
         return None
 
 
-def _read_models(path: Path) -> list[ModelSpec]:
+def _read_models(path: Path, problems: list[str] | None = None) -> list[ModelSpec]:
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+    except OSError:
+        return []
+    except yaml.YAMLError as error:
+        if problems is not None:
+            problems.append(f"{path}: cannot parse YAML: {error}")
         return []
     if not isinstance(payload, list):
+        if problems is not None:
+            problems.append(f"{path}: catalog top level is not a list")
         return []
     models: list[ModelSpec] = []
-    for item in payload:
-        model = _model_from_mapping(item)
+    for index, item in enumerate(payload):
+        entry_problems: list[str] = []
+        model = _model_from_mapping(item, entry_problems)
         if model is not None:
             models.append(model)
+        elif problems is not None:
+            for reason in entry_problems:
+                problems.append(f"{path}: entry {index}: {reason}")
     return models
 
 
 def load_catalog(
-    bundled_path: Path | None = None, user_path: Path | None = None
+    bundled_path: Path | None = None,
+    user_path: Path | None = None,
+    problems: list[str] | None = None,
 ) -> list[ModelSpec]:
     bundled = bundled_path or Path(__file__).with_name("models.yaml")
     user = user_path or (nmesh_home() / "models.yaml")
-    merged: dict[str, ModelSpec] = {model.id: model for model in _read_models(bundled)}
-    merged.update({model.id: model for model in _read_models(user)})
+    merged: dict[str, ModelSpec] = {
+        model.id: model for model in _read_models(bundled, problems)
+    }
+    merged.update(
+        {model.id: model for model in _read_models(user, problems)}
+    )
     return list(merged.values())

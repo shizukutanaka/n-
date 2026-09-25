@@ -410,6 +410,37 @@ def test_catalog_quality_null_is_explicit_and_invalid_quality_is_rejected() -> N
     assert _model_from_mapping(missing) is None
 
 
+def test_catalog_problems_report_skipped_entries(tmp_path) -> None:
+    user_path = tmp_path / "models.yaml"
+    user_path.write_text(
+        "- id: broken-missing\n  family: test\n"
+        "- id: broken-quality\n"
+        "  family: test\n"
+        "  params: 1\n  n_layers: 1\n  n_heads: 1\n  n_kv_heads: 1\n"
+        "  head_dim: 1\n  hidden_size: 1\n  max_context: 1\n"
+        "  roles: [chat]\n  quality: \"unknown\"\n  license: apache\n"
+        "  sources: {hf: org/candidate}\n",
+        encoding="utf-8",
+    )
+    problems: list[str] = []
+    models = load_catalog(user_path=user_path, problems=problems)
+    # Bundled entries still load; the malformed user entries are skipped
+    # but each skip is reported instead of vanishing silently.
+    assert models
+    assert not {"broken-missing", "broken-quality"} & {model.id for model in models}
+    assert any("broken-missing" in problem for problem in problems)
+    assert any("missing required keys" in problem for problem in problems)
+    assert any("broken-quality" in problem for problem in problems)
+
+
+def test_catalog_problems_report_unparseable_file(tmp_path) -> None:
+    user_path = tmp_path / "models.yaml"
+    user_path.write_text("- id: [unclosed\n", encoding="utf-8")
+    problems: list[str] = []
+    load_catalog(user_path=user_path, problems=problems)
+    assert problems and any("cannot parse YAML" in p for p in problems)
+
+
 def test_unmeasured_models_require_explicit_selection() -> None:
     model = ModelSpec(
         "candidate", "test", 500_000_000, 24, 16, 2, 64, 1024,
