@@ -327,6 +327,16 @@ def _non_negative_int(value: str) -> int:
     return parsed
 
 
+def _valid_port(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer port") from error
+    if parsed < 1 or parsed > 65535:
+        raise argparse.ArgumentTypeError("must be a port between 1 and 65535")
+    return parsed
+
+
 def _print_json(value: object) -> None:
     print(json.dumps(value, indent=2, default=str))
 
@@ -4298,7 +4308,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--no-download", action="store_true")
     up_parser.add_argument("--kv-quant", choices=("f16", "q8_0"), default="f16")
     up_parser.add_argument("--detach", action="store_true")
-    up_parser.add_argument("--port", type=int, default=18000)
+    up_parser.add_argument("--port", type=_valid_port, default=18000)
     up_parser.add_argument("--ignore-free-memory", action="store_true")
     up_parser.add_argument("--lang")
     up_parser.add_argument("--roles", default=None)
@@ -4316,23 +4326,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--min-decode-tps", type=float, default=8.0,
                            help="minimum decode throughput (tok/s) a service must sustain")
     serve_parser = sub.add_parser("serve")
-    serve_parser.add_argument("--port", type=int, default=18000)
+    serve_parser.add_argument("--port", type=_valid_port, default=18000)
     serve_parser.add_argument("--roles", default=None)
     reload_parser = sub.add_parser("reload")
-    reload_parser.add_argument("--port", type=int, default=18000)
+    reload_parser.add_argument("--port", type=_valid_port, default=18000)
     reload_parser.add_argument("--json", action="store_true")
     unload_parser = sub.add_parser("unload")
     unload_parser.add_argument("service", nargs="?")
-    unload_parser.add_argument("--port", type=int, default=18000)
+    unload_parser.add_argument("--port", type=_valid_port, default=18000)
     unload_parser.add_argument("--json", action="store_true")
     for name in ("status", "down"):
         item = sub.add_parser(name)
         item.add_argument("--json", action="store_true")
-        item.add_argument("--port", type=int, default=18000)
+        item.add_argument("--port", type=_valid_port, default=18000)
     run_parser = sub.add_parser("run")
     run_parser.add_argument("prompt")
     run_parser.add_argument("--role", default="chat")
-    run_parser.add_argument("--port", type=int, default=18000)
+    run_parser.add_argument("--port", type=_valid_port, default=18000)
     run_parser.add_argument("--json", action="store_true")
     run_parser.add_argument(
         "--stream", action="store_true",
@@ -4425,7 +4435,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logs_parser.add_argument("--lines", type=_positive_int, default=50)
     logs_parser.add_argument("--json", action="store_true")
     jobs_parser = sub.add_parser("jobs", help="list queued and running gateway jobs")
-    jobs_parser.add_argument("--port", type=int, default=18000)
+    jobs_parser.add_argument("--port", type=_valid_port, default=18000)
     jobs_parser.add_argument("--limit", type=_positive_int, default=50)
     jobs_parser.add_argument("--cancel", metavar="JOB_ID",
                              help="cancel a queued job (running jobs cannot be interrupted)")
@@ -4451,7 +4461,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     auto = sub.add_parser("autotune")
     auto.add_argument("--json", action="store_true")
     autostart = sub.add_parser("autostart")
-    autostart.add_argument("--port", type=int, default=18000)
+    autostart.add_argument("--port", type=_valid_port, default=18000)
     autostart.add_argument("--install", action="store_true")
     autostart.add_argument("--json", action="store_true")
     models = sub.add_parser("models")

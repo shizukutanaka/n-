@@ -55,3 +55,12 @@ def test_version_reports_package_and_evidence_versions(
     assert "nmesh 0.1.0" in output
     assert f"bench={cli.BENCH_HARNESS_VERSION}" in output
     assert "probe_rules=" in output
+
+
+def test_port_flag_rejects_out_of_range_values() -> None:
+    """Port 0 silently binds an ephemeral port; out-of-range values fail
+    inside uvicorn instead of at parse time."""
+    for port in ("0", "-1", "65536"):
+        with pytest.raises(SystemExit) as error:
+            cli.main(["status", "--port", port])
+        assert error.value.code == 2
