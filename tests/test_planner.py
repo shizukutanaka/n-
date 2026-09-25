@@ -1023,6 +1023,21 @@ def test_context_shift_warns_when_unsupported(
     assert any("context-shift" in warning for warning in result.warnings)
 
 
+def test_context_shift_omitted_and_warns_on_swa_models(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "gemma2-2b")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl", "--context-shift")},
+    )
+    result = build_plan(
+        machine, [model], Policy(roles=["chat"], context_shift=True),
+    )
+    assert "--context-shift" not in result.services[0].launch.argv
+    assert any("context-shift" in warning for warning in result.warnings)
+
+
 def test_rerank_gets_dedicated_service_with_reranking_flag(
     catalog: list[ModelSpec],
 ) -> None:
