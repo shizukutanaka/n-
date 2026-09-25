@@ -1326,6 +1326,41 @@ def test_oversized_llamacpp_model_uses_tensor_split() -> None:
     assert "--tensor-split" in service.launch.argv
 
 
+def test_tensor_split_pins_main_gpu_to_largest_card() -> None:
+    model = ModelSpec(
+        "oversized-llamacpp", "test", 40_000_000_000, 80, 32, 8, 128,
+        4096, 128, ["chat"], 99.0, "test", {"hf_gguf": "test.gguf"},
+    )
+    result = build_plan(
+        profile(128, (8, 24)),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert service.backend == "llamacpp"
+    assert service.gpu_indices == [0, 1]
+    # llama.cpp puts the compute buffer on the main GPU (visible device 0
+    # without a visibility pin), so it must be the largest card — GPU 1.
+    assert "--main-gpu" in service.launch.argv
+    argv = service.launch.argv
+    assert argv[argv.index("--main-gpu") + 1] == "1"
+
+
+def test_tensor_split_main_gpu_removed_on_cpu_fallback() -> None:
+    model = ModelSpec(
+        "cpu-fallback-llamacpp", "test", 60_000_000_000, 80, 80, 100, 128,
+        12800, 4096, ["chat"], 99.0, "test", {"hf_gguf": "test.gguf"},
+    )
+    result = build_plan(
+        profile(128, (4, 4)),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    service = result.services[0]
+    assert service.gpu_indices == []
+    assert "--main-gpu" not in service.launch.argv
+
+
 def test_oversized_llamacpp_cpu_fallback_clears_split_and_warns() -> None:
     # Tiny GPUs: the KV pool alone exceeds the combined VRAM budgets,
     # forcing the pure CPU fallback this test exercises.

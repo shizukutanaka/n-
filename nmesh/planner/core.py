@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -1697,7 +1697,8 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
                     backend_flags: frozenset[str] | tuple[str, ...] | None = None,
                     warnings: list[str] | None = None,
                     gpu_devices: tuple[str, ...] | None = None,
-                    language: str = "en") -> LaunchSpec:
+                    language: str = "en",
+                    main_gpu: int | None = None) -> LaunchSpec:
     argv = list(service.launch.argv)
     if service.backend == "vllm":
         if tensor_parallel > 1:
@@ -1731,6 +1732,17 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
                     )
         elif "--tensor-split" in argv:
             index = argv.index("--tensor-split")
+            del argv[index:index + 2]
+        main_gpu_supported = backend_flags is None or (
+            "--main-gpu" in backend_flags or "-mg" in backend_flags
+        )
+        if tensor_parallel > 1 and main_gpu is not None and main_gpu_supported:
+            if "--main-gpu" in argv:
+                argv[argv.index("--main-gpu") + 1] = str(main_gpu)
+            else:
+                argv += ["--main-gpu", str(main_gpu)]
+        elif "--main-gpu" in argv:
+            index = argv.index("--main-gpu")
             del argv[index:index + 2]
         if "--n-cpu-moe" in argv:
             index = argv.index("--n-cpu-moe")
@@ -1993,6 +2005,11 @@ def _place_services(
             remaining[target] -= committed
 
         current = replace(service, gpu_indices=assigned)
+        main_gpu_index = (
+            max(assigned, key=lambda index: (remaining[index], -index))
+            if tensor_parallel > 1 and current.backend == "llamacpp"
+            else None
+        )
         if (
             current.backend == "llamacpp"
             and current.n_gpu_layers is not None
@@ -2068,6 +2085,7 @@ def _place_services(
                     profile.backend_flags.get(current.backend), warnings,
                     gpu_devices=profile.backend_gpu_devices.get(current.backend),
                     language=policy.lang,
+                    main_gpu=main_gpu_index,
                 ),
             )
         pin = (
