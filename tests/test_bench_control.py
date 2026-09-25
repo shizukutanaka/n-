@@ -53,6 +53,36 @@ def test_bench_records_round_trip_and_legacy(tmp_path) -> None:
     assert load_cache(path) == {}
 
 
+def test_bench_records_reject_non_finite_measurements(tmp_path) -> None:
+    path = tmp_path / "bench.json"
+    base: dict[str, object] = {
+        "tps": 20.0, "decode_tps_min": 19.0, "decode_tps_max": 21.0,
+        "runs": 3, "passes": 2, "control_ratio": 0.99,
+        "stable": True, "measured_at": "now",
+        "harness": BENCH_HARNESS_VERSION, "sessions": [20.0],
+    }
+    for field, value in (
+        ("tps", float("nan")),
+        ("tps", float("inf")),
+        ("tps", -1.0),
+        ("decode_tps_min", float("nan")),
+        ("control_ratio", float("inf")),
+        ("reference_tps", float("nan")),
+    ):
+        path.write_text(
+            json.dumps({"key": {**base, field: value}}), encoding="utf-8",
+        )
+        assert load_records(path) == {}, field
+    path.write_text(
+        json.dumps({"key": {**base, "sessions": [float("nan")]}}),
+        encoding="utf-8",
+    )
+    assert load_records(path) == {}
+
+    path.write_text(json.dumps({"legacy": float("nan")}), encoding="utf-8")
+    assert load_records(path) == {}
+
+
 def test_unstable_records_are_hidden_but_prior_evidence_survives(tmp_path) -> None:
     path = tmp_path / "bench.json"
     records = {
