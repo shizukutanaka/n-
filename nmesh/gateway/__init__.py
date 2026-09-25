@@ -583,7 +583,7 @@ async def _routing_token_hint(
     if (
         threshold > 0
         and 0.5 * threshold <= count <= 2 * threshold
-        and _service_is_running_llamacpp(chat)
+        and await asyncio.to_thread(_service_is_running_llamacpp, chat)
     ):
         assert httpx is not None
         client = httpx.AsyncClient()
@@ -1058,7 +1058,10 @@ async def _slot_progress(
         service = next(
             (item for item in services if item.name == service_name), None
         )
-        if service is None or not _service_is_running_llamacpp(service):
+        if (
+            service is None
+            or not await asyncio.to_thread(_service_is_running_llamacpp, service)
+        ):
             continue
         try:
             async with httpx.AsyncClient(
