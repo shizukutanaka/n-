@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -657,12 +657,21 @@ def _launch(
             "http://127.0.0.1:11434/api/tags",
             True,
         )
+    env: dict[str, str] = {}
     if backend == "vllm":
         argv = [
             binary or "vllm", "serve", ref, "--host", "127.0.0.1",
             "--port", str(port), "--max-model-len", str(context),
             "--max-num-seqs", str(slots),
         ]
+        # nmesh promises offline operation for spawned services, but vLLM
+        # phones anonymous usage stats home by default — disable it unless
+        # the user already chose either side explicitly.
+        if (
+            os.environ.get("VLLM_NO_USAGE_STATS") is None
+            and os.environ.get("DO_NOT_TRACK") is None
+        ):
+            env["VLLM_NO_USAGE_STATS"] = "1"
         if tensor_parallel > 1:
             argv += ["--tensor-parallel-size", str(tensor_parallel)]
         if gpu_fraction is not None:
@@ -836,7 +845,7 @@ def _launch(
                     t("warn.rerank_unsupported", language, model=model.id)
                 )
     health_path = "/health" if backend == "llamacpp" else "/v1/models"
-    return LaunchSpec(argv, {}, f"http://127.0.0.1:{port}{health_path}")
+    return LaunchSpec(argv, env, f"http://127.0.0.1:{port}{health_path}")
 
 
 @dataclass(frozen=True)

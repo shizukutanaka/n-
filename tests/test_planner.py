@@ -701,6 +701,39 @@ def test_ollama_only_model_never_uses_llamacpp(tmp_path, monkeypatch) -> None:
     assert result.services[0].backend == "ollama"
 
 
+def test_vllm_env_disables_usage_stats(monkeypatch) -> None:
+    monkeypatch.delenv("VLLM_NO_USAGE_STATS", raising=False)
+    monkeypatch.delenv("DO_NOT_TRACK", raising=False)
+    model = ModelSpec(
+        "oversized", "test", 150_000_000_000, 100, 100, 100, 128,
+        12800, 4096, ["chat"], 99.0, "test", {"hf": "test/model"},
+    )
+    result = build_plan(
+        profile(128, (80, 80), os_name="linux",
+                backends={"ollama": None, "llamacpp": None,
+                          "vllm": "installed", "mlx": None}),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert result.services[0].launch.env["VLLM_NO_USAGE_STATS"] == "1"
+
+
+def test_vllm_env_respects_user_usage_stats_choice(monkeypatch) -> None:
+    monkeypatch.setenv("VLLM_NO_USAGE_STATS", "0")
+    model = ModelSpec(
+        "oversized", "test", 150_000_000_000, 100, 100, 100, 128,
+        12800, 4096, ["chat"], 99.0, "test", {"hf": "test/model"},
+    )
+    result = build_plan(
+        profile(128, (80, 80), os_name="linux",
+                backends={"ollama": None, "llamacpp": None,
+                          "vllm": "installed", "mlx": None}),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert "VLLM_NO_USAGE_STATS" not in result.services[0].launch.env
+
+
 def test_installed_lower_preference_backend_wins() -> None:
     model = ModelSpec(
         "both-sources", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
