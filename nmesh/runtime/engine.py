@@ -615,7 +615,10 @@ def use(tag: str) -> InstalledEngine:
 
 
 def remove(tag: str) -> bool:
-    target = engines_dir() / tag
+    root = engines_dir().resolve()
+    target = (root / tag).resolve()
+    if target.parent != root:
+        raise ValueError(f"invalid engine tag: {tag}")
     if not target.exists():
         raise FileNotFoundError(f"llama.cpp engine is not installed: {tag}")
     active_engine = active()

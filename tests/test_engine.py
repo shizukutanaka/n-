@@ -288,6 +288,24 @@ def test_install_launch_warning_has_no_vcredist_hint_off_windows(
     assert "Visual C++" not in launch_warning
 
 
+def test_engine_remove_rejects_path_traversal(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path / "llamacpp")
+    engines = tmp_path / "llamacpp"
+    engines.mkdir()
+    (engines / "b10830").mkdir()
+    sibling = tmp_path / "other"
+    sibling.mkdir()
+    for tag in ("..", ".", "", "b10830/..", str(tmp_path)):
+        with pytest.raises(ValueError, match="invalid engine tag"):
+            engine.remove(tag)
+    assert (tmp_path / "other").exists()
+    assert (engines / "b10830").exists()
+    with pytest.raises(FileNotFoundError):
+        engine.remove("b99999")
+    assert engine.remove("b10830") is False
+    assert not (engines / "b10830").exists()
+
+
 def test_tar_member_path_traversal_is_rejected(tmp_path: Path) -> None:
     archive = tmp_path / "bad.tar.gz"
     with tarfile.open(archive, "w:gz") as source:
