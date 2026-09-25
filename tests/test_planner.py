@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -1609,10 +1610,33 @@ def test_vllm_slots_and_total_vram_fraction() -> None:
         gpu.total_vram_bytes for gpu in result.profile.gpus
         if gpu.index in service.gpu_indices
     )
-    assert 0.10 < fraction <= 0.95
-    assert fraction == round(
-        min(0.95, max(0.10, service.memory.gpu_bytes / total_vram)), 3
+    assert 0 < fraction <= 1.0
+    assert fraction == math.ceil(
+        service.memory.gpu_bytes / total_vram * 1000
+    ) / 1000
+
+
+def test_vllm_fraction_matches_small_planned_share() -> None:
+    model = ModelSpec(
+        "pocket", "test", 1_000_000_000, 28, 28, 28, 128,
+        1024, 2048, ["chat"], 99.0, "test", {"hf": "test/model"},
     )
+    result = build_plan(
+        profile(64, (80,), os_name="linux"),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0, parallel_slots=1),
+    )
+    service = result.services[0]
+    assert service.backend == "vllm"
+    argv = service.launch.argv
+    fraction = float(argv[argv.index("--gpu-memory-utilization") + 1])
+    total_vram = sum(
+        gpu.total_vram_bytes for gpu in result.profile.gpus
+        if gpu.index in service.gpu_indices
+    )
+    planned = service.memory.gpu_bytes / total_vram
+    assert planned < 0.10
+    assert planned <= fraction < planned + 0.001
 
 
 def test_forced_slots_clamp_and_one_is_silent(catalog: list[ModelSpec]) -> None:
