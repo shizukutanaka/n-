@@ -701,6 +701,38 @@ def test_ollama_only_model_never_uses_llamacpp(tmp_path, monkeypatch) -> None:
     assert result.services[0].backend == "ollama"
 
 
+def test_ollama_daemon_env_pins_loopback_host(monkeypatch) -> None:
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    model = ModelSpec(
+        "ollama-only", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"ollama": "test:model"},
+    )
+    result = build_plan(profile(8), [model], Policy(roles=["chat"]))
+    assert result.services[0].launch.env["OLLAMA_HOST"] == "127.0.0.1:11434"
+
+
+def test_ollama_daemon_warns_when_user_ollama_host_differs(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0:9999")
+    model = ModelSpec(
+        "ollama-only", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"ollama": "test:model"},
+    )
+    result = build_plan(profile(8), [model], Policy(roles=["chat"]))
+    assert result.services[0].launch.env["OLLAMA_HOST"] == "127.0.0.1:11434"
+    assert any("0.0.0.0:9999" in warning for warning in result.warnings)
+
+
+def test_ollama_daemon_no_warn_when_user_host_matches(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_HOST", "127.0.0.1:11434")
+    model = ModelSpec(
+        "ollama-only", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"ollama": "test:model"},
+    )
+    result = build_plan(profile(8), [model], Policy(roles=["chat"]))
+    assert result.services[0].launch.env["OLLAMA_HOST"] == "127.0.0.1:11434"
+    assert not any("OLLAMA_HOST" in warning for warning in result.warnings)
+
+
 def test_installed_lower_preference_backend_wins() -> None:
     model = ModelSpec(
         "both-sources", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
