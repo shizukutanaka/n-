@@ -2049,6 +2049,81 @@ def test_full_gpu_spread_does_not_pin() -> None:
     assert "CUDA_VISIBLE_DEVICES" not in service.launch.env
 
 
+def _ollama_models(count: int) -> list[ModelSpec]:
+    roles = ["chat", "code", "math", "embed", "rerank"]
+    return [
+        ModelSpec(
+            f"ol{i}", f"ol{i}", 1_000_000_000, 24, 16, 4, 128, 2048, 8192,
+            [roles[i]], 80.0, "apache", {"ollama": f"test:m{i}"},
+        )
+        for i in range(count)
+    ]
+
+
+def test_shared_daemon_emits_max_loaded_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OLLAMA_MAX_LOADED_MODELS", raising=False)
+    models = _ollama_models(2)
+    result = build_plan(
+        profile(64, (24,)),
+        models,
+        Policy(roles=["chat", "code"], min_decode_tps=0),
+    )
+    daemon_services = [
+        service for service in result.services if service.launch.shared_daemon
+    ]
+    assert len(daemon_services) == 2
+    for service in daemon_services:
+        assert service.launch.env["OLLAMA_MAX_LOADED_MODELS"] == "2"
+    assert not any(
+        "OLLAMA_MAX_LOADED_MODELS" in warning for warning in result.warnings
+    )
+
+
+def test_shared_daemon_respects_max_loaded_models_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OLLAMA_MAX_LOADED_MODELS", "5")
+    models = _ollama_models(2)
+    result = build_plan(
+        profile(64, (24,)),
+        models,
+        Policy(roles=["chat", "code"], min_decode_tps=0),
+    )
+    daemon_services = [
+        service for service in result.services if service.launch.shared_daemon
+    ]
+    assert len(daemon_services) == 2
+    for service in daemon_services:
+        assert "OLLAMA_MAX_LOADED_MODELS" not in service.launch.env
+    assert not any(
+        "OLLAMA_MAX_LOADED_MODELS" in warning for warning in result.warnings
+    )
+
+
+def test_shared_daemon_warns_when_loaded_cap_below_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OLLAMA_MAX_LOADED_MODELS", "1")
+    models = _ollama_models(4)
+    result = build_plan(
+        profile(64, (24,)),
+        models,
+        Policy(roles=["chat", "code", "math", "embed"], min_decode_tps=0),
+    )
+    daemon_services = [
+        service for service in result.services if service.launch.shared_daemon
+    ]
+    assert len(daemon_services) == 4
+    for service in daemon_services:
+        assert "OLLAMA_MAX_LOADED_MODELS" not in service.launch.env
+    assert any(
+        "OLLAMA_MAX_LOADED_MODELS=1 is below" in warning
+        for warning in result.warnings
+    )
+
+
 def test_download_budget_warning_reports_actual_totals(
     catalog: list[ModelSpec],
 ) -> None:

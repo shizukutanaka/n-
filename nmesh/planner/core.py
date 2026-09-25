@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 5
+LAUNCH_REVISION = 6
 
 
 @dataclass(frozen=True)
@@ -2089,6 +2089,41 @@ def _place_services(
         warn_cpu_fallback(current)
         placed[service.name] = current
         ram_used += current.memory.cpu_bytes
+    shared = [
+        service for service in placed.values() if service.launch.shared_daemon
+    ]
+    if shared:
+        loaded_cap = os.environ.get("OLLAMA_MAX_LOADED_MODELS")
+        if loaded_cap is None:
+            # Upstream caps loaded runners at 3 per GPU and evicts the
+            # least-recently-used one once the cap is hit; a plan that places
+            # more ollama services than that would silently rotate planned
+            # services through reloads inside request latency.
+            for service in shared:
+                placed[service.name] = replace(
+                    service,
+                    launch=replace(
+                        service.launch,
+                        env={
+                            **service.launch.env,
+                            "OLLAMA_MAX_LOADED_MODELS": str(len(shared)),
+                        },
+                    ),
+                )
+        else:
+            try:
+                effective_cap = int(loaded_cap)
+            except ValueError:
+                effective_cap = 0
+            if effective_cap <= 0:
+                effective_cap = 3 * max(len(profile.gpus), 1)
+            if effective_cap < len(shared):
+                warnings.append(
+                    t(
+                        "warn.ollama_max_loaded_models", policy.lang,
+                        value=loaded_cap, count=len(shared),
+                    )
+                )
     return [placed[service.name] for service in services]
 
 
