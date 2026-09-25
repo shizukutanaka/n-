@@ -423,6 +423,20 @@ def test_delegation_record_round_trip_defaults_and_validation(tmp_path: Path) ->
         assert load_cache(path) == {}
 
 
+def test_orchestrate_measure_rejects_negative_reasoning_allowance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A negative allowance is clamped to 0 by measure() but still recorded
+    in the record key — reject it at the parser instead of writing an
+    unreadable record."""
+    monkeypatch.setattr(
+        cli, "orchestrate_measure",
+        lambda *args, **kwargs: pytest.fail("measured with negative allowance"),
+    )
+    with pytest.raises(SystemExit):
+        cli.main(["orchestrate", "measure", "--reasoning-allowance", "-1"])
+
+
 def test_orchestrate_measure_rejects_embed_only_fallback_worker(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
