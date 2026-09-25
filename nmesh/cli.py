@@ -1029,6 +1029,11 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
     return plan
 
 
+def _metric_cell(metrics: dict[str, float], key: str, digits: int) -> str:
+    value = metrics.get(key)
+    return f"{value:.{digits}f}" if value is not None else "-"
+
+
 def _runtime(args: argparse.Namespace) -> int:
     exit_code = 0
     status_data_jobs: dict[str, dict[str, int]] | None = None
@@ -1281,10 +1286,10 @@ def _runtime(args: argparse.Namespace) -> int:
                 table.add_row(
                     service,
                     str(int(metrics["samples"])),
-                    f"{metrics.get('decode_tps_median', 0):.2f}",
-                    f"{metrics.get('ttft_s_median', 0):.3f}",
-                    f"{metrics.get('ttft_s_p95', 0):.3f}",
-                    f"{metrics.get('total_s_median', 0):.3f}",
+                    _metric_cell(metrics, "decode_tps_median", 2),
+                    _metric_cell(metrics, "ttft_s_median", 3),
+                    _metric_cell(metrics, "ttft_s_p95", 3),
+                    _metric_cell(metrics, "total_s_median", 3),
                 )
             _console().print(table)
     return 0 if exit_code == 0 else 1

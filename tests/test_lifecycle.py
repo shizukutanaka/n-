@@ -13,7 +13,7 @@ from urllib.error import HTTPError
 import psutil
 import pytest
 
-from nmesh import cli
+from nmesh import cli, telemetry
 from nmesh.catalog import load_catalog
 from nmesh.planner import Policy, build_plan
 from nmesh.runtime import service_unit as service_unit_module
@@ -1397,6 +1397,25 @@ def test_status_cli_renders_table_not_repr(monkeypatch, tmp_path: Path, capsys) 
     out = capsys.readouterr().out
     assert "RuntimeStatus(" not in out
     assert "gateway" in out and "stopped" in out
+
+
+def test_status_telemetry_table_marks_unmeasured_metrics(
+    monkeypatch, capsys
+) -> None:
+    # A sample carries total_s without decode/ttft whenever the completion was
+    # short or the request did not stream, so medians can be absent per column.
+    telemetry._default.record(
+        telemetry.Sample("chat", "chat", None, None, 1.5, 4, time.time())
+    )
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    free_port = sock.getsockname()[1]
+    sock.close()
+    assert cli.main(["status", "--port", str(free_port)]) == 0
+    out = capsys.readouterr().out
+    assert "1.500" in out
+    assert "0.00" not in out
 
 
 def test_down_cli_no_services_message(monkeypatch, tmp_path: Path, capsys) -> None:
