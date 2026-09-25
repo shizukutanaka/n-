@@ -277,6 +277,25 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: vicuna-13b-v1.5
+  family: vicuna
+  params: 13000000000
+  n_layers: 40
+  n_heads: 40
+  n_kv_heads: 40
+  head_dim: 128
+  hidden_size: 5120
+  vocab_size: 32000
+  head_layout: separate
+  max_context: 4096
+  roles: [chat]
+  quality: 54
+  license: llama2
+  languages: [en]
+  sources:
+    ollama: "vicuna:13b"
+    hf_gguf: "TheBloke/vicuna-13B-v1.5-GGUF"
+    hf: "lmsys/vicuna-13b-v1.5"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
