@@ -104,6 +104,10 @@ class _HeaderReader:
         if kind == 9:
             item_kind = self.u32()
             count = self.u64()
+            if item_kind == 9:
+                # The spec forbids arrays of arrays; rejecting them also
+                # bounds recursion to one level on hostile headers.
+                raise ValueError("nested GGUF arrays are invalid")
             return [self.value(item_kind) for _ in range(count)]
         if kind not in formats:
             raise ValueError("unexpected GGUF type tag")
@@ -129,6 +133,8 @@ class _HeaderReader:
         elif kind == 9:
             item_kind = self.u32()
             count = self.u64()
+            if item_kind == 9:
+                raise ValueError("nested GGUF arrays are invalid")
             for _ in range(count):
                 self.skip_value(item_kind)
         elif kind in sizes:

@@ -199,6 +199,35 @@ def test_hf_unreachable_is_reported_honestly() -> None:
     assert not status.reachable and items == ()
 
 
+def test_zenn_article_page_failure_skips_only_that_article() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/articles":
+            return httpx.Response(200, json={"articles": [
+                {"path": "/a/gone", "title": "gone"},
+                {"path": "/a/ok", "title": "ok"},
+            ]})
+        if request.url.path == "/a/gone":
+            return httpx.Response(404)
+        return httpx.Response(200, text="<p>kv cache</p>")
+
+    status, items = fetch_zenn(("llm",), 2, _client(handler))
+    assert status.reachable and len(items) == 1
+    assert items[0].url == "https://zenn.dev/a/ok"
+
+
+def test_hf_card_fetch_error_keeps_the_model_listing() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/models":
+            return httpx.Response(200, json=[
+                {"id": "acme/Model-GGUF", "lastModified": "2026-01-02T00:00:00Z"},
+            ])
+        raise httpx.ConnectError("connection lost", request=request)
+
+    status, items = fetch_hf("gguf", 5, _client(handler))
+    assert status.reachable and len(items) == 1
+    assert items[0].body == ""
+
+
 def test_x_without_token_reports_auth_required(monkeypatch) -> None:
     monkeypatch.delenv("NMESH_X_BEARER_TOKEN", raising=False)
     status, items = fetch_x("llm", 2)
