@@ -277,6 +277,23 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: glm-edge-4b-chat
+  family: glm-edge
+  params: 4030000000
+  n_layers: 40
+  n_heads: 24
+  n_kv_heads: 6
+  head_dim: 128
+  hidden_size: 3072
+  vocab_size: 59264
+  head_layout: separate
+  max_context: 8192
+  roles: [chat]
+  quality: 54
+  license: glm-4
+  languages: [en, zh]
+  sources:
+    hf: "THUDM/glm-edge-4b-chat"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
