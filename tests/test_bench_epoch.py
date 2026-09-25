@@ -73,6 +73,14 @@ def test_history_is_trimmed_and_reference_ids_are_isolated(tmp_path) -> None:
     assert baseline(loaded, "two") == 82.5
 
 
+def test_default_epoch_path_stays_in_session_home(tmp_path) -> None:
+    """EPOCH_PATH is bound at import time; the shared conftest must rebind it
+    to the per-test NMESH_HOME or bench runs leak into the real home."""
+    save_history({"ref": _samples("ref", [1.0, 2.0])})
+    assert (tmp_path / "epoch.json").is_file()
+    assert baseline(load_history(), "ref") is not None
+
+
 def test_reference_discovery_uses_smallest_model_and_windows_sibling(tmp_path) -> None:
     server = tmp_path / "llama-server.exe"
     binary = tmp_path / "llama-bench.exe"
