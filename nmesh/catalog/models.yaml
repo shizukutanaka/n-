@@ -277,6 +277,26 @@
     hf_gguf: "bartowski/HuggingFaceTB_SmolLM3-3B-GGUF"
     hf: "HuggingFaceTB/SmolLM3-3B"
     hf_mlx: "mlx-community/SmolLM3-3B-4bit"
+- id: ministral-8b-instruct
+  family: ministral
+  params: 8000000000
+  n_layers: 36
+  n_heads: 32
+  n_kv_heads: 8
+  head_dim: 128
+  hidden_size: 4096
+  vocab_size: 131072
+  head_layout: separate
+  sliding_window: 32768
+  sliding_window_pattern: 4
+  max_context: 32768
+  roles: [chat, tool]
+  quality: 60
+  license: mistral-non-production
+  languages: [en, fr, de, es, it, pt]
+  sources:
+    hf_gguf: "bartowski/Ministral-8B-Instruct-2410-GGUF"
+    hf: "mistralai/Ministral-8B-Instruct-2410"
 - id: llama3.1-8b-instruct
   family: llama3.1
   params: 8030000000
