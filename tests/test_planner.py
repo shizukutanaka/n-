@@ -993,6 +993,24 @@ def test_cache_reuse_warns_when_unsupported(
     assert any("cache-reuse" in warning for warning in result.warnings)
 
 
+def test_cache_reuse_omitted_and_warns_on_swa_models(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "gemma2-2b")
+    assert model.sliding_window > 0
+    result = build_plan(
+        profile(64, (24,)),
+        [model],
+        Policy(roles=["chat"], cache_reuse=256),
+    )
+    assert not any(
+        "--cache-reuse" in flag for flag in result.services[0].launch.argv
+    )
+    assert any(
+        "cannot shift KV entries" in warning for warning in result.warnings
+    )
+
+
 def test_context_shift_is_launched_and_warns_of_dropped_tokens(
     catalog: list[ModelSpec],
 ) -> None:
