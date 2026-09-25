@@ -21,6 +21,7 @@ import psutil
 from nmesh import __version__, i18n
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.catalog import ModelSpec, load_catalog
+from nmesh.net import local_urlopen
 from nmesh.paths import is_windows, nmesh_home
 from nmesh.planner import (
     BPW,
@@ -283,7 +284,7 @@ class Supervisor:
         if not isinstance(url, str) or not url:
             return False
         try:
-            with urllib.request.urlopen(url, timeout=2):
+            with local_urlopen(url, timeout=2):
                 return True
         except urllib.error.HTTPError as error:
             return error.code < 500
@@ -301,7 +302,7 @@ class Supervisor:
             request = urllib.request.Request(
                 f"http://127.0.0.1:{service.port}/{path}", method="POST"
             )
-            with urllib.request.urlopen(request, timeout=timeout):
+            with local_urlopen(request, timeout=timeout):
                 return True
         except (OSError, ValueError):
             return False
@@ -311,7 +312,7 @@ class Supervisor:
         """GET /is_sleeping on a sleep-capable engine; any failure means the
         engine is not parked (or not sleep-capable at all)."""
         try:
-            with urllib.request.urlopen(
+            with local_urlopen(
                 f"http://127.0.0.1:{service.port}/is_sleeping", timeout=2
             ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
@@ -892,8 +893,8 @@ class Supervisor:
         if service.launch.health_url is None:
             return True
         try:
-            with urllib.request.urlopen(service.launch.health_url, timeout=2) as response:
-                return 200 <= response.status < 500
+            with local_urlopen(service.launch.health_url, timeout=2) as response:
+                return response.status is not None and 200 <= response.status < 500
         except (OSError, ValueError):
             return False
 

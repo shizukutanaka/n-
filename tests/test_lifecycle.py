@@ -995,7 +995,7 @@ def test_unload_cli(monkeypatch, capsys) -> None:
         def read(self):
             return b'{"unloaded": ["chat"]}'
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(cli, "local_urlopen", lambda *_args, **_kwargs: Response())
     assert cli.main(["unload", "chat"]) == 0
     assert "chat" in capsys.readouterr().out
 
@@ -1004,7 +1004,7 @@ def test_unload_cli(monkeypatch, capsys) -> None:
             return b'{"unloaded": []}'
 
     monkeypatch.setattr(
-        cli.urllib.request, "urlopen", lambda *_args, **_kwargs: EmptyResponse()
+        cli, "local_urlopen", lambda *_args, **_kwargs: EmptyResponse()
     )
     assert cli.main(["unload", "missing"]) == 1
     assert "not unloaded" in capsys.readouterr().err
@@ -1518,7 +1518,7 @@ def test_jobs_cli_lists_gateway_jobs(monkeypatch, tmp_path: Path, capsys) -> Non
             return json.dumps(payload).encode()
 
     monkeypatch.setattr(
-        "nmesh.cli.urllib.request.urlopen", lambda *_a, **_k: _Response()
+        "nmesh.cli.local_urlopen", lambda *_a, **_k: _Response()
     )
     assert cli.main(["jobs", "--json"]) == 0
     out = capsys.readouterr().out
@@ -1533,7 +1533,7 @@ def test_jobs_cli_gateway_unreachable(monkeypatch, tmp_path: Path, capsys) -> No
     def _raise(*_a, **_k):
         raise OSError("connection refused")
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _raise)
     assert cli.main(["jobs"]) == 1
     captured = capsys.readouterr()
     assert "18000" in captured.err
@@ -1544,7 +1544,7 @@ def test_jobs_cli_old_gateway_404(monkeypatch, tmp_path: Path, capsys) -> None:
     def _raise(*_a, **_k):
         raise HTTPError("http://x", 404, "not found", {}, None)
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _raise)
     assert cli.main(["jobs"]) == 1
     captured = capsys.readouterr()
     assert "older build" in captured.err or "古いビルド" in captured.err
@@ -1571,7 +1571,7 @@ def test_jobs_cli_cancel(monkeypatch, tmp_path: Path, capsys) -> None:
         seen.append(getattr(request, "method", "GET"))
         return _Response()
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _open)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _open)
     assert cli.main(["jobs", "--cancel", "job-2"]) == 0
     assert seen == ["DELETE"]
     assert "job-2" in capsys.readouterr().out
@@ -1583,7 +1583,7 @@ def test_jobs_cli_cancel_conflict(monkeypatch, tmp_path: Path, capsys) -> None:
     def _raise(*_a, **_k):
         raise HTTPError("http://x", 409, "conflict", {}, None)
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _raise)
     assert cli.main(["jobs", "--cancel", "job-1"]) == 1
     assert "queued" in capsys.readouterr().err
 
@@ -1619,7 +1619,7 @@ def test_reload_posts_admin_reload(monkeypatch, tmp_path: Path, capsys) -> None:
         seen.append(f"{request.get_method()} {request.full_url}")
         return _Response()
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _open)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _open)
     assert cli.main(["reload", "--port", "18000"]) == 0
     assert seen == ["POST http://127.0.0.1:18000/admin/reload"]
     assert "chat" in capsys.readouterr().out
@@ -1633,7 +1633,7 @@ def test_reload_unreachable_gateway_returns_1(
     def _raise(*_args, **_kwargs):
         raise OSError("connection refused")
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _raise)
     assert cli.main(["reload"]) == 1
     assert "connection refused" in capsys.readouterr().err
 
@@ -1818,7 +1818,7 @@ def test_status_surfaces_gateway_failed_services(
             ]})
         return _Response({})
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _open)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _open)
     assert cli.main(["status", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     chat = next(
