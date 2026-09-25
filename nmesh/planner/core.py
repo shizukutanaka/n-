@@ -777,7 +777,14 @@ def _launch(
             backend == "llamacpp" and context_shift
             and not embed_only and not rerank_only
         ):
-            if not known or "--context-shift" in flags:
+            if model.sliding_window > 0:
+                # The reduced iSWA cache cannot shift KV entries, so
+                # llama.cpp disables context shift on sliding-window models.
+                if warnings is not None:
+                    warnings.append(
+                        t("warn.context_shift_swa", language, model=model.id)
+                    )
+            elif not known or "--context-shift" in flags:
                 argv.append("--context-shift")
                 if warnings is not None:
                     warnings.append(
