@@ -2017,7 +2017,8 @@ def create_app(
 
     @app.get("/status")
     async def status_endpoint() -> dict[str, object]:
-        return asdict(runtime_status())
+        runtime = await asyncio.to_thread(runtime_status)
+        return asdict(runtime)
 
     @app.get("/v1/models")
     async def models() -> dict[str, object]:

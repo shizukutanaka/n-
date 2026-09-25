@@ -15,6 +15,7 @@ from nmesh import cli, telemetry
 from nmesh.catalog import ModelSpec
 from nmesh.gateway import create_app, route
 from nmesh.planner import Policy, build_plan
+from nmesh.runtime import RuntimeStatus
 from nmesh.runtime.logs import log_path
 
 from .test_planner import profile
@@ -400,6 +401,28 @@ def test_gateway_admin_requires_api_key(monkeypatch) -> None:
     with TestClient(create_app(plan)) as client:
         response = client.post("/admin/unload")
     assert response.status_code == 401
+
+
+def test_status_endpoint_probe_runs_off_the_event_loop(monkeypatch) -> None:
+    """runtime_status blocks on per-service health probes — /status must run
+    it in a worker thread, not on the event loop."""
+    plan = _completion_plan(1)
+    probe_threads: list[int] = []
+
+    def probe() -> RuntimeStatus:
+        probe_threads.append(threading.get_ident())
+        return RuntimeStatus(True, [{"service": "chat", "running": True}])
+
+    monkeypatch.setattr(gateway_module, "runtime_status", probe)
+    app = create_app(plan)
+    endpoint = next(
+        route.endpoint for route in app.routes
+        if getattr(route, "path", None) == "/status"
+    )
+    result = asyncio.run(endpoint())
+    assert probe_threads
+    assert all(tid != threading.get_ident() for tid in probe_threads)
+    assert result["services"] == [{"service": "chat", "running": True}]
 
 
 def test_gateway_reaper_skips_in_flight(monkeypatch) -> None:
