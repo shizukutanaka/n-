@@ -1747,7 +1747,7 @@ def test_cli_plan_ignore_eval_evidence_sets_policy(monkeypatch, capsys) -> None:
     models = _quality_models()
     captured = []
     monkeypatch.setattr(cli, "detect_hardware", lambda: profile(8))
-    monkeypatch.setattr(cli, "load_catalog", lambda: models)
+    monkeypatch.setattr(cli, "load_catalog", lambda **_kwargs: models)
     monkeypatch.setattr(cli, "load_cache", dict)
     monkeypatch.setattr(cli, "bench_overlay", dict)
     monkeypatch.setattr(cli, "_eval_rates", dict)

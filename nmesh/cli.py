@@ -67,7 +67,7 @@ from nmesh.bench import (
     save_records,
     save_retrieval,
 )
-from nmesh.catalog import load_catalog
+from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.eval import (
     EXTENDED_CATEGORIES,
     EXTENDED_TASKS,
@@ -460,6 +460,18 @@ def _argv_text(value: object) -> str:
     return " ".join(str(item) for item in value)
 
 
+def _catalog() -> list[ModelSpec]:
+    problems: list[str] = []
+    models = load_catalog(problems=problems)
+    language = i18n.lang()
+    for problem in problems:
+        print(
+            i18n.t("warn.catalog_entry_skipped", language, detail=problem),
+            file=sys.stderr,
+        )
+    return models
+
+
 def _bench_cache(live: Mapping[str, float]) -> dict[object, float]:
     """Stored measurements with live telemetry taking precedence."""
     merged: dict[object, float] = {}
@@ -536,7 +548,7 @@ def _make_plan(args: argparse.Namespace) -> Plan:
     eval_depth_coverage, eval_depth_lost = _context_depth_maps()
     return build_plan(
         profile,
-        load_catalog(),
+        _catalog(),
         policy,
         cache,
         _eval_rates(eval_records),
@@ -1075,7 +1087,7 @@ def _runtime(args: argparse.Namespace) -> int:
             embed_input_caps = _embed_context_caps()
             embed_retrieval_limits = _embed_retrieval_limits()
             plan = build_plan(
-                detect_hardware(), load_catalog(),
+                detect_hardware(), _catalog(),
                 policy,
                 _bench_cache(live),
                 _eval_rates(eval_records),
@@ -1871,7 +1883,7 @@ def _models(args: argparse.Namespace) -> int:
                 )
             _console().print(table)
         return 0
-    models = load_catalog()
+    models = _catalog()
     if args.role:
         models = [model for model in models if args.role in model.roles]
     if args.json:
@@ -3982,7 +3994,7 @@ def _watch(args: argparse.Namespace) -> int:
                 source=status.name,
                 detail=status.detail,
             ))
-    catalog_models = load_catalog()
+    catalog_models = _catalog()
     catalog_metrics = {
         "entries": len(catalog_models),
         "repo_ids": len({
