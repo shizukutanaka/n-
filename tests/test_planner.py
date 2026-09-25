@@ -1439,6 +1439,35 @@ def test_old_plan_without_service_kv_quant_defaults_to_f16(
     assert loaded.services[0].kv_quant == "f16"
 
 
+def test_load_plan_rejects_invalid_policy_bounds(
+    tmp_path, catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(profile(8), catalog)
+    path = tmp_path / "plan.json"
+    save_plan(result, path)
+    for field, value in (
+        ("min_decode_tps", -1.0),
+        ("min_decode_tps", float("nan")),
+        ("allow_download_gb", -0.5),
+        ("allow_download_gb", float("inf")),
+    ):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["policy"][field] = value
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        assert load_plan(path) is None, (field, value)
+
+
+def test_policy_rejects_invalid_decode_and_download_bounds() -> None:
+    for field, value in (
+        ("min_decode_tps", -1.0),
+        ("min_decode_tps", float("nan")),
+        ("allow_download_gb", -0.5),
+        ("allow_download_gb", float("inf")),
+    ):
+        with pytest.raises(ValueError):
+            replace(Policy(), **{field: value})
+
+
 def test_plan_save_load_serializes_backend_flags_as_strings(
     tmp_path, catalog: list[ModelSpec]
 ) -> None:
