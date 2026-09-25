@@ -140,28 +140,68 @@ class _TagsResponse:
         return self.payload
 
 
+def _stub_client(response_or_error) -> object:
+    class _Client:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, url: str):
+            if isinstance(response_or_error, Exception):
+                raise response_or_error
+            return response_or_error
+
+    return _Client
+
+
 def test_ollama_fingerprint_matches_latest_and_handles_failures(monkeypatch) -> None:
     digest = "sha256:123456789012345678901234567890"
     monkeypatch.setattr(
         artifact.httpx,
-        "get",
-        lambda url, timeout: _TagsResponse({
+        "Client",
+        _stub_client(_TagsResponse({
             "models": [{"name": "qwen:latest", "digest": digest, "size": 42}],
-        }),
+        })),
     )
     assert artifact.ollama_fingerprint("qwen") == f"ollama:{digest[:19]}:42"
     monkeypatch.setattr(
         artifact.httpx,
-        "get",
-        lambda url, timeout: _TagsResponse({"models": []}),
+        "Client",
+        _stub_client(_TagsResponse({"models": []})),
     )
     assert artifact.ollama_fingerprint("missing") is None
     monkeypatch.setattr(
         artifact.httpx,
-        "get",
-        lambda url, timeout: (_ for _ in ()).throw(httpx.ConnectError("offline")),
+        "Client",
+        _stub_client(httpx.ConnectError("offline")),
     )
     assert artifact.ollama_fingerprint("qwen") is None
+
+
+def test_ollama_fingerprint_client_bypasses_env_proxy(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    class _Client:
+        def __init__(self, **kwargs: object) -> None:
+            seen.update(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, url: str):
+            raise httpx.ConnectError("unreachable")
+
+    monkeypatch.setattr(artifact.httpx, "Client", _Client)
+    assert artifact.ollama_fingerprint("qwen") is None
+    assert seen.get("trust_env") is False
 
 
 def test_service_fingerprint_dispatches_only_verified_backends(

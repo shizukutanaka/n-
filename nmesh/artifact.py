@@ -224,7 +224,11 @@ def ollama_fingerprint(
     model_ref: str, base_url: str = "http://127.0.0.1:11434",
 ) -> str | None:
     try:
-        response = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=5.0)
+        # Fingerprinting talks to the managed loopback daemon; env proxies
+        # must not reroute it (httpx honors them by default even for
+        # loopback addresses).
+        with httpx.Client(trust_env=False, timeout=5.0) as client:
+            response = client.get(f"{base_url.rstrip('/')}/api/tags")
         response.raise_for_status()
         payload = response.json()
         models = payload.get("models") if isinstance(payload, dict) else None
