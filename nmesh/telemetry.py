@@ -35,6 +35,89 @@ class Sample:
     prompt_tokens: int | None = None
 
 
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise TypeError("telemetry rate must be a number")
+    result = float(value)
+    if not math.isfinite(result) or result < 0:
+        raise ValueError("telemetry rate must be a finite non-negative number")
+    return result
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise TypeError("telemetry count must be an integer")
+    result = int(value)
+    if result < 0:
+        raise ValueError("telemetry count must be non-negative")
+    return result
+
+
+def _finite_sample(sample: Sample) -> bool:
+    rates = (sample.decode_tps, sample.ttft_s, sample.prefill_tps)
+    return (
+        all(value is None or (math.isfinite(value) and value >= 0)
+            for value in rates)
+        and math.isfinite(sample.total_s)
+        and sample.total_s >= 0
+        and math.isfinite(sample.at)
+        and sample.at >= 0
+        and sample.completion_tokens >= 0
+        and (sample.in_flight is None or sample.in_flight >= 0)
+        and (sample.prompt_tokens is None or sample.prompt_tokens >= 0)
+    )
+
+
+def _parse_sample(item: object) -> Sample | None:
+    if not isinstance(item, dict):
+        return None
+    try:
+        service = item["service"]
+        key = item["key"]
+        if not isinstance(service, str) or not isinstance(key, str):
+            return None
+        raw_total = item["total_s"]
+        raw_at = item["at"]
+        raw_tokens = item["completion_tokens"]
+        if (
+            isinstance(raw_total, bool)
+            or isinstance(raw_at, bool)
+            or isinstance(raw_tokens, bool)
+        ):
+            return None
+        total_s = float(raw_total)
+        at = float(raw_at)
+        completion_tokens = int(raw_tokens)
+        if (
+            not math.isfinite(total_s)
+            or total_s < 0
+            or not math.isfinite(at)
+            or at < 0
+            or completion_tokens < 0
+        ):
+            return None
+        sample = Sample(
+            service,
+            key,
+            _optional_float(item.get("decode_tps")),
+            _optional_float(item.get("ttft_s")),
+            total_s,
+            completion_tokens,
+            at,
+            bool(item.get("approximate", True)),
+            _optional_float(item.get("prefill_tps")),
+            _optional_int(item.get("in_flight")),
+            _optional_int(item.get("prompt_tokens")),
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return sample if _finite_sample(sample) else None
+
+
 @dataclass(frozen=True)
 class OverlayReport:
     values: dict[str, float]
@@ -72,20 +155,14 @@ class Telemetry:
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
             values = payload.get("samples", []) if isinstance(payload, dict) else []
-            return [Sample(
-                str(item["service"]), str(item["key"]),
-                float(item["decode_tps"]) if item.get("decode_tps") is not None else None,
-                float(item["ttft_s"]) if item.get("ttft_s") is not None else None,
-                float(item["total_s"]), int(item["completion_tokens"]), float(item["at"]),
-                bool(item.get("approximate", True)),
-                float(item["prefill_tps"]) if item.get("prefill_tps") is not None else None,
-                int(item["in_flight"]) if item.get("in_flight") is not None else None,
-                int(item["prompt_tokens"]) if item.get("prompt_tokens") is not None else None,
-            ) for item in values if isinstance(item, dict)]
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            samples = (_parse_sample(item) for item in values)
+            return [item for item in samples if item is not None]
+        except (OSError, json.JSONDecodeError):
             return []
 
     def record(self, sample: Sample) -> None:
+        if not _finite_sample(sample):
+            return
         with self._lock:
             samples = self._load()
             samples.append(sample)
