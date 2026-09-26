@@ -3252,6 +3252,20 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     "warn.language_coverage", selected.lang,
                     model=service.model_id, languages=", ".join(missing),
                 ))
+    for backend, prefixes in (
+        ("vllm", ("VLLM_", "TRITON_", "TORCHINDUCTOR_")),
+        ("mlx", ("MLX_",)),
+    ):
+        if not any(service.backend == backend for service in services):
+            continue
+        leaked = sorted(
+            name for name in os.environ if name.startswith(prefixes)
+        )
+        if leaked:
+            warnings.append(t(
+                "warn.backend_env", selected.lang,
+                backend=backend, vars=", ".join(leaked),
+            ))
     covered = set(role_to_service)
     runnable = (
         bool(services)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -674,6 +675,57 @@ def test_apple_mlx(catalog: list[ModelSpec]) -> None:
     )
     assert_memory_fit(result)
     assert result.services[0].backend == "mlx"
+
+
+def test_backend_env_leak_warns_for_vllm_and_mlx(
+    catalog: list[ModelSpec], monkeypatch,
+) -> None:
+    monkeypatch.setenv("VLLM_ATTENTION_BACKEND", "FLASHINFER")
+    monkeypatch.setenv("TRITON_CACHE_DIR", "/tmp/x")
+    result = build_plan(
+        profile(128, (80, 80), os_name="linux"),
+        catalog,
+        Policy(roles=["chat"], model_ids=("phi-4-14b",)),
+    )
+    warns = [w for w in result.warnings if "VLLM_ATTENTION_BACKEND" in w]
+    assert len(warns) == 1
+    assert "TRITON_CACHE_DIR" in warns[0]
+    monkeypatch.delenv("VLLM_ATTENTION_BACKEND")
+    monkeypatch.delenv("TRITON_CACHE_DIR")
+    monkeypatch.setenv("MLX_METAL_FAST_SYNCH", "1")
+    mlx_result = build_plan(
+        profile(
+            64, (44,), os_name="macos", unified=True,
+            backends={
+                "ollama": None, "llamacpp": None,
+                "vllm": None, "mlx": "installed",
+            },
+        ),
+        catalog,
+        Policy(roles=["chat"], model_ids=("phi-4-14b",)),
+    )
+    mlx_warns = [
+        w for w in mlx_result.warnings if "MLX_METAL_FAST_SYNCH" in w
+    ]
+    assert len(mlx_warns) == 1
+
+
+def test_backend_env_warn_absent_without_leak(
+    catalog: list[ModelSpec], monkeypatch,
+) -> None:
+    for name in list(os.environ):
+        if name.startswith(("VLLM_", "TRITON_", "TORCHINDUCTOR_", "MLX_")):
+            monkeypatch.delenv(name)
+    result = build_plan(
+        profile(128, (80, 80), os_name="linux"),
+        catalog,
+        Policy(roles=["chat"], model_ids=("phi-4-14b",)),
+    )
+    assert result.services[0].backend == "vllm"
+    assert not any(
+        "environment variables" in w and "vllm" in w
+        for w in result.warnings
+    )
 
 
 def test_no_backend_still_plans(catalog: list[ModelSpec]) -> None:
