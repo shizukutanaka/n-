@@ -1261,13 +1261,21 @@ def create_app(
         job = jobs.submit(service.name, path)
         if limit_slots:
             deadline = time.monotonic() + QUEUE_TIMEOUT
-            while job.state == "queued" and slot_token is None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                slot_token = await limiter.acquire(
-                    service, min(0.5, remaining)
-                )
+            try:
+                while job.state == "queued" and slot_token is None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    slot_token = await limiter.acquire(
+                        service, min(0.5, remaining)
+                    )
+            except BaseException:
+                # A wait that ends without reaching start (cancellation,
+                # unexpected error) must still finish the job: a job left
+                # "queued" is a permanent phantom entry that never evicts
+                # and inflates queue positions for every later request.
+                jobs.finish(job, ok=False, detail="aborted")
+                raise
             if job.state == "cancelled":
                 if slot_token is not None:
                     limiter.release(slot_token)
