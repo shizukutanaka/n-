@@ -41,6 +41,11 @@ from .logs import log_path, open_log, tail
 
 STATE_PATH = nmesh_home() / "state.json"
 HEALTH_TIMEOUT = 120.0
+# A cold engine start must read the full weight bytes from storage;
+# a health bound shorter than that read would kill-and-restart a
+# healthy load forever. Scale the bound to a HDD-class read floor.
+HEALTH_LOAD_FLOOR_BPS = 50.0 * 1024 * 1024
+HEALTH_WAIT_MAX = 1800.0
 MAX_RESTARTS = 3
 RESTART_WINDOW = 300.0
 GIB = 1024**3
@@ -897,8 +902,17 @@ class Supervisor:
         except (OSError, ValueError):
             return False
 
+    @staticmethod
+    def _health_wait_bound(service: PlannedService, timeout: float) -> float:
+        weight_bytes = float(service.memory.weight_bytes)
+        if weight_bytes <= 0:
+            return timeout
+        scaled = weight_bytes / HEALTH_LOAD_FLOOR_BPS
+        return min(max(timeout, scaled), HEALTH_WAIT_MAX)
+
     def _wait_health(self, service: PlannedService, timeout: float | None = None) -> bool:
         timeout = self.health_timeout if timeout is None else timeout
+        timeout = self._health_wait_bound(service, timeout)
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             process = self.processes.get(service.name)

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import http.server
 import json
 import os
 import socket
 import sys
+import threading
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -1829,3 +1831,59 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_health_wait_bound_scales_with_model_weight(tmp_path: Path) -> None:
+    plan = build_plan(profile(32, (24,)), load_catalog(), Policy(roles=["chat"]))
+    service = plan.services[0]
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+
+    small = replace(service, memory=replace(service.memory, weight_bytes=1e9))
+    assert supervisor._health_wait_bound(small, 120.0) == 120.0
+
+    big = replace(service, memory=replace(service.memory, weight_bytes=40e9))
+    assert supervisor._health_wait_bound(
+        big, 120.0,
+    ) == pytest.approx(40e9 / (50.0 * 1024 * 1024))
+
+    huge = replace(service, memory=replace(service.memory, weight_bytes=1e13))
+    assert supervisor._health_wait_bound(huge, 120.0) == 1800.0
+
+
+def test_wait_health_survives_cold_load_beyond_flat_timeout(
+    tmp_path: Path,
+) -> None:
+    ready_at = time.monotonic() + 0.6
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200 if time.monotonic() >= ready_at else 503)
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        plan = build_plan(
+            profile(32, (24,)), load_catalog(), Policy(roles=["chat"]),
+        )
+        service = plan.services[0]
+        service = replace(
+            service,
+            launch=replace(
+                service.launch,
+                health_url=f"http://127.0.0.1:{server.server_port}/health",
+            ),
+            memory=replace(service.memory, weight_bytes=200e9),
+        )
+        supervisor = Supervisor(
+            state_path=tmp_path / "state.json", health_timeout=0.1,
+        )
+        # 200e9 B ≈ 1800 s bound — the flat 0.1 s timeout would have
+        # given up before the engine finishes its cold load.
+        assert supervisor._wait_health(service) is True
+    finally:
+        server.shutdown()
