@@ -4,6 +4,8 @@ import json
 import struct
 from pathlib import Path
 
+import pytest
+
 from nmesh import cli, inventory
 
 
@@ -141,6 +143,25 @@ def test_unknown_file_type_is_preserved(tmp_path: Path) -> None:
     artifact = inventory.scan({"store": tmp_path})[0]
     assert artifact.file_type == 99
     assert artifact.quant is None
+
+
+@pytest.mark.parametrize(
+    "file_type,quant",
+    [(38, "mxfp4"), (39, "nvfp4"), (40, "q1_0"), (41, "q2_0")],
+)
+def test_newer_file_types_resolve_their_quant(
+    tmp_path: Path, file_type: int, quant: str
+) -> None:
+    _write(tmp_path / "model-mxfp4.gguf", file_type=file_type)
+    artifact = inventory.scan({"store": tmp_path})[0]
+    assert artifact.quant == quant
+
+
+def test_mxfp4_label_does_not_mismatch(tmp_path: Path) -> None:
+    _write(tmp_path / "gpt-oss-20b-mxfp4.gguf", file_type=38)
+    artifact = inventory.scan({"store": tmp_path})[0]
+    assert artifact.quant == "mxfp4"
+    assert not artifact.label_mismatch
 
 
 def test_invalid_files_and_missing_roots_are_skipped(tmp_path: Path) -> None:

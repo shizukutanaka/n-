@@ -43,8 +43,14 @@ FILE_TYPE_QUANT = {
     30: "iq4_xs",
     31: "iq1_m",
     32: "bf16",
+    # 33-35 (q4_0_4_4/4_8/8_8) were removed from the format upstream — files
+    # carry q4_0 with a runtime repack instead.
     36: "tq1_0",
     37: "tq2_0",
+    38: "mxfp4",
+    39: "nvfp4",
+    40: "q1_0",
+    41: "q2_0",
 }
 
 
