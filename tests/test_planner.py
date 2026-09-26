@@ -2111,6 +2111,51 @@ def test_download_budget_warning_silent_within_limit(
     assert not any("download budget" in w for w in result.warnings)
 
 
+def test_hf_offline_warns_when_hf_download_planned(
+    catalog: list[ModelSpec], monkeypatch,
+) -> None:
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    result = build_plan(
+        profile(64, (96,)), catalog, Policy(roles=["chat"], min_decode_tps=0)
+    )
+    assert result.total_download_bytes > 0
+    assert any(
+        "HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE is set" in w
+        for w in result.warnings
+    )
+
+
+def test_hf_offline_silent_for_ollama_only(monkeypatch) -> None:
+    # Ollama pulls go through the daemon, not huggingface_hub — the warning
+    # only applies when an HF-backed backend has planned downloads.
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    result = build_plan(
+        profile(8), [_ollama_only_model()], Policy(roles=["chat"])
+    )
+    assert result.total_download_bytes > 0
+    assert result.services[0].backend == "ollama"
+    assert not any("HF_HUB_OFFLINE" in w for w in result.warnings)
+
+
+def test_hf_endpoint_warns_and_values(catalog: list[ModelSpec], monkeypatch) -> None:
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.example")
+    result = build_plan(
+        profile(64, (96,)), catalog, Policy(roles=["chat"], min_decode_tps=0)
+    )
+    warns = [w for w in result.warnings if "HF_ENDPOINT" in w]
+    assert len(warns) == 1
+    assert "hf-mirror.example" in warns[0]
+    monkeypatch.delenv("HF_ENDPOINT")
+    result = build_plan(
+        profile(64, (96,)), catalog, Policy(roles=["chat"], min_decode_tps=0)
+    )
+    assert not any("HF_ENDPOINT" in w for w in result.warnings)
+
+
 def moe_model() -> ModelSpec:
     # gpt-oss-20b-shaped MoE: 24 layers, experts ~19.1B of 20.9B params.
     return ModelSpec(
