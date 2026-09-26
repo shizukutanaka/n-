@@ -498,3 +498,18 @@ def test_job_registry_cancel() -> None:
     assert registry.cancel(running) is False
     listed = [j.id for j in registry.list()]
     assert queued.id in listed and running.id in listed
+
+
+def test_env_timeout_rejects_non_finite_and_negative(monkeypatch) -> None:
+    from nmesh.gateway import _env_timeout
+
+    for bad in ("nan", "inf", "-inf", "-5", "abc"):
+        monkeypatch.setenv("NMESH_TEST_TIMEOUT", bad)
+        assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 7.5
+    monkeypatch.setenv("NMESH_TEST_TIMEOUT", "0")
+    assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 0.0
+    assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5, allow_zero=False) == 7.5
+    monkeypatch.setenv("NMESH_TEST_TIMEOUT", "2.5")
+    assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 2.5
+    monkeypatch.delenv("NMESH_TEST_TIMEOUT")
+    assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 7.5
