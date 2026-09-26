@@ -4111,7 +4111,12 @@ def _run_prompt(args: argparse.Namespace) -> int:
         headers,
     )
     try:
-        with urllib.request.urlopen(request, timeout=300) as response:
+        # No socket bound: urllib applies the timeout to every read, and a
+        # non-streamed generation legally exceeds 300s on slow hosts while
+        # streaming can spend that long in prefill before the first byte.
+        # Loopback connect either succeeds or is refused instantly, and the
+        # supervisor's health layer is what detects a wedged engine.
+        with urllib.request.urlopen(request, timeout=None) as response:
             if not stream:
                 payload = json.loads(response.read().decode())
                 if args.json:
