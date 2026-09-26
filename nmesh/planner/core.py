@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 6
+LAUNCH_REVISION = 7
 
 
 @dataclass(frozen=True)
@@ -348,14 +348,18 @@ def _gpu_pin_env(
     vendors = {
         gpu.vendor for gpu in profile.gpus if gpu.index in set(assigned)
     }
-    variable = (
-        "CUDA_VISIBLE_DEVICES" if vendors == {"nvidia"}
-        else "HIP_VISIBLE_DEVICES" if vendors == {"amd"}
-        else None
-    )
-    if variable is None:
-        return {}
-    return {variable: ",".join(str(index) for index in assigned)}
+    indices = ",".join(str(index) for index in assigned)
+    if vendors == {"nvidia"}:
+        # Indices come from NVML/nvidia-smi (PCI order); CUDA's default
+        # FASTEST_FIRST ordering differs on heterogeneous cards, so pin the
+        # enumeration order alongside the device list (vLLM does the same).
+        return {
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            "CUDA_VISIBLE_DEVICES": indices,
+        }
+    if vendors == {"amd"}:
+        return {"HIP_VISIBLE_DEVICES": indices}
+    return {}
 
 
 def _swa_layer_count(model: ModelSpec, kv_layers: int) -> int:
@@ -2096,6 +2100,20 @@ def _place_services(
             else _gpu_pin_env(profile, current.gpu_indices)
         )
         if pin:
+            if "HIP_VISIBLE_DEVICES" in pin:
+                # ROCR_VISIBLE_DEVICES/GPU_DEVICE_ORDINAL filter ROCr-level
+                # agents under a different numbering and apply before the
+                # HIP pin — they cannot be neutralized by rewriting indices.
+                for leak in ("ROCR_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL"):
+                    if os.environ.get(leak):
+                        warnings.append(
+                            t(
+                                "warn.gpu_visibility_env",
+                                policy.lang,
+                                service=current.name,
+                                env=leak,
+                            )
+                        )
             current = replace(
                 current,
                 launch=replace(
