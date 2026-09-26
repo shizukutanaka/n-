@@ -1146,12 +1146,12 @@ def test_gateway_injects_usage_for_vllm_and_ollama_streams(monkeypatch) -> None:
         upstream.server_close()
 
 
-def test_upstream_timeout_has_no_read_cap() -> None:
-    # Generation is bounded by max_tokens and engine health, not a fixed
-    # wall clock — prompt processing on slow CPU services can exceed a
-    # small fixed read cap before the first token.
-    timeout = gateway_module._upstream_timeout()
+def test_upstream_timeout_scales_silence_bound() -> None:
+    # The read cap scales with the request's own work: 1s per context token
+    # admits prefill down to 1 token/s, while a deadlocked engine that still
+    # answers /health eventually frees its slot instead of hanging forever.
+    timeout = gateway_module._upstream_timeout(8192)
     assert timeout.connect == gateway_module.CONNECT_TIMEOUT
-    assert timeout.read is None
-    assert timeout.write is None
-    assert timeout.pool is None
+    assert timeout.read == 8192.0
+    floored = gateway_module._upstream_timeout(30)
+    assert floored.read == 60.0

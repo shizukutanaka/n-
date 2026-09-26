@@ -82,13 +82,16 @@ except ValueError:
 _STREAM_USAGE_BACKENDS = {"llamacpp", "vllm", "ollama"}
 
 
-def _upstream_timeout() -> httpx.Timeout:
-    # Engine-side generation is bounded by max_tokens and engine health, not
-    # a fixed wall clock: on slow CPU services prompt processing alone can
-    # exceed any small read cap before the first token, and non-stream
-    # responses must complete the whole generation inside it. Only connect
-    # stays bounded so a dead listener fails fast.
-    return httpx.Timeout(None, connect=CONNECT_TIMEOUT)
+def _upstream_timeout(silence_seconds: float) -> httpx.Timeout:
+    # A single socket read cannot wait forever: an engine that still answers
+    # /health but is deadlocked on generation would hold its slot
+    # indefinitely. Yet prompt processing is a legitimate multi-minute gap on
+    # slow CPU services, so the bound scales with the request's own work —
+    # one second per context token admits prefill down to 1 token/s and any
+    # generation gap is far shorter. Connect stays separately bounded.
+    return httpx.Timeout(
+        max(60.0, float(silence_seconds)), connect=CONNECT_TIMEOUT
+    )
 
 if TYPE_CHECKING:
     import httpx
@@ -684,7 +687,7 @@ async def _confirm_embedding_truncation(
     assert httpx is not None
     try:
         async with httpx.AsyncClient(
-            timeout=_upstream_timeout()
+            timeout=_upstream_timeout(cap)
         ) as client:
             response = await client.post(url, json=probe)
     except httpx.HTTPError:
@@ -766,7 +769,7 @@ async def _verify_embedding_batch(
         return "unverified"
     assert httpx is not None
     async with httpx.AsyncClient(
-        timeout=_upstream_timeout()
+        timeout=_upstream_timeout(cap)
     ) as client:
         for index, element in suspects:
             pieces = _byte_split_embedding_input(element, cap)
@@ -1345,7 +1348,9 @@ def create_app(
                 else None
             )
             assert httpx is not None
-            client = httpx.AsyncClient(timeout=_upstream_timeout())
+            client = httpx.AsyncClient(
+                timeout=_upstream_timeout(service.context)
+            )
             ticket = in_flight.enter(service.name)
         except BaseException as error:
             # A failed acquire/revive must not keep the slot (or a held swap
@@ -1966,7 +1971,7 @@ def create_app(
             def run() -> Delegation:
                 assert httpx is not None
                 with httpx.Client(
-                    timeout=_upstream_timeout()
+                    timeout=_upstream_timeout(max(lead.context, worker.context))
                 ) as client:
                     return delegate(
                         client,
