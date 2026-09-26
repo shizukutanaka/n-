@@ -448,6 +448,64 @@ def test_unrecorded_cached_gguf_still_adopted(tmp_path, monkeypatch) -> None:
     assert acquired.path == target
 
 
+def test_zero_recorded_size_does_not_reject_healthy_cache(
+    tmp_path, monkeypatch
+) -> None:
+    """A recorded 0 (written when upstream metadata omitted sizes) can
+    never match real bytes — it must not flag a healthy cache as corrupt
+    and delete + re-download it on every up."""
+    target = tmp_path / "model-Q4_K_M.gguf"
+    target.write_bytes(b"artifact")
+    service = _llamacpp_service(tmp_path)
+    service.model_ref = str(target)
+    service.download_repo = "org/repo"
+
+    monkeypatch.setattr(
+        acquisition,
+        "load_cache",
+        lambda *a, **k: {
+            artifacts.artifact_key("org/repo", "q4_k_m"): 0
+        },
+    )
+
+    def fail_download(**kwargs: object) -> str:
+        raise AssertionError("healthy cache was condemned and re-downloaded")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fail_download)
+
+    acquired = acquisition.acquire(service)
+
+    assert acquired.path == target
+
+
+def test_download_records_actual_disk_bytes_when_metadata_missing(
+    tmp_path, monkeypatch
+) -> None:
+    """When upstream metadata has no sizes the record must hold the bytes
+    actually written — a 0/partial record makes the next up reject the
+    healthy cache as corrupt and re-download it."""
+    service = _llamacpp_service(tmp_path)
+    monkeypatch.setattr(
+        acquisition,
+        "_resolve_gguf",
+        lambda _repo, _quant: ("q4_k_m", ["model-Q4_K_M.gguf"], 0),
+    )
+
+    def fake_download(**kwargs: object) -> str:
+        path = tmp_path / str(kwargs["filename"])
+        path.write_bytes(b"real-bytes")
+        return str(path)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+
+    acquired = acquisition.acquire(service)
+
+    assert acquired.artifact_bytes == len(b"real-bytes")
+    assert artifacts.load_cache()[
+        artifacts.artifact_key("repo", "q4_k_m")
+    ] == len(b"real-bytes")
+
+
 def test_local_only_adopts_matching_gguf(tmp_path, monkeypatch) -> None:
     """Planned names ({id}-{quant}.gguf) differ from downloaded filenames,
     so a no-download acquire must resolve the real on-disk artifact by
