@@ -429,9 +429,14 @@
   n_kv_heads: 12
   head_dim: 64
   hidden_size: 768
-  vocab_size: 30522
+  # Embedding matrix is padded to 30528 rows upstream
+  # (nomic-ai/nomic-embed-text-v1.5 config.json vocab_size).
+  vocab_size: 30528
   head_layout: shared
-  max_context: 8192
+  # GGUF/llama.cpp/Ollama serve max_position_embeddings=2048; the
+  # advertised 8192 needs the HF rope-extension path none of the
+  # backends here use.
+  max_context: 2048
   roles: [embed]
   quality: 80
   license: apache-2.0
