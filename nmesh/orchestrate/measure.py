@@ -166,7 +166,9 @@ def measure(
         for task in items:
             budget = task.max_tokens + max(0, reasoning_allowance)
             try:
-                lead_call = complete(client, lead, task.prompt, budget)
+                lead_call = complete(
+                    client, lead, task.prompt, budget, timeout=timeout,
+                )
                 solo.add(lead_call)
                 outcome = delegate(
                     client,
@@ -175,6 +177,7 @@ def measure(
                     lead=lead,
                     worker=worker,
                     ledger=ledger,
+                    timeout=timeout,
                 )
             except (httpx.HTTPError, ValueError):
                 transport_failures += 1
