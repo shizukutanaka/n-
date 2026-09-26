@@ -189,6 +189,9 @@ from nmesh.spec import (
     from_arms,
     run_arm,
 )
+from nmesh.spec import (
+    request_timeout as spec_request_timeout,
+)
 from nmesh.spec.record import decide as decide_spec
 from nmesh.spec.record import demote_stale as demote_spec_stale
 from nmesh.spec.record import load_cache as load_spec_cache
@@ -3644,9 +3647,7 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                 )
                 supervisor.up(arm_plan, no_download=True, admit=False)
                 base_url = f"http://127.0.0.1:{port}"
-                request_timeout = 30.0 + max(
-                    workload.max_tokens for workload in WORKLOADS
-                ) / 2.0
+                request_timeout = spec_request_timeout(WORKLOADS)
                 with httpx.Client(timeout=request_timeout) as client:
                     return run_arm(
                         client, base_url, item.model_ref,
