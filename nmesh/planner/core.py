@@ -3252,6 +3252,15 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     "warn.language_coverage", selected.lang,
                     model=service.model_id, languages=", ".join(missing),
                 ))
+    if any(service.backend == "llamacpp" for service in services):
+        leaked = sorted(
+            name for name in os.environ
+            if name.startswith(("LLAMA_ARG_", "GGML_"))
+        )
+        if leaked:
+            warnings.append(t(
+                "warn.llamacpp_env", selected.lang, vars=", ".join(leaked),
+            ))
     covered = set(role_to_service)
     runnable = (
         bool(services)
