@@ -1799,6 +1799,21 @@ def test_embedding_launch_flags_are_role_aware(catalog: list[ModelSpec]) -> None
     )
 
 
+def test_nomic_embed_context_matches_upstream(
+    catalog: list[ModelSpec],
+) -> None:
+    # nomic-ai/nomic-embed-text-v1.5 config.json: the served ceiling is
+    # max_position_embeddings 2048 (the advertised 8192 requires the HF
+    # rope-extension path no backend here uses) and the embedding matrix
+    # is padded to vocab_size 30528. An overstated cap lets the planner
+    # accept inputs the model cannot actually embed.
+    model = next(
+        item for item in catalog if item.id == "nomic-embed-text-v1.5"
+    )
+    assert model.max_context == 2048
+    assert model.vocab_size == 30528
+
+
 def test_embedding_capability_warnings_and_flags() -> None:
     model = ModelSpec(
         "embed-test", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
