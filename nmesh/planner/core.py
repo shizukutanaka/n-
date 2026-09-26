@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 6
+LAUNCH_REVISION = 7
 
 
 @dataclass(frozen=True)
@@ -855,6 +855,11 @@ def _launch(
                 warnings.append(
                     t("warn.rerank_unsupported", language, model=model.id)
                 )
+        # /slots backs the gateway's decode-progress reporting; newer builds
+        # gate it behind --slots and LLAMA_ARG_ENDPOINT_SLOTS=0 can disable it,
+        # so pin it on explicitly when the binary supports the flag.
+        if not known or "--slots" in flags:
+            argv.append("--slots")
     health_path = "/health" if backend == "llamacpp" else "/v1/models"
     return LaunchSpec(argv, {}, f"http://127.0.0.1:{port}{health_path}")
 

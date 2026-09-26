@@ -164,6 +164,25 @@ def test_launch_uses_resolved_backend_binary_when_present(
     assert default.argv[0] == "llama-server"
 
 
+def test_llamacpp_launch_pins_slots_endpoint(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    launched = planner_core._launch(
+        "llamacpp", model, "q4_k_m", 4096, 18010, 0, 1,
+    )
+    assert "--slots" in launched.argv
+
+
+def test_llamacpp_slots_omitted_when_binary_lacks_flag(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    launched = planner_core._launch(
+        "llamacpp", model, "q4_k_m", 4096, 18010, 0, 1,
+        backend_flags=("-np", "-ngl"),
+    )
+    assert "--slots" not in launched.argv
+
+
 def profile(
     ram_gib: int,
     gpu_gib: tuple[int, ...] = (),
