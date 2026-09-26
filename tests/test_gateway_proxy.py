@@ -1144,3 +1144,14 @@ def test_gateway_injects_usage_for_vllm_and_ollama_streams(monkeypatch) -> None:
         _UsageHandler.request_body = {}
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_upstream_timeout_has_no_read_cap() -> None:
+    # Generation is bounded by max_tokens and engine health, not a fixed
+    # wall clock — prompt processing on slow CPU services can exceed a
+    # small fixed read cap before the first token.
+    timeout = gateway_module._upstream_timeout()
+    assert timeout.connect == gateway_module.CONNECT_TIMEOUT
+    assert timeout.read is None
+    assert timeout.write is None
+    assert timeout.pool is None

@@ -81,6 +81,15 @@ except ValueError:
 # server does not document the field and would reject the request.
 _STREAM_USAGE_BACKENDS = {"llamacpp", "vllm", "ollama"}
 
+
+def _upstream_timeout() -> httpx.Timeout:
+    # Engine-side generation is bounded by max_tokens and engine health, not
+    # a fixed wall clock: on slow CPU services prompt processing alone can
+    # exceed any small read cap before the first token, and non-stream
+    # responses must complete the whole generation inside it. Only connect
+    # stays bounded so a dead listener fails fast.
+    return httpx.Timeout(None, connect=CONNECT_TIMEOUT)
+
 if TYPE_CHECKING:
     import httpx
     from fastapi import FastAPI, HTTPException
@@ -675,7 +684,7 @@ async def _confirm_embedding_truncation(
     assert httpx is not None
     try:
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
+            timeout=_upstream_timeout()
         ) as client:
             response = await client.post(url, json=probe)
     except httpx.HTTPError:
@@ -757,7 +766,7 @@ async def _verify_embedding_batch(
         return "unverified"
     assert httpx is not None
     async with httpx.AsyncClient(
-        timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
+        timeout=_upstream_timeout()
     ) as client:
         for index, element in suspects:
             pieces = _byte_split_embedding_input(element, cap)
@@ -1336,7 +1345,7 @@ def create_app(
                 else None
             )
             assert httpx is not None
-            client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT))
+            client = httpx.AsyncClient(timeout=_upstream_timeout())
             ticket = in_flight.enter(service.name)
         except BaseException as error:
             # A failed acquire/revive must not keep the slot (or a held swap
@@ -1957,7 +1966,7 @@ def create_app(
             def run() -> Delegation:
                 assert httpx is not None
                 with httpx.Client(
-                    timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
+                    timeout=_upstream_timeout()
                 ) as client:
                     return delegate(
                         client,
