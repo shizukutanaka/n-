@@ -1956,8 +1956,13 @@ def create_app(
 
             def run() -> Delegation:
                 assert httpx is not None
+                # Each delegate call is a generation capped at max_tokens, so
+                # bound each request like one (~1 tok/s floor plus overhead)
+                # instead of a fixed ceiling that cuts off slow hosts.
                 with httpx.Client(
-                    timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
+                    timeout=httpx.Timeout(
+                        30.0 + max(1, max_tokens), connect=CONNECT_TIMEOUT
+                    )
                 ) as client:
                     return delegate(
                         client,

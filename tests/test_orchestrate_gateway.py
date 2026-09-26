@@ -226,3 +226,45 @@ def test_swap_exclusive_pair_is_not_eligible(monkeypatch) -> None:
     message = response.json()["error"]["message"]
     assert "chat" in message and "worker" in message
     assert "mutually exclusive" in message
+
+
+def test_delegate_scales_upstream_timeout_with_max_tokens(monkeypatch) -> None:
+    plan = _delegation_plan()
+    monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": _record(plan)})
+    read_timeouts: list[float | None] = []
+
+    def fake_delegate(client, prompt, max_tokens, *, lead, worker, ledger):
+        del prompt, max_tokens, lead, worker
+        read_timeouts.append(client.timeout.read)
+        ledger.worker.add(Call("worker", 3, 4, False, 0.0))
+        ledger.verify.add(Call("YES", 5, 1, False, 0.0))
+        return Delegation(
+            "worker",
+            True,
+            False,
+            False,
+            False,
+            Call("worker", 3, 4, False, 0.0),
+            Call("YES", 5, 1, False, 0.0),
+        )
+
+    monkeypatch.setattr(gateway_module, "delegate", fake_delegate)
+    with TestClient(create_app(plan)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "nmesh-delegate",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert response.status_code == 200
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "nmesh-delegate",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 4096,
+            },
+        )
+        assert response.status_code == 200
+    assert read_timeouts == [30.0 + 256, 30.0 + 4096]
