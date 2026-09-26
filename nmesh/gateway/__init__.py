@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import secrets
@@ -60,20 +61,20 @@ from .tokens import (
     record as record_token_calibration,
 )
 
-try:
-    QUEUE_TIMEOUT = float(os.environ.get("NMESH_QUEUE_TIMEOUT", "120.0"))
-except ValueError:
-    QUEUE_TIMEOUT = 120.0
 
-try:
-    KEEP_ALIVE = float(os.environ.get("NMESH_KEEP_ALIVE", "0"))
-except ValueError:
-    KEEP_ALIVE = 0.0
+def _env_timeout(name: str, default: float, *, allow_zero: bool = True) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    if not math.isfinite(value) or value < 0 or (value == 0 and not allow_zero):
+        return default
+    return value
 
-try:
-    CONNECT_TIMEOUT = float(os.environ.get("NMESH_CONNECT_TIMEOUT", "10.0"))
-except ValueError:
-    CONNECT_TIMEOUT = 10.0
+
+QUEUE_TIMEOUT = _env_timeout("NMESH_QUEUE_TIMEOUT", 120.0)
+KEEP_ALIVE = _env_timeout("NMESH_KEEP_ALIVE", 0.0)
+CONNECT_TIMEOUT = _env_timeout("NMESH_CONNECT_TIMEOUT", 10.0, allow_zero=False)
 
 # Backends whose OpenAI-compat stream accepts stream_options.include_usage.
 # The gateway injects it so decode telemetry uses the upstream's exact
