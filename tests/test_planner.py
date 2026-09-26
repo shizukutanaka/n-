@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import sys
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -674,6 +676,52 @@ def test_apple_mlx(catalog: list[ModelSpec]) -> None:
     )
     assert_memory_fit(result)
     assert result.services[0].backend == "mlx"
+
+
+def _mlx_plan(catalog: list[ModelSpec]):
+    return build_plan(
+        profile(
+            64,
+            (44,),
+            os_name="macos",
+            unified=True,
+            backends={"ollama": None, "llamacpp": None, "vllm": None, "mlx": "installed"},
+        ),
+        catalog,
+        Policy(roles=["chat"], model_ids=("phi-4-14b",)),
+    )
+
+
+def test_mlx_launch_resolves_python_executable(
+    catalog: list[ModelSpec],
+) -> None:
+    # Detection probes `python`/`python3` on PATH; launch must use the same
+    # resolution (absolute path baked into argv) instead of bare "python",
+    # which is absent on python3-only systems.
+    argv = _mlx_plan(catalog).services[0].launch.argv
+    assert argv[0] == (
+        shutil.which("python") or shutil.which("python3") or sys.executable
+    )
+    assert argv[0] != "python"
+
+
+def test_mlx_launch_falls_back_to_python3_and_sys_executable(
+    catalog: list[ModelSpec], tmp_path: Path, monkeypatch,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    python3 = fake_bin / "python3"
+    python3.write_text("#!/bin/sh\n")
+    python3.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+    argv = _mlx_plan(catalog).services[0].launch.argv
+    assert argv[0] == str(python3)
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    argv = _mlx_plan(catalog).services[0].launch.argv
+    assert argv[0] == sys.executable
 
 
 def test_no_backend_still_plans(catalog: list[ModelSpec]) -> None:
