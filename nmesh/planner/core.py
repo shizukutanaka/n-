@@ -3243,6 +3243,22 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             total_gb=total_download / GIB,
             limit_gb=selected.allow_download_gb,
         ))
+    if total_download > 0 and any(
+        service.backend in ("llamacpp", "vllm", "mlx") for service in services
+    ):
+        # huggingface_hub honors HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE and
+        # fails every planned download with OfflineModeIsEnabled at `up`
+        # time; HF_ENDPOINT silently redirects where weights come from.
+        offline = os.environ.get("HF_HUB_OFFLINE") or os.environ.get(
+            "TRANSFORMERS_OFFLINE"
+        )
+        if offline and offline.strip().upper() in {"1", "ON", "YES", "TRUE"}:
+            warnings.append(t("warn.hf_hub_offline", selected.lang))
+        endpoint = os.environ.get("HF_ENDPOINT")
+        if endpoint:
+            warnings.append(t(
+                "warn.hf_endpoint", selected.lang, endpoint=endpoint
+            ))
     if selected.languages:
         requested = set(selected.languages)
         for service in services:
