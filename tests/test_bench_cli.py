@@ -187,6 +187,50 @@ def test_autotune_pauses_detached_gateway_watchdog(monkeypatch, capsys) -> None:
     assert ups and all(admit is False for admit in ups)
 
 
+def test_autotune_rescales_llamacpp_pool_total(monkeypatch) -> None:
+    """llama.cpp -c is the shared KV pool total — with --parallel N the
+    planner emits context * slots, so the tuned rewrite must re-scale or
+    each slot gets context/N of the declared value."""
+    plan = _plan()
+    service = replace(
+        plan.services[0],
+        context=4096,
+        launch=replace(
+            plan.services[0].launch,
+            argv=["llama-server", "-m", "model.gguf", "-c", "8192",
+                  "--parallel", "2", "--port", "18010"],
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "load_plan", lambda: replace(plan, services=[service])
+    )
+    monkeypatch.setattr(
+        cli, "runtime_status", lambda: SimpleNamespace(services=[])
+    )
+    monkeypatch.setattr(cli, "_service_running", lambda *_a: True)
+    monkeypatch.setattr(cli, "save_plan", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "runtime_down", lambda: SimpleNamespace())
+    monkeypatch.setattr(cli, "disarm_atexit", lambda: None)
+    seen: list[list[str]] = []
+    monkeypatch.setattr(
+        cli,
+        "runtime_up",
+        lambda tuned_plan, **_k: seen.append(
+            next(s.launch.argv for s in tuned_plan.services
+                 if s.name == service.name)
+        ) or SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        cli, "measure", lambda *_a, **_k: SimpleNamespace(decode_tps=1.0)
+    )
+
+    assert cli.main(["autotune"]) == 0
+    # Grid contexts {2048, 4096} at 2 slots -> pool totals {4096, 8192},
+    # then the winning cell's relaunch.
+    totals = [int(argv[argv.index("-c") + 1]) for argv in seen]
+    assert totals == [4096, 8192, 4096]
+
+
 def test_bench_http_failure_returns_error_without_saving(monkeypatch, capsys) -> None:
     plan = _plan()
     saved = []
