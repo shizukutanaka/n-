@@ -1829,3 +1829,73 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_raise_soft_nofile_raises_soft_to_target(monkeypatch) -> None:
+    if supervisor_module.resource is None:
+        pytest.skip("resource module unavailable on this platform")
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        supervisor_module.resource, "getrlimit", lambda _r: (256, 1024)
+    )
+    monkeypatch.setattr(
+        supervisor_module.resource,
+        "setrlimit",
+        lambda _r, pair: calls.append(pair),
+    )
+    monkeypatch.setattr(
+        supervisor_module.resource, "RLIM_INFINITY", -1, raising=False
+    )
+    supervisor_module._raise_soft_nofile()
+    assert calls == [(1024, 1024)]
+
+
+def test_raise_soft_nofile_caps_at_4096_when_hard_unlimited(
+    monkeypatch,
+) -> None:
+    if supervisor_module.resource is None:
+        pytest.skip("resource module unavailable on this platform")
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        supervisor_module.resource,
+        "getrlimit",
+        lambda _r: (256, supervisor_module.resource.RLIM_INFINITY),
+    )
+    monkeypatch.setattr(
+        supervisor_module.resource,
+        "setrlimit",
+        lambda _r, pair: calls.append(pair),
+    )
+    supervisor_module._raise_soft_nofile()
+    hard = supervisor_module.resource.RLIM_INFINITY
+    assert calls == [(4096, hard)]
+
+
+def test_raise_soft_nofile_noop_when_soft_already_high(monkeypatch) -> None:
+    if supervisor_module.resource is None:
+        pytest.skip("resource module unavailable on this platform")
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        supervisor_module.resource, "getrlimit", lambda _r: (8192, 8192)
+    )
+    monkeypatch.setattr(
+        supervisor_module.resource,
+        "setrlimit",
+        lambda _r, pair: calls.append(pair),
+    )
+    supervisor_module._raise_soft_nofile()
+    assert calls == []
+
+
+def test_raise_soft_nofile_swallows_errors(monkeypatch) -> None:
+    if supervisor_module.resource is None:
+        pytest.skip("resource module unavailable on this platform")
+    monkeypatch.setattr(
+        supervisor_module.resource, "getrlimit", lambda _r: (256, 1024)
+    )
+    monkeypatch.setattr(
+        supervisor_module.resource,
+        "setrlimit",
+        lambda _r, pair: (_ for _ in ()).throw(OSError("denied")),
+    )
+    supervisor_module._raise_soft_nofile()
