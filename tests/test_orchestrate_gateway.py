@@ -88,7 +88,7 @@ def test_delegate_model_sums_usage_when_allowed(monkeypatch) -> None:
     monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": record})
     endpoints: list[object] = []
 
-    def fake_delegate(client, prompt, max_tokens, *, lead, worker, ledger):
+    def fake_delegate(client, prompt, max_tokens, *, lead, worker, ledger, timeout=None):
         del client, prompt, max_tokens
         endpoints.extend((lead, worker))
         ledger.worker.add(Call("worker", 3, 4, False, 0.0))
