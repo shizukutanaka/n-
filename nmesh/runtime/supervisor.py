@@ -39,6 +39,12 @@ from nmesh.runtime import engine
 from .acquisition import Acquired, acquire
 from .logs import log_path, open_log, tail
 
+if os.name != "nt":
+    import resource
+else:
+    resource = None  # type: ignore[assignment]
+
+
 STATE_PATH = nmesh_home() / "state.json"
 HEALTH_TIMEOUT = 120.0
 MAX_RESTARTS = 3
@@ -46,6 +52,27 @@ RESTART_WINDOW = 300.0
 GIB = 1024**3
 STATE_VERSION = 2
 PID_CREATE_TIME_TOLERANCE = 2.0
+
+
+def _raise_soft_nofile(minimum: int = 4096) -> None:
+    """Raise the process's soft RLIMIT_NOFILE so engine children inherit a
+    workable fd budget. Engines mmap every model shard and hold a socket per
+    request slot, and the macOS default soft limit of 256 is routinely
+    exceeded — the resulting EMFILE surfaces deep inside the engine."""
+    if resource is None:
+        return
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (OSError, ValueError):
+        return
+    if soft >= minimum:
+        return
+    target = minimum if hard == resource.RLIM_INFINITY else min(hard, minimum)
+    if target > soft:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        except (OSError, ValueError):
+            pass
 
 
 def _slots(plan: Plan | None, name: str) -> int:
@@ -828,6 +855,7 @@ class Supervisor:
         )
 
     def _launch(self, service: PlannedService) -> ProcessLike:
+        _raise_soft_nofile()
         env: dict[str, str] = {**os.environ, **service.launch.env}
         handle = None
         if os.environ.get("NMESH_BACKEND_LOG") != "0":
