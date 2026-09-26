@@ -658,6 +658,37 @@ def test_server_vllm_single_gpu(catalog: list[ModelSpec]) -> None:
     assert len(result.services[0].gpu_indices) == 1
 
 
+def test_vllm_env_pins_cache_root(
+    monkeypatch, catalog: list[ModelSpec]
+) -> None:
+    monkeypatch.delenv("VLLM_CACHE_ROOT", raising=False)
+    result = build_plan(
+        profile(128, (80, 80), os_name="linux"),
+        catalog,
+        Policy(roles=["chat"], model_ids=("phi-4-14b",)),
+    )
+    service = next(
+        item for item in result.services if item.backend == "vllm"
+    )
+    root = service.launch.env["VLLM_CACHE_ROOT"]
+    assert root == str(planner_core.nmesh_home() / "cache" / "vllm")
+
+
+def test_vllm_env_respects_user_cache_root(
+    monkeypatch, catalog: list[ModelSpec]
+) -> None:
+    monkeypatch.setenv("VLLM_CACHE_ROOT", "/custom/vcache")
+    result = build_plan(
+        profile(128, (80, 80), os_name="linux"),
+        catalog,
+        Policy(roles=["chat"], model_ids=("phi-4-14b",)),
+    )
+    service = next(
+        item for item in result.services if item.backend == "vllm"
+    )
+    assert "VLLM_CACHE_ROOT" not in service.launch.env
+
+
 def test_apple_mlx(catalog: list[ModelSpec]) -> None:
     # model_ids pins the model: on unified memory a heavier MoE entry can
     # legitimately fill the shared RAM pool beyond the GPU-side budget.
