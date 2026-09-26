@@ -625,3 +625,72 @@ def test_cli_state_deduplication_and_all_override(tmp_path: Path, monkeypatch, c
     assert main(["watch", "--offline", str(items), "--all", "--json"]) == 0
     third = json.loads(capsys.readouterr().out)
     assert third["new_findings"] == 1
+
+
+def test_zenn_single_topic_failure_keeps_other_topics() -> None:
+    """One failing topic list must not take down the whole source — same
+    granularity rule as the per-article fetches fixed earlier."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/articles":
+            if request.url.params["topicname"] == "bad":
+                return httpx.Response(500)
+            return httpx.Response(200, json={"articles": [
+                {"path": "/a/ok", "title": "ok"},
+            ]})
+        return httpx.Response(200, text="<p>body</p>")
+
+    status, items = fetch_zenn(("bad", "llm"), 1, _client(handler))
+    assert status.reachable and len(items) == 1
+    assert "bad=unreachable" in status.detail
+
+
+def test_zenn_all_topics_failed_reports_unreachable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    status, items = fetch_zenn(("llm", "gguf"), 1, _client(handler))
+    assert not status.reachable and items == ()
+
+
+def test_qiita_single_tag_failure_keeps_other_tags() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "tag:bad" in request.url.params["query"]:
+            return httpx.Response(500)
+        return httpx.Response(200, json=[
+            {"url": "https://qiita.com/x/one", "title": "x", "body": ""},
+        ])
+
+    status, _items = fetch_qiita(("bad", "llm"), 1, _client(handler))
+    assert status.reachable and status.items == 1
+    assert "bad" in status.detail
+
+
+def test_qiita_all_tags_failed_reports_unreachable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    status, items = fetch_qiita(("llm", "gguf"), 1, _client(handler))
+    assert not status.reachable and items == ()
+
+
+def test_github_single_repo_failure_keeps_other_repos() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "bad/repo" in request.url.path:
+            return httpx.Response(500)
+        return httpx.Response(200, json=[{
+            "html_url": "https://github.com/o/r/releases/tag/b1",
+            "name": "b1",
+            "body": "fix",
+        }])
+
+    status, _items = fetch_github(("bad/repo", "o/r"), 5, _client(handler))
+    assert status.reachable and status.items == 1
+    assert "bad/repo=unreachable" in status.detail
+
+
+def test_github_all_repos_failed_reports_unreachable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500)
+
+    status, items = fetch_github(("o/r", "p/q"), 5, _client(handler))
+    assert not status.reachable and items == ()
