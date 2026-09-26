@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -734,6 +735,31 @@ def test_ollama_daemon_env_no_warn_when_user_parallel_matches(
     assert "OLLAMA_NUM_PARALLEL" not in result.services[0].launch.env
     assert not any(
         "OLLAMA_NUM_PARALLEL" in warning for warning in result.warnings
+    )
+
+
+def test_ollama_env_leak_warns(monkeypatch) -> None:
+    # OLLAMA_* envs reach the shared daemon and every service on it;
+    # NUM_PARALLEL is excluded — it has its own emission/warning path.
+    monkeypatch.setenv("OLLAMA_NUM_PARALLEL", "2")
+    monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "q8_0")
+    monkeypatch.setenv("OLLAMA_GPU_OVERHEAD", "1000000")
+    result = build_plan(profile(8), [_ollama_only_model()], Policy(roles=["chat"]))
+    warns = [w for w in result.warnings if "OLLAMA_KV_CACHE_TYPE" in w]
+    assert len(warns) == 1
+    assert "OLLAMA_GPU_OVERHEAD" in warns[0]
+    assert "OLLAMA_NUM_PARALLEL" not in warns[0]
+
+
+def test_ollama_env_warn_absent_when_clean(monkeypatch) -> None:
+    for name in list(os.environ):
+        if name.startswith("OLLAMA_"):
+            monkeypatch.delenv(name)
+    result = build_plan(profile(8), [_ollama_only_model()], Policy(roles=["chat"]))
+    assert result.services[0].backend == "ollama"
+    assert not any(
+        "ollama" in w.lower() and "environment" in w
+        for w in result.warnings
     )
 
 
