@@ -22,6 +22,14 @@ refutes = evidence.refutes
 EPOCH_HISTORY = 12
 EPOCH_PATH = nmesh_home() / "epoch.json"
 
+#: llama-bench must read the whole GGUF before generating; a flat timeout
+#: kills the reference workload on slow storage (the same cold-load bound the
+#: supervisor's health wait already scales for). 50 MiB/s is an HDD-class
+#: read floor, matching HEALTH_LOAD_FLOOR_BPS in runtime/supervisor.py.
+REFERENCE_LOAD_FLOOR_BPS = 50.0 * 1024 * 1024
+REFERENCE_TIMEOUT_MIN = 300.0
+REFERENCE_TIMEOUT_MAX = 3600.0
+
 
 @dataclass(frozen=True)
 class EpochSample:
@@ -57,6 +65,26 @@ def reference_id(engine_build: str, model: Path, threads: int, gen: int) -> str:
     return f"{engine_build}|{model.name}|{model.stat().st_size}|t{threads}|n{gen}"
 
 
+def _reference_timeout(model: Path, gen: int, reps: int) -> float:
+    """Bound scaled to the model's cold read plus a slow decode floor.
+
+    A flat bound worked only when the reference GGUF loaded in far less than
+    300s; on slow storage a healthy measurement was killed mid-load and the
+    epoch check silently degraded to ``unknown`` on exactly the large models
+    that need it most.
+    """
+    try:
+        size = model.stat().st_size
+    except OSError:
+        size = 0
+    load_bound = size / REFERENCE_LOAD_FLOOR_BPS
+    decode_bound = max(gen, 0) * max(reps, 1) / 2.0  # 2 tok/s decode floor
+    return min(
+        max(REFERENCE_TIMEOUT_MIN, load_bound + decode_bound),
+        REFERENCE_TIMEOUT_MAX,
+    )
+
+
 def measure_reference(
     binary: Path,
     model: Path,
@@ -79,7 +107,7 @@ def measure_reference(
             capture_output=True,
             text=True,
             check=False,
-            timeout=300,
+            timeout=_reference_timeout(model, gen, reps),
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise RuntimeError(f"reference workload failed: {error}") from error
