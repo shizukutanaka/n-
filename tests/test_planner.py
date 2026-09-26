@@ -717,8 +717,13 @@ def test_llamacpp_launch_pins_loopback_host() -> None:
     assert argv[argv.index("--host") + 1] == "127.0.0.1"
 
 
-def test_llamacpp_launch_warns_on_llama_arg_api_key(monkeypatch) -> None:
-    monkeypatch.setenv("LLAMA_ARG_API_KEY", "secret")
+@pytest.mark.parametrize(
+    "env_var", ["LLAMA_API_KEY", "LLAMA_ARG_API_KEY_FILE"]
+)
+def test_llamacpp_launch_warns_on_llama_api_key_envs(
+    monkeypatch, env_var
+) -> None:
+    monkeypatch.setenv(env_var, "secret")
     model = ModelSpec(
         "llamacpp-chat", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
         ["chat"], 90.0, "apache", {"hf_gguf": "repo"},
@@ -730,7 +735,7 @@ def test_llamacpp_launch_warns_on_llama_arg_api_key(monkeypatch) -> None:
     )
     result = build_plan(available, [model], Policy(roles=["chat"]))
     assert any(
-        "LLAMA_ARG_API_KEY" in warning for warning in result.warnings
+        env_var in warning for warning in result.warnings
     )
 
 
@@ -754,7 +759,8 @@ def test_vllm_launch_warns_on_vllm_api_key(monkeypatch) -> None:
 
 
 def test_no_upstream_env_warn_when_unset(monkeypatch) -> None:
-    for var in ("LLAMA_ARG_API_KEY", "LLAMA_ARG_API_PREFIX",
+    for var in ("LLAMA_API_KEY", "LLAMA_ARG_API_KEY_FILE",
+                "LLAMA_ARG_API_PREFIX",
                 "LLAMA_ARG_SSL_KEY_FILE", "LLAMA_ARG_SSL_CERT_FILE",
                 "VLLM_API_KEY"):
         monkeypatch.delenv(var, raising=False)

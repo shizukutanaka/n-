@@ -709,12 +709,15 @@ def _launch(
             )
         argv += ["--port", str(port), "--host", "127.0.0.1"]
         if backend == "llamacpp" and warnings is not None:
-            # LLAMA_ARG_* envs only apply to argv-unset options, and the
+            # These envs only apply to argv-unset options, and the
             # gateway assumes an unauthenticated plain-HTTP loopback
             # upstream — auth, a path prefix, or TLS all break that
             # contract and have no argv negation, so warn instead.
+            # (llama.cpp keeps --api-key's env as LLAMA_API_KEY; the
+            # LLAMA_ARG_ prefix was never applied to it.)
             for env_var in (
-                "LLAMA_ARG_API_KEY", "LLAMA_ARG_API_PREFIX",
+                "LLAMA_API_KEY", "LLAMA_ARG_API_KEY_FILE",
+                "LLAMA_ARG_API_PREFIX",
                 "LLAMA_ARG_SSL_KEY_FILE", "LLAMA_ARG_SSL_CERT_FILE",
             ):
                 value = os.environ.get(env_var)
