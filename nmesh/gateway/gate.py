@@ -30,6 +30,14 @@ class SwapGate:
                     self._current = name
                     self._active += 1
                     return
+                except BaseException:
+                    # A failed or cancelled ensure may have stopped the
+                    # outgoing member — a stale _current would fast-path the
+                    # next request for it to a dead engine. Drop the pointer
+                    # so that request re-ensures; ensure_running short-
+                    # circuits when the member is still alive.
+                    self._current = None
+                    raise
                 finally:
                     self._swapping = False
 
