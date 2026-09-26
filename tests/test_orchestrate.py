@@ -250,6 +250,84 @@ def test_measure_reports_paired_arms_and_costs(monkeypatch: pytest.MonkeyPatch) 
     assert run.verifier.rejected_but_right == 0
 
 
+def test_measure_ignores_env_proxies_for_loopback_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[bool] = []
+
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            seen.append(kwargs.get("trust_env", True))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def fake_complete(
+        _client: object, endpoint: Endpoint, prompt: str, max_tokens: int
+    ) -> Call:
+        del prompt, max_tokens
+        return Call("YES" if endpoint.model_ref == "lead" else "good", 1, 1, False, 0.0)
+
+    monkeypatch.setattr(measure_module.httpx, "Client", FakeClient)
+    monkeypatch.setattr(measure_module, "complete", fake_complete)
+    monkeypatch.setattr(protocol_module, "complete", fake_complete)
+    run = measure(
+        (Task("one", "test", "one", 8, lambda text: text == "good"),),
+        lead=Endpoint("http://127.0.0.1:8000", "lead"),
+        worker=Endpoint("https://remote.example.com", "worker"),
+        lead_identity=RoleIdentity("lead", "q4", "llamacpp"),
+        worker_identity=RoleIdentity("worker", "q4", "external"),
+    )
+    assert seen == [False, True]
+    assert run.delegated_passed == 1
+
+
+def test_delegate_routes_worker_call_through_worker_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    used: list[object] = []
+    lead_client, worker_client = object(), object()
+
+    def fake_complete(
+        client: object, endpoint: Endpoint, prompt: str, max_tokens: int
+    ) -> Call:
+        del prompt, max_tokens
+        used.append(client)
+        return Call("YES" if endpoint.model_ref == "lead" else "good", 1, 1, False, 0.0)
+
+    monkeypatch.setattr(protocol_module, "complete", fake_complete)
+    result = delegate(
+        lead_client,
+        "task",
+        10,
+        lead=Endpoint("lead", "lead"),
+        worker=Endpoint("worker", "worker"),
+        worker_client=worker_client,
+    )
+    assert result.accepted
+    assert used == [worker_client, lead_client]
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("http://127.0.0.1:11434", True),
+        ("http://127.20.0.9", True),
+        ("http://localhost:8000", True),
+        ("http://api.localhost:8000", True),
+        ("http://[::1]:8000", True),
+        ("https://remote.example.com", False),
+        ("https://169.254.0.1", False),
+        ("not-a-url", False),
+    ],
+)
+def test_loopback_detection(url: str, expected: bool) -> None:
+    assert measure_module._loopback(url) is expected
+
+
 def test_record_round_trip_and_gate(tmp_path: Path) -> None:
     lead = RoleIdentity("lead", "q4", "llamacpp")
     worker = RoleIdentity("worker", "q4", "llamacpp")
