@@ -28,7 +28,7 @@ def _ollama_service() -> SimpleNamespace:
 def test_ollama_acquisition_creates_context_model(tmp_path, monkeypatch) -> None:
     calls: list[list[str]] = []
 
-    def run(argv, check):
+    def run(argv, check, env=None):
         assert check
         calls.append(argv)
 
@@ -53,7 +53,7 @@ def test_ollama_acquisition_creates_context_model(tmp_path, monkeypatch) -> None
 def test_ollama_create_failure_returns_context_warning(tmp_path, monkeypatch) -> None:
     calls = 0
 
-    def run(argv, check):
+    def run(argv, check, env=None):
         nonlocal calls
         calls += 1
         if calls == 2:
@@ -499,7 +499,7 @@ def test_local_only_ollama_skips_pull(tmp_path, monkeypatch) -> None:
     derived context model exists."""
     calls: list[list[str]] = []
 
-    def run(argv, check):
+    def run(argv, check, env=None):
         calls.append(argv)
 
     monkeypatch.setattr(acquisition, "nmesh_home", lambda: tmp_path)
@@ -508,6 +508,26 @@ def test_local_only_ollama_skips_pull(tmp_path, monkeypatch) -> None:
     acquisition.acquire(_ollama_service(), local_only=True)
 
     assert [argv[1] for argv in calls] == ["create"]
+
+
+def test_ollama_acquisition_pins_loopback_host(tmp_path, monkeypatch) -> None:
+    """A user-set OLLAMA_HOST would send pull/create to a daemon the plan
+    does not manage; the CLI must be pinned to the managed loopback daemon."""
+    envs: list[dict] = []
+
+    def run(argv, check, env=None):
+        envs.append(env)
+
+    monkeypatch.setenv("OLLAMA_HOST", "http://remote-host:11434")
+    monkeypatch.setattr(acquisition, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(acquisition.subprocess, "run", run)
+
+    acquisition.acquire(_ollama_service())
+
+    assert len(envs) == 2
+    for env in envs:
+        assert env is not None
+        assert env["OLLAMA_HOST"] == "127.0.0.1:11434"
 
 
 def test_enable_hf_transfer_sets_env_and_patches_loaded_constants(

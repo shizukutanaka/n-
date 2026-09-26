@@ -345,8 +345,14 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
     downloading (planned names like {id}-{quant}.gguf differ from
     upstream filenames)."""
     if service.backend == "ollama":
+        # The CLI targets OLLAMA_HOST from the environment, but nmesh manages
+        # a fixed loopback daemon — a user-set remote/port would land the
+        # pull and the nmesh-* model on a daemon the plan cannot reach.
+        env = {**os.environ, "OLLAMA_HOST": "127.0.0.1:11434"}
         if not local_only:
-            subprocess.run(["ollama", "pull", service.model_ref], check=True)
+            subprocess.run(
+                ["ollama", "pull", service.model_ref], check=True, env=env
+            )
         name = f"nmesh-{service.model_id}-c{service.context}"
         modelfile = nmesh_home() / "ollama" / f"{name}.Modelfile"
         modelfile.parent.mkdir(parents=True, exist_ok=True)
@@ -358,7 +364,7 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
         try:
             subprocess.run(
                 ["ollama", "create", name, "-f", str(modelfile)],
-                check=True,
+                check=True, env=env,
             )
         except (OSError, subprocess.CalledProcessError):
             return Acquired(
