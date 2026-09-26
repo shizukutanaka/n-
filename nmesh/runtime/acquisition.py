@@ -317,23 +317,35 @@ def _artifact_warning(
     return " ".join(warnings) or None
 
 
-def _enable_hf_transfer() -> None:
-    """Enable hf_transfer (Rust multi-range downloader) when installed.
+def _enable_fast_download() -> None:
+    """Enable the fastest installed Hugging Face downloader.
 
-    huggingface_hub gates it behind ``HF_HUB_ENABLE_HF_TRANSFER``; the env var
-    wins over the module default so an explicit user override (including "0")
-    is respected, and the already-imported constants module is patched because
-    the flag may have been read at import time.
+    Prefers hf_xet's high-performance mode (``HF_XET_HIGH_PERFORMANCE`` —
+    hf_xet is the default transfer path on hub 1.x); falls back to the
+    legacy ``HF_HUB_ENABLE_HF_TRANSFER`` flag only when hf_xet is absent,
+    since hub >=1.0 removed hf_transfer support and ignores the flag.
+    A user-set value of either variable (including "0") is respected, and
+    already-imported constants are patched because the flag may have been
+    read at import time.
     """
-    if os.environ.get("HF_HUB_ENABLE_HF_TRANSFER") is not None:
+    if (
+        os.environ.get("HF_XET_HIGH_PERFORMANCE") is not None
+        or os.environ.get("HF_HUB_ENABLE_HF_TRANSFER") is not None
+    ):
+        return
+    constants = sys.modules.get("huggingface_hub.constants")
+    if importlib.util.find_spec("hf_xet") is not None:
+        os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
+        if constants is not None:
+            # huggingface_hub caches the env read at import; patch the live
+            # module. ModuleType assignment is untyped; the constant exists
+            # at runtime.
+            constants.HF_XET_HIGH_PERFORMANCE = True  # type: ignore[attr-defined]
         return
     if importlib.util.find_spec("hf_transfer") is None:
         return
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-    constants = sys.modules.get("huggingface_hub.constants")
     if constants is not None:
-        # huggingface_hub caches the env read at import; patch the live module.
-        # ModuleType assignment is untyped; the constant exists at runtime.
         constants.HF_HUB_ENABLE_HF_TRANSFER = True  # type: ignore[attr-defined]
 
 
@@ -375,7 +387,7 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
             )
         return Acquired(None, None, False, model_ref=name)
     if service.backend in {"vllm", "mlx"}:
-        _enable_hf_transfer()
+        _enable_fast_download()
         from huggingface_hub import snapshot_download
 
         return Acquired(
@@ -436,7 +448,7 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
         if repo_id is None:
             raise RuntimeError("No Hugging Face GGUF repository configured")
         chosen, files, total_bytes = _resolve_gguf(repo_id, service.quant)
-        _enable_hf_transfer()
+        _enable_fast_download()
         from huggingface_hub import hf_hub_download
 
         paths = [
