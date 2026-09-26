@@ -75,6 +75,20 @@ try:
 except ValueError:
     CONNECT_TIMEOUT = 10.0
 
+# A swap-gated request waits on two phases: draining the outgoing member's
+# in-flight requests (kept at a fixed 300s so a wedged stream cannot park the
+# waiter forever) and cold-loading the incoming model, which scales with the
+# weights — the same 50MiB/s disk floor the supervisor uses for its health
+# wait. The caller must out-wait the loader or it 504s on a healthy swap.
+SWAP_DRAIN_TIMEOUT = 300.0
+SWAP_LOAD_FLOOR_BPS = 50.0 * 1024 * 1024
+SWAP_LOAD_TIMEOUT_MAX = 1800.0
+
+
+def _swap_timeout(service: PlannedService) -> float:
+    load = service.memory.weight_bytes / SWAP_LOAD_FLOOR_BPS
+    return SWAP_DRAIN_TIMEOUT + min(load, SWAP_LOAD_TIMEOUT_MAX)
+
 # Backends whose OpenAI-compat stream accepts stream_options.include_usage.
 # The gateway injects it so decode telemetry uses the upstream's exact
 # completion_tokens instead of an approximation; mlx is excluded because its
@@ -1307,7 +1321,7 @@ def create_app(
                 try:
                     await asyncio.wait_for(
                         gate.acquire(service.name, _ensure_target),
-                        timeout=300.0,
+                        timeout=_swap_timeout(service),
                     )
                 except asyncio.TimeoutError as error:
                     raise HTTPException(status_code=504, detail="Timed out waiting for service swap") from error
