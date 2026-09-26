@@ -593,7 +593,9 @@
   n_layers: 36
   n_heads: 32
   n_kv_heads: 8
-  head_dim: 80
+  # head_dim is 128 upstream (Qwen/Qwen3-Embedding-4B config.json);
+  # qwen3 fixes head_dim at 128 rather than hidden_size/n_heads.
+  head_dim: 128
   hidden_size: 2560
   vocab_size: 151665
   head_layout: shared
@@ -631,7 +633,8 @@
   n_layers: 28
   n_heads: 16
   n_kv_heads: 8
-  head_dim: 64
+  # head_dim is 128 upstream (Qwen/Qwen3-Reranker-0.6B config.json).
+  head_dim: 128
   hidden_size: 1024
   vocab_size: 151669
   head_layout: shared
@@ -649,7 +652,8 @@
   n_layers: 36
   n_heads: 32
   n_kv_heads: 8
-  head_dim: 80
+  # head_dim is 128 upstream (Qwen/Qwen3-Reranker-4B config.json).
+  head_dim: 128
   hidden_size: 2560
   vocab_size: 151669
   head_layout: shared
