@@ -2070,6 +2070,54 @@ def test_single_gpu_does_not_pin() -> None:
     assert "CUDA_VISIBLE_DEVICES" not in result.services[0].launch.env
 
 
+def _amd_profile() -> HardwareProfile:
+    gpus = [
+        GPUInfo(index, f"AMD GPU {size}GB", "amd", size * GIB, size * GIB, None, False)
+        for index, size in enumerate((24, 24))
+    ]
+    return HardwareProfile(
+        "linux", "Test CPU", 8, 16, 64 * GIB, 64 * GIB, 100 * GIB, False, gpus,
+        {"ollama": "test", "llamacpp": "test", "vllm": "test", "mlx": None},
+        classify_tier(gpus, False, 64 * GIB), [],
+    )
+
+
+def test_multi_gpu_pin_sets_cuda_device_order() -> None:
+    # nmesh indices come from NVML (PCI order); without PCI_BUS_ID the CUDA
+    # runtime would interpret them in FASTEST_FIRST order on mixed cards.
+    result = build_plan(
+        profile(64, (24, 24)),
+        symmetric_catalog(),
+        Policy(roles=["chat", "code"]),
+    )
+    for service in result.services:
+        assert service.launch.env["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+
+
+def test_amd_pin_warns_on_rocr_visibility_env(monkeypatch) -> None:
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0")
+    result = build_plan(
+        _amd_profile(), symmetric_catalog(), Policy(roles=["chat", "code"]),
+    )
+    assert any(
+        "HIP_VISIBLE_DEVICES" in service.launch.env
+        for service in result.services
+    )
+    assert any("ROCR_VISIBLE_DEVICES" in warning for warning in result.warnings)
+
+
+def test_amd_pin_no_warn_without_leak_env(monkeypatch) -> None:
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("GPU_DEVICE_ORDINAL", raising=False)
+    result = build_plan(
+        _amd_profile(), symmetric_catalog(), Policy(roles=["chat", "code"]),
+    )
+    assert not any(
+        "ROCR_VISIBLE_DEVICES" in warning or "GPU_DEVICE_ORDINAL" in warning
+        for warning in result.warnings
+    )
+
+
 def test_full_gpu_spread_does_not_pin() -> None:
     big = ModelSpec(
         "huge", "huge", 60_000_000_000, 80, 40, 10, 128, 4096, 8192,
