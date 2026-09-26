@@ -406,7 +406,10 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
             artifact_bytes = sum(part.stat().st_size for part in parts)
             actual_label = parse_label(target.name)
             expected = _recorded_artifact_bytes(service, actual_label)
-            if expected is not None and artifact_bytes != expected:
+            # A recorded reference must be positive: a missing/zero record
+            # can never match real bytes and would only produce false
+            # corrupt verdicts that delete healthy caches on every up.
+            if expected is not None and expected > 0 and artifact_bytes != expected:
                 # Bytes differ from what a successful acquisition recorded —
                 # the cached artifact is corrupt/truncated; re-acquire it
                 # instead of handing llama-server a file it will crash on.
@@ -459,15 +462,25 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
             ))
             for filename in files
         ]
-        warning = _artifact_warning(service, chosen, files[0], total_bytes)
+        try:
+            measured = sum(path.stat().st_size for path in paths)
+        except OSError:
+            measured = 0
+        # The record must hold what was actually written to disk: upstream
+        # metadata can omit sizes (total_bytes then undercounts to 0 or a
+        # partial sum), and a wrong record makes every later up reject the
+        # healthy cache as corrupt and re-download it.
+        artifact_bytes = measured or total_bytes
+        warning = _artifact_warning(service, chosen, files[0], artifact_bytes)
         if corrupt_note is not None:
             warning = f"{corrupt_note} {warning}" if warning else corrupt_note
-        try:
-            record(repo_id, chosen, total_bytes)
-        except OSError:
-            pass
+        if artifact_bytes > 0:
+            try:
+                record(repo_id, chosen, artifact_bytes)
+            except OSError:
+                pass
         return Acquired(
             paths[0], chosen, chosen != service.quant, warning=warning,
-            artifact_bytes=total_bytes,
+            artifact_bytes=artifact_bytes,
         )
     return Acquired(Path(service.model_ref), None, False)
