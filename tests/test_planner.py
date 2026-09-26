@@ -1929,7 +1929,11 @@ def test_partly_measured_services_keep_the_prior_warning() -> None:
     assert i18n.t("warn.quality_prior", "en") in plan.warnings
 
 
-def test_embedding_uses_supported_flag_aliases_without_warnings() -> None:
+def test_embedding_uses_supported_flag_aliases_without_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in _resolution_env_names():
+        monkeypatch.delenv(name, raising=False)
     model = ModelSpec(
         "embed-alias", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
         8192, ["embed"], 80.0, "apache", {"hf_gguf": "embed-alias.gguf"},
