@@ -138,6 +138,36 @@ def test_measure_reference_timeout_scales_with_model_size(monkeypatch, tmp_path)
     assert seen_timeouts[-1] <= 3600.0
 
 
+def test_measure_reference_timeout_budgets_all_split_shards(
+    monkeypatch, tmp_path,
+) -> None:
+    from nmesh.bench import epoch
+
+    seen_timeouts: list[float] = []
+
+    def fake_run(command, **kwargs):
+        seen_timeouts.append(kwargs["timeout"])
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": '[{"avg_ts": 42.0}]', "stderr": ""},
+        )()
+
+    monkeypatch.setattr(epoch.subprocess, "run", fake_run)
+
+    for part in range(1, 5):
+        shard = tmp_path / f"model-0000{part}-of-00004.gguf"
+        with shard.open("wb") as handle:
+            handle.truncate(10 * 1024**3)
+    epoch.measure_reference(
+        Path("llama-bench"), tmp_path / "model-00001-of-00004.gguf",
+    )
+    # llama-bench reads all four 10 GiB shards — 40 GiB total — even though
+    # only part 1 is named on the command line.
+    assert seen_timeouts[-1] > 800.0
+    assert seen_timeouts[-1] <= 3600.0
+
+
 def _record(reference_id: str, reference_tps: float | None) -> BenchRecord:
     return BenchRecord(
         tps=20.0,

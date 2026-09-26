@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import statistics
 import subprocess
 from dataclasses import asdict, dataclass
@@ -29,6 +30,37 @@ EPOCH_PATH = nmesh_home() / "epoch.json"
 REFERENCE_LOAD_FLOOR_BPS = 50.0 * 1024 * 1024
 REFERENCE_TIMEOUT_MIN = 300.0
 REFERENCE_TIMEOUT_MAX = 3600.0
+
+# Split GGUFs name every shard ``<prefix>-000NN-of-000MM.gguf``; llama-bench
+# opens part 1 and the library reads the rest, so the timeout must budget
+# all shards, not just the file named on the command line.
+_SPLIT_RE = re.compile(
+    r"^(?P<prefix>.+?)[-_.](?P<part>\d{5})-of-(?P<total>\d{5})\.gguf$",
+    re.IGNORECASE,
+)
+
+
+def _gguf_parts(model: Path) -> list[Path]:
+    """Every numbered shard of a split GGUF, or just *model* itself."""
+    match = _SPLIT_RE.match(model.name)
+    if match is None:
+        return [model]
+    total = int(match.group("total"))
+    head = model.name[: match.start("part")]
+    return [
+        model.parent / f"{head}{part:05d}-of-{total:05d}.gguf"
+        for part in range(1, total + 1)
+    ]
+
+
+def _model_bytes(model: Path) -> int:
+    total = 0
+    for part in _gguf_parts(model):
+        try:
+            total += part.stat().st_size
+        except OSError:
+            continue
+    return total
 
 
 @dataclass(frozen=True)
@@ -73,11 +105,7 @@ def _reference_timeout(model: Path, gen: int, reps: int) -> float:
     epoch check silently degraded to ``unknown`` on exactly the large models
     that need it most.
     """
-    try:
-        size = model.stat().st_size
-    except OSError:
-        size = 0
-    load_bound = size / REFERENCE_LOAD_FLOOR_BPS
+    load_bound = _model_bytes(model) / REFERENCE_LOAD_FLOOR_BPS
     decode_bound = max(gen, 0) * max(reps, 1) / 2.0  # 2 tok/s decode floor
     return min(
         max(REFERENCE_TIMEOUT_MIN, load_bound + decode_bound),
