@@ -3252,6 +3252,20 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     "warn.language_coverage", selected.lang,
                     model=service.model_id, languages=", ".join(missing),
                 ))
+    if any(service.backend == "ollama" for service in services):
+        # OLLAMA_* envs apply to the shared daemon nmesh launches:
+        # KV_CACHE_TYPE shrinks KV quality/memory, GPU_OVERHEAD shifts the
+        # VRAM budget, FLASH_ATTENTION/LLM_LIBRARY change execution — all
+        # silently diverging from the plan. NUM_PARALLEL is covered by its
+        # own emission/warning path, so it is excluded here.
+        leaked = sorted(
+            name for name in os.environ
+            if name.startswith("OLLAMA_") and name != "OLLAMA_NUM_PARALLEL"
+        )
+        if leaked:
+            warnings.append(t(
+                "warn.ollama_env", selected.lang, vars=", ".join(leaked),
+            ))
     covered = set(role_to_service)
     runnable = (
         bool(services)
