@@ -2023,6 +2023,17 @@ def _reference_context(
     return binary, model, reference_id(engine_build, model, threads, 32), threads
 
 
+def _unbounded_client() -> httpx.Client:
+    """Client for engine measurements whose duration scales with input size.
+
+    A flat 300s bound kills a healthy probe on a slow host — embedding probes
+    of 3×context tokens take minutes on CPU — and reports it as an HTTP
+    failure. Connect stays bounded (loopback refuses instantly); a wedged
+    engine is the supervisor health layer's job, not the socket's.
+    """
+    return httpx.Client(timeout=httpx.Timeout(None, connect=10.0))
+
+
 def _bench(args: argparse.Namespace) -> int:
     plan = load_plan()
     if plan is None or not plan.services:
@@ -2037,7 +2048,7 @@ def _bench(args: argparse.Namespace) -> int:
     )
     if service.roles == ["embed"]:
         try:
-            with httpx.Client(timeout=300.0) as client:
+            with _unbounded_client() as client:
                 embed_measurement = measure_embedding(
                     client,
                     base_url,
@@ -2095,7 +2106,7 @@ def _bench(args: argparse.Namespace) -> int:
         retrieval_record: RetrievalRecord | None = None
         if getattr(args, "retrieval", False):
             try:
-                with httpx.Client(timeout=300.0) as client:
+                with _unbounded_client() as client:
                     requests, seconds = measure_retrieval_estimate(
                         client, base_url, service.model_ref,
                         encode_tps=embed_record.encode_tps,
@@ -2167,7 +2178,7 @@ def _bench(args: argparse.Namespace) -> int:
                 )
                 if usable_rung is not None and degraded_rung is not None:
                     try:
-                        with httpx.Client(timeout=300.0) as client:
+                        with _unbounded_client() as client:
                             chunk_arm = measure_retrieval_chunk_arm(
                                 client,
                                 base_url,
