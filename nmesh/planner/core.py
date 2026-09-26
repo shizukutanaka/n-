@@ -4,6 +4,8 @@ import json
 import math
 import os
 import re
+import shutil
+import sys
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
@@ -281,7 +283,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 6
+LAUNCH_REVISION = 7
 
 
 @dataclass(frozen=True)
@@ -692,7 +694,15 @@ def _launch(
                 t("warn.embeddings_backend_unverified", language, model=model.id)
             )
     elif backend == "mlx":
-        argv = ["python", "-m", "mlx_lm.server", "--model", ref, "--port", str(port)]
+        # The probe accepts mlx_lm reachable from `python` or `python3` on
+        # PATH; resolving the same way here (with sys.executable as the last
+        # resort) keeps launch consistent with detection instead of relying
+        # on a bare `python` that may not exist on python3-only systems.
+        argv = [
+            shutil.which("python") or shutil.which("python3")
+            or sys.executable,
+            "-m", "mlx_lm.server", "--model", ref, "--port", str(port),
+        ]
         if embed_only and warnings is not None:
             warnings.append(
                 t("warn.embeddings_backend_unsupported", language, model=model.id)
