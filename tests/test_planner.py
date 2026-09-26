@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -674,6 +675,40 @@ def test_apple_mlx(catalog: list[ModelSpec]) -> None:
     )
     assert_memory_fit(result)
     assert result.services[0].backend == "mlx"
+
+
+def _resolution_env_names() -> frozenset[str]:
+    return frozenset({
+        "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE",
+        "LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT",
+        "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+    })
+
+
+def test_resolution_env_leak_warns(
+    catalog: list[ModelSpec], monkeypatch,
+) -> None:
+    for name in _resolution_env_names():
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("PYTHONPATH", "/tmp/stale")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/libs")
+    result = build_plan(profile(8), [_ollama_only_model()], Policy(roles=["chat"]))
+    warns = [w for w in result.warnings if "PYTHONPATH" in w]
+    assert len(warns) == 1
+    assert "LD_LIBRARY_PATH" in warns[0]
+
+
+def test_resolution_env_warn_absent_when_clean(
+    catalog: list[ModelSpec], monkeypatch,
+) -> None:
+    for name in list(os.environ):
+        if name in _resolution_env_names():
+            monkeypatch.delenv(name)
+    result = build_plan(profile(8), [_ollama_only_model()], Policy(roles=["chat"]))
+    assert not any(
+        "module/library resolution" in w for w in result.warnings
+    )
 
 
 def test_no_backend_still_plans(catalog: list[ModelSpec]) -> None:

@@ -3252,6 +3252,31 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     "warn.language_coverage", selected.lang,
                     model=service.model_id, languages=", ".join(missing),
                 ))
+    if services:
+        # Spawned processes inherit these resolution envs wholesale:
+        # PYTHONPATH/PYTHONHOME/PYTHONUSERBASE can make `python -m
+        # mlx_lm.server` and the gateway launcher import a different tree
+        # than the one probing verified; LD_*/DYLD_* redirect native
+        # engines' shared-library loading.
+        leaked = sorted(
+            name for name in os.environ
+            if name
+            in (
+                "PYTHONPATH",
+                "PYTHONHOME",
+                "PYTHONUSERBASE",
+                "LD_LIBRARY_PATH",
+                "LD_PRELOAD",
+                "LD_AUDIT",
+                "DYLD_LIBRARY_PATH",
+                "DYLD_FALLBACK_LIBRARY_PATH",
+                "DYLD_INSERT_LIBRARIES",
+            )
+        )
+        if leaked:
+            warnings.append(t(
+                "warn.resolution_env", selected.lang, vars=", ".join(leaked),
+            ))
     covered = set(role_to_service)
     runnable = (
         bool(services)
