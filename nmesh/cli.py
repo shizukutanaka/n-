@@ -4598,7 +4598,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if "--max-model-len" in argv:
                     argv[argv.index("--max-model-len") + 1] = str(context)
                 if "-c" in argv:
-                    argv[argv.index("-c") + 1] = str(context)
+                    # llama.cpp's -c is the shared KV pool total: the
+                    # planner emits context * slots when --parallel is
+                    # present, so the tuned context must be re-scaled.
+                    slots = 1
+                    if "--parallel" in argv:
+                        try:
+                            slots = max(
+                                1, int(argv[argv.index("--parallel") + 1])
+                            )
+                        except (IndexError, ValueError):
+                            slots = 1
+                    argv[argv.index("-c") + 1] = str(context * slots)
                 if "-ngl" in argv:
                     argv[argv.index("-ngl") + 1] = str(layers)
                 tuned = replace(
