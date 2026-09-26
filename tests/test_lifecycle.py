@@ -1829,3 +1829,73 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def _ollama_service(name: str, model: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        name=name,
+        port=11434,
+        backend="ollama",
+        model_ref=model,
+        quant="q4_k_m",
+        launch=SimpleNamespace(
+            health_url="http://127.0.0.1:11434/api/tags",
+            shared_daemon=True,
+            argv=["ollama", "serve"],
+        ),
+        memory=SimpleNamespace(parallel_slots=1),
+    )
+
+
+def test_ensure_running_swap_unloads_ollama_model_without_killing_daemon(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """Ollama members share one daemon: the tracked process is the daemon
+    itself, so killing it on swap would cut every ollama service — and the
+    outgoing model would otherwise stay resident until its keep_alive
+    timeout while the incoming model loads."""
+    chat_a = _ollama_service("chat_a", "nmesh-a-c4096")
+    chat_b = _ollama_service("chat_b", "nmesh-b-c4096")
+    plan = SimpleNamespace(
+        services=[chat_a, chat_b],
+        warnings=[],
+        swap_group={"chat_a", "chat_b"},
+        policy=None,
+    )
+    unloads: list[tuple[str, dict[str, object]]] = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> bool:
+            return False
+
+    def _open(request, timeout=0):
+        unloads.append((request.full_url, json.loads(request.data)))
+        return _Response()
+
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.urllib.request.urlopen", _open
+    )
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json", terminator=terminated.append
+    )
+    daemon = _KillableProcess()
+    supervisor.processes["chat_a"] = daemon
+    monkeypatch.setattr(supervisor, "_adopt", lambda _service: False)
+    monkeypatch.setattr(supervisor, "_already_up", lambda _service: True)
+    monkeypatch.setattr(supervisor, "_persist", lambda _plan: None)
+
+    supervisor.ensure_running("chat_b", plan)
+
+    assert daemon.terminated is False
+    assert terminated == []
+    assert unloads == [
+        (
+            "http://127.0.0.1:11434/api/generate",
+            {"model": "nmesh-a-c4096", "keep_alive": 0},
+        )
+    ]
+    assert "chat_b" in supervisor.shared_services

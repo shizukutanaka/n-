@@ -307,6 +307,27 @@ class Supervisor:
             return False
 
     @staticmethod
+    def _ollama_unload(service: PlannedService) -> None:
+        """Best-effort unload of a swapped-out model on the shared daemon.
+
+        `keep_alive: 0` is Ollama's unload verb; without it the outgoing
+        model stays resident until its idle timeout while the incoming
+        model loads, doubling the swap group's memory footprint."""
+        try:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{service.port}/api/generate",
+                data=json.dumps(
+                    {"model": service.model_ref, "keep_alive": 0}
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5):
+                pass
+        except (OSError, ValueError):
+            pass
+
+    @staticmethod
     def _probe_sleep(service: PlannedService) -> bool:
         """GET /is_sleeping on a sleep-capable engine; any failure means the
         engine is not parked (or not sleep-capable at all)."""
@@ -1445,6 +1466,10 @@ class Supervisor:
                             ),
                             None,
                         )
+                        if parked is not None and parked.backend == "ollama":
+                            # The tracked process is the shared daemon —
+                            # stopping it would cut every ollama service.
+                            continue
                         if (
                             parked is not None
                             and getattr(parked, "sleep_mode", False)
@@ -1453,6 +1478,13 @@ class Supervisor:
                             self.sleeping.add(name)
                         else:
                             self._stop_process(name)
+                for item in selected.services:
+                    if (
+                        item.backend == "ollama"
+                        and item.name in selected.swap_group
+                        and item.name != service_name
+                    ):
+                        self._ollama_unload(item)
             dead = service_name in self.processes and not self._alive(service_name)
             if dead:
                 self.processes.pop(service_name, None)
