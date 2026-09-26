@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -1383,6 +1384,40 @@ def test_oversized_llamacpp_cpu_fallback_clears_split_and_warns() -> None:
     assert "--tensor-split" not in service.launch.argv
     warning = i18n.t("warn.gpu_layers_cpu_fallback", "en", service=service.name)
     assert result.warnings.count(warning) == 1
+
+
+def _llamacpp_env_model() -> ModelSpec:
+    return ModelSpec(
+        "env-leak-llamacpp", "test", 40_000_000_000, 80, 32, 8, 128,
+        4096, 128, ["chat"], 99.0, "test", {"hf_gguf": "test.gguf"},
+    )
+
+
+def test_llamacpp_backend_env_leak_warns(monkeypatch) -> None:
+    monkeypatch.setenv("LLAMA_ARG_THREADS", "4")
+    monkeypatch.setenv("GGML_CUDA_FORCE_MMQ", "1")
+    result = build_plan(
+        profile(128, (24, 8)),
+        [_llamacpp_env_model()],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    warns = [w for w in result.warnings if "LLAMA_ARG_THREADS" in w]
+    assert len(warns) == 1
+    assert "GGML_CUDA_FORCE_MMQ" in warns[0]
+
+
+def test_llamacpp_env_warn_absent_when_clean(monkeypatch) -> None:
+    for name in list(os.environ):
+        if name.startswith(("LLAMA_ARG_", "GGML_")):
+            monkeypatch.delenv(name)
+    result = build_plan(
+        profile(128, (24, 8)),
+        [_llamacpp_env_model()],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert not any(
+        "LLAMA_ARG_" in w or "GGML_" in w for w in result.warnings
+    )
 
 
 def test_ollama_quantization_warning_is_emitted_for_placed_service() -> None:
