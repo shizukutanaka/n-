@@ -313,7 +313,9 @@
   license: llama3.1
   languages: [en, de, fr, it, pt, hi, es, th]
   sources:
-    ollama: "llama3.1:8b-instruct"
+    # Ollama default tag for the instruct model is `8b` —
+    # `8b-instruct` does not exist on the registry (pull would 404).
+    ollama: "llama3.1:8b"
     hf_gguf: "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
     hf: "meta-llama/Llama-3.1-8B-Instruct"
     hf_mlx: "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit"
@@ -333,7 +335,8 @@
   license: llama3.3
   languages: [en, de, fr, it, pt, hi, es, th]
   sources:
-    ollama: "llama3.3:70b-instruct"
+    # `70b` is the instruct default tag; `70b-instruct` 404s upstream.
+    ollama: "llama3.3:70b"
     hf_gguf: "bartowski/Llama-3.3-70B-Instruct-GGUF"
     hf: "meta-llama/Llama-3.3-70B-Instruct"
     hf_mlx: "mlx-community/Llama-3.3-70B-Instruct-4bit"

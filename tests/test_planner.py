@@ -1799,6 +1799,21 @@ def test_embedding_launch_flags_are_role_aware(catalog: list[ModelSpec]) -> None
     )
 
 
+def test_llama3_ollama_tags_exist_on_registry(
+    catalog: list[ModelSpec],
+) -> None:
+    # Ollama's llama3.x default tags are the bare size (`8b`, `70b`) and
+    # point at the instruct weights; the `*-instruct` suffix does not
+    # exist on the registry, so `ollama pull` would 404 at acquisition.
+    tags = {
+        item.id: (item.sources or {}).get("ollama")
+        for item in catalog
+        if item.id.startswith("llama3")
+    }
+    assert tags["llama3.1-8b-instruct"] == "llama3.1:8b"
+    assert tags["llama3.3-70b-instruct"] == "llama3.3:70b"
+
+
 def test_embedding_capability_warnings_and_flags() -> None:
     model = ModelSpec(
         "embed-test", "embed-test", 137_000_000, 12, 12, 12, 64, 768,
