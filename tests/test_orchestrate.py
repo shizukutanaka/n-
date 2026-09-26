@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 import nmesh.orchestrate.protocol as protocol_module
@@ -58,7 +59,7 @@ def test_complete_only_sends_cache_prompt_when_configured() -> None:
         def __init__(self) -> None:
             self.payloads: list[dict[str, object]] = []
 
-        def post(self, _url: str, *, json: dict[str, object]) -> Response:
+        def post(self, _url: str, *, json: dict[str, object], timeout=None) -> Response:
             self.payloads.append(json)
             return Response()
 
@@ -69,6 +70,42 @@ def test_complete_only_sends_cache_prompt_when_configured() -> None:
     )
     assert "cache_prompt" not in client.payloads[0]
     assert client.payloads[1]["cache_prompt"] is False
+
+
+def test_complete_scales_timeout_with_prompt_and_budget() -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+            }
+
+    class Client:
+        def __init__(self) -> None:
+            self.timeouts: list[object] = []
+
+        def post(self, _url: str, *, json: dict[str, object], timeout=None) -> Response:
+            del json
+            self.timeouts.append(timeout)
+            return Response()
+
+    client = Client()
+    protocol_module.complete(client, Endpoint("url", "model"), "hi", 4)
+    protocol_module.complete(client, Endpoint("url", "model"), "hi", 800)
+    small, large = client.timeouts
+    assert isinstance(small, httpx.Timeout)
+    assert small.connect == 10.0
+    # A 4-token budget needs far less than the old flat 300s; an 800-token
+    # budget at the 2 tok/s decode floor needs 30 + 400 = 430s.
+    assert small.read < 300.0
+    assert large.read >= 430.0
+    protocol_module.complete(
+        client, Endpoint("url", "model"), "hi", 4, timeout=600.0,
+    )
+    assert client.timeouts[2].read == 600.0
 
 
 def _record_run() -> measure_module.DelegationRun:
@@ -200,7 +237,7 @@ def test_orchestrate_show_json_handles_empty_cache(
 def test_delegate_escalates_once_on_unreadable_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
-    def fake_complete(_client: object, endpoint: Endpoint, prompt: str, max_tokens: int) -> Call:
+    def fake_complete(_client: object, endpoint: Endpoint, prompt: str, max_tokens: int, timeout: float | None = None) -> Call:
         del max_tokens
         calls.append(endpoint.model_ref)
         if endpoint.model_ref == "verify":
@@ -222,7 +259,7 @@ def test_measure_reports_paired_arms_and_costs(monkeypatch: pytest.MonkeyPatch) 
         Task("two", "test", "two", 8, lambda text: text == "good"),
     )
 
-    def fake_complete(_client: object, endpoint: Endpoint, prompt: str, max_tokens: int) -> Call:
+    def fake_complete(_client: object, endpoint: Endpoint, prompt: str, max_tokens: int, timeout: float | None = None) -> Call:
         del max_tokens
         if endpoint.model_ref == "worker":
             text = "good" if prompt == "one" else "bad"
