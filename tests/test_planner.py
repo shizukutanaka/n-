@@ -2462,3 +2462,26 @@ def test_lfm2_24b_a2b_catalog_moe_anatomy(catalog: list[ModelSpec]) -> None:
     assert estimate.moe_expert_bytes_per_layer == pytest.approx(
         22_951_231_488 / 38 * estimate.weight_bytes / 24_000_000_000
     )
+
+
+def test_service_port_base_rejects_out_of_range(
+    monkeypatch: pytest.MonkeyPatch, catalog: list[ModelSpec]
+) -> None:
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "70000")
+    plan = build_plan(profile(64, (24,)), catalog, Policy(roles=["chat"]))
+    assert plan.services and all(
+        1 <= service.port <= 65535 for service in plan.services
+    )
+    assert plan.services[0].port == 18010
+
+
+def test_service_port_base_derived_overflow_falls_back(
+    monkeypatch: pytest.MonkeyPatch, catalog: list[ModelSpec]
+) -> None:
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "65535")
+    plan = build_plan(
+        profile(64, (24,)), catalog, Policy(roles=["chat", "worker"])
+    )
+    assert len(plan.services) >= 2
+    assert all(1 <= service.port <= 65535 for service in plan.services)
+    assert any("65536" in warning for warning in plan.warnings)
