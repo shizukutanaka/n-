@@ -258,6 +258,12 @@ class PlannedService:
     tensor_split: tuple[int, ...] = ()
     sleep_mode: bool = False
 
+    def __post_init__(self) -> None:
+        if isinstance(self.port, bool) or not 1 <= self.port <= 65535:
+            raise ValueError(f"Invalid service port: {self.port}")
+        if isinstance(self.context, bool) or self.context < 1:
+            raise ValueError(f"Invalid service context: {self.context}")
+
 
 def _is_embed_only(value: ModelSpec | PlannedService) -> bool:
     return value.roles == ["embed"]

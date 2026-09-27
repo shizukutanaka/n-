@@ -2485,3 +2485,27 @@ def test_service_port_base_derived_overflow_falls_back(
     assert len(plan.services) >= 2
     assert all(1 <= service.port <= 65535 for service in plan.services)
     assert any("65536" in warning for warning in plan.warnings)
+
+
+def test_saved_plan_with_out_of_range_port_is_rejected(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    plan = build_plan(profile(64, (24,)), catalog, Policy(roles=["chat"]))
+    path = tmp_path / "plan.json"
+    save_plan(plan, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["services"][0]["port"] = 70000
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load_plan(path) is None
+
+
+def test_saved_plan_with_non_positive_context_is_rejected(
+    tmp_path, catalog: list[ModelSpec]
+) -> None:
+    plan = build_plan(profile(64, (24,)), catalog, Policy(roles=["chat"]))
+    path = tmp_path / "plan.json"
+    save_plan(plan, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["services"][0]["context"] = 0
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load_plan(path) is None
