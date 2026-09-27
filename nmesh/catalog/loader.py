@@ -74,7 +74,7 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
         ) or ("en",)
         quality_value = item["quality"]
         quality = None if quality_value is None else float(quality_value)
-        return ModelSpec(
+        spec = ModelSpec(
             id=str(item["id"]),
             family=str(item["family"]),
             params=int(item["params"]),
@@ -101,6 +101,24 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
         )
     except (TypeError, ValueError):
         return None
+    if (
+        spec.params <= 0
+        or spec.n_layers <= 0
+        or spec.n_heads <= 0
+        or spec.n_kv_heads <= 0
+        or spec.head_dim <= 0
+        or spec.hidden_size <= 0
+        or spec.max_context <= 0
+        or spec.vocab_size < 0
+        or spec.kv_layers < 0
+        or spec.sliding_window < 0
+        or spec.sliding_window_pattern < 0
+        or spec.active_params < 0
+        or spec.moe_expert_params < 0
+        or spec.n_moe_layers < 0
+    ):
+        return None
+    return spec
 
 
 def _read_models(path: Path) -> list[ModelSpec]:

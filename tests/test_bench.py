@@ -197,3 +197,37 @@ def test_bench_timeout_scales_with_prompt_tokens() -> None:
     floored = runner._bench_timeout(30)
     assert floored.read == 60.0
     assert floored.connect == 10.0
+
+
+def test_bench_cache_rejects_non_finite_measurements(tmp_path) -> None:
+    from nmesh.bench import load_records
+
+    record = {
+        "tps": 12.0,
+        "decode_tps_min": 10.0,
+        "decode_tps_max": 14.0,
+        "runs": 3,
+        "passes": 2,
+        "stable": True,
+        "measured_at": "now",
+        "harness": "bench-v2",
+        "sessions": [12.0],
+    }
+    cache = tmp_path / "bench.json"
+    cache.write_text(
+        json.dumps(
+            {
+                "legacy_inf": float("inf"),
+                "legacy_negative": -3.0,
+                "legacy_ok": 9.5,
+                "record_nan": {**record, "tps": float("nan")},
+                "record_negative_session": {**record, "sessions": [-1.0]},
+                "record_infinite_ratio": {**record, "control_ratio": float("inf")},
+                "record_ok": record,
+            }
+        ),
+        encoding="utf-8",
+    )
+    records = load_records(cache)
+    assert set(records) == {"legacy_ok", "record_ok"}
+>>>>>>> origin/main
