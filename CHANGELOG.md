@@ -23,6 +23,8 @@
 ### Fixed
 - **`/status`・ルーティング・進捗取得がランタイムプローブでイベントループをブロックしていた問題を修正 + `/status` を API キー保護対象に追加**: `runtime_status()` は採用中・外部サービスごとに `urlopen(timeout=2)` のヘルスプローブと state.json の読込を直列実行しますが、`/status` ハンドラと `route()` のトークン見積もり経路（`_routing_token_hint`）および `/slots` 進捗取得（`_slot_progress`）からイベントループ上で直接呼ばれていました。採用サービスが応答しない場合、リクエストごとに最大2秒ずつ全ゲートウェイ処理が停止します。いずれも `asyncio.to_thread` 経由に変更し、`/status`（サービス名・PID・ポートを含むランタイムスナップショット）を `/metrics`/`/admin/*` と同じく API キー設定時に認証必須とします
 
+- **`autotune` の計測失敗で復旧経路が迂回していた問題を修正**: チューニングセルがエンジンを不安定化させた場合、`measure()` の `httpx.HTTPError`（接続拒否・5xx応答）が `(OSError, RuntimeError)` の捕捉を抜けて propagate し、`runtime_down`・元プラン復帰・ゲートウェイ再起動の復旧経路が到達不能になっていました — チューニングがバックエンドを壊したまさにその時に、稼働中の外部ゲートウェイが復帰しないまま残りました
+
 - **`bench.json` の非有限・負の計測値を読込時に拒否**: Python の `json` は `Infinity`/`NaN` リテラルを受理するため、レガシー数値レコードや sessions/control_ratio 等に非有限・負値を含む壊れたキャッシュがそのまま採用され、tps=inf/nan が中央値・エポック判定・プランの speedup 比較へ伝播していました。必須値は非有限・負で拒否、オプション値は非有限のみ拒否（#507 epoch・#552 telemetry と同規約）
 - **watch の状態ファイル書込みがプロセス間で tmp ファイルを共有していた問題を修正**: `watch.json` の原子的書込みに `.watch.json.tmp` という固定名を使っていたため、タイマーユニットと手動実行など2つの `nmesh watch` プロセスが並走すると、一方の `write_text`→`replace` の間にもう一方が同じ tmp を上書き・移動し、FileNotFoundError か別プロセスの内容の誤確定が起こり得ました。engine 状態ファイルと同じ `.{name}.{pid}.tmp` 規約に揃えました
 - **watch ドラフトの YAML 文字列が引用符をエスケープしていなかった問題を修正**: `_yaml` が文字列を `"..."` で囲むだけだったため、検証済みメタデータ（`architectures`/`license` 等）に `"` を含む値があると壊れた YAML のドラフトを生成していました。JSON ダンプ（有効な YAML フロースカラー）に置き換え
