@@ -22,6 +22,8 @@
 
 ### Fixed
 - **取得失敗が `nmesh up` の再試行・クリーンアップ経路を迂回していた問題を修正**: `acquire()` が huggingface_hub 1.x/2.x の内部リトライ尽きた後に送出される素の httpx 輸送エラー（`ConnectError`/`TimeoutException`/`RemoteProtocolError` — いずれも `OSError` 非継承）と `ollama pull` の `CalledProcessError` をそのまま漏らしており、`supervisor.up()` の `except (OSError, RuntimeError)` に捕捉されずにフォールバックラダーと `down()` クリーンアップをスキップしたまま生トレースバックで中断し、部分起動したサービスが放置され得ました。HF 系呼出（`model_info`/`snapshot_download`/`hf_hub_download`）の httpx 輸送エラーを `OSError` に、`ollama pull` 失敗を `RuntimeError` に正規化 — `HfHubHTTPError` 系（`OSError` 継承済み）はそのまま再送出して例外情報を保全
+- **`autotune` の計測失敗で復旧経路が迂回していた問題を修正**: チューニングセルがエンジンを不安定化させた場合、`measure()` の `httpx.HTTPError`（接続拒否・5xx応答）が `(OSError, RuntimeError)` の捕捉を抜けて propagate し、`runtime_down`・元プラン復帰・ゲートウェイ再起動の復旧経路が到達不能になっていました — チューニングがバックエンドを壊したまさにその時に、稼働中の外部ゲートウェイが復帰しないまま残りました
+
 - **`bench.json` の非有限・負の計測値を読込時に拒否**: Python の `json` は `Infinity`/`NaN` リテラルを受理するため、レガシー数値レコードや sessions/control_ratio 等に非有限・負値を含む壊れたキャッシュがそのまま採用され、tps=inf/nan が中央値・エポック判定・プランの speedup 比較へ伝播していました。必須値は非有限・負で拒否、オプション値は非有限のみ拒否（#507 epoch・#552 telemetry と同規約）
 - **watch の状態ファイル書込みがプロセス間で tmp ファイルを共有していた問題を修正**: `watch.json` の原子的書込みに `.watch.json.tmp` という固定名を使っていたため、タイマーユニットと手動実行など2つの `nmesh watch` プロセスが並走すると、一方の `write_text`→`replace` の間にもう一方が同じ tmp を上書き・移動し、FileNotFoundError か別プロセスの内容の誤確定が起こり得ました。engine 状態ファイルと同じ `.{name}.{pid}.tmp` 規約に揃えました
 - **watch ドラフトの YAML 文字列が引用符をエスケープしていなかった問題を修正**: `_yaml` が文字列を `"..."` で囲むだけだったため、検証済みメタデータ（`architectures`/`license` 等）に `"` を含む値があると壊れた YAML のドラフトを生成していました。JSON ダンプ（有効な YAML フロースカラー）に置き換え
