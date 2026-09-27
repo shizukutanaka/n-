@@ -2462,3 +2462,28 @@ def test_lfm2_24b_a2b_catalog_moe_anatomy(catalog: list[ModelSpec]) -> None:
     assert estimate.moe_expert_bytes_per_layer == pytest.approx(
         22_951_231_488 / 38 * estimate.weight_bytes / 24_000_000_000
     )
+
+
+def test_policy_rejects_invalid_numeric_bounds() -> None:
+    for kwargs in (
+        {"max_context": -5},
+        {"max_context": 0},
+        {"parallel_slots": -2},
+        {"parallel_slots": 0},
+        {"min_decode_tps": float("nan")},
+        {"min_decode_tps": -1.0},
+        {"allow_download_gb": float("inf")},
+        {"allow_download_gb": -0.5},
+    ):
+        with pytest.raises(ValueError):
+            Policy(**kwargs)
+
+
+def test_corrupt_plan_json_with_negative_context_is_rejected(tmp_path) -> None:
+    plan = build_plan(profile(8), load_catalog(), Policy(roles=["chat"]))
+    path = tmp_path / "plan.json"
+    save_plan(plan, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["policy"]["max_context"] = -5
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load_plan(path) is None
