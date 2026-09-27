@@ -6,6 +6,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import psutil
@@ -309,7 +310,9 @@ def _detect_backends(
                 flags[name] = tuple(sorted(caps.flags))
                 if caps.gpu_devices is not None:
                     gpu_devices[name] = caps.gpu_devices
-    python_executable = shutil.which("python") or shutil.which("python3")
+    python_executable = (
+        shutil.which("python") or shutil.which("python3") or sys.executable
+    )
     if python_executable:
         output, error = _run([python_executable, "-c", "import mlx_lm; print('installed')"])
         if output and "installed" in output:

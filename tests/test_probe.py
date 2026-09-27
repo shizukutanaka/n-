@@ -148,3 +148,24 @@ def test_backend_version_line_prefers_line_containing_version() -> None:
         "Warning: client version is 0.33.2\n",
         None,
     ) == "Warning: client version is 0.33.2"
+
+
+def test_mlx_detection_falls_back_to_sys_executable(monkeypatch) -> None:
+    import sys
+
+    monkeypatch.delenv("NMESH_LLAMACPP_BIN", raising=False)
+    monkeypatch.setattr(detector.shutil, "which", lambda value: None)
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str]) -> tuple[str | None, str | None]:
+        calls.append(list(command))
+        if command[0] == sys.executable:
+            return ("installed", "")
+        return (None, None)
+
+    monkeypatch.setattr(detector, "_run", fake_run)
+
+    backends, _, _, _ = detector._detect_backends([], [])
+
+    assert backends["mlx"] == "installed"
+    assert calls[-1][:2] == [sys.executable, "-c"]
