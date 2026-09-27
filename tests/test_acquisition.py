@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import huggingface_hub
 import pytest
 
@@ -48,6 +49,69 @@ def test_ollama_acquisition_creates_context_model(tmp_path, monkeypatch) -> None
     ]
     assert acquired.model_ref == "nmesh-probe-model-c8192"
     assert acquired.path is None
+
+
+def test_ollama_pull_failure_raises_runtime_error(tmp_path, monkeypatch) -> None:
+    """A failed pull must surface through the (OSError, RuntimeError)
+    acquisition contract — not leak CalledProcessError past supervisor.up's
+    retry/cleanup handling."""
+
+    def run(argv, check):
+        raise acquisition.subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(acquisition, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(acquisition.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match="ollama pull failed"):
+        acquisition.acquire(_ollama_service())
+
+
+def test_hf_transport_error_surfaces_as_oserror(tmp_path, monkeypatch) -> None:
+    """huggingface_hub re-raises raw httpx transport errors once its retry
+    budget is exhausted; acquire must normalize them into OSError."""
+    service = _llamacpp_service(tmp_path)
+    monkeypatch.setattr(
+        acquisition,
+        "_resolve_gguf",
+        lambda _repo, _quant: ("q4_k_m", ["model-Q4_K_M.gguf"], 100),
+    )
+
+    def boom(**_kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", boom)
+
+    with pytest.raises(OSError, match="Download from repo failed"):
+        acquisition.acquire(service)
+
+
+def test_hf_http_errors_still_propagate_as_oserror(tmp_path, monkeypatch) -> None:
+    """HfHubHTTPError subclasses are already OSError — they must pass through
+    unchanged rather than being re-wrapped."""
+    from huggingface_hub.utils import HfHubHTTPError
+
+    service = _llamacpp_service(tmp_path)
+    monkeypatch.setattr(
+        acquisition,
+        "_resolve_gguf",
+        lambda _repo, _quant: ("q4_k_m", ["model-Q4_K_M.gguf"], 100),
+    )
+
+    sentinel = HfHubHTTPError(
+        "boom",
+        response=httpx.Response(
+            500, request=httpx.Request("GET", "https://hf.test")
+        ),
+    )
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda **_kwargs: (_ for _ in ()).throw(sentinel),
+    )
+
+    with pytest.raises(OSError) as captured:
+        acquisition.acquire(service)
+    assert captured.value is sentinel
 
 
 def test_ollama_create_failure_returns_context_warning(tmp_path, monkeypatch) -> None:
