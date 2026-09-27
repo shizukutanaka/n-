@@ -732,4 +732,3 @@ def test_watch_state_tmp_name_is_pid_namespaced(
     save_state(WatchState("now", {}, {}), tmp_path / "watch.json")
     assert [path.name for path in written] == [".watch.json.4321.tmp"]
     assert (tmp_path / "watch.json").exists()
->>>>>>> origin/main
