@@ -276,6 +276,18 @@ def test_api_key_authentication(monkeypatch) -> None:
         assert secret not in wrong.text
 
 
+def test_empty_api_key_disables_authentication(monkeypatch) -> None:
+    # `nmesh autostart --install` writes `NMESH_API_KEY=` into gateway.env
+    # when the variable is unset — an empty value must not become a required
+    # empty bearer credential.
+    monkeypatch.setenv("NMESH_API_KEY", "")
+    plan = _completion_plan(1)
+    with TestClient(create_app(plan)) as client:
+        assert client.get("/metrics").status_code == 200
+        bearer = client.get("/v1/models", headers={"Authorization": "Bearer x"})
+        assert bearer.status_code == 200
+
+
 def test_logs_endpoint_reads_tail_and_reports_missing(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("NMESH_API_KEY", raising=False)
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
