@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import subprocess
 import sys
 import time
 from dataclasses import asdict, replace
@@ -19,7 +20,7 @@ from nmesh.planner import Policy, build_plan
 from nmesh.runtime import service_unit as service_unit_module
 from nmesh.runtime import supervisor as supervisor_module
 from nmesh.runtime.acquisition import Acquired
-from nmesh.runtime.logs import log_path, open_log, tail
+from nmesh.runtime.logs import _max_bytes, log_path, open_log, tail
 from nmesh.runtime.service_unit import launcher_script, service_unit, watch_unit
 from nmesh.runtime.supervisor import Supervisor
 
@@ -901,6 +902,67 @@ def test_supervisor_captures_backend_output(monkeypatch, tmp_path: Path) -> None
     assert process.wait(timeout=10) == 0
 
     assert "captured backend output" in log_path(service.name).read_text()
+
+
+def test_max_bytes_rejects_malformed_env(monkeypatch) -> None:
+    monkeypatch.delenv("NMESH_LOG_MAX_BYTES", raising=False)
+    assert _max_bytes() > 0
+    monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "bogus")
+    with pytest.raises(ValueError, match="NMESH_LOG_MAX_BYTES.*bogus"):
+        _max_bytes()
+    monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "0")
+    with pytest.raises(ValueError, match="positive"):
+        _max_bytes()
+
+
+def test_launch_without_log_capture_when_log_env_malformed(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    # _max_bytes runs during rotation, which only happens once a log exists.
+    handle = open_log("chat")
+    handle.write(b"prior run\n")
+    handle.close()
+    monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "bogus")
+    plan = build_plan(profile(64, (24,)), load_catalog(), Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        launch=replace(
+            plan.services[0].launch,
+            argv=[sys.executable, "-c", "print('still launches')"],
+            health_url=None,
+        ),
+    )
+    supervisor = Supervisor()
+    process = supervisor._launch(service)
+    assert process.wait(timeout=10) == 0
+    assert "NMESH_LOG_MAX_BYTES" in supervisor.notes[service.name]
+
+
+def test_launch_gateway_survives_malformed_log_env(
+    monkeypatch, tmp_path: Path, capsys,
+) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    # Rotation (and therefore _max_bytes) only runs once a log exists.
+    (tmp_path / "gateway.log").write_text("prior run\n")
+    monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "bogus")
+    monkeypatch.setattr(cli, "gateway_health", lambda _port: False)
+    spawned: list[list[str]] = []
+
+    class _FakeProcess:
+        pid = 4242
+
+    def _fake_popen(argv, **kwargs):
+        spawned.append(argv)
+        return _FakeProcess()
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(cli, "record_gateway", lambda *args: None)
+    process, path = cli._launch_gateway(19876, True)
+    assert process.pid == 4242
+    assert spawned
+    assert path == tmp_path / "gateway.log"
+    assert "NMESH_LOG_MAX_BYTES" in capsys.readouterr().err
 
 
 def test_unhealthy_message_includes_backend_log_tail(monkeypatch, tmp_path: Path) -> None:

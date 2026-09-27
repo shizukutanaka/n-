@@ -1558,7 +1558,14 @@ def _launch_gateway(
         return process, None
     log_path = nmesh_home() / "gateway.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    rotate_log(log_path)
+    try:
+        rotate_log(log_path)
+    except (OSError, ValueError) as error:
+        print(
+            i18n.t("warn.log_rotate_failed", i18n.lang(),
+                   path=log_path, error=error),
+            file=sys.stderr,
+        )
     with log_path.open("ab") as log:
         if is_windows():
             # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
