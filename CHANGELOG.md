@@ -22,6 +22,9 @@
 
 ### Fixed
 - **`/status`・ルーティング・進捗取得がランタイムプローブでイベントループをブロックしていた問題を修正 + `/status` を API キー保護対象に追加**: `runtime_status()` は採用中・外部サービスごとに `urlopen(timeout=2)` のヘルスプローブと state.json の読込を直列実行しますが、`/status` ハンドラと `route()` のトークン見積もり経路（`_routing_token_hint`）および `/slots` 進捗取得（`_slot_progress`）からイベントループ上で直接呼ばれていました。採用サービスが応答しない場合、リクエストごとに最大2秒ずつ全ゲートウェイ処理が停止します。いずれも `asyncio.to_thread` 経由に変更し、`/status`（サービス名・PID・ポートを含むランタイムスナップショット）を `/metrics`/`/admin/*` と同じく API キー設定時に認証必須とします
+
+- **`nmesh models` の重複回収可能バイトがハードリンクを二重計上していた問題を修正**: 同一モデルの複数パスが1つの inode を共有するハードリンクの場合、1つ残して削除しても実際には0バイトしか解放されないのに、`sum(bytes) - max(bytes)` のパス単位計算で実容量を超える回収見込みを表示していました（推定を実測のように見せる北極星違反）。inode 単位で集計するよう修正
+
 - **ユーザ `models.yaml` の次元値が 0/負数の項目で `nmesh plan` がクラッシュまたは予算を過小見積もりしていた問題を修正**: カタログローダが `params`/`n_layers`/`n_kv_heads`/`head_dim`/`hidden_size`/`max_context` の非正値と `kv_layers`/`vocab_size`/`active_params`/`moe_*`/`sliding_window*` の負値をそのまま受理していました。`n_layers: 0` や `params: 0`（weight=0 → per_layer=0 → `round(weight/per_layer)`）はプランナで ZeroDivisionError、`n_kv_heads`/`head_dim`/`kv_layers` の 0/負値は KV キャッシュが 0 以下と見積もられ、コンテキストが無料であるかのような静かな予算超過（N2 違反）を招きます。構造次元を持たない項目は他の不正エントリと同様にロード時スキップへ変更
 - **`nmesh engine install`/`use` の状態ファイル書込みがプロセス間で tmp ファイルを共有していた問題を修正**: manifest.json と active.json の原子的書込みに `manifest.json.tmp`/`active.json.tmp` という固定名を使っていたため、同一 NMESH_HOME で2つの `nmesh engine` 系プロセスが並走すると、一方の `write_text`→`replace` の間にもう一方が同じ tmp を上書き・移動し、FileNotFoundError でクラッシュするか別プロセスの内容を誤って確定する競合がありました。telemetry/watch state 等と同じ `.{name}.{pid}.tmp` 規約に揃え、プロセスごとに独立した tmp 名に変更
 - **gateway のタイムアウト系環境変数が非有限値・負値を受理していた問題を修正**: `NMESH_QUEUE_TIMEOUT`/`NMESH_KEEP_ALIVE`/`NMESH_CONNECT_TIMEOUT` を `float()` でパースしていたため `"nan"`/`"inf"`/負値が通り、キュー待機（`asyncio.wait_for` に nan → 待機不能な未定義挙動）・アイドル退避判定（nan 比較で常に False → 退避しない）・上流接続タイムアウト（httpx で即失敗/無期限待ち）が静かに壊れていました。非有限・負・接続ゼロ秒を既定値へフォールバックする共通パーサ `_env_timeout` に集約 — #388/#507/#509/#552 の非有限拒否規約と同型
