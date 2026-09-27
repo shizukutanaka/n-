@@ -23,6 +23,10 @@
 ### Fixed
 - **`/status`・ルーティング・進捗取得がランタイムプローブでイベントループをブロックしていた問題を修正 + `/status` を API キー保護対象に追加**: `runtime_status()` は採用中・外部サービスごとに `urlopen(timeout=2)` のヘルスプローブと state.json の読込を直列実行しますが、`/status` ハンドラと `route()` のトークン見積もり経路（`_routing_token_hint`）および `/slots` 進捗取得（`_slot_progress`）からイベントループ上で直接呼ばれていました。採用サービスが応答しない場合、リクエストごとに最大2秒ずつ全ゲートウェイ処理が停止します。いずれも `asyncio.to_thread` 経由に変更し、`/status`（サービス名・PID・ポートを含むランタイムスナップショット）を `/metrics`/`/admin/*` と同じく API キー設定時に認証必須とします
 
+- **`bench.json` の非有限・負の計測値を読込時に拒否**: Python の `json` は `Infinity`/`NaN` リテラルを受理するため、レガシー数値レコードや sessions/control_ratio 等に非有限・負値を含む壊れたキャッシュがそのまま採用され、tps=inf/nan が中央値・エポック判定・プランの speedup 比較へ伝播していました。必須値は非有限・負で拒否、オプション値は非有限のみ拒否（#507 epoch・#552 telemetry と同規約）
+- **watch の状態ファイル書込みがプロセス間で tmp ファイルを共有していた問題を修正**: `watch.json` の原子的書込みに `.watch.json.tmp` という固定名を使っていたため、タイマーユニットと手動実行など2つの `nmesh watch` プロセスが並走すると、一方の `write_text`→`replace` の間にもう一方が同じ tmp を上書き・移動し、FileNotFoundError か別プロセスの内容の誤確定が起こり得ました。engine 状態ファイルと同じ `.{name}.{pid}.tmp` 規約に揃えました
+- **watch ドラフトの YAML 文字列が引用符をエスケープしていなかった問題を修正**: `_yaml` が文字列を `"..."` で囲むだけだったため、検証済みメタデータ（`architectures`/`license` 等）に `"` を含む値があると壊れた YAML のドラフトを生成していました。JSON ダンプ（有効な YAML フロースカラー）に置き換え
+
 - **`nmesh models` の重複回収可能バイトがハードリンクを二重計上していた問題を修正**: 同一モデルの複数パスが1つの inode を共有するハードリンクの場合、1つ残して削除しても実際には0バイトしか解放されないのに、`sum(bytes) - max(bytes)` のパス単位計算で実容量を超える回収見込みを表示していました（推定を実測のように見せる北極星違反）。inode 単位で集計するよう修正
 
 - **ユーザ `models.yaml` の次元値が 0/負数の項目で `nmesh plan` がクラッシュまたは予算を過小見積もりしていた問題を修正**: カタログローダが `params`/`n_layers`/`n_kv_heads`/`head_dim`/`hidden_size`/`max_context` の非正値と `kv_layers`/`vocab_size`/`active_params`/`moe_*`/`sliding_window*` の負値をそのまま受理していました。`n_layers: 0` や `params: 0`（weight=0 → per_layer=0 → `round(weight/per_layer)`）はプランナで ZeroDivisionError、`n_kv_heads`/`head_dim`/`kv_layers` の 0/負値は KV キャッシュが 0 以下と見積もられ、コンテキストが無料であるかのような静かな予算超過（N2 違反）を招きます。構造次元を持たない項目は他の不正エントリと同様にロード時スキップへ変更
