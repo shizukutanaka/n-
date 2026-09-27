@@ -230,4 +230,3 @@ def test_bench_cache_rejects_non_finite_measurements(tmp_path) -> None:
     )
     records = load_records(cache)
     assert set(records) == {"legacy_ok", "record_ok"}
->>>>>>> origin/main
