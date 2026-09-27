@@ -133,8 +133,13 @@ def _read_sysfs_card(card: Path, index: int) -> GPUInfo | None:
 
 def detect_linux_sysfs(root: Path = Path("/sys/class/drm")) -> list[GPUInfo]:
     gpus: list[GPUInfo] = []
-    for index, card in enumerate(sorted(root.glob("card*/"))):
-        gpu = _read_sysfs_card(card, index)
+    for card in sorted(root.glob("card*/")):
+        # Connector entries (card0-eDP-1, card0-HDMI-A-1, ...) sort between the
+        # real cardN directories and would consume enumeration indexes.
+        match = re.fullmatch(r"card(\d+)", card.name)
+        if match is None:
+            continue
+        gpu = _read_sysfs_card(card, int(match.group(1)))
         if gpu is not None:
             gpus.append(gpu)
     return gpus
