@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 from pathlib import Path
 
@@ -93,6 +94,26 @@ def test_duplicates_group_reclaimable_bytes_across_stores(tmp_path: Path) -> Non
         "three": third.parent,
     }))
     assert groups[0].reclaimable_bytes == first.stat().st_size * 2
+
+
+def test_hardlinked_duplicates_reclaim_nothing(tmp_path: Path) -> None:
+    """Deleting one hardlink frees no bytes — shared inodes are not reclaimable."""
+    first = _write(tmp_path / "one" / "model.gguf")
+    linked = tmp_path / "two" / "model.gguf"
+    linked.parent.mkdir()
+    os.link(first, linked)
+    artifacts = inventory.scan({"one": first.parent, "two": linked.parent})
+    groups = inventory.duplicates(artifacts)
+    assert len(groups) == 1
+    assert groups[0].reclaimable_bytes == 0
+
+    real_copy = _write(tmp_path / "three" / "model.gguf")
+    groups = inventory.duplicates(inventory.scan({
+        "one": first.parent,
+        "two": linked.parent,
+        "three": real_copy.parent,
+    }))
+    assert groups[0].reclaimable_bytes == real_copy.stat().st_size
 
 
 def test_variants_are_not_duplicates(tmp_path: Path) -> None:
