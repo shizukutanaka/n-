@@ -413,3 +413,27 @@ def test_planner_selects_chunk_retrieval_warning_messages() -> None:
                for warning in failed.warnings)
     assert any("not a verified remedy" in warning for warning in failed.warnings)
     assert any("Chunk long inputs" in warning for warning in unmeasured.warnings)
+
+
+def test_retrieval_reason_legend_translates_stale_and_unmeasured(
+    tmp_path, monkeypatch,
+) -> None:
+    from nmesh import i18n
+
+    path = tmp_path / "retrieval.json"
+    stale = replace(_record(_ladder((8, 8, 8, 2))), digest="0" * 16)
+    unmeasured = replace(_record(_ladder((8, 8, 8, 8))), model_id="embed2")
+    save_retrieval(stale, path)
+    save_retrieval(unmeasured, path)
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    reasons = {
+        reason
+        for row in collect_evidence()["records"]
+        if row["kind"] == "retrieval"
+        for reason in row["reasons"]
+    }
+    assert {"stale_digest", "unmeasured"} <= reasons
+    for language in ("en", "ja"):
+        for reason in reasons:
+            key = f"evidence.reason.{reason}"
+            assert i18n.t(key, language) != key
