@@ -232,6 +232,50 @@ def test_install_manifest_and_active_round_trip(monkeypatch, tmp_path: Path) -> 
     assert engine.installed()[0].exe.name == "llama-server.exe"
 
 
+def _fake_download_zip(payload: bytes):
+    def download(_url: str, path: Path) -> None:
+        path.write_bytes(payload)
+
+    return download
+
+
+def test_engine_state_writes_use_pid_tmp_files(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    foreign_active = tmp_path / "active.json.tmp"
+    foreign_manifest_dir = tmp_path / "b10830"
+    foreign_manifest_dir.mkdir()
+    foreign_manifest = foreign_manifest_dir / "manifest.json.tmp"
+    foreign_active.write_text("other process", encoding="utf-8")
+    foreign_manifest.write_text("other process", encoding="utf-8")
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as source:
+        source.writestr("llama-server.exe", "fake")
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: type(
+            "Result", (), {"stdout": "", "stderr": "version: test", "returncode": 0}
+        )(),
+    )
+    monkeypatch.setattr("nmesh.probe.caps.llamacpp_caps", lambda _: None)
+    engine.install(
+        "b10830",
+        dest=tmp_path,
+        fetch=lambda _: ASSETS,
+        download=_fake_download_zip(archive.getvalue()),
+        system="windows",
+        machine="AMD64",
+        accelerator=None,
+    )
+    assert foreign_manifest.read_text(encoding="utf-8") == "other process"
+    engine.use("b10830")
+    assert foreign_active.read_text(encoding="utf-8") == "other process"
+    assert engine.active().tag == "b10830"
+    leftovers = {
+        path for path in tmp_path.rglob("*.tmp") if not path.name.startswith(".")
+    }
+    assert leftovers == {foreign_manifest, foreign_active}
+
+
 def _install_with_exit_code(
     monkeypatch, tmp_path: Path, system: str, returncode: int
 ) -> list[str]:
