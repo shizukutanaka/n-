@@ -312,8 +312,12 @@ def test_jobs_report_decode_progress_from_llamacpp_slots(monkeypatch) -> None:
             {"is_processing": True,
              "next_token": [{"n_decoded": 12, "n_remain": 88}]},
         ]
+
+        async def _running(_service: object) -> bool:
+            return True
+
         monkeypatch.setattr(
-            gateway_module, "_service_is_running_llamacpp", lambda _s: True
+            gateway_module, "_service_is_running_llamacpp", _running
         )
         with TestClient(create_app(plan)) as client:
             _LimitHandler.block = True
@@ -350,8 +354,12 @@ def test_jobs_omit_progress_when_slot_mapping_is_ambiguous(monkeypatch) -> None:
             {"is_processing": True, "next_token": [{"n_decoded": 1}]},
             {"is_processing": True, "next_token": [{"n_decoded": 2}]},
         ]
+
+        async def _running(_service: object) -> bool:
+            return True
+
         monkeypatch.setattr(
-            gateway_module, "_service_is_running_llamacpp", lambda _s: True
+            gateway_module, "_service_is_running_llamacpp", _running
         )
         with TestClient(create_app(plan)) as client:
             _LimitHandler.block = True

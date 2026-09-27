@@ -554,11 +554,11 @@ def _chat_service(plan: Plan) -> PlannedService | None:
     return next((item for item in plan.services if item.name == name), None)
 
 
-def _service_is_running_llamacpp(service: PlannedService) -> bool:
+async def _service_is_running_llamacpp(service: PlannedService) -> bool:
     if service.backend != "llamacpp":
         return False
     try:
-        runtime = runtime_status()
+        runtime = await asyncio.to_thread(runtime_status)
     except (OSError, ValueError, RuntimeError):
         return False
     return any(
@@ -584,7 +584,7 @@ async def _routing_token_hint(
     if (
         threshold > 0
         and 0.5 * threshold <= count <= 2 * threshold
-        and _service_is_running_llamacpp(chat)
+        and await _service_is_running_llamacpp(chat)
     ):
         assert httpx is not None
         client = httpx.AsyncClient()
@@ -1059,7 +1059,7 @@ async def _slot_progress(
         service = next(
             (item for item in services if item.name == service_name), None
         )
-        if service is None or not _service_is_running_llamacpp(service):
+        if service is None or not await _service_is_running_llamacpp(service):
             continue
         try:
             async with httpx.AsyncClient(
@@ -1228,7 +1228,7 @@ def create_app(
                 },
             )
         if api_key_bytes is not None and path.startswith(
-            ("/v1/", "/metrics", "/admin/", "/logs")
+            ("/v1/", "/metrics", "/admin/", "/logs", "/status")
         ):
             authorization = request.headers.get("authorization", "")
             prefix = "Bearer "
@@ -2018,7 +2018,8 @@ def create_app(
 
     @app.get("/status")
     async def status_endpoint() -> dict[str, object]:
-        return asdict(runtime_status())
+        runtime = await asyncio.to_thread(runtime_status)
+        return asdict(runtime)
 
     @app.get("/v1/models")
     async def models() -> dict[str, object]:
