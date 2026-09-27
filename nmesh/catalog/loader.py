@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,6 +75,8 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
         ) or ("en",)
         quality_value = item["quality"]
         quality = None if quality_value is None else float(quality_value)
+        if quality is not None and not math.isfinite(quality):
+            return None
         spec = ModelSpec(
             id=str(item["id"]),
             family=str(item["family"]),

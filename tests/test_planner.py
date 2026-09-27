@@ -410,6 +410,26 @@ def test_catalog_quality_null_is_explicit_and_invalid_quality_is_rejected() -> N
     assert _model_from_mapping(missing) is None
 
 
+def test_catalog_rejects_non_finite_quality() -> None:
+    base = {
+        "id": "candidate",
+        "family": "Candidate",
+        "params": 1,
+        "n_layers": 1,
+        "n_heads": 1,
+        "n_kv_heads": 1,
+        "head_dim": 1,
+        "hidden_size": 1,
+        "max_context": 1,
+        "roles": ["chat"],
+        "quality": None,
+        "license": "apache",
+        "sources": {"hf": "org/candidate"},
+    }
+    for bad in (float("nan"), float("inf"), float("-inf"), "nan", "inf"):
+        assert _model_from_mapping({**base, "quality": bad}) is None
+
+
 def test_catalog_rejects_non_positive_dimensions() -> None:
     base = {
         "id": "candidate",
