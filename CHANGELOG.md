@@ -22,6 +22,8 @@
 
 ### Fixed
 - **プロキシ環境下で loopback HTTP 呼出が全て誤ルートされていた問題を修正**: 全内部通信（supervisor のヘルスプローブ・スリープ判定、gateway→エンジン上流呼出・/slots 進捗・委譲、cli の bench/spec/eval/unload/status/reload/e2e、run/measure のクライアント）は `127.0.0.1`/`localhost` 宛てですが、`urllib.request.urlopen`（env 変数 + macOS システムプロキシを参照）と httpx の `trust_env` 既定で `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` をそのまま踏襲していたため、企業プロキシ環境では全ヘルスプローブ・上流呼出が生存不能なプロキシに吸い込まれ、生存エンジンが dead 判定→再起動ループ、上流呼出が到達不能で全リクエスト失敗になり得ました。新規 `nmesh/net.py` に `local_urlopen`（ProxyHandler 空マップの opener）/`local_client`/`local_async_client`（`trust_env=False`）を追加し、loopback 経路を全て切替 — リモート通信（HF ダウンロード・watch ソース等）は従来どおりユーザのプロキシ設定を尊重します（N7）
+- **`autotune` の計測失敗で復旧経路が迂回していた問題を修正**: チューニングセルがエンジンを不安定化させた場合、`measure()` の `httpx.HTTPError`（接続拒否・5xx応答）が `(OSError, RuntimeError)` の捕捉を抜けて propagate し、`runtime_down`・元プラン復帰・ゲートウェイ再起動の復旧経路が到達不能になっていました — チューニングがバックエンドを壊したまさにその時に、稼働中の外部ゲートウェイが復帰しないまま残りました
+
 - **`bench.json` の非有限・負の計測値を読込時に拒否**: Python の `json` は `Infinity`/`NaN` リテラルを受理するため、レガシー数値レコードや sessions/control_ratio 等に非有限・負値を含む壊れたキャッシュがそのまま採用され、tps=inf/nan が中央値・エポック判定・プランの speedup 比較へ伝播していました。必須値は非有限・負で拒否、オプション値は非有限のみ拒否（#507 epoch・#552 telemetry と同規約）
 - **watch の状態ファイル書込みがプロセス間で tmp ファイルを共有していた問題を修正**: `watch.json` の原子的書込みに `.watch.json.tmp` という固定名を使っていたため、タイマーユニットと手動実行など2つの `nmesh watch` プロセスが並走すると、一方の `write_text`→`replace` の間にもう一方が同じ tmp を上書き・移動し、FileNotFoundError か別プロセスの内容の誤確定が起こり得ました。engine 状態ファイルと同じ `.{name}.{pid}.tmp` 規約に揃えました
 - **watch ドラフトの YAML 文字列が引用符をエスケープしていなかった問題を修正**: `_yaml` が文字列を `"..."` で囲むだけだったため、検証済みメタデータ（`architectures`/`license` 等）に `"` を含む値があると壊れた YAML のドラフトを生成していました。JSON ダンプ（有効な YAML フロースカラー）に置き換え
