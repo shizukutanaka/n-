@@ -283,6 +283,20 @@ class RoutingRules:
 # `up` can flag saved plans that predate launch-flag improvements.
 LAUNCH_REVISION = 6
 
+# Process-spawn env vars that change module/library resolution for engines;
+# nmesh warns at plan time when they are set because spawned services inherit
+# them and may resolve different code than the probe verified.
+_RESOLUTION_ENV_VARS = (
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+)
+
 
 @dataclass(frozen=True)
 class Plan:
@@ -2453,6 +2467,15 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         )
         for index, warning in enumerate(profile.warnings)
     ]
+    leaked = [
+        name
+        for name in _RESOLUTION_ENV_VARS
+        if os.environ.get(name)
+    ]
+    if leaked:
+        warnings.append(
+            t("warn.resolution_env_leak", selected.lang, vars=", ".join(leaked))
+        )
     stale_bench_records = sum(
         record.harness != BENCH_HARNESS_VERSION
         for record in (bench_records or {}).values()
