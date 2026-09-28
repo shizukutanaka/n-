@@ -2,6 +2,8 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+import pytest
+
 from nmesh import cli
 from nmesh.catalog import load_catalog
 from nmesh.planner import Policy, build_plan
@@ -170,3 +172,16 @@ def test_speed_saturation_warning_requires_a_faster_candidate(tmp_path) -> None:
     assert _speed_saturation_warning(
         "chat", chosen, [chosen], Policy(roles=["chat"], prefer="speed"),
     ) is None
+
+
+def test_load_catalog_ignores_non_utf8_user_models(tmp_path) -> None:
+    user = tmp_path / "models.yaml"
+    user.write_bytes(b"\xff\xfegarbage")
+    assert load_catalog(user_path=user)
+
+
+def test_load_profile_rejects_non_utf8_file(tmp_path) -> None:
+    bad = tmp_path / "profile.json"
+    bad.write_bytes(b"\xff\xfegarbage")
+    with pytest.raises(ValueError):
+        cli._load_profile(bad)

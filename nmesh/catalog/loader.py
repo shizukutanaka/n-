@@ -124,7 +124,7 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
 def _read_models(path: Path) -> list[ModelSpec]:
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
         return []
     if not isinstance(payload, list):
         return []

@@ -1829,3 +1829,10 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_load_state_ignores_non_utf8_state_file(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_bytes(b"\xff\xfegarbage")
+    supervisor = Supervisor(state_path=state_path, terminator=lambda _pid: None)
+    assert supervisor._load_state() is None

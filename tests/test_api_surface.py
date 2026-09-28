@@ -552,6 +552,39 @@ def test_run_surfaces_upstream_error_body(monkeypatch, capsys) -> None:
     assert "logits computation" in err
 
 
+def test_run_surfaces_non_utf8_error_body(monkeypatch, capsys) -> None:
+    import io
+    import urllib.error
+
+    def fail(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            "http://127.0.0.1:18000/v1/chat/completions",
+            500, "Internal Server Error", {}, io.BytesIO(b"\xff\xfegarbage"),
+        )
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fail)
+    result = cli._run_prompt(SimpleNamespace(prompt="hi", role="chat", json=False))
+    assert result == 1
+    assert "HTTP 500" in capsys.readouterr().err
+
+
+def test_run_surfaces_non_utf8_success_body(monkeypatch, capsys) -> None:
+    class Response:
+        def read(self):
+            return b"\xff\xfegarbage"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *a, **k: Response())
+    result = cli._run_prompt(SimpleNamespace(prompt="hi", role="chat", json=False))
+    assert result == 1
+    assert "decode" in capsys.readouterr().err
+
+
 def test_serve_returns_nonzero_for_failed_gateway(monkeypatch) -> None:
     process = SimpleNamespace(pid=123, wait=lambda: 1)
     monkeypatch.setattr(cli, "_launch_gateway", lambda _port, detach: (process, None))

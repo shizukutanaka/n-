@@ -388,7 +388,7 @@ class Supervisor:
     def _load_state(self) -> dict[str, object] | None:
         try:
             payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return None
         return payload if isinstance(payload, dict) else None
 
