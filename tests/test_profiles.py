@@ -66,6 +66,19 @@ def test_bundled_profiles_round_trip_and_gpu_budgets() -> None:
             assert usage[gpu.index] + swap_usage[gpu.index] <= _gpu_budget(gpu) + 1
 
 
+def test_profile_rejects_duplicate_gpu_index() -> None:
+    data = json.loads(
+        (PROFILE_DIR / "t5-dual-asymmetric.json").read_text(encoding="utf-8")
+    )
+    data["gpus"][1]["index"] = data["gpus"][0]["index"]
+    try:
+        profile_from_dict(data)
+    except ValueError as error:
+        assert "duplicates" in str(error)
+    else:
+        raise AssertionError("duplicate gpu index was accepted")
+
+
 def test_asymmetric_profile_places_largest_service_on_large_card() -> None:
     profile = _profile(PROFILE_DIR / "t5-dual-asymmetric.json")
     plan = build_plan(profile, load_catalog(), Policy(roles=["chat", "code", "embed"]))
