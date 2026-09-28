@@ -543,7 +543,9 @@ def install(
             flags,
         )
         manifest = _manifest_path(target)
-        temporary = manifest.with_suffix(".json.tmp")
+        temporary = manifest.with_name(
+            f".{manifest.name}.{os.getpid()}.tmp"
+        )
         manifest_payload = asdict(installed)
         manifest_payload["sha256_note"] = (
             "observed download hash; not publisher provenance verification"
@@ -554,7 +556,9 @@ def install(
         )
         temporary.replace(manifest)
         active = root / "active.json"
-        active_tmp = active.with_suffix(".json.tmp")
+        active_tmp = active.with_name(
+            f".{active.name}.{os.getpid()}.tmp"
+        )
         active_tmp.write_text(
             json.dumps({"tag": selected_tag, "manifest": str(manifest)}, indent=2),
             encoding="utf-8",
@@ -605,7 +609,7 @@ def use(tag: str) -> InstalledEngine:
         raise FileNotFoundError(f"llama.cpp engine is not installed: {tag}")
     path = engines_dir() / "active.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".json.tmp")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(
         json.dumps({"tag": candidate.tag, "manifest": str(engines_dir() / tag / "manifest.json")}),
         encoding="utf-8",
