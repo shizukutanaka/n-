@@ -164,8 +164,15 @@ def profile_from_dict(data: Mapping[str, object]) -> HardwareProfile:
         gpu_name = _field(raw, "name")
         if not isinstance(gpu_name, str):
             raise TypeError(f"profile field 'gpus[{index}].name' must be a string")
+        gpu_index = _nonnegative_int(
+            _field(raw, "index"), f"gpus[{index}].index"
+        )
+        if gpu_index in {gpu.index for gpu in gpus}:
+            raise ValueError(
+                f"profile field 'gpus[{index}].index' duplicates {gpu_index}"
+            )
         gpus.append(GPUInfo(
-            _nonnegative_int(_field(raw, "index"), f"gpus[{index}].index"),
+            gpu_index,
             gpu_name,
             vendor,
             _nonnegative_int(_field(raw, "total_vram_bytes"), f"gpus[{index}].total_vram_bytes"),
