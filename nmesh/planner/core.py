@@ -120,6 +120,12 @@ class Policy:
     def __post_init__(self) -> None:
         if self.spec not in KINDS:
             raise ValueError(f"Unknown speculation kind: {self.spec}")
+        if self.prefer not in ("quality", "speed", "balanced"):
+            raise ValueError(f"Unknown prefer: {self.prefer}")
+        if self.kv_quant not in ("f16", "q8_0"):
+            raise ValueError(f"Unknown kv_quant: {self.kv_quant}")
+        if self.budget_source not in ("total", "free"):
+            raise ValueError(f"Unknown budget_source: {self.budget_source}")
         if self.spec == "draft" and not self.spec_draft.strip():
             raise ValueError("spec_draft is required for draft speculation")
         if self.spec_n_max < 1:
@@ -3335,6 +3341,12 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
         memory_values["parallel_slots"] = int(memory_values.get("parallel_slots", 1))
         memory_values["n_cpu_moe"] = int(memory_values.get("n_cpu_moe", 0))
         memory = MemoryEstimate(**memory_values)
+        service_spec = str(sd.get("spec", "none"))
+        service_kv_quant = str(sd.get("kv_quant", "f16"))
+        if service_spec not in KINDS:
+            raise ValueError("Invalid service spec")
+        if service_kv_quant not in ("f16", "q8_0"):
+            raise ValueError("Invalid service kv_quant")
         launch = LaunchSpec(
             [str(x) for x in ld["argv"]], {str(k): str(v) for k, v in ld["env"].items()},
             str(ld["health_url"]) if ld["health_url"] else None, bool(ld.get("shared_daemon", False)),
@@ -3351,8 +3363,8 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             bool(sd["estimated"]),
             launch,
             tuple(str(x) for x in sd.get("languages", ["en"])),
-            kv_quant=str(sd.get("kv_quant", "f16")),
-            spec=str(sd.get("spec", "none")),
+            kv_quant=service_kv_quant,
+            spec=service_spec,
             spec_draft=str(sd.get("spec_draft", "")),
             n_cpu_moe=int(sd.get("n_cpu_moe", 0)),
             tensor_split=tuple(
