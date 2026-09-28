@@ -45,6 +45,15 @@ def test_every_top_level_command_help_exits_successfully(
         assert error.value.code == 0
 
 
+def test_orchestrate_measure_rejects_negative_reasoning_allowance(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.main(["orchestrate", "measure", "--reasoning-allowance", "-1"])
+    assert error.value.code == 2
+    assert "reasoning-allowance" in capsys.readouterr().err
+
+
 def test_version_reports_package_and_evidence_versions(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
