@@ -3243,6 +3243,12 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             total_gb=total_download / GIB,
             limit_gb=selected.allow_download_gb,
         ))
+    if 0 < profile.free_disk_bytes < total_download:
+        warnings.append(t(
+            "warn.download_free_disk", selected.lang,
+            total_gb=total_download / GIB,
+            free_gb=profile.free_disk_bytes / GIB,
+        ))
     if selected.languages:
         requested = set(selected.languages)
         for service in services:
