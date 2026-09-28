@@ -1335,6 +1335,15 @@ def test_watch_unit_names_both_systemd_files(monkeypatch, tmp_path: Path) -> Non
     assert command.endswith(str(timer))
 
 
+def test_watch_unit_windows_subdaily_interval_uses_hourly_schedule() -> None:
+    _filename, _text, command = watch_unit(6, "nt")
+    assert "/sc hourly /mo 6" in command
+    assert "/sc daily" not in command
+
+    _filename2, _text2, command = watch_unit(48, "nt")
+    assert "/sc daily /mo 2" in command
+
+
 def test_autostart_install_writes_launcher_and_preserves_environment(
     monkeypatch, capsys, tmp_path: Path
 ) -> None:

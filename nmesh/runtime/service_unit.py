@@ -135,9 +135,13 @@ def watch_unit(
         command_line = subprocess.list2cmdline(
             (executable, "-m", "nmesh.cli", "watch")
         )
+        if interval_hours < 24:
+            schedule = f"/sc hourly /mo {interval_hours}"
+        else:
+            schedule = f"/sc daily /mo {interval_hours // 24}"
         command = (
-            f"schtasks /create /tn nmesh-watch /sc daily "
-            f"/mo {max(interval_hours // 24, 1)} /tr {command_line}"
+            f"schtasks /create /tn nmesh-watch {schedule} "
+            f"/tr {command_line}"
         )
         return "nmesh-watch.xml", command + "\n", command
     if macos:
