@@ -22,6 +22,7 @@
 
 ### Fixed
 - **ユーザ由来の文字列に `[` を含むと CLI 表示から文字が脱落していた問題を修正**: rich コンソールが既定でマークアップ（`[bold]`等）を解釈するため、警告メッセージ・モデル ID・パス・argv 等の `[zzz]` 断片がスタイルタグとして解釈されて表示から消えていました。`Console(markup=False)` に変更し、黄色警告は `style="yellow"` へ移行 — 表示は同じで、ユーザ由来テキストは逐語的に表示されます
+- **不正なカタログ項目が警告なしに捨てられていた問題を修正**: `~/.nmesh/models.yaml` に必須キー欠落・型違い・YAML パース不能な項目があっても、ローダは全項目を無言でスキップしており、ユーザが追加したモデルが `nmesh plan`/`nmesh models` に現れない理由が一切分かりませんでした。`load_catalog` がスキップ理由を報告できるようになり（`problems` シンク）、plan/up/models/watch の各コマンドは `warn.catalog_entry_skipped` で「どの項目がなぜ無視されたか」を stderr に明示します
 - **vLLM の `--gpu-memory-utilization` がプラン見積もりと乖離する問題を修正**: 同フラグはカード総メモリに対する vLLM 総使用量の上限で、KV キャッシュを上限まで埋めます（vLLM docs/issue #54354）。nmesh は `min(0.95, max(0.10, 見積もり/総VRAM))` で発行していたため、小モデル（<10%）ではプラン以上の VRAM 獲得を承認し同居サービスの予算を静かに侵食し（N2 違反）、高負荷（>95%）ではプランが「収まる」と判定したのに実行時に vLLM がロードを拒否し得ました。プランのシェアをそのまま発行するよう変更（フォーマットの丸めがプランを下回らないよう ceil）。LAUNCH_REVISION 7
 - **`ollama_fingerprint` の loopback 呼出が env プロキシに誤ルートされる問題を修正**: `httpx.get` は `trust_env=True` 既定で `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` を参照し、`127.0.0.1`/`localhost` を自動除外しないため、企業プロキシ設定環境では Ollama デーモンへの `/api/tags` 問合せが到達不能なプロキシへ送られ指紋採取が常に失敗（`None`）になっていました。指紋は「実際にロードされているモデルが管理対象と一致するか」の検証に使われるため、プロキシ環境では照合が常にスキップされ旧モデル/無関係モデルの誤採用防止が静かに外れます。`httpx.Client(trust_env=False)` 経由に変更
 - **GPU index の重複をプロファイル読込時に拒否**: 手編集・陳腐化した profile.json で2つの GPU が同じ `index` を持つと、予算マップ `{index: budget}` が片方へ潰れ、vLLM の `--gpu-memory-utilization` 計算が合計 VRAM を過大に見積もる（`gpu.index in indices` が両方に一致）など、カード別予算の静かな誤集計が起きていました。`profile_from_dict` が重複 index を ValueError で拒否
