@@ -22,6 +22,8 @@
 
 ### Fixed
 - **取得失敗が `nmesh up` の再試行・クリーンアップ経路を迂回していた問題を修正**: `acquire()` が huggingface_hub 1.x/2.x の内部リトライ尽きた後に送出される素の httpx 輸送エラー（`ConnectError`/`TimeoutException`/`RemoteProtocolError` — いずれも `OSError` 非継承）と `ollama pull` の `CalledProcessError` をそのまま漏らしており、`supervisor.up()` の `except (OSError, RuntimeError)` に捕捉されずにフォールバックラダーと `down()` クリーンアップをスキップしたまま生トレースバックで中断し、部分起動したサービスが放置され得ました。HF 系呼出（`model_info`/`snapshot_download`/`hf_hub_download`）の httpx 輸送エラーを `OSError` に、`ollama pull` 失敗を `RuntimeError` に正規化 — `HfHubHTTPError` 系（`OSError` 継承済み）はそのまま再送出して例外情報を保全
+- **`ollama_fingerprint` の loopback 呼出が env プロキシに誤ルートされる問題を修正**: `httpx.get` は `trust_env=True` 既定で `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` を参照し、`127.0.0.1`/`localhost` を自動除外しないため、企業プロキシ設定環境では Ollama デーモンへの `/api/tags` 問合せが到達不能なプロキシへ送られ指紋採取が常に失敗（`None`）になっていました。指紋は「実際にロードされているモデルが管理対象と一致するか」の検証に使われるため、プロキシ環境では照合が常にスキップされ旧モデル/無関係モデルの誤採用防止が静かに外れます。`httpx.Client(trust_env=False)` 経由に変更
+- **GPU index の重複をプロファイル読込時に拒否**: 手編集・陳腐化した profile.json で2つの GPU が同じ `index` を持つと、予算マップ `{index: budget}` が片方へ潰れ、vLLM の `--gpu-memory-utilization` 計算が合計 VRAM を過大に見積もる（`gpu.index in indices` が両方に一致）など、カード別予算の静かな誤集計が起きていました。`profile_from_dict` が重複 index を ValueError で拒否
 - **`autotune` の計測失敗で復旧経路が迂回していた問題を修正**: チューニングセルがエンジンを不安定化させた場合、`measure()` の `httpx.HTTPError`（接続拒否・5xx応答）が `(OSError, RuntimeError)` の捕捉を抜けて propagate し、`runtime_down`・元プラン復帰・ゲートウェイ再起動の復旧経路が到達不能になっていました — チューニングがバックエンドを壊したまさにその時に、稼働中の外部ゲートウェイが復帰しないまま残りました
 
 - **`bench.json` の非有限・負の計測値を読込時に拒否**: Python の `json` は `Infinity`/`NaN` リテラルを受理するため、レガシー数値レコードや sessions/control_ratio 等に非有限・負値を含む壊れたキャッシュがそのまま採用され、tps=inf/nan が中央値・エポック判定・プランの speedup 比較へ伝播していました。必須値は非有限・負で拒否、オプション値は非有限のみ拒否（#507 epoch・#552 telemetry と同規約）
