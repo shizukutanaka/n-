@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,6 +38,11 @@ class ModelSpec:
     active_params: int = 0
     moe_expert_params: int = 0
     n_moe_layers: int = 0
+
+
+# Model ids become filename components (models/{id}-{quant}.gguf,
+# ollama/nmesh-{id}-c{ctx}.Modelfile): anything else can escape NMESH_HOME.
+_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def _model_from_mapping(item: object) -> ModelSpec | None:
@@ -116,6 +122,7 @@ def _model_from_mapping(item: object) -> ModelSpec | None:
         or spec.active_params < 0
         or spec.moe_expert_params < 0
         or spec.n_moe_layers < 0
+        or _MODEL_ID.fullmatch(spec.id) is None
     ):
         return None
     return spec
