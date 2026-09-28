@@ -442,6 +442,45 @@ def test_catalog_rejects_non_positive_dimensions() -> None:
         assert _model_from_mapping({**base, field: 0}) is not None
 
 
+def test_catalog_reports_skipped_entries(tmp_path: Path) -> None:
+    base = {
+        "id": "candidate",
+        "family": "Candidate",
+        "params": 1,
+        "n_layers": 1,
+        "n_heads": 1,
+        "n_kv_heads": 1,
+        "head_dim": 1,
+        "hidden_size": 1,
+        "max_context": 1,
+        "roles": ["chat"],
+        "quality": None,
+        "license": "apache",
+        "sources": {"hf": "org/candidate"},
+    }
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "- id: broken\n  family: x\n- 42\n"
+        + f"- {json.dumps(base)}\n",
+        encoding="utf-8",
+    )
+    problems: list[str] = []
+    models = load_catalog(
+        bundled_path=path,
+        user_path=tmp_path / "missing.yaml",
+        problems=problems,
+    )
+    assert [model.id for model in models] == ["candidate"]
+    assert any(
+        "entry 0" in problem and "missing required keys" in problem
+        for problem in problems
+    )
+    assert any(
+        "entry 1" in problem and "entry is not a mapping" in problem
+        for problem in problems
+    )
+
+
 def test_unmeasured_models_require_explicit_selection() -> None:
     model = ModelSpec(
         "candidate", "test", 500_000_000, 24, 16, 2, 64, 1024,
