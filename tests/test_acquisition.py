@@ -510,35 +510,69 @@ def test_local_only_ollama_skips_pull(tmp_path, monkeypatch) -> None:
     assert [argv[1] for argv in calls] == ["create"]
 
 
-def test_enable_hf_transfer_sets_env_and_patches_loaded_constants(
+def test_fast_download_prefers_hf_xet_and_patches_loaded_constants(
     monkeypatch,
 ) -> None:
+    monkeypatch.delenv("HF_XET_HIGH_PERFORMANCE", raising=False)
     monkeypatch.delenv("HF_HUB_ENABLE_HF_TRANSFER", raising=False)
     monkeypatch.setattr(
-        acquisition.importlib.util, "find_spec", lambda name: object()
+        acquisition.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "hf_xet" else None,
+    )
+    constants = SimpleNamespace(HF_XET_HIGH_PERFORMANCE=False)
+    monkeypatch.setitem(
+        acquisition.sys.modules, "huggingface_hub.constants", constants
+    )
+    acquisition._enable_fast_download()
+    assert acquisition.os.environ["HF_XET_HIGH_PERFORMANCE"] == "1"
+    assert "HF_HUB_ENABLE_HF_TRANSFER" not in acquisition.os.environ
+    assert constants.HF_XET_HIGH_PERFORMANCE is True
+
+
+def test_fast_download_falls_back_to_hf_transfer(monkeypatch) -> None:
+    monkeypatch.delenv("HF_XET_HIGH_PERFORMANCE", raising=False)
+    monkeypatch.delenv("HF_HUB_ENABLE_HF_TRANSFER", raising=False)
+    monkeypatch.setattr(
+        acquisition.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "hf_transfer" else None,
     )
     constants = SimpleNamespace(HF_HUB_ENABLE_HF_TRANSFER=False)
     monkeypatch.setitem(
         acquisition.sys.modules, "huggingface_hub.constants", constants
     )
-    acquisition._enable_hf_transfer()
+    acquisition._enable_fast_download()
     assert acquisition.os.environ["HF_HUB_ENABLE_HF_TRANSFER"] == "1"
+    assert "HF_XET_HIGH_PERFORMANCE" not in acquisition.os.environ
     assert constants.HF_HUB_ENABLE_HF_TRANSFER is True
 
 
-def test_enable_hf_transfer_respects_user_env(monkeypatch) -> None:
-    monkeypatch.setenv("HF_HUB_ENABLE_HF_TRANSFER", "0")
+@pytest.mark.parametrize(
+    "var", ["HF_XET_HIGH_PERFORMANCE", "HF_HUB_ENABLE_HF_TRANSFER"]
+)
+def test_fast_download_respects_user_env(monkeypatch, var: str) -> None:
+    other = (
+        "HF_HUB_ENABLE_HF_TRANSFER"
+        if var == "HF_XET_HIGH_PERFORMANCE"
+        else "HF_XET_HIGH_PERFORMANCE"
+    )
+    monkeypatch.setenv(var, "0")
+    monkeypatch.delenv(other, raising=False)
     monkeypatch.setattr(
         acquisition.importlib.util, "find_spec", lambda name: object()
     )
-    acquisition._enable_hf_transfer()
-    assert acquisition.os.environ["HF_HUB_ENABLE_HF_TRANSFER"] == "0"
+    acquisition._enable_fast_download()
+    assert acquisition.os.environ[var] == "0"
+    assert other not in acquisition.os.environ
 
 
-def test_enable_hf_transfer_noop_without_package(monkeypatch) -> None:
+def test_fast_download_noop_without_package(monkeypatch) -> None:
+    monkeypatch.delenv("HF_XET_HIGH_PERFORMANCE", raising=False)
     monkeypatch.delenv("HF_HUB_ENABLE_HF_TRANSFER", raising=False)
     monkeypatch.setattr(
         acquisition.importlib.util, "find_spec", lambda name: None
     )
-    acquisition._enable_hf_transfer()
+    acquisition._enable_fast_download()
+    assert "HF_XET_HIGH_PERFORMANCE" not in acquisition.os.environ
     assert "HF_HUB_ENABLE_HF_TRANSFER" not in acquisition.os.environ
