@@ -23,6 +23,10 @@ def _telemetry_path(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(supervisor_module, "STATE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(supervisor_module._default, "state_path", tmp_path / "state.json")
     monkeypatch.setattr(telemetry, "_default", Telemetry(tmp_path / "telemetry.json"))
+    # Ambient loader/linker env (e.g. LD_LIBRARY_PATH on CI runners) is
+    # unrelated to the code under test — drop it so plans are deterministic.
+    for name in planner_core._RESOLUTION_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)
