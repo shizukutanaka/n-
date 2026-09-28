@@ -1384,6 +1384,7 @@ def _jobs(args: argparse.Namespace) -> int:
         request = urllib.request.Request(
             f"http://127.0.0.1:{args.port}/v1/jobs/{args.cancel}",
             method="DELETE",
+            headers=_gateway_headers(),
         )
         try:
             with urllib.request.urlopen(request, timeout=10) as response:

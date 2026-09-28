@@ -1577,6 +1577,30 @@ def test_jobs_cli_cancel(monkeypatch, tmp_path: Path, capsys) -> None:
     assert "job-2" in capsys.readouterr().out
 
 
+def test_jobs_cli_cancel_sends_auth_header(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setenv("NMESH_API_KEY", "secret-key")
+    seen: list[object] = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps({"id": "job-2", "state": "cancelled"}).encode()
+
+    def _open(request, *_a, **_k):
+        seen.append(request)
+        return _Response()
+
+    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _open)
+    assert cli.main(["jobs", "--cancel", "job-2"]) == 0
+    assert seen[0].get_header("Authorization") == "Bearer secret-key"
+
+
 def test_jobs_cli_cancel_conflict(monkeypatch, tmp_path: Path, capsys) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
 
