@@ -13,7 +13,7 @@ from urllib.error import HTTPError
 import psutil
 import pytest
 
-from nmesh import cli
+from nmesh import cli, i18n
 from nmesh.catalog import load_catalog
 from nmesh.planner import Policy, build_plan
 from nmesh.runtime import service_unit as service_unit_module
@@ -1368,6 +1368,34 @@ def test_autostart_install_writes_launcher_and_preserves_environment(
     output = capsys.readouterr().out
     assert "/sc onlogon" in output
     assert "self-crash" in output
+
+
+def test_autostart_install_warns_on_env_key_drift(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(service_unit_module, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(cli, "is_windows", lambda: True)
+    monkeypatch.setenv("NMESH_API_KEY", "rotated-key")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "gateway.env").write_text(
+        "NMESH_API_KEY=original-key\n", encoding="utf-8"
+    )
+
+    assert cli.main(["autostart", "--install", "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["installed"] is True
+    assert i18n.t(
+        "warn.gateway_env_key_drift",
+        i18n.lang(),
+        path=tmp_path / "gateway.env",
+    ) in captured.err
+
+    monkeypatch.setenv("NMESH_API_KEY", "original-key")
+    assert cli.main(["autostart", "--install", "--json"]) == 0
+    assert i18n.t(
+        "warn.gateway_env_key_drift", i18n.lang(), path=tmp_path / "gateway.env"
+    ) not in capsys.readouterr().err
 
 
 def test_autostart_install_writes_unit_file(
