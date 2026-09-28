@@ -39,6 +39,8 @@ from nmesh.runtime import engine
 from .acquisition import Acquired, acquire
 from .logs import log_path, open_log, tail
 
+# Retained for API compatibility; Supervisor resolves nmesh_home() lazily so a
+# NMESH_HOME set after import is honored.
 STATE_PATH = nmesh_home() / "state.json"
 HEALTH_TIMEOUT = 120.0
 MAX_RESTARTS = 3
@@ -204,14 +206,14 @@ class RuntimeStatus:
 
 
 class Supervisor:
-    def __init__(self, launcher: Launcher | None = None, state_path: Path = STATE_PATH,
+    def __init__(self, launcher: Launcher | None = None, state_path: Path | None = None,
                  health_timeout: float = HEALTH_TIMEOUT,
                  probe: Callable[[], HardwareProfile] | None = None,
                  catalog: Callable[[], Sequence[ModelSpec]] | None = None,
                  terminator: Callable[[int], None] | None = None,
                  plan_path: Path | None = None):
         self.launcher = launcher or self._launch
-        self.state_path = state_path
+        self._state_path = state_path
         self.plan_path = plan_path
         self.health_timeout = health_timeout
         self.probe = probe or detect_hardware
@@ -237,6 +239,10 @@ class Supervisor:
         self._lock = RLock()
         self._atexit_armed = False
         self._terminator = terminator or self._terminate_pid
+
+    @property
+    def state_path(self) -> Path:
+        return self._state_path or nmesh_home() / "state.json"
 
     @staticmethod
     def _plan_stamp() -> tuple[float, int] | None:

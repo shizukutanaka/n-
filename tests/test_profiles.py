@@ -83,11 +83,8 @@ def test_4090_plans_larger_model_than_gtx1650() -> None:
     assert strong.memory.weight_bytes > weak.memory.weight_bytes
 
 
-def test_profile_plan_is_simulated_and_does_not_save(tmp_path, monkeypatch, capsys) -> None:
-    from nmesh.planner import core as planner_core
-
+def test_profile_plan_is_simulated_and_does_not_save(tmp_path, capsys) -> None:
     plan_path = tmp_path / "plan.json"
-    monkeypatch.setattr(planner_core, "PLAN_PATH", plan_path)
     profile_path = PROFILE_DIR / "t2-rtx3060-12gb.json"
     assert cli.main(["plan", "--profile", str(profile_path), "--roles", "chat", "--json"]) == 0
     output = json.loads(capsys.readouterr().out)

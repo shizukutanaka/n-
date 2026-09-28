@@ -58,6 +58,8 @@ SPEED_REFERENCE_TPS = 30.0
 # the artifact actually downloaded.
 UNPLANNED_QUANTS = frozenset({"mxfp4"})
 GIB = 1024**3
+# Retained for API compatibility; load_plan/save_plan resolve nmesh_home()
+# lazily so a NMESH_HOME set after import is honored.
 PLAN_PATH = nmesh_home() / "plan.json"
 INSTALL_HINTS = {
     "ollama": "install.ollama",
