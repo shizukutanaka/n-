@@ -44,6 +44,13 @@ def test_bench_runs_rejects_zero() -> None:
         cli.main(["bench", "--runs", "0"])
 
 
+@pytest.mark.parametrize("argv", [["bench"], ["eval"], ["autotune"]])
+def test_plan_dependent_commands_report_missing_plan(argv, capsys) -> None:
+    capsys.readouterr()
+    assert cli.main(argv) == 1
+    assert "No active plan" in capsys.readouterr().err
+
+
 def test_bench_measures_embedding_service(monkeypatch, capsys) -> None:
     plan = _plan()
     service = replace(plan.services[0], name="embed", roles=["embed"])

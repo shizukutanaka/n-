@@ -2026,6 +2026,7 @@ def _reference_context(
 def _bench(args: argparse.Namespace) -> int:
     plan = load_plan()
     if plan is None or not plan.services:
+        print(i18n.t("err.no_active_plan", i18n.lang()), file=sys.stderr)
         return 1
     service = next((item for item in plan.services if item.name == args.service), plan.services[0])
     running = runtime_status()
@@ -2641,6 +2642,7 @@ def _eval_progress(total: int):
 def _eval(args: argparse.Namespace) -> int:
     plan = load_plan()
     if plan is None or not plan.services:
+        print(i18n.t("err.no_active_plan", i18n.lang()), file=sys.stderr)
         return 1
     service = next((item for item in plan.services if item.name == args.service), None)
     if service is None:
@@ -4526,6 +4528,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "autotune":
         saved_plan = load_plan()
         if saved_plan is None or not saved_plan.services:
+            print(i18n.t("err.no_active_plan", i18n.lang()), file=sys.stderr)
             return 1
         service = saved_plan.services[0]
         if service.roles == ["embed"]:
