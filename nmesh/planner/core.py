@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 6
+LAUNCH_REVISION = 7
 
 
 @dataclass(frozen=True)
@@ -677,12 +677,18 @@ def _launch(
             "http://127.0.0.1:11434/api/tags",
             True,
         )
+    spawn_env: dict[str, str] = {}
     if backend == "vllm":
         argv = [
             binary or "vllm", "serve", ref, "--host", "127.0.0.1",
             "--port", str(port), "--max-model-len", str(context),
             "--max-num-seqs", str(slots),
         ]
+        # vLLM phones home anonymous usage stats by default; the orchestrator's
+        # contract is local-only operation, so opt out unless the user already
+        # set the variable (including "0").
+        if "VLLM_NO_USAGE_STATS" not in os.environ:
+            spawn_env["VLLM_NO_USAGE_STATS"] = "1"
         if tensor_parallel > 1:
             argv += ["--tensor-parallel-size", str(tensor_parallel)]
         if gpu_fraction is not None:
@@ -856,7 +862,7 @@ def _launch(
                     t("warn.rerank_unsupported", language, model=model.id)
                 )
     health_path = "/health" if backend == "llamacpp" else "/v1/models"
-    return LaunchSpec(argv, {}, f"http://127.0.0.1:{port}{health_path}")
+    return LaunchSpec(argv, spawn_env, f"http://127.0.0.1:{port}{health_path}")
 
 
 @dataclass(frozen=True)
