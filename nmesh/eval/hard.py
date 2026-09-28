@@ -46,7 +46,7 @@ def _word_count(count: int) -> Callable[[str], bool]:
 
 def _digits(expected: tuple[int, ...]) -> Callable[[str], bool]:
     def check(text: str) -> bool:
-        found = tuple(int(item) for item in re.findall(r"-?\d+", text.replace(",", "")))
+        found = tuple(int(item) for item in re.findall(r"-?\d+", text.replace(",", " ")))
         return found == expected
     return check
 
@@ -212,12 +212,14 @@ HARD_TASKS: tuple[Task, ...] = (
         "instruction.sort_desc.3_1_2", "instruction",
         "Output the numbers 3, 1, 2 in descending order, comma-separated digits "
         "only, with no other text.", 24, _digits((3, 2, 1)),
+        rule="sort_digits:v2",
         value_check=_numbers_value((3, 2, 1)),
     ),
     Task(
         "instruction.sort_asc.40_7_19", "instruction",
         "Output the numbers 40, 7, 19 in ascending order, comma-separated digits "
         "only, with no other text.", 24, _digits((7, 19, 40)),
+        rule="sort_digits:v2",
         value_check=_numbers_value((7, 19, 40)),
     ),
     Task(

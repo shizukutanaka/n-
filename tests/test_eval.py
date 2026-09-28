@@ -502,7 +502,7 @@ def test_hard_suite_and_graders() -> None:
     assert len({task.id for task in SUITES["hard"]}) == 130
     assert not {task.id for task in HARD_TASKS} & {task.id for task in EXTENDED_TASKS}
     assert suite_digest(SUITES["extended"]) == "v2:86e41db848586057"
-    assert suite_digest(HARD_SUITE_TASKS) == "v2:22237baff8c47e35"
+    assert suite_digest(HARD_SUITE_TASKS) == "v2:aaf5c82864a933e9"
     assert suite_digest(EXTENDED_TASKS) == "v2:86e41db848586057"
     assert all(
         task.grades in {"value", "form", "value+form"}
@@ -536,6 +536,14 @@ def test_hard_suite_and_graders() -> None:
         assert task.check(accepted), task_id
         assert not task.check(rejected), task_id
 
+    for task_id, accepted in (
+        ("instruction.sort_desc.3_1_2", "3,2,1"),
+        ("instruction.sort_asc.40_7_19", "7,19,40"),
+    ):
+        task = next(task for task in HARD_TASKS if task.id == task_id)
+        assert task.rule == "sort_digits:v2"
+        assert task.check(accepted), task_id
+
     kanji_17 = next(task for task in HARD_TASKS if task.id == "multilingual.kanji_number.17")
     assert kanji_17.rule == "kanji_number:v3"
     for answer in ("十七", "一十七", "壹拾柒", "壱拾七"):
@@ -566,7 +574,7 @@ def test_hard_suite_and_graders() -> None:
     assert seven.check("七")
     assert seven.check("七日")
     assert not seven.check("7")
-    assert suite_digest(SUITES["hard"]) == "v2:22237baff8c47e35"
+    assert suite_digest(SUITES["hard"]) == "v2:aaf5c82864a933e9"
 
 
 def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
