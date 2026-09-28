@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from nmesh.bench import (
     EPOCH_MIN_RATIO,
@@ -18,6 +21,7 @@ from nmesh.bench.epoch import (
     classify,
     find_reference_binary,
     load_history,
+    measure_reference,
     prune_degraded,
     refutes,
     save_history,
@@ -71,6 +75,47 @@ def test_history_is_trimmed_and_reference_ids_are_isolated(tmp_path) -> None:
     assert loaded["one"][0].tps == 1.0
     assert loaded["two"] == history["two"]
     assert baseline(loaded, "two") == 82.5
+
+
+def test_history_rejects_non_finite_and_non_positive_tps(tmp_path) -> None:
+    path = tmp_path / "epoch.json"
+    path.write_text(
+        json.dumps(
+            {
+                "ref": [
+                    {"reference_id": "ref", "tps": float("nan"),
+                     "measured_at": "2025-01-01T00:00:00+00:00"},
+                    {"reference_id": "ref", "tps": float("inf"),
+                     "measured_at": "2025-01-01T00:00:01+00:00"},
+                    {"reference_id": "ref", "tps": -3.0,
+                     "measured_at": "2025-01-01T00:00:02+00:00"},
+                    {"reference_id": "ref", "tps": 12.5,
+                     "measured_at": "2025-01-01T00:00:03+00:00"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_history(path)
+    assert [sample.tps for sample in loaded["ref"]] == [12.5]
+
+
+def test_measure_reference_rejects_non_finite_tps(monkeypatch, tmp_path) -> None:
+    import subprocess as _subprocess
+
+    binary = tmp_path / "llama-bench"
+    binary.write_text("", encoding="utf-8")
+    model = tmp_path / "model.gguf"
+    model.write_text("x", encoding="utf-8")
+
+    def fake_run(command, **kwargs):
+        return _subprocess.CompletedProcess(
+            command, 0, stdout='[{"avg_ts": NaN}]', stderr=""
+        )
+
+    monkeypatch.setattr("nmesh.bench.epoch.subprocess.run", fake_run)
+    with pytest.raises(RuntimeError):
+        measure_reference(binary, model)
 
 
 def test_reference_discovery_uses_smallest_model_and_windows_sibling(tmp_path) -> None:
