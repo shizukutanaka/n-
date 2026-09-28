@@ -82,6 +82,55 @@ def test_route_uses_script_aware_context_and_reserved_output(catalog) -> None:
     }, plan) == "large"
 
 
+def test_route_never_picks_embed_only_for_chat(catalog) -> None:
+    # An oversized prompt must not route to the plan's largest-context service
+    # when that service cannot decode — embed/rerank-only models cannot serve
+    # chat completions.
+    chat_model = next(item for item in catalog if item.id == "gemma2-2b")
+    embed_model = next(item for item in catalog if item.id == "qwen3-embedding-8b")
+    base = build_plan(
+        profile(64, (24,)), [chat_model, embed_model],
+        Policy(roles=["chat", "embed"]),
+    )
+    chat = next(item for item in base.services if "chat" in item.roles)
+    embed = replace(chat, name="embed", context=32768, roles=["embed"])
+    small_chat = replace(chat, context=8192)
+    plan = replace(
+        base,
+        services=[small_chat, embed],
+        routing=replace(
+            base.routing,
+            role_to_service={"chat": small_chat.name, "embed": embed.name},
+        ),
+    )
+    assert embed.context > small_chat.context
+    request = {"messages": [{"role": "user", "content": "word " * 8000}]}
+    target = route(request, plan)
+    assert target != embed.name
+    target_service = next(item for item in plan.services if item.name == target)
+    assert set(target_service.roles) & {"chat", "code", "worker"}
+
+
+def test_route_default_prefers_generative_over_first_service(catalog) -> None:
+    # With no chat role assigned, routing must prefer a decode-capable service
+    # over whatever happens to be services[0] (e.g. an embed-only member).
+    chat_model = next(item for item in catalog if item.id == "gemma2-2b")
+    embed_model = next(item for item in catalog if item.id == "qwen3-embedding-8b")
+    base = build_plan(
+        profile(64, (24,)), [chat_model, embed_model],
+        Policy(roles=["chat", "embed"]),
+    )
+    service = base.services[0]
+    embed = replace(service, name="embed", roles=["embed"])
+    code = replace(service, name="code", roles=["code"])
+    plan = replace(
+        base,
+        services=[embed, code],
+        routing=replace(base.routing, role_to_service={}, aliases={}),
+    )
+    assert route({"messages": [{"role": "user", "content": "hi"}]}, plan) == "code"
+
+
 def test_bench_cache_round_trip(tmp_path) -> None:
     key = benchmark_key("model", "q4_k_m", "llamacpp", "cpu", 0)
     path = tmp_path / "bench.json"
