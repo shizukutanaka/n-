@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 6
+LAUNCH_REVISION = 7
 
 # Process-spawn env vars that change module/library resolution for engines;
 # nmesh warns at plan time when they are set because spawned services inherit
@@ -2293,8 +2293,12 @@ def _assign_slots(
                 gpu.total_vram_bytes for gpu in profile.gpus if gpu.index in indices
             )
             if total_vram > 0:
+                # --gpu-memory-utilization caps vLLM's total use at
+                # fraction*card_total; emit exactly the planned share
+                # (ceil-rounded so formatting never under-emits it).
                 gpu_fraction = min(
-                    0.95, max(0.10, rewritten.gpu_bytes / total_vram)
+                    1.0,
+                    math.ceil(rewritten.gpu_bytes / total_vram * 1000) / 1000,
                 )
         launch = _rewrite_launch(
             service, slots, gpu_fraction,
