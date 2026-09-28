@@ -73,6 +73,22 @@ def test_history_is_trimmed_and_reference_ids_are_isolated(tmp_path) -> None:
     assert baseline(loaded, "two") == 82.5
 
 
+def test_history_default_path_follows_nmesh_home(monkeypatch, tmp_path) -> None:
+    home = tmp_path / "custom-home"
+    home.mkdir()
+    (home / "epoch.json").write_text(
+        '{"ref": [{"reference_id": "ref", "tps": 12.5,'
+        ' "measured_at": "2025-01-01T00:00:00+00:00"}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("NMESH_HOME", str(home))
+    # EPOCH_PATH is bound at import; load/save must resolve nmesh_home()
+    # lazily so a later NMESH_HOME change is honored and real home untouched.
+    loaded = load_history()
+    assert loaded["ref"][0].tps == 12.5
+    assert save_history(loaded).parent == home
+
+
 def test_reference_discovery_uses_smallest_model_and_windows_sibling(tmp_path) -> None:
     server = tmp_path / "llama-server.exe"
     binary = tmp_path / "llama-bench.exe"
