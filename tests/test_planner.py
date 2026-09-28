@@ -92,6 +92,20 @@ def test_worker_role_omits_larger_model_than_small_lead(
     assert any("strictly smaller" in warning for warning in result.warnings)
 
 
+def test_unknown_role_is_named_in_warnings(
+    catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(
+        profile(16),
+        catalog,
+        Policy(roles=["chat", "chatt"], min_decode_tps=0, roles_explicit=True),
+    )
+    assert not result.runnable
+    assert any(
+        "chatt" in warning for warning in result.warnings
+    )
+
+
 def test_worker_role_warns_with_planned_lead_but_no_worker(
     catalog: list[ModelSpec],
 ) -> None:

@@ -3253,6 +3253,13 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     model=service.model_id, languages=", ".join(missing),
                 ))
     covered = set(role_to_service)
+    if selected.roles_explicit:
+        uncovered = sorted(set(roles) - covered)
+        if uncovered:
+            warnings.append(t(
+                "warn.roles_uncovered", selected.lang,
+                roles=", ".join(uncovered),
+            ))
     runnable = (
         bool(services)
         and not hints
