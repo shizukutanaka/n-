@@ -22,6 +22,7 @@
 
 ### Fixed
 - **`orchestrate measure --reasoning-allowance` の負値を拒否**: 引数が素の `type=int` で受理され `max(0, ...)` で静かに 0 へ丸められていたため、`--reasoning-allowance -50` が案内なしに「許容量なし」の計測として実行されていました。`eval` の同名フラグと同じ `_non_negative_int` 検証に統一
+- **vLLM の `--gpu-memory-utilization` がプラン見積もりと乖離する問題を修正**: 同フラグはカード総メモリに対する vLLM 総使用量の上限で、KV キャッシュを上限まで埋めます（vLLM docs/issue #54354）。nmesh は `min(0.95, max(0.10, 見積もり/総VRAM))` で発行していたため、小モデル（<10%）ではプラン以上の VRAM 獲得を承認し同居サービスの予算を静かに侵食し（N2 違反）、高負荷（>95%）ではプランが「収まる」と判定したのに実行時に vLLM がロードを拒否し得ました。プランのシェアをそのまま発行するよう変更（フォーマットの丸めがプランを下回らないよう ceil）。LAUNCH_REVISION 7
 - **`ollama_fingerprint` の loopback 呼出が env プロキシに誤ルートされる問題を修正**: `httpx.get` は `trust_env=True` 既定で `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` を参照し、`127.0.0.1`/`localhost` を自動除外しないため、企業プロキシ設定環境では Ollama デーモンへの `/api/tags` 問合せが到達不能なプロキシへ送られ指紋採取が常に失敗（`None`）になっていました。指紋は「実際にロードされているモデルが管理対象と一致するか」の検証に使われるため、プロキシ環境では照合が常にスキップされ旧モデル/無関係モデルの誤採用防止が静かに外れます。`httpx.Client(trust_env=False)` 経由に変更
 - **GPU index の重複をプロファイル読込時に拒否**: 手編集・陳腐化した profile.json で2つの GPU が同じ `index` を持つと、予算マップ `{index: budget}` が片方へ潰れ、vLLM の `--gpu-memory-utilization` 計算が合計 VRAM を過大に見積もる（`gpu.index in indices` が両方に一致）など、カード別予算の静かな誤集計が起きていました。`profile_from_dict` が重複 index を ValueError で拒否
 - **`autotune` の計測失敗で復旧経路が迂回していた問題を修正**: チューニングセルがエンジンを不安定化させた場合、`measure()` の `httpx.HTTPError`（接続拒否・5xx応答）が `(OSError, RuntimeError)` の捕捉を抜けて propagate し、`runtime_down`・元プラン復帰・ゲートウェイ再起動の復旧経路が到達不能になっていました — チューニングがバックエンドを壊したまさにその時に、稼働中の外部ゲートウェイが復帰しないまま残りました
