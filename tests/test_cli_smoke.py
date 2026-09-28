@@ -55,3 +55,29 @@ def test_version_reports_package_and_evidence_versions(
     assert "nmesh 0.1.0" in output
     assert f"bench={cli.BENCH_HARNESS_VERSION}" in output
     assert "probe_rules=" in output
+
+
+@pytest.mark.parametrize("port", ["0", "-1", "65536", "99999"])
+def test_port_flag_rejects_out_of_range(
+    port: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for command in (
+        ["jobs", "--port", port],
+        ["run", "hi", "--port", port],
+        ["status", "--port", port],
+        ["up", "--port", port, "--dry-run"],
+        ["serve", "--port", port],
+        ["reload", "--port", port],
+        ["unload", "--port", port],
+        ["down", "--port", port],
+        ["autostart", "--port", port],
+    ):
+        with pytest.raises(SystemExit) as error:
+            cli.main(command)
+        assert error.value.code == 2
+        assert "between 1 and 65535" in capsys.readouterr().err
+
+
+def test_port_flag_accepts_valid_port(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["jobs", "--port", "18000"]) == 1
+    assert "reachable" in capsys.readouterr().err
