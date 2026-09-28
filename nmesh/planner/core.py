@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 6
+LAUNCH_REVISION = 7
 
 
 @dataclass(frozen=True)
@@ -671,6 +671,20 @@ def _launch(
                         parallel=num_parallel,
                     )
                 )
+        # The daemon is spawned with os.environ merged in, so a user-set
+        # OLLAMA_HOST would move the bind away from the loopback URL every
+        # probe and proxy targets. Pin it, and warn when the user's value
+        # differs because that env is overridden.
+        ollama_host = os.environ.get("OLLAMA_HOST")
+        if (
+            ollama_host is not None
+            and ollama_host != "127.0.0.1:11434"
+            and warnings is not None
+        ):
+            warnings.append(
+                t("warn.ollama_host_overridden", language, host=ollama_host)
+            )
+        env["OLLAMA_HOST"] = "127.0.0.1:11434"
         return LaunchSpec(
             [binary or "ollama", "serve"],
             env,
