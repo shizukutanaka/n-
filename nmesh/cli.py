@@ -1382,7 +1382,7 @@ def _jobs(args: argparse.Namespace) -> int:
     language = i18n.lang()
     if args.cancel:
         request = urllib.request.Request(
-            f"http://127.0.0.1:{args.port}/v1/jobs/{args.cancel}",
+            f"http://127.0.0.1:{args.port}/v1/jobs/{quote(args.cancel, safe='')}",
             method="DELETE",
         )
         try:

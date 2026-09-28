@@ -1577,6 +1577,20 @@ def test_jobs_cli_cancel(monkeypatch, tmp_path: Path, capsys) -> None:
     assert "job-2" in capsys.readouterr().out
 
 
+def test_jobs_cli_cancel_quotes_job_id(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    seen: list[str] = []
+
+    def _raise(request, *_a, **_k):
+        seen.append(request.full_url)
+        raise HTTPError(request.full_url, 404, "not found", {}, None)
+
+    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    assert cli.main(["jobs", "--cancel", "bad id/.."]) == 1
+    assert seen == ["http://127.0.0.1:18000/v1/jobs/bad%20id%2F.."]
+    assert "bad id/.." in capsys.readouterr().err
+
+
 def test_jobs_cli_cancel_conflict(monkeypatch, tmp_path: Path, capsys) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
 
