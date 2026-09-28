@@ -22,6 +22,8 @@
 
 ### Fixed
 - **vLLM サービスが既定の匿名使用統計送信を行い得た問題を修正**: vLLM は既定で匿名テレメトリを報告するため、ローカル完結を公約するオーケストレータが送信を黙認していました。ユーザが `VLLM_NO_USAGE_STATS` を未設定の場合に限り `VLLM_NO_USAGE_STATS=1` を起動 env に発行（"0" を含むユーザ設定は尊重 — N7）。LAUNCH_REVISION 7
+- **`ollama_fingerprint` の loopback 呼出が env プロキシに誤ルートされる問題を修正**: `httpx.get` は `trust_env=True` 既定で `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` を参照し、`127.0.0.1`/`localhost` を自動除外しないため、企業プロキシ設定環境では Ollama デーモンへの `/api/tags` 問合せが到達不能なプロキシへ送られ指紋採取が常に失敗（`None`）になっていました。指紋は「実際にロードされているモデルが管理対象と一致するか」の検証に使われるため、プロキシ環境では照合が常にスキップされ旧モデル/無関係モデルの誤採用防止が静かに外れます。`httpx.Client(trust_env=False)` 経由に変更
+- **GPU index の重複をプロファイル読込時に拒否**: 手編集・陳腐化した profile.json で2つの GPU が同じ `index` を持つと、予算マップ `{index: budget}` が片方へ潰れ、vLLM の `--gpu-memory-utilization` 計算が合計 VRAM を過大に見積もる（`gpu.index in indices` が両方に一致）など、カード別予算の静かな誤集計が起きていました。`profile_from_dict` が重複 index を ValueError で拒否
 - **`autotune` の計測失敗で復旧経路が迂回していた問題を修正**: チューニングセルがエンジンを不安定化させた場合、`measure()` の `httpx.HTTPError`（接続拒否・5xx応答）が `(OSError, RuntimeError)` の捕捉を抜けて propagate し、`runtime_down`・元プラン復帰・ゲートウェイ再起動の復旧経路が到達不能になっていました — チューニングがバックエンドを壊したまさにその時に、稼働中の外部ゲートウェイが復帰しないまま残りました
 - **`bench.json` の非有限・負の計測値を読込時に拒否**: Python の `json` は `Infinity`/`NaN` リテラルを受理するため、レガシー数値レコードや sessions/control_ratio 等に非有限・負値を含む壊れたキャッシュがそのまま採用され、tps=inf/nan が中央値・エポック判定・プランの speedup 比較へ伝播していました。必須値は非有限・負で拒否、オプション値は非有限のみ拒否（#507 epoch・#552 telemetry と同規約）
 - **watch の状態ファイル書込みがプロセス間で tmp ファイルを共有していた問題を修正**: `watch.json` の原子的書込みに `.watch.json.tmp` という固定名を使っていたため、タイマーユニットと手動実行など2つの `nmesh watch` プロセスが並走すると、一方の `write_text`→`replace` の間にもう一方が同じ tmp を上書き・移動し、FileNotFoundError か別プロセスの内容の誤確定が起こり得ました。engine 状態ファイルと同じ `.{name}.{pid}.tmp` 規約に揃えました
