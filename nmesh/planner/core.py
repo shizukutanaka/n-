@@ -281,7 +281,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 6
+LAUNCH_REVISION = 7
 
 
 @dataclass(frozen=True)
@@ -767,7 +767,14 @@ def _launch(
                     t("warn.sleep_idle_unsupported", language, model=model.id)
                 )
         if backend == "llamacpp" and cache_reuse > 0:
-            if not known or "--cache-reuse" in flags:
+            if model.sliding_window > 0:
+                # The reduced iSWA cache cannot shift KV entries, so
+                # llama.cpp ignores --cache-reuse on sliding-window models.
+                if warnings is not None:
+                    warnings.append(
+                        t("warn.cache_reuse_swa", language, model=model.id)
+                    )
+            elif not known or "--cache-reuse" in flags:
                 argv += ["--cache-reuse", str(cache_reuse)]
             elif warnings is not None:
                 warnings.append(
@@ -777,7 +784,14 @@ def _launch(
             backend == "llamacpp" and context_shift
             and not embed_only and not rerank_only
         ):
-            if not known or "--context-shift" in flags:
+            if model.sliding_window > 0:
+                # The reduced iSWA cache cannot shift KV entries, so
+                # llama.cpp disables context shift on sliding-window models.
+                if warnings is not None:
+                    warnings.append(
+                        t("warn.context_shift_swa", language, model=model.id)
+                    )
+            elif not known or "--context-shift" in flags:
                 argv.append("--context-shift")
                 if warnings is not None:
                     warnings.append(
