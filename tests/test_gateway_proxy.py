@@ -1144,3 +1144,36 @@ def test_gateway_injects_usage_for_vllm_and_ollama_streams(monkeypatch) -> None:
         _UsageHandler.request_body = {}
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_gateway_ollama_keep_alive_matches_residency(monkeypatch) -> None:
+    """Resident ollama services pin weights (keep_alive -1); swap members
+    release them quickly so co-members can load."""
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UsageHandler)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    monkeypatch.setattr(
+        gateway_module, "_base_url",
+        lambda service: f"http://127.0.0.1:{upstream.server_address[1]}",
+    )
+    monkeypatch.setattr(gateway_module, "record_telemetry", lambda sample: None)
+    try:
+        model = ModelSpec("keep-alive-model", "test", 500_000_000, 24, 16, 2,
+                          64, 1024, 4096, ["chat"], 80.0, "test",
+                          {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        for resident, expected in ((True, -1), (False, "30s")):
+            _UsageHandler.request_body = {}
+            service = replace(
+                plan.services[0], backend="ollama", resident=resident
+            )
+            client = TestClient(create_app(replace(plan, services=[service])))
+            response = client.post("/v1/chat/completions", json={
+                "model": "client-model", "stream": True,
+                "messages": [{"role": "user", "content": "hello"}],
+            })
+            assert response.status_code == 200
+            assert _UsageHandler.request_body["keep_alive"] == expected
+    finally:
+        _UsageHandler.request_body = {}
+        upstream.shutdown()
+        upstream.server_close()
