@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -409,6 +410,76 @@ def test_catalog_quality_null_is_explicit_and_invalid_quality_is_rejected() -> N
     missing = dict(base)
     del missing["quality"]
     assert _model_from_mapping(missing) is None
+
+
+def test_catalog_rejects_non_positive_dimensions() -> None:
+    base = {
+        "id": "candidate",
+        "family": "Candidate",
+        "params": 1,
+        "n_layers": 1,
+        "n_heads": 1,
+        "n_kv_heads": 1,
+        "head_dim": 1,
+        "hidden_size": 1,
+        "max_context": 1,
+        "roles": ["chat"],
+        "quality": None,
+        "license": "apache",
+        "sources": {"hf": "org/candidate"},
+    }
+    for field in (
+        "params", "n_layers", "n_heads", "n_kv_heads",
+        "head_dim", "hidden_size", "max_context",
+    ):
+        assert _model_from_mapping({**base, field: 0}) is None
+        assert _model_from_mapping({**base, field: -1}) is None
+    for field in (
+        "vocab_size", "kv_layers", "sliding_window",
+        "sliding_window_pattern", "active_params",
+        "moe_expert_params", "n_moe_layers",
+    ):
+        assert _model_from_mapping({**base, field: -1}) is None
+        assert _model_from_mapping({**base, field: 0}) is not None
+
+
+def test_catalog_reports_skipped_entries(tmp_path: Path) -> None:
+    base = {
+        "id": "candidate",
+        "family": "Candidate",
+        "params": 1,
+        "n_layers": 1,
+        "n_heads": 1,
+        "n_kv_heads": 1,
+        "head_dim": 1,
+        "hidden_size": 1,
+        "max_context": 1,
+        "roles": ["chat"],
+        "quality": None,
+        "license": "apache",
+        "sources": {"hf": "org/candidate"},
+    }
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "- id: broken\n  family: x\n- 42\n"
+        + f"- {json.dumps(base)}\n",
+        encoding="utf-8",
+    )
+    problems: list[str] = []
+    models = load_catalog(
+        bundled_path=path,
+        user_path=tmp_path / "missing.yaml",
+        problems=problems,
+    )
+    assert [model.id for model in models] == ["candidate"]
+    assert any(
+        "entry 0" in problem and "missing required keys" in problem
+        for problem in problems
+    )
+    assert any(
+        "entry 1" in problem and "entry is not a mapping" in problem
+        for problem in problems
+    )
 
 
 def test_unmeasured_models_require_explicit_selection() -> None:
@@ -1680,10 +1751,33 @@ def test_vllm_slots_and_total_vram_fraction() -> None:
         gpu.total_vram_bytes for gpu in result.profile.gpus
         if gpu.index in service.gpu_indices
     )
-    assert 0.10 < fraction <= 0.95
-    assert fraction == round(
-        min(0.95, max(0.10, service.memory.gpu_bytes / total_vram)), 3
+    assert 0 < fraction <= 1.0
+    assert fraction == math.ceil(
+        service.memory.gpu_bytes / total_vram * 1000
+    ) / 1000
+
+
+def test_vllm_fraction_matches_small_planned_share() -> None:
+    model = ModelSpec(
+        "pocket", "test", 1_000_000_000, 28, 28, 28, 128,
+        1024, 2048, ["chat"], 99.0, "test", {"hf": "test/model"},
     )
+    result = build_plan(
+        profile(64, (80,), os_name="linux"),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0, parallel_slots=1),
+    )
+    service = result.services[0]
+    assert service.backend == "vllm"
+    argv = service.launch.argv
+    fraction = float(argv[argv.index("--gpu-memory-utilization") + 1])
+    total_vram = sum(
+        gpu.total_vram_bytes for gpu in result.profile.gpus
+        if gpu.index in service.gpu_indices
+    )
+    planned = service.memory.gpu_bytes / total_vram
+    assert planned < 0.10
+    assert planned <= fraction < planned + 0.001
 
 
 def test_forced_slots_clamp_and_one_is_silent(catalog: list[ModelSpec]) -> None:
