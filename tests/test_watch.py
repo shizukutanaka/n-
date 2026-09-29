@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -574,7 +575,9 @@ def test_cli_offline_json_shape_and_all_sources_unreachable(
         "notes",
         "catalog",
         "candidates",
+        "last_run",
     }
+    assert payload["last_run"]
     assert set(payload["catalog"]) == {
         "entries",
         "repo_ids",
@@ -663,3 +666,31 @@ def test_watch_state_tmp_name_is_pid_namespaced(
     save_state(WatchState("now", {}, {}), tmp_path / "watch.json")
     assert [path.name for path in written] == [".watch.json.4321.tmp"]
     assert (tmp_path / "watch.json").exists()
+
+
+def test_watch_state_save_failure_removes_tmp(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        Path, "write_text",
+        lambda self, data, **kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    monkeypatch.setattr("os.getpid", lambda: 4321)
+    try:
+        save_state(WatchState("now", {}, {}), tmp_path / "watch.json")
+    except OSError:
+        pass
+    else:
+        raise AssertionError("save_state should propagate OSError")
+    assert not list(tmp_path.glob(".watch.json.*.tmp"))
+
+
+def test_watch_json_reports_last_run(tmp_path: Path, monkeypatch, capsys) -> None:
+    items = tmp_path / "items.json"
+    items.write_text(json.dumps({"items": []}), encoding="utf-8")
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path / "home"))
+    assert main(["watch", "--offline", str(items), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert datetime.fromisoformat(payload["last_run"])
+    persisted = json.loads(
+        (tmp_path / "home" / "watch.json").read_text(encoding="utf-8")
+    )
+    assert payload["last_run"] == persisted["last_run"]

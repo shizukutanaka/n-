@@ -61,8 +61,15 @@ def save_state(state: WatchState, path: Path | None = None) -> None:
         "seen_findings": _bounded(state.seen_findings),
     }
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    temporary.replace(target)
+    try:
+        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        temporary.replace(target)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def now_iso() -> str:

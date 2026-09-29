@@ -4044,6 +4044,7 @@ def _watch(args: argparse.Namespace) -> int:
         "notes": notes,
         "catalog": catalog_metrics,
         "candidates": candidates,
+        "last_run": next_state.last_run,
     }
     if args.json:
         _print_json(output)
