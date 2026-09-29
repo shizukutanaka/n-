@@ -625,3 +625,41 @@ def test_cli_state_deduplication_and_all_override(tmp_path: Path, monkeypatch, c
     assert main(["watch", "--offline", str(items), "--all", "--json"]) == 0
     third = json.loads(capsys.readouterr().out)
     assert third["new_findings"] == 1
+
+
+def test_draft_escapes_quotes_in_verified_strings(tmp_path: Path) -> None:
+    import yaml
+
+    finding = Finding(
+        "catalog_gap",
+        "acme/thing",
+        1,
+        ("u",),
+        {
+            "architectures": 'Thing"ForCausalLM',
+            "license": 'other"x',
+            "pipeline_tag": "text-generation",
+            "config_repo": "acme/thing",
+        },
+    )
+    text = write_draft(finding, tmp_path).read_text(encoding="utf-8")
+    parsed = yaml.safe_load(text)
+    assert parsed[0]["family"] == 'Thing"ForCausalLM'
+    assert parsed[0]["license"] == 'other"x'
+
+
+def test_watch_state_tmp_name_is_pid_namespaced(
+    tmp_path: Path, monkeypatch
+) -> None:
+    written: list[Path] = []
+    original = Path.write_text
+
+    def capture(self: Path, data: str, **kwargs: object) -> int:
+        written.append(self)
+        return original(self, data, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", capture)
+    monkeypatch.setattr("os.getpid", lambda: 4321)
+    save_state(WatchState("now", {}, {}), tmp_path / "watch.json")
+    assert [path.name for path in written] == [".watch.json.4321.tmp"]
+    assert (tmp_path / "watch.json").exists()
