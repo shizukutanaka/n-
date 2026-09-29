@@ -54,6 +54,64 @@ def test_linux_nvidia_uses_vulkan_with_warning() -> None:
     assert "no ubuntu-cuda asset" in warning
 
 
+def test_linux_nvidia_prefers_published_cuda_asset() -> None:
+    asset, warning = engine.select_asset(
+        "b10830",
+        [
+            "llama-b10830-bin-ubuntu-cuda-12.8-x64.tar.gz",
+            "llama-b10830-bin-ubuntu-cuda-13.4-x64.tar.gz",
+            "cudart-llama-b10830-bin-ubuntu-cuda-13.4-x64.tar.gz",
+            "llama-b10830-bin-ubuntu-vulkan-x64.tar.gz",
+        ],
+        system="linux",
+        machine="x86_64",
+        accelerator="nvidia",
+    )
+    assert asset.asset == "llama-b10830-bin-ubuntu-cuda-13.4-x64.tar.gz"
+    assert asset.variant == "cuda-13.4"
+    assert asset.extra_assets == (
+        "cudart-llama-b10830-bin-ubuntu-cuda-13.4-x64.tar.gz",
+    )
+    assert warning is None
+
+
+def test_linux_bare_cuda_selects_highest_published_version() -> None:
+    asset, _ = engine.select_asset(
+        "b10830",
+        [
+            "llama-b10830-bin-ubuntu-cuda-12.8-x64.tar.gz",
+            "llama-b10830-bin-ubuntu-cuda-13.4-x64.tar.gz",
+            "cudart-llama-b10830-bin-ubuntu-cuda-13.4-x64.tar.gz",
+        ],
+        system="linux",
+        machine="x86_64",
+        accelerator=None,
+        variant="cuda",
+    )
+    assert asset.variant == "cuda-13.4"
+    assert asset.extra_assets == (
+        "cudart-llama-b10830-bin-ubuntu-cuda-13.4-x64.tar.gz",
+    )
+
+
+def test_linux_explicit_cuda_version_selects_matching_asset() -> None:
+    asset, _ = engine.select_asset(
+        "b10830",
+        [
+            "llama-b10830-bin-ubuntu-cuda-12.8-x64.tar.gz",
+            "cudart-llama-b10830-bin-ubuntu-cuda-12.8-x64.tar.gz",
+        ],
+        system="linux",
+        machine="x86_64",
+        accelerator=None,
+        variant="cuda-12.8",
+    )
+    assert asset.asset == "llama-b10830-bin-ubuntu-cuda-12.8-x64.tar.gz"
+    assert asset.extra_assets == (
+        "cudart-llama-b10830-bin-ubuntu-cuda-12.8-x64.tar.gz",
+    )
+
+
 def test_darwin_selects_macos_asset() -> None:
     asset, warning = engine.select_asset(
         "b10830",
