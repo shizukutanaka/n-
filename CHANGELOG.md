@@ -22,6 +22,8 @@
 
 ### Fixed
 - **エポック履歴が非有限 tps で永久汚染される問題を修正**: `measure_reference` は `avg_ts` の `NaN`/`Infinity`（Python の `json` は両リテラルを受理）を `value <= 0` チェックをすり抜けて返し、`load_history` も非有限値をそのまま読み込んでいました — nan 比較は常に False のため。nan な `reference_tps` は `prune_degraded` が全サンプルを "degraded" と誤判定して履歴を消去した上で nan を新規記録し、以後すべてのベンチが永久に degraded 判定されるところでした。発行側・読込側の両方で `math.isfinite` を拒否するよう修正（PR #507 再送）
+||||||| 7cbd1b2
+- **証拠棚卸し: 劣化境界を計測しなかった retrieval 記録が `usable` と表示される問題を修正**: 全ラング合格（劣化なし観測）の retrieval 記録は `degraded_tokens=None` となり planner 側の `_embed_retrieval_limits` が無視するにもかかわらず、`nmesh evidence` が `usable=True` と表示していました — 他の証拠種別は全て「planner が消費するか」の基準で usable を出すのに retrieval だけ `control_passed` をゲートに使っていたため（`control_failed` は推移的に `degraded_tokens=None` なので planner 側で既に排除済み）。planner の採用条件と同一に揃えました
 - **読み取れないエンジンマニフェストが警告なしにスキップされていた問題を修正**: `engines/*/manifest.json` が破損・手編集ミスで読めなくなると `engine.installed()` が無言で除外し、インストール済みエンジンが `nmesh engine list` から消え・ヒール候補からも外れ・`use <tag>` が「未インストール」と誤答していました。`installed()` に `problems` シンクを追加し `engine list` が `warn.engine_entry_skipped` でスキップ理由を stderr に明示します（カタログスキップ報告と同じ仕組み）
 - **不正なカタログ項目が警告なしに捨てられていた問題を修正**: `~/.nmesh/models.yaml` に必須キー欠落・型違い・YAML パース不能な項目があっても、ローダは全項目を無言でスキップしており、ユーザが追加したモデルが `nmesh plan`/`nmesh models` に現れない理由が一切分かりませんでした。`load_catalog` がスキップ理由を報告できるようになり（`problems` シンク）、plan/up/models/watch の各コマンドは `warn.catalog_entry_skipped` で「どの項目がなぜ無視されたか」を stderr に明示します
 - **vLLM の `--gpu-memory-utilization` がプラン見積もりと乖離する問題を修正**: 同フラグはカード総メモリに対する vLLM 総使用量の上限で、KV キャッシュを上限まで埋めます（vLLM docs/issue #54354）。nmesh は `min(0.95, max(0.10, 見積もり/総VRAM))` で発行していたため、小モデル（<10%）ではプラン以上の VRAM 獲得を承認し同居サービスの予算を静かに侵食し（N2 違反）、高負荷（>95%）ではプランが「収まる」と判定したのに実行時に vLLM がロードを拒否し得ました。プランのシェアをそのまま発行するよう変更（フォーマットの丸めがプランを下回らないよう ceil）。LAUNCH_REVISION 7
