@@ -33,8 +33,15 @@ def save_cache(cache: ArtifactCache, path: Path | None = None) -> Path:
     target = path or CACHE_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(cache, indent=2), encoding="utf-8")
-    os.replace(temporary, target)
+    try:
+        temporary.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+        os.replace(temporary, target)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
     return target
 
 

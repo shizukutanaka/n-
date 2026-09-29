@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from nmesh.artifacts import artifact_key, load_cache, record, save_cache
 
 
@@ -20,3 +24,15 @@ def test_artifact_cache_tolerates_missing_and_corrupt_files(tmp_path) -> None:
     assert load_cache(path) == {}
     path.write_text("{", encoding="utf-8")
     assert load_cache(path) == {}
+
+
+def test_artifact_cache_save_failure_removes_tmp(
+    monkeypatch, tmp_path: Path
+) -> None:
+    def _raise(*_args, **_kwargs):
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(Path, "write_text", _raise)
+    with pytest.raises(OSError):
+        save_cache({"org/model|q4_k_m": 1}, tmp_path / "artifacts.json")
+    assert not list(tmp_path.glob(".artifacts.json.*.tmp"))

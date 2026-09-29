@@ -540,3 +540,19 @@ def test_installed_reports_unreadable_manifests(monkeypatch, tmp_path: Path) -> 
 
     # Without the sink the behaviour is unchanged: silently skipped.
     assert engine.installed() == []
+
+
+def test_engine_use_write_failure_removes_tmp(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    candidate = SimpleNamespace(tag="b10830")
+    monkeypatch.setattr(engine, "installed", lambda: [candidate])
+
+    def _raise(*_args, **_kwargs):
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(Path, "write_text", _raise)
+    with pytest.raises(OSError):
+        engine.use("b10830")
+    assert not list(tmp_path.glob(".active.json.*.tmp"))

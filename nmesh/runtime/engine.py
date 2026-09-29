@@ -550,20 +550,34 @@ def install(
         manifest_payload["sha256_note"] = (
             "observed download hash; not publisher provenance verification"
         )
-        temporary.write_text(
-            json.dumps(manifest_payload, indent=2, default=str),
-            encoding="utf-8",
-        )
-        temporary.replace(manifest)
+        try:
+            temporary.write_text(
+                json.dumps(manifest_payload, indent=2, default=str),
+                encoding="utf-8",
+            )
+            temporary.replace(manifest)
+        except OSError:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+            raise
         active = root / "active.json"
         active_tmp = active.with_name(
             f".{active.name}.{os.getpid()}.tmp"
         )
-        active_tmp.write_text(
-            json.dumps({"tag": selected_tag, "manifest": str(manifest)}, indent=2),
-            encoding="utf-8",
-        )
-        active_tmp.replace(active)
+        try:
+            active_tmp.write_text(
+                json.dumps({"tag": selected_tag, "manifest": str(manifest)}, indent=2),
+                encoding="utf-8",
+            )
+            active_tmp.replace(active)
+        except OSError:
+            try:
+                active_tmp.unlink()
+            except OSError:
+                pass
+            raise
         archive.unlink()
         return installed, warnings
     except Exception:
@@ -611,11 +625,18 @@ def use(tag: str) -> InstalledEngine:
     path = engines_dir() / "active.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(
-        json.dumps({"tag": candidate.tag, "manifest": str(engines_dir() / tag / "manifest.json")}),
-        encoding="utf-8",
-    )
-    temporary.replace(path)
+    try:
+        temporary.write_text(
+            json.dumps({"tag": candidate.tag, "manifest": str(engines_dir() / tag / "manifest.json")}),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
     return candidate
 
 

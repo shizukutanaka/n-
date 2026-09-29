@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from nmesh.bench import (
     EPOCH_MIN_RATIO,
     BenchRecord,
@@ -169,3 +171,27 @@ def test_demote_stale_requires_reference_identity_and_value() -> None:
         "missing": _record("ref", None),
     }
     assert demote_stale(records, "ref", 48.0) == ()
+
+
+def test_save_records_write_failure_removes_tmp(
+    monkeypatch, tmp_path: Path
+) -> None:
+    def _raise(*_args, **_kwargs):
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(Path, "write_text", _raise)
+    with pytest.raises(OSError):
+        save_records({}, tmp_path / "bench.json")
+    assert not list(tmp_path.glob(".bench.json.*.tmp"))
+
+
+def test_save_history_write_failure_removes_tmp(
+    monkeypatch, tmp_path: Path
+) -> None:
+    def _raise(*_args, **_kwargs):
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(Path, "write_text", _raise)
+    with pytest.raises(OSError):
+        save_history({}, tmp_path / "epoch.json")
+    assert not list(tmp_path.glob(".epoch.json.*.tmp"))

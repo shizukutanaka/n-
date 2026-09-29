@@ -217,11 +217,18 @@ def save_records(records: dict[str, BenchRecord], path: Path | None = None) -> P
     target = path or CACHE_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    temporary.write_text(
-        json.dumps({key: asdict(value) for key, value in records.items()}, indent=2),
-        encoding="utf-8",
-    )
-    os.replace(temporary, target)
+    try:
+        temporary.write_text(
+            json.dumps({key: asdict(value) for key, value in records.items()}, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(temporary, target)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
     return target
 
 
