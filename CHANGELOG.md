@@ -23,6 +23,8 @@
 ### Fixed
 - **`nmesh status` のテレメトリ表が未計測の列に `0.00` を偽造表示していた問題を修正**: decode/TTFT サンプルが無いサービス（非ストリーム経路は常に ttft=None、16トークン未満の短い応答では decode=None）の中央値を `0.00`/`0.000` と表示し、実測ゼロと区別が付かない偽の計測値に見えていました。値が存在しない列は他の表と同じく `-` で表示します
 ||||||| 7cbd1b2
+||||||| 0ae67f2
+- **engine: Linux+NVIDIA で ubuntu CUDA ビルドを選択するよう修正**: llama.cpp は既に `llama-b*-bin-ubuntu-cuda-{12.x,13.x}-x64.tar.gz`（+ `cudart-llama-b*-bin-ubuntu-cuda-*`）を公開していますが、`engine install` は NVIDIA GPU 検出時に常に `ubuntu-vulkan-x64` を選び「ubuntu-cuda アセットは公開されていない」と誤った警告を出していました — ネイティブ CUDA ビルドがあるのに低速な Vulkan 経路がインストールされていました。`--variant cuda` 明示もバージョン中綴り名に対応しておらず常に「公開されていない」で失敗していました。自動選択は公開済み CUDA の最新版を優先し（windows と同規約で cudart 同梱アセットも取得）、非公開時のみ従来の Vulkan フォールバック＋警告を維持します
 - **証拠棚卸し: 劣化境界を計測しなかった retrieval 記録が `usable` と表示される問題を修正**: 全ラング合格（劣化なし観測）の retrieval 記録は `degraded_tokens=None` となり planner 側の `_embed_retrieval_limits` が無視するにもかかわらず、`nmesh evidence` が `usable=True` と表示していました — 他の証拠種別は全て「planner が消費するか」の基準で usable を出すのに retrieval だけ `control_passed` をゲートに使っていたため（`control_failed` は推移的に `degraded_tokens=None` なので planner 側で既に排除済み）。planner の採用条件と同一に揃えました
 - **読み取れないエンジンマニフェストが警告なしにスキップされていた問題を修正**: `engines/*/manifest.json` が破損・手編集ミスで読めなくなると `engine.installed()` が無言で除外し、インストール済みエンジンが `nmesh engine list` から消え・ヒール候補からも外れ・`use <tag>` が「未インストール」と誤答していました。`installed()` に `problems` シンクを追加し `engine list` が `warn.engine_entry_skipped` でスキップ理由を stderr に明示します（カタログスキップ報告と同じ仕組み）
 - **不正なカタログ項目が警告なしに捨てられていた問題を修正**: `~/.nmesh/models.yaml` に必須キー欠落・型違い・YAML パース不能な項目があっても、ローダは全項目を無言でスキップしており、ユーザが追加したモデルが `nmesh plan`/`nmesh models` に現れない理由が一切分かりませんでした。`load_catalog` がスキップ理由を報告できるようになり（`problems` シンク）、plan/up/models/watch の各コマンドは `warn.catalog_entry_skipped` で「どの項目がなぜ無視されたか」を stderr に明示します
