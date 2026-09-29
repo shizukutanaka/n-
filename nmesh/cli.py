@@ -4352,7 +4352,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     bench_parser = sub.add_parser("bench")
     bench_parser.add_argument("--service", default="chat")
-    bench_parser.add_argument("--tokens", type=int, default=128)
+    bench_parser.add_argument("--tokens", type=_positive_int, default=128)
     bench_parser.add_argument("--runs", type=_positive_int, default=3)
     bench_parser.add_argument("--passes", type=_positive_int, default=2)
     bench_parser.add_argument("--no-reference", action="store_true")
