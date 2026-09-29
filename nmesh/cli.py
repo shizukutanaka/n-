@@ -1027,13 +1027,14 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
             print(i18n.t("err.up", i18n.lang(), error=error), file=sys.stderr)
             _print_plan_failure(plan, json_output=getattr(args, "json", False))
             return None
-        _console().print(
+        print(
             i18n.t(
                 "info.engine_autoinstall",
                 i18n.lang(),
                 tag=installed.tag,
                 variant=installed.variant,
-            )
+            ),
+            file=sys.stderr,
         )
         try:
             plan = _make_plan(plan_args)
