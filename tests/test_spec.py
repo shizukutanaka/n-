@@ -893,3 +893,14 @@ def test_spec_cli_transport_failure_writes_nothing(
     ]) == 1
     assert "transport" in capsys.readouterr().err.lower()
     assert not (tmp_path / "spec.json").exists()
+
+
+def test_spec_measure_rejects_nonpositive_n_max() -> None:
+    # --n-max 0/-1 flowed raw into `--spec-draft-n-max` argv — the draft arm
+    # would launch with a nonsense flag mid-measurement — and into the
+    # SpecConfig evidence record.
+    for bad in ("0", "-2"):
+        with pytest.raises(SystemExit) as raised:
+            cli.main(["spec", "measure", "--kind", "draft",
+                      "--draft", "d", "--n-max", bad])
+        assert raised.value.code == 2

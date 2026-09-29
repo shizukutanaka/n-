@@ -4398,7 +4398,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     spec_measure.add_argument("--kind", choices=("ngram", "draft"), required=True)
     spec_measure.add_argument("--draft")
     spec_measure.add_argument("--repeats", type=int, default=3)
-    spec_measure.add_argument("--n-max", type=int, default=3)
+    spec_measure.add_argument("--n-max", type=_positive_int, default=3)
     spec_measure.add_argument("--service")
     spec_measure.add_argument("--no-reference", action="store_true")
     spec_measure.add_argument("--json", action="store_true")
