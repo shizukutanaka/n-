@@ -310,3 +310,63 @@ def test_embed_inventory_reports_cap_and_speed(tmp_path, monkeypatch) -> None:
     assert row["served_cap"] == 2048
     assert row["encode_tps"] == 500.0
     assert payload["counts"]["embed"] == 1
+
+
+def test_embed_inventory_supersedes_older_proven_records(
+    tmp_path, monkeypatch,
+) -> None:
+    # The planner keeps only the newest cap-proven record per
+    # (model, quant, backend); an older proven record measured under a
+    # different gpu config must not report usable.
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    path = tmp_path / "embed.json"
+    save_embed(
+        _record(gpu_name="cpu", n_gpu_layers=0, at=1.0), path
+    )
+    save_embed(
+        _record(
+            gpu_name="gpu0",
+            n_gpu_layers=32,
+            at=2.0,
+            served_small=1024,
+            served_large=1024,
+        ),
+        path,
+    )
+    rows = [
+        row for row in collect_evidence()["records"] if row["kind"] == "embed"
+    ]
+    assert len(rows) == 2
+    by_cap = {row["served_cap"]: row for row in rows}
+    assert by_cap[2048]["usable"] is False
+    assert by_cap[2048]["reasons"] == ["superseded"]
+    assert by_cap[1024]["usable"] is True
+    assert by_cap[1024]["reasons"] == []
+
+
+def test_embed_inventory_keeps_proven_record_when_newer_probe_failed(
+    tmp_path, monkeypatch,
+) -> None:
+    # A newer record with cap=None is invisible to the planner; the older
+    # proven record remains the consumed one.
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    path = tmp_path / "embed.json"
+    save_embed(
+        _record(gpu_name="cpu", n_gpu_layers=0, at=1.0), path
+    )
+    save_embed(
+        _record(
+            gpu_name="gpu0",
+            n_gpu_layers=32,
+            at=2.0,
+            refused_small=True,
+        ),
+        path,
+    )
+    rows = [
+        row for row in collect_evidence()["records"] if row["kind"] == "embed"
+    ]
+    assert len(rows) == 2
+    proven = next(row for row in rows if row["served_cap"] == 2048)
+    assert proven["usable"] is True
+    assert proven["reasons"] == []

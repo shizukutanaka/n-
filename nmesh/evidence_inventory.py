@@ -10,7 +10,11 @@ from nmesh.bench.cache import (
     load_cache,
     load_records,
 )
-from nmesh.bench.embed import EMBED_HARNESS_VERSION, load_embed_cache
+from nmesh.bench.embed import (
+    EMBED_HARNESS_VERSION,
+    EmbedRecord,
+    load_embed_cache,
+)
 from nmesh.bench.retrieval import (
     RETRIEVAL_HARNESS_VERSION,
     load_retrieval_cache,
@@ -215,8 +219,26 @@ def _depth_rows(records: Mapping[str, ContextRecord]) -> list[dict[str, object]]
 
 
 def _embed_rows() -> list[dict[str, object]]:
+    # The planner keeps only the newest cap-proven record per model identity
+    # (_embed_context_caps); older proven records are superseded.
+    records = load_embed_cache()
+    latest: dict[tuple[str, str, str], EmbedRecord] = {}
+    for candidate in records.values():
+        if (
+            candidate.harness != EMBED_HARNESS_VERSION
+            or candidate.cap is None
+        ):
+            continue
+        identity = (
+            candidate.model_id.casefold(),
+            candidate.quant.casefold(),
+            candidate.backend.casefold(),
+        )
+        previous = latest.get(identity)
+        if previous is None or candidate.at > previous.at:
+            latest[identity] = candidate
     rows: list[dict[str, object]] = []
-    for key, record in load_embed_cache().items():
+    for key, record in records.items():
         reasons: list[str] = []
         if record.harness != EMBED_HARNESS_VERSION:
             reasons.append("harness_mismatch")
@@ -245,6 +267,20 @@ def _embed_rows() -> list[dict[str, object]]:
                 )
         else:
             value = f"cap={record.cap} tokens; encode={record.encode_tps:.1f} tok/s"
+        selected = latest.get(
+            (
+                record.model_id.casefold(),
+                record.quant.casefold(),
+                record.backend.casefold(),
+            )
+        )
+        usable = (
+            record.harness == EMBED_HARNESS_VERSION
+            and record.cap is not None
+            and selected is record
+        )
+        if not usable and not reasons and selected is not None:
+            reasons.append("superseded")
         rows.append({
             "kind": "embed",
             "key": key,
@@ -254,7 +290,7 @@ def _embed_rows() -> list[dict[str, object]]:
             "value": value,
             "served_cap": record.cap,
             "encode_tps": record.encode_tps,
-            "usable": record.harness == EMBED_HARNESS_VERSION and record.cap is not None,
+            "usable": usable,
             "reasons": reasons,
             "remeasure": (
                 ""
