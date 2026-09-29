@@ -808,6 +808,73 @@ def test_ollama_daemon_env_no_warn_when_user_parallel_matches(
     )
 
 
+def test_ollama_keep_alive_pinned_for_resident_service(monkeypatch) -> None:
+    # The daemon's default keep_alive unloads an idle model after ~5
+    # minutes, so a plan-resident ollama service pins it to stay loaded.
+    monkeypatch.delenv("OLLAMA_KEEP_ALIVE", raising=False)
+    result = build_plan(
+        profile(8, backends={"ollama": "test", "llamacpp": None,
+                             "vllm": None, "mlx": None}),
+        [_ollama_only_model()],
+        Policy(roles=["chat"]),
+    )
+    service = result.services[0]
+    assert service.backend == "ollama"
+    assert service.resident
+    assert service.launch.env["OLLAMA_KEEP_ALIVE"] == "-1"
+    assert any("OLLAMA_KEEP_ALIVE" in warning for warning in result.warnings)
+
+
+def test_ollama_keep_alive_not_pinned_when_swap_member_present(
+    monkeypatch,
+) -> None:
+    # The shared daemon cannot discriminate per-service keep_alive, so a
+    # non-resident ollama member in the plan disables the pin.
+    monkeypatch.delenv("OLLAMA_KEEP_ALIVE", raising=False)
+    result = build_plan(
+        profile(8, backends={"ollama": "test", "llamacpp": None,
+                             "vllm": None, "mlx": None}),
+        [_ollama_only_model()],
+        Policy(roles=["chat"]),
+    )
+    services = [
+        replace(
+            service,
+            resident=False,
+            launch=replace(
+                service.launch,
+                env={
+                    key: value
+                    for key, value in service.launch.env.items()
+                    if key != "OLLAMA_KEEP_ALIVE"
+                },
+            ),
+        )
+        for service in result.services
+    ]
+    placed = planner_core._place_services(
+        services,
+        result.profile,
+        result.policy,
+        [service.name for service in services],
+        [],
+    )
+    assert all(
+        "OLLAMA_KEEP_ALIVE" not in service.launch.env for service in placed
+    )
+
+
+def test_ollama_keep_alive_respects_user_env(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_KEEP_ALIVE", "30m")
+    result = build_plan(
+        profile(8, backends={"ollama": "test", "llamacpp": None,
+                             "vllm": None, "mlx": None}),
+        [_ollama_only_model()],
+        Policy(roles=["chat"]),
+    )
+    assert "OLLAMA_KEEP_ALIVE" not in result.services[0].launch.env
+
+
 def test_installed_lower_preference_backend_wins() -> None:
     model = ModelSpec(
         "both-sources", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
