@@ -893,3 +893,12 @@ def test_spec_cli_transport_failure_writes_nothing(
     ]) == 1
     assert "transport" in capsys.readouterr().err.lower()
     assert not (tmp_path / "spec.json").exists()
+
+
+def test_unreadable_spec_cache_warns(tmp_path: Path, capsys) -> None:
+    from nmesh import persist
+    persist._warned.clear()
+    target = tmp_path / "spec.json"
+    target.write_text("{broken", encoding="utf-8")
+    assert load_cache(target) == {}
+    assert "could not be read" in capsys.readouterr().err

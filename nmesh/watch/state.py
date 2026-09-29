@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
+from nmesh.persist import read_json_file
 
 
 @dataclass(frozen=True)
@@ -28,27 +29,24 @@ def _bounded(values: dict[str, str], limit: int = 5000) -> dict[str, str]:
 
 def load_state(path: Path | None = None) -> WatchState:
     target = path or (nmesh_home() / "watch.json")
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict) or payload.get("version") != 1:
-            return _empty()
-        items = payload.get("seen_items")
-        findings = payload.get("seen_findings")
-        if not isinstance(items, dict) or not isinstance(findings, dict):
-            return _empty()
-        if not all(isinstance(key, str) and isinstance(value, str)
-                   for key, value in items.items()):
-            return _empty()
-        if not all(isinstance(key, str) and isinstance(value, str)
-                   for key, value in findings.items()):
-            return _empty()
-        return WatchState(
-            payload.get("last_run", "") if isinstance(payload.get("last_run"), str) else "",
-            _bounded(dict(items)),
-            _bounded(dict(findings)),
-        )
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    payload = read_json_file(target)
+    if not isinstance(payload, dict) or payload.get("version") != 1:
         return _empty()
+    items = payload.get("seen_items")
+    findings = payload.get("seen_findings")
+    if not isinstance(items, dict) or not isinstance(findings, dict):
+        return _empty()
+    if not all(isinstance(key, str) and isinstance(value, str)
+               for key, value in items.items()):
+        return _empty()
+    if not all(isinstance(key, str) and isinstance(value, str)
+               for key, value in findings.items()):
+        return _empty()
+    return WatchState(
+        payload.get("last_run", "") if isinstance(payload.get("last_run"), str) else "",
+        _bounded(dict(items)),
+        _bounded(dict(findings)),
+    )
 
 
 def save_state(state: WatchState, path: Path | None = None) -> None:

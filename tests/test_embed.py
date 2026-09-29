@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from pathlib import Path
 
 import httpx
 
@@ -310,3 +311,12 @@ def test_embed_inventory_reports_cap_and_speed(tmp_path, monkeypatch) -> None:
     assert row["served_cap"] == 2048
     assert row["encode_tps"] == 500.0
     assert payload["counts"]["embed"] == 1
+
+
+def test_unreadable_embed_cache_warns(tmp_path: Path, capsys) -> None:
+    from nmesh import persist
+    persist._warned.clear()
+    target = tmp_path / "embed.json"
+    target.write_text("{broken", encoding="utf-8")
+    assert load_embed_cache(target) == {}
+    assert "could not be read" in capsys.readouterr().err

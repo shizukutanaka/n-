@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
+from nmesh.persist import read_json_file
 
 CAPS_PATH = nmesh_home() / "caps.json"
 
@@ -106,9 +107,10 @@ def llamacpp_caps(
     except OSError:
         return None
     target = cache_path or CAPS_PATH
+    payload = read_json_file(target)
     try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-        cached = payload.get("entries", {}).get(key)
+        entries = payload.get("entries") if isinstance(payload, dict) else None
+        cached = entries.get(key) if isinstance(entries, dict) else None
         if isinstance(cached, dict):
             return BackendCaps(
                 str(cached["binary"]),
@@ -118,7 +120,7 @@ def llamacpp_caps(
                 if isinstance(cached.get("gpu_devices"), list)
                 else None if cached.get("gpu_devices") is None else (),
             )
-    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError):
         pass
     try:
         result = subprocess.run(
@@ -164,11 +166,8 @@ def llamacpp_caps(
     except (OSError, subprocess.SubprocessError):
         gpu_devices = None
     caps = BackendCaps(str(resolved), version, flags, gpu_devices)
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            payload = {}
-    except (OSError, json.JSONDecodeError):
+    payload = read_json_file(target)
+    if not isinstance(payload, dict):
         payload = {}
     entries = payload.setdefault("entries", {})
     if isinstance(entries, dict):

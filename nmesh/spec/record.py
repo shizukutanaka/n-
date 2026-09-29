@@ -25,6 +25,7 @@ from nmesh.evidence import refutes
 from nmesh.orchestrate.measure import RoleIdentity
 from nmesh.orchestrate.record import role_key
 from nmesh.paths import nmesh_home
+from nmesh.persist import read_json_file
 
 from .measure import (
     KIND_NONE,
@@ -235,10 +236,7 @@ def cache_path(path: Path | None = None) -> Path:
 
 def load_cache(path: Path | None = None) -> dict[str, SpecRecord]:
     target = cache_path(path)
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return {}
+    payload = read_json_file(target)
     results = payload.get("results") if isinstance(payload, Mapping) else None
     if not isinstance(results, Mapping):
         return {}

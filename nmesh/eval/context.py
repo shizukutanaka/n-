@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
+from nmesh.persist import read_json_file
 
 
 @dataclass(frozen=True)
@@ -164,18 +165,15 @@ def _record(data: object) -> ContextRecord | None:
 
 def load_context_cache(path: Path | None = None) -> dict[str, ContextRecord]:
     target = path or (nmesh_home() / "context.json")
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-        results = payload.get("results", {}) if isinstance(payload, dict) else {}
-        if not isinstance(results, dict):
-            return {}
-        return {
-            str(key): record
-            for key, value in results.items()
-            if (record := _record(value)) is not None
-        }
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    payload = read_json_file(target)
+    results = payload.get("results", {}) if isinstance(payload, dict) else {}
+    if not isinstance(results, dict):
         return {}
+    return {
+        str(key): record
+        for key, value in results.items()
+        if (record := _record(value)) is not None
+    }
 
 
 def save_context(record: ContextRecord, path: Path | None = None) -> Path:

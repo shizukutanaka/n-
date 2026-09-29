@@ -13,6 +13,7 @@ import httpx
 
 from nmesh.catalog import load_catalog
 from nmesh.paths import nmesh_home
+from nmesh.persist import read_json_file
 from nmesh.planner import BPW
 
 if TYPE_CHECKING:
@@ -239,7 +240,7 @@ def _model_finding(
 def _caps_flags() -> tuple[frozenset[str], tuple[dict[str, object], ...]] | None:
     path = nmesh_home() / _CAPS_PATH
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = read_json_file(path)
         entries = payload.get("entries") if isinstance(payload, dict) else None
         if not isinstance(entries, dict) or not entries:
             return None
@@ -263,7 +264,7 @@ def _caps_flags() -> tuple[frozenset[str], tuple[dict[str, object], ...]] | None
         if not combined:
             return None
         return frozenset(combined), tuple(binaries)
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    except (TypeError, ValueError):
         return None
 
 

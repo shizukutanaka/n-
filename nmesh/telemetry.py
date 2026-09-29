@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
+from nmesh.persist import read_json_file
 
 COMPARABLE_PROMPT_TOKENS = 1024
 """Real-token ceiling for live samples comparable to the bench reference.
@@ -69,8 +70,8 @@ class Telemetry:
         return list(loaded)
 
     def _read(self) -> list[Sample]:
+        payload = read_json_file(self.path)
         try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
             values = payload.get("samples", []) if isinstance(payload, dict) else []
             return [Sample(
                 str(item["service"]), str(item["key"]),
@@ -82,7 +83,7 @@ class Telemetry:
                 int(item["in_flight"]) if item.get("in_flight") is not None else None,
                 int(item["prompt_tokens"]) if item.get("prompt_tokens") is not None else None,
             ) for item in values if isinstance(item, dict)]
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError):
             return []
 
     def record(self, sample: Sample) -> None:

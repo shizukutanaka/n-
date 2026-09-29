@@ -49,3 +49,14 @@ def test_caps_cache_hits_and_invalidates_on_size_and_mtime(tmp_path, monkeypatch
 
 def test_caps_missing_binary_is_unknown(tmp_path) -> None:
     assert llamacpp_caps(str(tmp_path / "missing"), tmp_path / "caps.json") is None
+
+
+def test_unreadable_caps_cache_warns_and_reprobes(tmp_path, capsys) -> None:
+    from nmesh import persist
+    persist._warned.clear()
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"one")
+    cache = tmp_path / "caps.json"
+    cache.write_text("{broken", encoding="utf-8")
+    assert llamacpp_caps(str(binary), cache) is None
+    assert "could not be read" in capsys.readouterr().err

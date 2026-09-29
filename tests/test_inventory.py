@@ -199,3 +199,13 @@ def test_cli_scan_and_local_report_header_metadata(
     missing = tmp_path / "missing"
     assert cli.main(["models", "scan", "--json", "--root", str(missing)]) == 1
     assert "not an existing directory" in capsys.readouterr().err
+
+
+def test_ollama_manifest_unreadable_warns(tmp_path: Path, capsys) -> None:
+    from nmesh import persist
+    persist._warned.clear()
+    manifests = tmp_path / "manifests" / "registry.ollama.ai"
+    manifests.mkdir(parents=True)
+    (manifests / "broken").write_text("{", encoding="utf-8")
+    assert inventory.ollama_tags(tmp_path) == {}
+    assert "could not be read" in capsys.readouterr().err

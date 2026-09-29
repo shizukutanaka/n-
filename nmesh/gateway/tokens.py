@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from nmesh.paths import nmesh_home
+from nmesh.persist import read_json_file
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
@@ -156,10 +157,7 @@ def _coerce_sums(value: object) -> Sums:
 
 
 def _read() -> dict[str, Sums]:
-    try:
-        payload = json.loads(_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    payload = read_json_file(_path())
     if not isinstance(payload, dict) or not isinstance(payload.get("models"), dict):
         return {}
     return {

@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
+from nmesh.persist import read_json_file
 
 ATOM_URL = "https://github.com/ggml-org/llama.cpp/releases.atom"
 ASSETS_URL = "https://github.com/ggml-org/llama.cpp/releases/expanded_assets/{tag}"
@@ -588,8 +589,8 @@ def installed(problems: list[str] | None = None) -> list[InstalledEngine]:
 
 def active() -> InstalledEngine | None:
     path = engines_dir() / "active.json"
+    payload = read_json_file(path)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             return None
         manifest = payload.get("manifest")
@@ -600,7 +601,7 @@ def active() -> InstalledEngine | None:
         if not candidate.exists():
             return None
         return _read_manifest(candidate)
-    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+    except (OSError, ValueError, TypeError, KeyError):
         return None
 
 

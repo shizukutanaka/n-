@@ -663,3 +663,14 @@ def test_watch_state_tmp_name_is_pid_namespaced(
     save_state(WatchState("now", {}, {}), tmp_path / "watch.json")
     assert [path.name for path in written] == [".watch.json.4321.tmp"]
     assert (tmp_path / "watch.json").exists()
+
+
+def test_unreadable_watch_state_warns_once(tmp_path: Path, capsys) -> None:
+    from nmesh import persist
+    persist._warned.clear()
+    target = tmp_path / "watch.json"
+    target.write_text("{broken", encoding="utf-8")
+    assert load_state(target).seen_items == {}
+    assert "could not be read" in capsys.readouterr().err
+    assert load_state(target).seen_items == {}
+    assert capsys.readouterr().err == ""

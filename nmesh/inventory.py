@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from dataclasses import dataclass
@@ -10,6 +9,7 @@ from pathlib import Path
 
 from nmesh.artifact import GgufInfo, gguf_info
 from nmesh.paths import nmesh_home
+from nmesh.persist import read_json_file
 from nmesh.runtime.acquisition import parse_label
 
 FILE_TYPE_QUANT = {
@@ -150,10 +150,7 @@ def ollama_tags(models_root: Path) -> dict[str, tuple[str, ...]]:
     for manifest in manifests.rglob("*"):
         if not manifest.is_file():
             continue
-        try:
-            payload = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            continue
+        payload = read_json_file(manifest)
         layers = payload.get("layers") if isinstance(payload, dict) else None
         if not isinstance(layers, list):
             continue

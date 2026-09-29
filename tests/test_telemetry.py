@@ -601,3 +601,23 @@ def test_gateway_short_stream_records_no_decode_rate(tmp_path, monkeypatch) -> N
         _TelemetryHandler.include_usage = False
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_unreadable_telemetry_warns_once(tmp_path, capsys) -> None:
+    from nmesh import persist
+    persist._warned.clear()
+    target = tmp_path / "telemetry.json"
+    target.write_text("{broken", encoding="utf-8")
+    store = Telemetry(target)
+    assert store._read() == []
+    assert "could not be read" in capsys.readouterr().err
+    assert store._read() == []
+    assert capsys.readouterr().err == ""
+
+
+def test_missing_telemetry_is_silent(tmp_path, capsys) -> None:
+    from nmesh import persist
+    persist._warned.clear()
+    store = Telemetry(tmp_path / "telemetry.json")
+    assert store._read() == []
+    assert capsys.readouterr().err == ""

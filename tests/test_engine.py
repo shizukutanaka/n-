@@ -540,3 +540,14 @@ def test_installed_reports_unreadable_manifests(monkeypatch, tmp_path: Path) -> 
 
     # Without the sink the behaviour is unchanged: silently skipped.
     assert engine.installed() == []
+
+
+def test_active_reports_unreadable_state(monkeypatch, tmp_path: Path, capsys) -> None:
+    from nmesh import persist
+    persist._warned.clear()
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    (tmp_path / "active.json").write_text("{broken", encoding="utf-8")
+    assert engine.active() is None
+    assert "could not be read" in capsys.readouterr().err
+    assert engine.active() is None
+    assert capsys.readouterr().err == ""

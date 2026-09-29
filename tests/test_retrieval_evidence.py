@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import httpx
 
@@ -413,3 +414,12 @@ def test_planner_selects_chunk_retrieval_warning_messages() -> None:
                for warning in failed.warnings)
     assert any("not a verified remedy" in warning for warning in failed.warnings)
     assert any("Chunk long inputs" in warning for warning in unmeasured.warnings)
+
+
+def test_unreadable_retrieval_cache_warns(tmp_path: Path, capsys) -> None:
+    from nmesh import persist
+    persist._warned.clear()
+    target = tmp_path / "retrieval.json"
+    target.write_text("{broken", encoding="utf-8")
+    assert load_retrieval_cache(target) == {}
+    assert "could not be read" in capsys.readouterr().err

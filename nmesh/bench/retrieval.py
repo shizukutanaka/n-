@@ -14,6 +14,7 @@ from pathlib import Path
 import httpx
 
 from nmesh.paths import nmesh_home
+from nmesh.persist import read_json_file
 
 RETRIEVAL_HARNESS_VERSION = "retrieval-v3"
 RETRIEVAL_DOCS = 8
@@ -334,18 +335,15 @@ def _record(data: object) -> RetrievalRecord | None:
 
 def load_retrieval_cache(path: Path | None = None) -> dict[str, RetrievalRecord]:
     target = path or (nmesh_home() / "retrieval.json")
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-        results = payload.get("results", {}) if isinstance(payload, dict) else {}
-        if not isinstance(results, dict):
-            return {}
-        return {
-            str(key): record
-            for key, value in results.items()
-            if (record := _record(value)) is not None
-        }
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    payload = read_json_file(target)
+    results = payload.get("results", {}) if isinstance(payload, dict) else {}
+    if not isinstance(results, dict):
         return {}
+    return {
+        str(key): record
+        for key, value in results.items()
+        if (record := _record(value)) is not None
+    }
 
 
 def save_retrieval(

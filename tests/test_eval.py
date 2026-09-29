@@ -6,6 +6,7 @@ import re
 import threading
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import ClassVar
 
 import httpx
@@ -2159,3 +2160,21 @@ def test_eval_cli_warns_when_artifact_changes(monkeypatch, capsys) -> None:
     assert output["artifact"] == "new-artifact"
     assert output["artifact_warning"].count("old-artifact") == 1
     assert output["artifact_warning"].count("new-artifact") == 1
+
+
+def test_unreadable_eval_cache_warns(tmp_path: Path, capsys) -> None:
+    from nmesh import persist
+    persist._warned.clear()
+    target = tmp_path / "eval.json"
+    target.write_text("{broken", encoding="utf-8")
+    assert load_eval_cache(target) == {}
+    assert "could not be read" in capsys.readouterr().err
+
+
+def test_unreadable_context_cache_warns(tmp_path: Path, capsys) -> None:
+    from nmesh import persist
+    persist._warned.clear()
+    target = tmp_path / "context.json"
+    target.write_text("{broken", encoding="utf-8")
+    assert load_context_cache(target) == {}
+    assert "could not be read" in capsys.readouterr().err

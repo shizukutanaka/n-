@@ -309,3 +309,15 @@ def test_prompt_calibration_uses_text_key_for_prompt_requests(monkeypatch) -> No
         {"prompt_tokens": 5},
     ))
     assert calls == [(calibration_key(service.model_id, False), "hello", 5)]
+
+
+def test_unreadable_tokens_file_warns_once(monkeypatch, tmp_path: Path, capsys) -> None:
+    from nmesh import persist
+    from nmesh.gateway import tokens
+    persist._warned.clear()
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    (tmp_path / "tokens.json").write_text("{broken", encoding="utf-8")
+    assert tokens._read() == {}
+    assert "could not be read" in capsys.readouterr().err
+    assert tokens._read() == {}
+    assert capsys.readouterr().err == ""
