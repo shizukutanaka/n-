@@ -572,7 +572,7 @@ def install(
         raise
 
 
-def installed() -> list[InstalledEngine]:
+def installed(problems: list[str] | None = None) -> list[InstalledEngine]:
     root = engines_dir()
     if not root.exists():
         return []
@@ -580,8 +580,9 @@ def installed() -> list[InstalledEngine]:
     for manifest in sorted(root.glob("*/manifest.json")):
         try:
             result.append(_read_manifest(manifest))
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-            continue
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+            if problems is not None:
+                problems.append(f"{manifest}: {error}")
     return result
 
 
