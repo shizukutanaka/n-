@@ -549,6 +549,12 @@
   # estimates use the active parameter count but no expert offload is
   # planned for this model.
   active_params: 3000000000
+  # Recurrent state per slot: 23 mamba layers (layers_block_type in the
+  # config) × f32 × [(mamba_num_heads×mamba_head_dim + 2×n_groups×
+  # ssm_state_size)×(conv_kernel-1) + mamba_num_heads×mamba_head_dim×
+  # ssm_state_size] = 23×4×(6144×3 + 4096×128), per llama.cpp's
+  # llama_memory_recurrent sizing.
+  recurrent_state_bytes: 49930240
   max_context: 262144
   roles: [chat, code, tool]
   quality: 76
@@ -577,6 +583,12 @@
   active_params: 3000000000
   moe_expert_params: 77309411328
   n_moe_layers: 48
+  # Recurrent state per slot: 36 GDN layers × f32 × [(linear_num_value_
+  # heads×linear_value_head_dim + 2×linear_num_key_heads×
+  # linear_key_head_dim)×(linear_conv_kernel_dim-1) + (linear_num_value_
+  # heads×linear_value_head_dim)×linear_key_head_dim] = 36×4×(8192×3 +
+  # 4096×128), per llama.cpp's llama_memory_recurrent sizing.
+  recurrent_state_bytes: 79036416
   max_context: 262144
   roles: [chat, code, tool]
   quality: 82
