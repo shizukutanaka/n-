@@ -1340,6 +1340,15 @@ def _gateway_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
 
+_UNLOAD_REASON_KEYS = {
+    "not_running": "err.unload_not_running",
+    "idle": "err.unload_idle",
+    "shared": "err.unload_shared",
+    "external": "err.unload_external",
+    "not_owned": "err.unload_not_owned",
+}
+
+
 def _unload(args: argparse.Namespace) -> int:
     path = "/admin/unload"
     if args.service is not None:
@@ -1371,14 +1380,8 @@ def _unload(args: argparse.Namespace) -> int:
             ),
             {},
         )
-        reason = result.get("reason")
-        reason_key = {
-            "not_running": "err.unload_not_running",
-            "idle": "err.unload_idle",
-            "shared": "err.unload_shared",
-            "external": "err.unload_external",
-            "not_owned": "err.unload_not_owned",
-        }.get(str(reason), "err.unload_unknown")
+        reason_key = _UNLOAD_REASON_KEYS.get(str(result.get("reason")),
+                                             "err.unload_unknown")
         print(i18n.t(reason_key, i18n.lang(), service=args.service), file=sys.stderr)
         return 1
     if args.json:
@@ -1387,6 +1390,15 @@ def _unload(args: argparse.Namespace) -> int:
         print(i18n.t("label.unloaded", i18n.lang(),
                      services=", ".join(unloaded) if unloaded else
                      i18n.t("label.none", i18n.lang())))
+        for result in data.get("results", []):
+            if not isinstance(result, dict) or result.get("unloaded", False):
+                continue
+            service = result.get("service")
+            if not isinstance(service, str):
+                continue
+            reason_key = _UNLOAD_REASON_KEYS.get(str(result.get("reason")),
+                                                 "err.unload_unknown")
+            print(i18n.t(reason_key, i18n.lang(), service=service), file=sys.stderr)
     return 0
 
 

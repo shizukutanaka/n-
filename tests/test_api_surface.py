@@ -557,3 +557,36 @@ def test_serve_returns_nonzero_for_failed_gateway(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_launch_gateway", lambda _port, detach: (process, None))
     monkeypatch.setattr(cli, "clear_gateway", lambda _pid: None)
     assert cli._runtime(SimpleNamespace(command="serve", port=18000)) == 1
+
+
+def test_unload_all_reports_refused_services(monkeypatch, capsys) -> None:
+    # Batch unload previously printed only the unloaded list; services the
+    # gateway refused (idle/shared/not_owned/...) were silently dropped,
+    # leaving no trace of why they stayed up.
+    class Response:
+        status = 200
+
+        def read(self):
+            return json.dumps({
+                "unloaded": ["chat"],
+                "results": [
+                    {"service": "chat", "unloaded": True, "reason": "ok"},
+                    {"service": "embed", "unloaded": False, "reason": "idle"},
+                    {"service": "code", "unloaded": False, "reason": "not_owned"},
+                ],
+            }).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen",
+                        lambda *args, **kwargs: Response())
+    args = SimpleNamespace(service=None, port=18000, json=False)
+    assert cli._unload(args) == 0
+    stderr = capsys.readouterr().err
+    for service in ("embed", "code"):
+        assert service in stderr
+    assert "chat" not in stderr
