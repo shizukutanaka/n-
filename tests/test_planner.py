@@ -2525,3 +2525,19 @@ def test_lfm2_24b_a2b_catalog_moe_anatomy(catalog: list[ModelSpec]) -> None:
     assert estimate.moe_expert_bytes_per_layer == pytest.approx(
         22_951_231_488 / 38 * estimate.weight_bytes / 24_000_000_000
     )
+
+
+def test_service_port_base_out_of_range_rejected(monkeypatch) -> None:
+    # NMESH_SERVICE_PORT_BASE=70000 used to emit `--port 70010` argv — an
+    # unbindable port discovered only at engine launch. Malformed values
+    # still fall back to 18010; parseable-but-out-of-range is rejected.
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "abc")
+    assert planner_core._service_port_base() == 18010
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "70000")
+    with pytest.raises(ValueError, match="port range"):
+        planner_core._service_port_base()
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "0")
+    with pytest.raises(ValueError):
+        planner_core._service_port_base()
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "18010")
+    assert planner_core._service_port_base() == 18010
