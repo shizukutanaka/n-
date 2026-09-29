@@ -11,6 +11,7 @@ from pathlib import Path
 
 from nmesh.bench.epoch import refutes
 from nmesh.paths import nmesh_home
+from nmesh.persist import read_json_file
 
 BenchCache = dict[str, float]
 CACHE_PATH = nmesh_home() / "bench.json"
@@ -199,10 +200,7 @@ def _record(value: object) -> BenchRecord | None:
 
 def load_records(path: Path | None = None) -> dict[str, BenchRecord]:
     target = path or CACHE_PATH
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return {}
+    payload = read_json_file(target)
     if not isinstance(payload, dict):
         return {}
     records: dict[str, BenchRecord] = {}

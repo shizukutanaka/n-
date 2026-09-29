@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
+from nmesh.persist import read_json_file
 
 ArtifactCache = dict[str, int]
 CACHE_PATH = nmesh_home() / "artifacts.json"
@@ -16,17 +17,14 @@ def artifact_key(repo_id: str, label: str) -> str:
 
 def load_cache(path: Path | None = None) -> ArtifactCache:
     target = path or CACHE_PATH
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            return {}
-        return {
-            str(key): int(value)
-            for key, value in payload.items()
-            if isinstance(value, int) and not isinstance(value, bool)
-        }
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    payload = read_json_file(target)
+    if not isinstance(payload, dict):
         return {}
+    return {
+        str(key): int(value)
+        for key, value in payload.items()
+        if isinstance(value, int) and not isinstance(value, bool)
+    }
 
 
 def save_cache(cache: ArtifactCache, path: Path | None = None) -> Path:
