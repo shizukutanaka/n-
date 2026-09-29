@@ -1829,3 +1829,22 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_unreadable_state_warns_once(tmp_path: Path, capsys) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{not json", encoding="utf-8")
+    supervisor = Supervisor(state_path=state_path, terminator=lambda _pid: None)
+
+    assert supervisor._load_state() is None
+    assert "could not be read" in capsys.readouterr().err
+    supervisor._load_state()
+    assert capsys.readouterr().err == ""
+
+
+def test_missing_state_is_silent(tmp_path: Path, capsys) -> None:
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json", terminator=lambda _pid: None
+    )
+    assert supervisor._load_state() is None
+    assert capsys.readouterr().err == ""
