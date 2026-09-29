@@ -523,3 +523,20 @@ def test_engine_install_rejects_unknown_backend(capsys) -> None:
     with pytest.raises(SystemExit) as error:
         cli.main(["engine", "install", "vllm"])
     assert error.value.code == 2
+
+
+def test_installed_reports_unreadable_manifests(monkeypatch, tmp_path: Path) -> None:
+    # A corrupt manifest used to be silently skipped — the engine vanished
+    # from `engine list` and heal candidates with no trace.
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    broken = tmp_path / "b10830"
+    broken.mkdir()
+    (broken / "manifest.json").write_text("{not json", encoding="utf-8")
+
+    problems: list[str] = []
+    assert engine.installed(problems) == []
+    assert len(problems) == 1
+    assert "manifest.json" in problems[0]
+
+    # Without the sink the behaviour is unchanged: silently skipped.
+    assert engine.installed() == []
