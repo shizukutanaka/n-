@@ -3986,7 +3986,7 @@ def _watch(args: argparse.Namespace) -> int:
     try:
         save_state(next_state)
     except OSError as error:
-        print(i18n.t("warn.watch_state", language, error=error))
+        print(i18n.t("warn.watch_state", language, error=error), file=sys.stderr)
     drafts: list[str] = []
     if args.write_drafts:
         for finding in findings:
@@ -3994,7 +3994,7 @@ def _watch(args: argparse.Namespace) -> int:
                 try:
                     drafts.append(str(write_draft(finding, args.write_drafts)))
                 except OSError as error:
-                    print(i18n.t("warn.watch_draft", language, error=error))
+                    print(i18n.t("warn.watch_draft", language, error=error), file=sys.stderr)
     notes = [
         i18n.t("note.watch_external_claim", language),
         i18n.t("note.watch_route", language),

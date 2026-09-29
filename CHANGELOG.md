@@ -22,6 +22,7 @@
 
 ### Fixed
 - **`nmesh up` がプラン警告を一切表示しなかった問題を修正**: `warn.*`（KV 量子化の FA 必須・CPU フォールバック・環境変数漏れ等）は `nmesh plan` と失敗時にしか出ず、直接 `nmesh up` を実行するユーザには新規構築・保存済みプランの両経路で不可視でした。`up` が採用するプランの `warnings` を `nmesh plan` と同じ形式で表示するよう統一（`_print_plan_warnings` 共通化）
+- **診断メッセージが stdout に出て `--json` 出力を汚染する問題を修正**: `up` のプラン警告（stderr へ）・エンジン自動導入の案内 `info.engine_autoinstall`・`warn.watch_state`・`warn.watch_draft` が stdout に出力され、`up --json`/`watch --json` のペイロードを破壊していました。全て stderr へ移行し stdout は機械可読ペイロードのみに統一
 - **読み取れないエンジンマニフェストが警告なしにスキップされていた問題を修正**: `engines/*/manifest.json` が破損・手編集ミスで読めなくなると `engine.installed()` が無言で除外し、インストール済みエンジンが `nmesh engine list` から消え・ヒール候補からも外れ・`use <tag>` が「未インストール」と誤答していました。`installed()` に `problems` シンクを追加し `engine list` が `warn.engine_entry_skipped` でスキップ理由を stderr に明示します（カタログスキップ報告と同じ仕組み）
 - **不正なカタログ項目が警告なしに捨てられていた問題を修正**: `~/.nmesh/models.yaml` に必須キー欠落・型違い・YAML パース不能な項目があっても、ローダは全項目を無言でスキップしており、ユーザが追加したモデルが `nmesh plan`/`nmesh models` に現れない理由が一切分かりませんでした。`load_catalog` がスキップ理由を報告できるようになり（`problems` シンク）、plan/up/models/watch の各コマンドは `warn.catalog_entry_skipped` で「どの項目がなぜ無視されたか」を stderr に明示します
 - **vLLM の `--gpu-memory-utilization` がプラン見積もりと乖離する問題を修正**: 同フラグはカード総メモリに対する vLLM 総使用量の上限で、KV キャッシュを上限まで埋めます（vLLM docs/issue #54354）。nmesh は `min(0.95, max(0.10, 見積もり/総VRAM))` で発行していたため、小モデル（<10%）ではプラン以上の VRAM 獲得を承認し同居サービスの予算を静かに侵食し（N2 違反）、高負荷（>95%）ではプランが「収まる」と判定したのに実行時に vLLM がロードを拒否し得ました。プランのシェアをそのまま発行するよう変更（フォーマットの丸めがプランを下回らないよう ceil）。LAUNCH_REVISION 7
