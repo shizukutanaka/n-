@@ -310,3 +310,27 @@ def test_plan_roundtrip_preserves_launch_revision(
     (tmp_path / "plan.json").write_text(json.dumps(raw))
     legacy = load_plan()
     assert legacy is not None and legacy.launch_revision == 0
+
+
+def test_up_warns_when_saved_plan_is_unreadable(monkeypatch, capsys, tmp_path) -> None:
+    # A hand-edited/corrupt plan.json used to be silently discarded and
+    # replanned — the user's saved plan vanished without a trace.
+    bad_plan = tmp_path / "plan.json"
+    bad_plan.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(cli, "PLAN_PATH", bad_plan)
+    monkeypatch.setattr(cli, "load_plan", lambda: None)
+    monkeypatch.setattr(cli, "_make_plan", lambda _args: _plan(["llamacpp"], False))
+    monkeypatch.setattr(cli.engine_runtime, "install", lambda **_kw: None)
+
+    assert cli._ensure_runnable_plan(_up_args()) is None
+    assert "could not be read" in capsys.readouterr().err
+
+
+def test_up_silent_when_no_plan_file(monkeypatch, capsys, tmp_path) -> None:
+    monkeypatch.setattr(cli, "PLAN_PATH", tmp_path / "missing.json")
+    monkeypatch.setattr(cli, "load_plan", lambda: None)
+    monkeypatch.setattr(cli, "_make_plan", lambda _args: _plan(["llamacpp"], False))
+    monkeypatch.setattr(cli.engine_runtime, "install", lambda **_kw: None)
+
+    assert cli._ensure_runnable_plan(_up_args()) is None
+    assert "could not be read" not in capsys.readouterr().err
