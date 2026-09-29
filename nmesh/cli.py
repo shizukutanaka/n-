@@ -1913,7 +1913,13 @@ def _engine(args: argparse.Namespace) -> int:
     command = getattr(args, "engine_command", None)
     try:
         if command == "list":
-            entries = engine_runtime.installed()
+            problems: list[str] = []
+            entries = engine_runtime.installed(problems)
+            for problem in problems:
+                print(
+                    i18n.t("warn.engine_entry_skipped", i18n.lang(), detail=problem),
+                    file=sys.stderr,
+                )
             active = engine_runtime.active()
             available = engine_runtime.build_tags() if args.available else []
             payload: dict[str, object] = {
