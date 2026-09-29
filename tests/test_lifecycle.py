@@ -1370,6 +1370,32 @@ def test_autostart_install_writes_launcher_and_preserves_environment(
     assert "self-crash" in output
 
 
+def test_autostart_install_without_api_key_writes_commented_placeholder(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    # An empty NMESH_API_KEY= assignment would export "" to the gateway, which
+    # then demands a bearer token that is itself empty — every real client is
+    # locked out. The env file must document the knob without exporting it.
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(service_unit_module, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(cli, "is_windows", lambda: False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("NMESH_API_KEY", raising=False)
+
+    assert cli.main(["autostart", "--install", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    env_text = Path(data["env_path"]).read_text(encoding="utf-8")
+    live = [
+        line for line in env_text.splitlines()
+        if line and not line.startswith("#")
+    ]
+    assert not any(line.startswith("NMESH_API_KEY=") for line in live)
+    assert any(
+        line.startswith("# NMESH_API_KEY=")
+        for line in env_text.splitlines()
+    )
+
+
 def test_autostart_install_writes_unit_file(
     monkeypatch, capsys, tmp_path: Path
 ) -> None:

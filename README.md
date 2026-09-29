@@ -531,9 +531,12 @@ details are machine-facing API contracts for clients.
 from that sibling file, sets `NMESH_HOME` to its own directory before Python
 starts, and runs `python -m nmesh.gateway.server --port 18000` (with the
 configured port). The API key belongs only in `gateway.env`; it is not embedded
-in a service unit or Task Scheduler command line. Existing `gateway.env` files
-are never overwritten. On POSIX systems the launcher is mode `0700` and the
-environment file is mode `0600`.
+in a service unit or Task Scheduler command line. When `NMESH_API_KEY` is not
+set at install time the file carries a commented `# NMESH_API_KEY=` placeholder
+instead of an empty assignment (an empty exported key would demand a bearer
+token that is itself empty). Existing `gateway.env` files are never
+overwritten. On POSIX systems the launcher is mode `0700` and the environment
+file is mode `0600`.
 
 After a restart, the gateway watchdog reloads the saved plan and recovers
 resident services, services recorded in `state.json`, and already-listening

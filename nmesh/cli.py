@@ -4706,8 +4706,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not env_path.exists():
                 api_key = os.environ.get("NMESH_API_KEY", "")
                 env_path.write_text(
-                    f"NMESH_API_KEY={api_key}\n"
-                    "# NMESH_HOME is set by the launcher to its own directory.\n",
+                    (
+                        f"NMESH_API_KEY={api_key}\n"
+                        if api_key
+                        else "# NMESH_API_KEY=<key> (set to require a bearer token)\n"
+                    )
+                    + "# NMESH_HOME is set by the launcher to its own directory.\n",
                     encoding="utf-8",
                     newline="",
                 )
