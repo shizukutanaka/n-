@@ -267,6 +267,7 @@ def test_saved_plan_warns_when_up_flags_ignored(monkeypatch, capsys) -> None:
     saved = SimpleNamespace(
         services=[object()], runnable=True,
         launch_revision=LAUNCH_REVISION,
+        warnings=[], policy=SimpleNamespace(lang="en"),
     )
     monkeypatch.setattr(cli, "load_plan", lambda: saved)
     assert cli._ensure_runnable_plan(_up_args(context_shift=True)) is saved
@@ -276,6 +277,7 @@ def test_saved_plan_warns_when_up_flags_ignored(monkeypatch, capsys) -> None:
 def test_saved_plan_warns_when_launch_revision_stale(monkeypatch, capsys) -> None:
     saved = SimpleNamespace(
         services=[object()], runnable=True, launch_revision=0,
+        warnings=[], policy=SimpleNamespace(lang="en"),
     )
     monkeypatch.setattr(cli, "load_plan", lambda: saved)
     assert cli._ensure_runnable_plan(_up_args()) is saved
@@ -288,6 +290,7 @@ def test_saved_plan_at_current_revision_stays_silent(monkeypatch, capsys) -> Non
     saved = SimpleNamespace(
         services=[object()], runnable=True,
         launch_revision=LAUNCH_REVISION,
+        warnings=[], policy=SimpleNamespace(lang="en"),
     )
     monkeypatch.setattr(cli, "load_plan", lambda: saved)
     assert cli._ensure_runnable_plan(_up_args()) is saved
@@ -310,3 +313,24 @@ def test_plan_roundtrip_preserves_launch_revision(
     (tmp_path / "plan.json").write_text(json.dumps(raw))
     legacy = load_plan()
     assert legacy is not None and legacy.launch_revision == 0
+
+
+def test_saved_plan_reprints_warnings(monkeypatch, capsys) -> None:
+    saved = SimpleNamespace(
+        services=[object()], runnable=True,
+        launch_revision=LAUNCH_REVISION,
+        warnings=["caveat one"], policy=SimpleNamespace(lang="en"),
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: saved)
+    assert cli._ensure_runnable_plan(_up_args()) is saved
+    assert "caveat one" in capsys.readouterr().out
+
+
+def test_fresh_plan_prints_warnings(monkeypatch, capsys) -> None:
+    plan = _runnable_plan()
+    plan.warnings = ["caveat two"]
+    monkeypatch.setattr(cli, "load_plan", lambda: None)
+    monkeypatch.setattr(cli, "save_plan", lambda _plan: None)
+    monkeypatch.setattr(cli, "_make_plan", lambda _args: plan)
+    assert cli._ensure_runnable_plan(_up_args()) is plan
+    assert "caveat two" in capsys.readouterr().out

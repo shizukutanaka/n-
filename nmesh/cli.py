@@ -848,8 +848,7 @@ def _plan(args: argparse.Namespace) -> int:
         )
     for hint in result.install_hints:
         _console().print(f"[yellow]{i18n.t('label.install', language, hint=hint)}[/yellow]")
-    for warning in result.warnings:
-        _console().print(f"[yellow]{i18n.t('label.warning', language, warning=warning)}[/yellow]")
+    _print_plan_warnings(result)
     if not getattr(args, "lang", None) and language != "en":
         _console().print(i18n.t("hint.language", language, language=language))
     if args.explain:
@@ -894,6 +893,14 @@ def _render_plan(result: Plan) -> None:
     if any(service.estimated and service.decode_tps is not None
            for service in result.services):
         _console().print(i18n.t("note.tps_estimate", language))
+
+
+def _print_plan_warnings(plan: Plan) -> None:
+    language = plan.policy.lang
+    for warning in plan.warnings:
+        _console().print(
+            f"[yellow]{i18n.t('label.warning', language, warning=warning)}[/yellow]"
+        )
 
 
 def _up_plan_args(args: argparse.Namespace) -> argparse.Namespace:
@@ -981,6 +988,7 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
                 i18n.t("warn.plan_stale", i18n.lang()),
                 file=sys.stderr,
             )
+        _print_plan_warnings(plan)
         return plan
     plan_args = _up_plan_args(args)
     try:
@@ -1038,6 +1046,7 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
         except OSError as error:
             print(i18n.t("err.plan_save", i18n.lang(), error=error), file=sys.stderr)
             return None
+    _print_plan_warnings(plan)
     return plan
 
 
