@@ -91,16 +91,23 @@ def fetch_qiita(
         if token:
             headers["Authorization"] = f"Bearer {token}"
         items: list[SourceItem] = []
+        failures: list[str] = []
+        succeeded = 0
         for tag in tags:
-            response = session.get(
-                "https://qiita.com/api/v2/items",
-                params={"per_page": limit, "query": f"tag:{tag}"},
-                headers=headers,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, list):
-                raise TypeError("Qiita response was not a list")
+            try:
+                response = session.get(
+                    "https://qiita.com/api/v2/items",
+                    params={"per_page": limit, "query": f"tag:{tag}"},
+                    headers=headers,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, list):
+                    raise TypeError("Qiita response was not a list")
+            except (httpx.HTTPError, ValueError, TypeError) as error:
+                failures.append(f"{tag}: {error}")
+                continue
+            succeeded += 1
             for raw in payload:
                 item = _mapping(raw)
                 if item is None:
@@ -115,8 +122,15 @@ def fetch_qiita(
                     _text(item.get("body")),
                     _text(item.get("created_at")),
                 ))
+        if not succeeded:
+            return _failure(
+                "qiita", "; ".join(failures) or "no tags requested"
+            )
         selected = _unique_items(items)
-        return SourceStatus("qiita", True, len(selected), True, False, ""), selected
+        detail = "; ".join(f"failed {entry}" for entry in failures)
+        return SourceStatus(
+            "qiita", True, len(selected), True, False, detail
+        ), selected
     except (httpx.HTTPError, ValueError, TypeError) as error:
         return _failure("qiita", error)
     finally:
@@ -139,19 +153,28 @@ def fetch_zenn(
     try:
         items: list[SourceItem] = []
         yields: list[str] = []
+        failures: list[str] = []
+        succeeded = 0
         for topic in topics:
-            response = session.get(
-                "https://zenn.dev/api/articles",
-                params={
-                    "topicname": topic,
-                    "order": "latest",
-                },
-            )
-            response.raise_for_status()
-            payload = _mapping(response.json())
-            raw_articles = payload.get("articles") if payload is not None else None
-            if not isinstance(raw_articles, list):
-                raise TypeError("Zenn response did not contain articles")
+            try:
+                response = session.get(
+                    "https://zenn.dev/api/articles",
+                    params={
+                        "topicname": topic,
+                        "order": "latest",
+                    },
+                )
+                response.raise_for_status()
+                payload = _mapping(response.json())
+                raw_articles = (
+                    payload.get("articles") if payload is not None else None
+                )
+                if not isinstance(raw_articles, list):
+                    raise TypeError("Zenn response did not contain articles")
+            except (httpx.HTTPError, ValueError, TypeError) as error:
+                failures.append(f"{topic}: {error}")
+                continue
+            succeeded += 1
             articles = raw_articles[:limit]
             yields.append(f"{topic}={len(articles)}")
             for raw in articles:
@@ -176,14 +199,21 @@ def fetch_zenn(
                     _strip_html(page.text),
                     _text(article.get("published_at") or article.get("publishedAt")),
                 ))
+        if not succeeded:
+            return _failure(
+                "zenn", "; ".join(failures) or "no topics requested"
+            )
         selected = _unique_items(items)
+        detail = "; ".join(
+            [*yields, *(f"failed {entry}" for entry in failures)]
+        )
         return SourceStatus(
             "zenn",
             True,
             len(selected),
             True,
             False,
-            "; ".join(yields),
+            detail,
         ), selected
     except (httpx.HTTPError, ValueError, TypeError) as error:
         return _failure("zenn", error)
@@ -212,22 +242,30 @@ def fetch_github(
             headers["Authorization"] = f"Bearer {token}"
         items: list[SourceItem] = []
         yields: list[str] = []
+        failures: list[str] = []
+        succeeded = 0
         for repo in repos:
-            response = session.get(
-                f"https://api.github.com/repos/{repo}/releases",
-                params={"per_page": min(max(limit, 1), 100)},
-                headers=headers,
-            )
-            if response.status_code == 403 and not token:
-                return _failure(
-                    "github",
-                    f"GitHub API 403 {response.headers.get('x-ratelimit-remaining', '')}; "
-                    "set GITHUB_TOKEN to authenticate",
+            try:
+                response = session.get(
+                    f"https://api.github.com/repos/{repo}/releases",
+                    params={"per_page": min(max(limit, 1), 100)},
+                    headers=headers,
                 )
-            response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, list):
-                raise TypeError("GitHub response was not a list")
+                if response.status_code == 403 and not token:
+                    failures.append(
+                        f"{repo}: GitHub API 403 "
+                        f"{response.headers.get('x-ratelimit-remaining', '')}; "
+                        "set GITHUB_TOKEN to authenticate"
+                    )
+                    continue
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, list):
+                    raise TypeError("GitHub response was not a list")
+            except (httpx.HTTPError, ValueError, TypeError) as error:
+                failures.append(f"{repo}: {error}")
+                continue
+            succeeded += 1
             fetched = 0
             for raw in payload:
                 release = _mapping(raw)
@@ -245,14 +283,21 @@ def fetch_github(
                 ))
                 fetched += 1
             yields.append(f"{repo}={fetched}")
+        if not succeeded:
+            return _failure(
+                "github", "; ".join(failures) or "no repos requested"
+            )
         selected = _unique_items(items)
+        detail = "; ".join(
+            [*yields, *(f"failed {entry}" for entry in failures)]
+        )
         return SourceStatus(
             "github",
             True,
             len(selected),
             any(item.body for item in selected),
             False,
-            "; ".join(yields),
+            detail,
         ), selected
     except (httpx.HTTPError, ValueError, TypeError) as error:
         return _failure("github", error)

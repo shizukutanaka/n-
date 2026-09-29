@@ -135,6 +135,76 @@ def test_github_rate_limit_reports_unreachable_with_hint(monkeypatch) -> None:
     assert "GITHUB_TOKEN" in status.detail
 
 
+def test_github_partial_failure_keeps_fetched_releases(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "good/repo" in request.url.path:
+            return httpx.Response(200, json=[{
+                "html_url": "https://github.com/good/repo/releases/tag/b1",
+                "name": "b1",
+                "body": "release notes",
+                "published_at": "2026-01-01T00:00:00Z",
+            }])
+        return httpx.Response(
+            403, json={"message": "API rate limit exceeded"},
+            headers={"x-ratelimit-remaining": "0"},
+        )
+    status, items = fetch_github(
+        ("good/repo", "bad/repo"), 5, _client(handler)
+    )
+    assert status.reachable and status.items == 1
+    assert items[0].title == "b1"
+    assert "good/repo=1" in status.detail
+    assert "bad/repo" in status.detail
+    assert "GITHUB_TOKEN" in status.detail
+
+
+def test_qiita_partial_failure_keeps_fetched_items() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params["query"] == "tag:good":
+            return httpx.Response(200, json=[{
+                "url": "https://qiita.com/good/one",
+                "title": "one",
+                "body": "body",
+                "created_at": "2026-01-01T00:00:00Z",
+            }])
+        return httpx.Response(404, json={"message": "not found"})
+
+    status, items = fetch_qiita(("good", "bad"), 1, _client(handler))
+    assert status.reachable and status.items == 1
+    assert items[0].title == "one"
+    assert "bad" in status.detail
+
+
+def test_zenn_partial_failure_keeps_fetched_items() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/articles":
+            if request.url.params["topicname"] == "good":
+                return httpx.Response(200, json={
+                    "articles": [
+                        {"path": "/a/good/one", "title": "one"},
+                    ],
+                })
+            return httpx.Response(500, json={"message": "oops"})
+        return httpx.Response(200, text="<p>body</p>")
+
+    status, items = fetch_zenn(("good", "bad"), 1, _client(handler))
+    assert status.reachable and len(items) == 1
+    assert items[0].title == "one"
+    assert "good=1" in status.detail
+    assert "bad" in status.detail
+
+
+def test_qiita_all_tags_failed_reports_unreachable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"message": "oops"})
+
+    status, items = fetch_qiita(("a", "b"), 1, _client(handler))
+    assert not status.reachable and items == ()
+
+
 def test_arxiv_parses_atom_entries() -> None:
     feed = """<?xml version="1.0" encoding="UTF-8"?>
     <feed xmlns="http://www.w3.org/2005/Atom">
