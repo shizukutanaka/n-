@@ -154,6 +154,13 @@ def test_embed_record_refused_probe_is_not_a_cap() -> None:
     assert _record(served_large=2048).cap == 2048
 
 
+def test_embed_record_zero_served_is_not_a_cap() -> None:
+    # A zero served count is a broken measurement, not a proven ceiling;
+    # as a cap it would reject every embedding request.
+    assert _record(served_small=0, served_large=0).cap is None
+    assert _record(served_small=0).cap is None
+
+
 def test_measure_embedding_treats_http_error_probe_as_refusal() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.read())

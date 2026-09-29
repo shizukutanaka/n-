@@ -54,6 +54,9 @@ class EmbedRecord:
 
         A probe the backend refused outright proves the opposite of silent
         truncation, so no cap follows from it.
+
+        A served count of zero is a broken measurement, not a proven ceiling
+        of zero: treated as a cap it would reject every request.
         """
         if self.refused_small or self.refused_large:
             return None
@@ -72,7 +75,8 @@ class EmbedRecord:
         )
         if difference > tolerance:
             return None
-        return min(self.served_small, self.served_large)
+        cap = min(self.served_small, self.served_large)
+        return cap if cap > 0 else None
 
 
 @dataclass(frozen=True)
