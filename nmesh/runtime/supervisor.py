@@ -1136,7 +1136,7 @@ class Supervisor:
                     )
             self.active_plan = current
             self._drop_unplanned(current)
-            for attempt in range(1, 4):
+            for attempt in range(1, 5):
                 self._sleep_probe = self._probe_sleeping(current.services)
                 try:
                     for index in range(len(current.services)):
@@ -1178,11 +1178,24 @@ class Supervisor:
                             and admit
                             and not replan_done
                         ):
-                            current = self._admit(
-                                current,
-                                bench_cache,
-                                drop_unaffordable=True,
-                            )
+                            try:
+                                current = self._admit(
+                                    current,
+                                    bench_cache,
+                                    drop_unaffordable=True,
+                                )
+                            except Exception as error:  # noqa: BLE001
+                                current = replace(
+                                    current,
+                                    warnings=[
+                                        *current.warnings,
+                                        i18n.t(
+                                            "warn.free_admission_fallback",
+                                            i18n.lang(),
+                                            error=error,
+                                        ),
+                                    ],
+                                )
                             replan_done = True
                             refreshed = next(
                                 (
@@ -1250,7 +1263,7 @@ class Supervisor:
                     return result
                 except (OSError, RuntimeError):
                     self.down()
-                    if attempt == 3:
+                    if attempt == 4:
                         raise
                     current = self._fallback(current, attempt)
                 finally:

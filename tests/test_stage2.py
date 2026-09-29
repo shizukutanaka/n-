@@ -1067,6 +1067,85 @@ def test_supervisor_admission_can_be_skipped_or_fail_open(
     supervisor.down()
 
 
+def test_supervisor_replan_failure_falls_back_open(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    """A non-OSError/RuntimeError from the mid-launch replan must not escape
+    up(): the run falls back to the original plan and records why."""
+    base = profile(32, (24,))
+    plan = build_plan(base, catalog, Policy(roles=["chat"]))
+    service = plan.services[0]
+    oversized = int(service.memory.weight_bytes * 1.5)
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(
+            None, None, False, artifact_bytes=oversized
+        ),
+    )
+    admit_calls = 0
+
+    def flaky_admit(
+        current, bench_cache=None, *, drop_unaffordable=False
+    ) -> object:
+        nonlocal admit_calls
+        admit_calls += 1
+        if admit_calls > 1:
+            raise ValueError("synthetic replan failure")
+        return current
+
+    supervisor = Supervisor(
+        lambda _service: _AdmissionProcess(),
+        tmp_path / "replan-fail.json",
+        health_timeout=0.01,
+        probe=lambda: base,
+        catalog=lambda: catalog,
+    )
+    monkeypatch.setattr(supervisor, "_admit", flaky_admit)
+    supervisor._wait_health = lambda _service, timeout=None: True
+    result = supervisor.up(plan, no_download=True)
+    assert result.running
+    assert any(
+        "Free-memory admission failed" in warning for warning in result.warnings
+    )
+    supervisor.down()
+
+
+def test_supervisor_fallback_reaches_gpu_layer_rung(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    """The documented quantization/context/GPU-layer ladder needs a fourth
+    attempt — otherwise the layer-reduction rung is unreachable."""
+    plan = build_plan(profile(64, (24,)), catalog, Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url=None),
+    )
+    plan = replace(plan, services=[service])
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    argv_seen: list[list[str]] = []
+
+    def launcher(item) -> _AdmissionProcess:
+        argv_seen.append(list(item.launch.argv))
+        if len(argv_seen) < 4:
+            raise RuntimeError("synthetic startup failure")
+        return _AdmissionProcess()
+
+    supervisor = Supervisor(
+        launcher, tmp_path / "ladder.json", health_timeout=0.01
+    )
+    result = supervisor.up(plan, no_download=True, admit=False)
+    assert result.running
+    assert len(argv_seen) == 4
+    ngl_seen = [argv[argv.index("-ngl") + 1] for argv in argv_seen]
+    assert ngl_seen == ["48", "48", "48", "36"]
+    supervisor.down()
+
+
 def test_supervisor_admission_leaves_roomy_plan_unchanged(
     tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
