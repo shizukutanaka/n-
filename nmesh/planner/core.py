@@ -128,6 +128,10 @@ class Policy:
             raise ValueError("sleep_idle_seconds must be >= 0")
         if self.cache_reuse < 0:
             raise ValueError("cache_reuse must be >= 0")
+        if self.max_context is not None and self.max_context < 1:
+            raise ValueError("max_context must be positive")
+        if self.parallel_slots is not None and self.parallel_slots < 1:
+            raise ValueError("parallel_slots must be positive")
 
 
 @dataclass(frozen=True)

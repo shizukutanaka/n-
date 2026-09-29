@@ -2525,3 +2525,18 @@ def test_lfm2_24b_a2b_catalog_moe_anatomy(catalog: list[ModelSpec]) -> None:
     assert estimate.moe_expert_bytes_per_layer == pytest.approx(
         22_951_231_488 / 38 * estimate.weight_bytes / 24_000_000_000
     )
+
+
+def test_policy_rejects_nonpositive_context_and_slots() -> None:
+    # --context 0 silently became 8192 (falsy `or` default) and negative
+    # values propagated into `-c <n>` argv; --parallel-slots 0/-2 silently
+    # clamped to 1. Both are silent overrides of the explicit request.
+    with pytest.raises(ValueError):
+        Policy(max_context=0)
+    with pytest.raises(ValueError):
+        Policy(max_context=-5)
+    with pytest.raises(ValueError):
+        Policy(parallel_slots=0)
+    with pytest.raises(ValueError):
+        Policy(parallel_slots=-2)
+    Policy(max_context=1, parallel_slots=1)
