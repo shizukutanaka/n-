@@ -323,7 +323,7 @@ def test_saved_plan_reprints_warnings(monkeypatch, capsys) -> None:
     )
     monkeypatch.setattr(cli, "load_plan", lambda: saved)
     assert cli._ensure_runnable_plan(_up_args()) is saved
-    assert "caveat one" in capsys.readouterr().out
+    assert "caveat one" in capsys.readouterr().err
 
 
 def test_fresh_plan_prints_warnings(monkeypatch, capsys) -> None:
@@ -333,4 +333,17 @@ def test_fresh_plan_prints_warnings(monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "save_plan", lambda _plan: None)
     monkeypatch.setattr(cli, "_make_plan", lambda _args: plan)
     assert cli._ensure_runnable_plan(_up_args()) is plan
-    assert "caveat two" in capsys.readouterr().out
+    assert "caveat two" in capsys.readouterr().err
+
+
+def test_plan_warnings_stay_off_json_stdout(monkeypatch, capsys) -> None:
+    saved = SimpleNamespace(
+        services=[object()], runnable=True,
+        launch_revision=LAUNCH_REVISION,
+        warnings=["caveat one"], policy=SimpleNamespace(lang="en"),
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: saved)
+    assert cli._ensure_runnable_plan(_up_args(json=True)) is saved
+    captured = capsys.readouterr()
+    assert "caveat one" in captured.err
+    assert captured.out == ""
