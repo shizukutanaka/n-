@@ -20,3 +20,16 @@ def test_artifact_cache_tolerates_missing_and_corrupt_files(tmp_path) -> None:
     assert load_cache(path) == {}
     path.write_text("{", encoding="utf-8")
     assert load_cache(path) == {}
+
+
+def test_artifact_cache_default_path_follows_nmesh_home(monkeypatch, tmp_path) -> None:
+    home = tmp_path / "custom-home"
+    home.mkdir()
+    (home / "artifacts.json").write_text(
+        '{"org/model|q4_k_m": 42}', encoding="utf-8"
+    )
+    monkeypatch.setenv("NMESH_HOME", str(home))
+    # The module-level CACHE_PATH was bound at import time; load/save must
+    # resolve nmesh_home() lazily rather than touching the real ~/.nmesh.
+    assert load_cache() == {"org/model|q4_k_m": 42}
+    assert save_cache({"k": 1}).parent == home

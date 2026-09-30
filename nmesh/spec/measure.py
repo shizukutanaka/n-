@@ -190,6 +190,14 @@ class ControlCheck:
     identical: bool
 
 
+def request_timeout(workloads: tuple[Workload, ...] = WORKLOADS) -> float:
+    """Per-request wall bound for an arm. Each request decodes up to
+    ``max_tokens`` tokens, so the bound scales with generation: a 1 tok/s
+    decode floor plus a fixed prompt/grace margin. A fixed budget would cut
+    legitimate runs on slow hosts and lie about the arm's throughput."""
+    return 30.0 + max(workload.max_tokens for workload in workloads)
+
+
 def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
