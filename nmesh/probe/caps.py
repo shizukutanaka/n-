@@ -168,7 +168,7 @@ def llamacpp_caps(
         payload = json.loads(target.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             payload = {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         payload = {}
     entries = payload.setdefault("entries", {})
     if isinstance(entries, dict):
