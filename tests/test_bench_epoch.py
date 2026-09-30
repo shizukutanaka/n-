@@ -107,6 +107,67 @@ def test_measure_reference_reads_llama_bench_json_without_shelling_out(monkeypat
     ]
 
 
+def test_measure_reference_timeout_scales_with_model_size(monkeypatch, tmp_path) -> None:
+    from nmesh.bench import epoch
+
+    seen_timeouts: list[float] = []
+
+    def fake_run(command, **kwargs):
+        seen_timeouts.append(kwargs["timeout"])
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": '[{"avg_ts": 42.0}]', "stderr": ""},
+        )()
+
+    monkeypatch.setattr(epoch.subprocess, "run", fake_run)
+
+    small = tmp_path / "small.gguf"
+    small.write_bytes(b"\0" * 1024)
+    assert epoch.measure_reference(Path("llama-bench"), small) == 42.0
+    # Small model: flat floor applies (300s, decode floor is below it).
+    assert seen_timeouts[-1] == 300.0
+
+    big = tmp_path / "big.gguf"
+    # Sparse file: st_size reports 40 GiB without allocating the bytes.
+    with big.open("wb") as handle:
+        handle.truncate(40 * 1024**3)
+    epoch.measure_reference(Path("llama-bench"), big)
+    # 40 GiB at a 50 MiB/s floor: ~858s of cold-load bound + decode floor.
+    assert seen_timeouts[-1] > 800.0
+    assert seen_timeouts[-1] <= 3600.0
+
+
+def test_measure_reference_timeout_budgets_all_split_shards(
+    monkeypatch, tmp_path,
+) -> None:
+    from nmesh.bench import epoch
+
+    seen_timeouts: list[float] = []
+
+    def fake_run(command, **kwargs):
+        seen_timeouts.append(kwargs["timeout"])
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": '[{"avg_ts": 42.0}]', "stderr": ""},
+        )()
+
+    monkeypatch.setattr(epoch.subprocess, "run", fake_run)
+
+    for part in range(1, 5):
+        shard = tmp_path / f"model-0000{part}-of-00004.gguf"
+        with shard.open("wb") as handle:
+            handle.truncate(10 * 1024**3)
+    epoch.measure_reference(
+        Path("llama-bench"), tmp_path / "model-00001-of-00004.gguf",
+    )
+    # llama-bench reads all four 10 GiB shards — 40 GiB total — even though
+    # only part 1 is named on the command line.
+    assert seen_timeouts[-1] > 800.0
+    assert seen_timeouts[-1] <= 3600.0
+
+
 def _record(reference_id: str, reference_tps: float | None) -> BenchRecord:
     return BenchRecord(
         tps=20.0,
