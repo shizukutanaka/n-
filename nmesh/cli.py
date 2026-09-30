@@ -120,6 +120,7 @@ from nmesh.inventory import (
 from nmesh.inventory import (
     variants as inventory_variants,
 )
+from nmesh.net import local_client, local_urlopen
 from nmesh.orchestrate import (
     Endpoint,
     RoleIdentity,
@@ -1154,7 +1155,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 if isinstance(recorded_port, (int, float, str))
                 else args.port
             )
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2):
+            with local_urlopen(f"http://127.0.0.1:{port}/health", timeout=2):
                 if gateway is None:
                     result.services.append({"service": "gateway", "port": port, "running": True})
                 elif gateway.get("pid") is not None and not gateway.get("running"):
@@ -1164,7 +1165,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 else:
                     gateway["running"] = True
             try:
-                with urllib.request.urlopen(
+                with local_urlopen(
                     urllib.request.Request(
                         f"http://127.0.0.1:{port}/v1/jobs?limit=20",
                         headers=_gateway_headers(),
@@ -1176,7 +1177,7 @@ def _runtime(args: argparse.Namespace) -> int:
             except (OSError, HTTPError, json.JSONDecodeError):
                 pass
             try:
-                with urllib.request.urlopen(
+                with local_urlopen(
                     urllib.request.Request(
                         f"http://127.0.0.1:{port}/status",
                         headers=_gateway_headers(),
@@ -1350,7 +1351,7 @@ def _unload(args: argparse.Namespace) -> int:
         headers=_gateway_headers(),
     )
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with local_urlopen(request, timeout=10) as response:
             data = json.loads(response.read().decode())
     except HTTPError as error:
         if error.code == 404 and args.service is not None:
@@ -1396,9 +1397,10 @@ def _jobs(args: argparse.Namespace) -> int:
         request = urllib.request.Request(
             f"http://127.0.0.1:{args.port}/v1/jobs/{args.cancel}",
             method="DELETE",
+            headers=_gateway_headers(),
         )
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with local_urlopen(request, timeout=10) as response:
                 data = json.loads(response.read().decode())
         except HTTPError as error:
             if error.code == 404:
@@ -1421,7 +1423,7 @@ def _jobs(args: argparse.Namespace) -> int:
             _console().print(i18n.t("jobs.cancelled", language, job=args.cancel))
         return 0
     try:
-        with urllib.request.urlopen(
+        with local_urlopen(
             urllib.request.Request(
                 f"http://127.0.0.1:{args.port}/v1/jobs?limit={args.limit}",
                 headers=_gateway_headers(),
@@ -1593,8 +1595,8 @@ def _wait_gateway(port: int, process: _GatewayProcess, timeout: float = 60.0) ->
         if process.poll() is not None:
             return False
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as response:
-                if response.status < 500:
+            with local_urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as response:
+                if response.status is not None and response.status < 500:
                     return True
         except OSError:
             time.sleep(0.2)
@@ -1608,8 +1610,8 @@ def _reload(args: argparse.Namespace) -> int:
         headers=_gateway_headers(),
     )
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            if response.status >= 400:
+        with local_urlopen(request, timeout=10) as response:
+            if response.status is not None and response.status >= 400:
                 return 1
             data = json.loads(response.read().decode())
     except (OSError, json.JSONDecodeError) as error:
@@ -2004,7 +2006,7 @@ def _service_running(service: PlannedService, runtime: RuntimeStatus) -> bool:
     if health_url is None:
         return True
     try:
-        with urllib.request.urlopen(health_url, timeout=2):
+        with local_urlopen(health_url, timeout=2):
             return True
     except OSError:
         return False
@@ -2055,7 +2057,7 @@ def _bench(args: argparse.Namespace) -> int:
     )
     if service.roles == ["embed"]:
         try:
-            with httpx.Client(timeout=300.0) as client:
+            with local_client(timeout=300.0) as client:
                 embed_measurement = measure_embedding(
                     client,
                     base_url,
@@ -2113,7 +2115,7 @@ def _bench(args: argparse.Namespace) -> int:
         retrieval_record: RetrievalRecord | None = None
         if getattr(args, "retrieval", False):
             try:
-                with httpx.Client(timeout=300.0) as client:
+                with local_client(timeout=300.0) as client:
                     requests, seconds = measure_retrieval_estimate(
                         client, base_url, service.model_ref,
                         encode_tps=embed_record.encode_tps,
@@ -2185,7 +2187,7 @@ def _bench(args: argparse.Namespace) -> int:
                 )
                 if usable_rung is not None and degraded_rung is not None:
                     try:
-                        with httpx.Client(timeout=300.0) as client:
+                        with local_client(timeout=300.0) as client:
                             chunk_arm = measure_retrieval_chunk_arm(
                                 client,
                                 base_url,
@@ -3665,7 +3667,7 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                 request_timeout = 30.0 + max(
                     workload.max_tokens for workload in WORKLOADS
                 ) / 2.0
-                with httpx.Client(timeout=request_timeout) as client:
+                with local_client(timeout=request_timeout) as client:
                     return run_arm(
                         client, base_url, item.model_ref,
                         target=target,
@@ -4129,7 +4131,7 @@ def _run_prompt(args: argparse.Namespace) -> int:
         headers,
     )
     try:
-        with urllib.request.urlopen(request, timeout=300) as response:
+        with local_urlopen(request, timeout=300) as response:
             if not stream:
                 payload = json.loads(response.read().decode())
                 if args.json:

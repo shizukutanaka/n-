@@ -244,6 +244,90 @@ def test_install_skips_release_with_no_assets(monkeypatch, tmp_path: Path) -> No
     assert warnings[0] == "b10830 published no assets"
 
 
+def _targz_payload(name: str = "llama-server") -> bytes:
+    archive = io.BytesIO()
+    info = tarfile.TarInfo(name)
+    info.size = 4
+    info.mode = 0o755
+    with tarfile.open(fileobj=archive, mode="w:gz") as source:
+        source.addfile(info, io.BytesIO(b"fake"))
+    return archive.getvalue()
+
+
+def _stub_version_probe(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: type(
+            "Result", (), {"stdout": "", "stderr": "version: x", "returncode": 0}
+        )(),
+    )
+    monkeypatch.setattr("nmesh.probe.caps.llamacpp_caps", lambda _: None)
+
+
+def test_install_skips_tag_missing_platform_asset(monkeypatch, tmp_path: Path) -> None:
+    """Some builds publish assets but not for every platform (e.g. a build
+    that shipped without Apple Silicon); install must take the newest tag
+    that can serve this machine, not fail on the newest tag."""
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    monkeypatch.setattr(engine, "build_tags", lambda fetch=None: ["b10830", "b10829"])
+    monkeypatch.setattr(
+        engine,
+        "published_assets",
+        lambda tag, fetch=None: (
+            ["llama-b10830-bin-win-cpu-x64.zip"]
+            if tag == "b10830"
+            else ["llama-b10829-bin-macos-arm64.tar.gz"]
+        ),
+    )
+    _stub_version_probe(monkeypatch)
+    payload = _targz_payload()
+    item, warnings = engine.install(
+        dest=tmp_path,
+        download=lambda _url, path: path.write_bytes(payload),
+        system="macos",
+        machine="arm64",
+        accelerator=None,
+    )
+    assert item.tag == "b10829"
+    assert warnings and "b10830" in warnings[0]
+
+
+def test_install_raises_when_no_tag_serves_platform(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    monkeypatch.setattr(engine, "build_tags", lambda fetch=None: ["b10830", "b10829"])
+    monkeypatch.setattr(
+        engine,
+        "published_assets",
+        lambda tag, fetch=None: [f"llama-{tag}-bin-win-cpu-x64.zip"],
+    )
+    with pytest.raises(ValueError, match="no CPU asset is published"):
+        engine.install(
+            dest=tmp_path,
+            download=lambda _url, path: path.write_bytes(_targz_payload()),
+            system="macos",
+            machine="arm64",
+            accelerator=None,
+        )
+
+
+def test_explicit_tag_does_not_iterate_older_tags(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        engine,
+        "published_assets",
+        lambda tag, fetch=None: [f"llama-{tag}-bin-win-cpu-x64.zip"],
+    )
+    with pytest.raises(ValueError, match="no CPU asset is published"):
+        engine.install(
+            "b10830",
+            dest=tmp_path,
+            download=lambda _url, path: path.write_bytes(_targz_payload()),
+            system="macos",
+            machine="arm64",
+            accelerator=None,
+        )
+
+
 def test_explicit_unpublished_variant_reports_assets() -> None:
     with pytest.raises(ValueError, match="published assets"):
         engine.select_asset(
@@ -456,6 +540,19 @@ def test_tar_hardlink_is_rejected(tmp_path: Path) -> None:
         engine._extract_archive(archive, tmp_path / "install")
 
 
+def test_engine_remove_rejects_traversal_tag(monkeypatch, tmp_path: Path) -> None:
+    engines = tmp_path / "engines"
+    engines.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("precious", encoding="utf-8")
+    monkeypatch.setattr(engine, "engines_dir", lambda: engines)
+    for tag in ("..", "../victim", "x/../.."):
+        with pytest.raises(ValueError, match="invalid engine tag"):
+            engine.remove(tag)
+    assert (victim / "keep.txt").exists()
+
+
 def test_models_rm_refuses_a_planned_file(monkeypatch, tmp_path: Path, capsys) -> None:
     model = tmp_path / "models" / "qwen-q4_k_m.gguf"
     model.parent.mkdir()
@@ -501,7 +598,7 @@ def test_unload_empty_result_reports_reason(monkeypatch, capsys) -> None:
         def read(self):
             return b'{"unloaded": [], "results": [{"service": "chat", "reason": "idle"}]}'
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(cli, "local_urlopen", lambda *_args, **_kwargs: Response())
     args = type(
         "Args",
         (),
@@ -523,7 +620,7 @@ def test_unload_not_owned_points_to_foreign_down(monkeypatch, capsys) -> None:
         def read(self):
             return b'{"unloaded": [], "results": [{"service": "chat", "reason": "not_owned"}]}'
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(cli, "local_urlopen", lambda *_args, **_kwargs: Response())
     args = type(
         "Args",
         (),
@@ -543,8 +640,8 @@ def test_unload_404_preserves_unknown_service(monkeypatch, capsys) -> None:
         None,
     )
     monkeypatch.setattr(
-        cli.urllib.request,
-        "urlopen",
+        cli,
+        "local_urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
     )
     args = type(
