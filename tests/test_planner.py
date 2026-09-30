@@ -93,6 +93,20 @@ def test_worker_role_omits_larger_model_than_small_lead(
     assert any("strictly smaller" in warning for warning in result.warnings)
 
 
+def test_unknown_role_is_named_in_warnings(
+    catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(
+        profile(16),
+        catalog,
+        Policy(roles=["chat", "chatt"], min_decode_tps=0, roles_explicit=True),
+    )
+    assert not result.runnable
+    assert any(
+        "chatt" in warning for warning in result.warnings
+    )
+
+
 def test_worker_role_warns_with_planned_lead_but_no_worker(
     catalog: list[ModelSpec],
 ) -> None:
@@ -1302,6 +1316,27 @@ def test_supported_llamacpp_kv_quantization_is_launched(
         if "planned throughput does not model KV cache type" in warning
     ]
     assert len(speed_warnings) == 1
+
+
+def test_kv_quant_emission_warns_v_needs_flash_attention(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={
+            "llamacpp": (
+                "--parallel", "-ngl", "--tensor-split",
+                "--cache-type-k", "--cache-type-v",
+            ),
+        },
+    )
+    result = build_plan(machine, [model], Policy(roles=["chat"], kv_quant="q8_0"))
+    assert "--cache-type-v" in result.services[0].launch.argv
+    assert any(
+        "requires llama.cpp flash attention" in warning
+        for warning in result.warnings
+    )
 
 
 def test_sleep_idle_seconds_is_launched_when_supported(
@@ -2631,6 +2666,29 @@ def test_download_budget_warning_silent_within_limit(
         Policy(roles=["chat"], min_decode_tps=0, allow_download_gb=4096.0),
     )
     assert not any("download budget" in w for w in result.warnings)
+
+
+def test_plan_warns_when_download_exceeds_free_disk(
+    catalog: list[ModelSpec],
+) -> None:
+    nearly_full = replace(profile(64, (96,)), free_disk_bytes=1)
+    result = build_plan(
+        nearly_full, catalog, Policy(roles=["chat"], min_decode_tps=0),
+    )
+    warning = next(
+        (w for w in result.warnings if "free on disk" in w), None
+    )
+    assert warning is not None, result.warnings
+    assert "GiB" in warning
+
+
+def test_plan_free_disk_warning_silent_when_space_fits(
+    catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(
+        profile(64, (96,)), catalog, Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert not any("free on disk" in w for w in result.warnings)
 
 
 def moe_model() -> ModelSpec:

@@ -860,6 +860,15 @@ def _launch(
             and _honors_kv_quant(backend, backend_flags)
         ):
             argv += ["--cache-type-k", kv_quant, "--cache-type-v", kv_quant]
+            if warnings is not None:
+                warnings.append(
+                    t(
+                        "warn.kv_quant_v_fa",
+                        language,
+                        model=model.id,
+                        kv_quant=kv_quant,
+                    )
+                )
         if backend == "llamacpp" and n_cpu_moe > 0:
             if not known or "--n-cpu-moe" in flags:
                 argv += ["--n-cpu-moe", str(n_cpu_moe)]
@@ -3410,6 +3419,12 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             total_gb=total_download / GIB,
             limit_gb=selected.allow_download_gb,
         ))
+    if 0 < profile.free_disk_bytes < total_download:
+        warnings.append(t(
+            "warn.download_free_disk", selected.lang,
+            total_gb=total_download / GIB,
+            free_gb=profile.free_disk_bytes / GIB,
+        ))
     if selected.languages:
         requested = set(selected.languages)
         for service in services:
@@ -3420,6 +3435,13 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     model=service.model_id, languages=", ".join(missing),
                 ))
     covered = set(role_to_service)
+    if selected.roles_explicit:
+        uncovered = sorted(set(roles) - covered)
+        if uncovered:
+            warnings.append(t(
+                "warn.roles_uncovered", selected.lang,
+                roles=", ".join(uncovered),
+            ))
     runnable = (
         bool(services)
         and not hints
