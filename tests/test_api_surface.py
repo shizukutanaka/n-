@@ -639,7 +639,7 @@ def test_run_surfaces_non_utf8_error_body(monkeypatch, capsys) -> None:
             500, "Internal Server Error", {}, io.BytesIO(b"\xff\xfegarbage"),
         )
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(cli, "local_urlopen", fail)
     result = cli._run_prompt(SimpleNamespace(prompt="hi", role="chat", json=False))
     assert result == 1
     assert "HTTP 500" in capsys.readouterr().err
@@ -656,7 +656,7 @@ def test_run_surfaces_non_utf8_success_body(monkeypatch, capsys) -> None:
         def __exit__(self, *args):
             return False
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *a, **k: Response())
+    monkeypatch.setattr(cli, "local_urlopen", lambda *a, **k: Response())
     result = cli._run_prompt(SimpleNamespace(prompt="hi", role="chat", json=False))
     assert result == 1
     assert "decode" in capsys.readouterr().err
