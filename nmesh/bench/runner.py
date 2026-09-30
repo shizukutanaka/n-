@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from nmesh.bench.cache import MIN_CONTROL_RATIO
+from nmesh.net import local_client
 
 if TYPE_CHECKING:
     from nmesh.planner import PlannedService
@@ -110,7 +111,7 @@ def _measure_once(
     usage: dict[str, object] | None = None
     timings: dict[str, object] | None = None
     started = time.perf_counter()
-    with httpx.Client(timeout=_bench_timeout(prefill_tokens)) as client, \
+    with local_client(timeout=_bench_timeout(prefill_tokens)) as client, \
             client.stream(
                 "POST", f"{base_url}/v1/chat/completions", json=request,
             ) as response:

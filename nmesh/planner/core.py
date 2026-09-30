@@ -128,6 +128,10 @@ class Policy:
             raise ValueError("sleep_idle_seconds must be >= 0")
         if self.cache_reuse < 0:
             raise ValueError("cache_reuse must be >= 0")
+        if not math.isfinite(self.min_decode_tps) or self.min_decode_tps < 0:
+            raise ValueError("min_decode_tps must be a finite number >= 0")
+        if not math.isfinite(self.allow_download_gb) or self.allow_download_gb < 0:
+            raise ValueError("allow_download_gb must be a finite number >= 0")
 
 
 @dataclass(frozen=True)
@@ -690,6 +694,13 @@ def _launch(
             argv += ["--tensor-parallel-size", str(tensor_parallel)]
         if gpu_fraction is not None:
             argv += ["--gpu-memory-utilization", f"{gpu_fraction:.3f}"]
+        if warnings is not None and os.environ.get("VLLM_API_KEY") is not None:
+            # VLLM_API_KEY makes vllm serve require bearer auth, which the
+            # gateway's unauthenticated loopback upstream cannot satisfy.
+            warnings.append(
+                t("warn.upstream_env_conflict", language,
+                  env="VLLM_API_KEY", service=model.id)
+            )
         if embed_only and warnings is not None:
             warnings.append(
                 t("warn.embeddings_backend_unverified", language, model=model.id)
@@ -723,7 +734,35 @@ def _launch(
             warnings.append(
                 t("warn.parallel_unsupported", language)
             )
-        argv += ["--port", str(port)]
+        argv += ["--port", str(port), "--host", "127.0.0.1"]
+        # The logical batch size (-b) bounds how large a prompt llama.cpp
+        # accepts per call (default 2048); KV headroom does not raise it, so
+        # emit the plan's context to keep the full window usable.
+        batch_flag = None
+        if not known or "-b" in flags:
+            batch_flag = "-b"
+        elif "--batch-size" in flags:
+            batch_flag = "--batch-size"
+        if batch_flag is not None:
+            argv += [batch_flag, str(context)]
+        if backend == "llamacpp" and warnings is not None:
+            # These envs only apply to argv-unset options, and the
+            # gateway assumes an unauthenticated plain-HTTP loopback
+            # upstream — auth, a path prefix, or TLS all break that
+            # contract and have no argv negation, so warn instead.
+            # (llama.cpp keeps --api-key's env as LLAMA_API_KEY; the
+            # LLAMA_ARG_ prefix was never applied to it.)
+            for env_var in (
+                "LLAMA_API_KEY", "LLAMA_ARG_API_KEY_FILE",
+                "LLAMA_ARG_API_PREFIX",
+                "LLAMA_ARG_SSL_KEY_FILE", "LLAMA_ARG_SSL_CERT_FILE",
+            ):
+                value = os.environ.get(env_var)
+                if value is not None:
+                    warnings.append(
+                        t("warn.upstream_env_conflict", language,
+                          env=env_var, service=model.id)
+                    )
         # llama-server's default read/write timeout (3600s) silently drops
         # requests whose prompt processing or full generation exceeds it;
         # a single slot may legitimately spend up to `context` tokens on
@@ -824,35 +863,17 @@ def _launch(
                     t("warn.embeddings_pooling_unknown", language, model=model.id)
                 )
             if context > 512:
-                if not known:
-                    logical_batch_flag = "-b"
-                    physical_batch_flag = "-ub"
-                else:
-                    logical_batch_flag = (
-                        "-b" if "-b" in flags else "--batch-size"
-                    )
-                    physical_batch_flag = (
-                        "-ub" if "-ub" in flags else "--ubatch-size"
-                    )
-                batch_supported = not known or (
-                    any(
-                        flag in flags
-                        for flag in ("-b", "--batch-size")
-                    )
-                    and any(
-                        flag in flags
-                        for flag in ("-ub", "--ubatch-size")
-                    )
+                physical_batch_supported = not known or any(
+                    flag in flags
+                    for flag in ("-ub", "--ubatch-size")
                 )
-                if batch_supported:
-                    argv.extend(
-                        [
-                            logical_batch_flag,
-                            str(context),
-                            physical_batch_flag,
-                            str(context),
-                        ]
+                if physical_batch_supported:
+                    physical_batch_flag = (
+                        "-ub"
+                        if not known or "-ub" in flags
+                        else "--ubatch-size"
                     )
+                    argv += [physical_batch_flag, str(context)]
                 elif warnings is not None:
                     warnings.append(
                         t(
@@ -1914,7 +1935,17 @@ def _place_services(
                 swap_reserved[target] = committed
             else:
                 remaining[target] -= committed
-        elif service.backend in {"llamacpp", "vllm"} and len(indices) > 1:
+        elif (
+            service.backend in {"llamacpp", "vllm"}
+            and len(indices) > 1
+            and (
+                service.backend == "llamacpp"
+                or service.memory.gpu_bytes
+                <= min(remaining[index] for index in indices)
+                * len(indices)
+                + 1
+            )
+        ):
             assigned = indices
             tensor_parallel = len(indices)
             proportional = service.backend == "llamacpp"
