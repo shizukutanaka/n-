@@ -28,6 +28,35 @@ def test_rocm_smi_parser() -> None:
     assert gpus[0].total_vram_bytes == 8589934592
 
 
+def test_rocm_smi_free_is_total_minus_used() -> None:
+    total = 8589934592
+    used = 1073741824
+    text = (
+        f'{{"GPU[0]": {{"VRAM Total Memory (B)": {total}, '
+        f'"VRAM Total Used Memory (B)": {used}}}}}'
+    )
+    gpus = parse_rocm_smi(text)
+    assert gpus[0].free_vram_bytes == total - used
+
+
+def test_rocm_smi_explicit_free_zero_is_kept() -> None:
+    text = (
+        '{"GPU[0]": {"VRAM Total Memory (B)": 8589934592, '
+        '"VRAM Free Memory (B)": 0}}'
+    )
+    gpus = parse_rocm_smi(text)
+    assert gpus[0].free_vram_bytes == 0
+
+
+def test_rocm_smi_multi_gpu_indices() -> None:
+    text = (
+        '{"GPU[0]": {"VRAM Total Memory (B)": 8589934592}, '
+        '"GPU[1]": {"VRAM Total Memory (B)": 8589934592}}'
+    )
+    gpus = parse_rocm_smi(text)
+    assert [gpu.index for gpu in gpus] == [0, 1]
+
+
 def test_tier_boundaries() -> None:
     gpu = GPUInfo(0, "GPU", "nvidia", 4 * 1024**3, 4 * 1024**3, None, False)
     assert classify_tier([gpu]) == Tier.T1_LOW

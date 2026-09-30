@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from nmesh.net import local_client
+
 from .depth import padded_prompt
 from .suite import Task
 
@@ -103,7 +105,7 @@ def run(
     outcomes: list[TaskOutcome] = []
     transport_errors = 0
     prompt_tokens_max = 0
-    with httpx.Client() as client:
+    with local_client() as client:
         for task in tasks:
             transport = False
             request_timeout = (

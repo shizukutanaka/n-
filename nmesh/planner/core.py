@@ -58,6 +58,8 @@ SPEED_REFERENCE_TPS = 30.0
 # the artifact actually downloaded.
 UNPLANNED_QUANTS = frozenset({"mxfp4"})
 GIB = 1024**3
+# Retained for API compatibility; load_plan/save_plan resolve nmesh_home()
+# lazily so a NMESH_HOME set after import is honored.
 PLAN_PATH = nmesh_home() / "plan.json"
 INSTALL_HINTS = {
     "ollama": "install.ollama",
@@ -123,6 +125,12 @@ class Policy:
     def __post_init__(self) -> None:
         if self.spec not in KINDS:
             raise ValueError(f"Unknown speculation kind: {self.spec}")
+        if self.prefer not in ("quality", "speed", "balanced"):
+            raise ValueError(f"Unknown prefer: {self.prefer}")
+        if self.kv_quant not in ("f16", "q8_0"):
+            raise ValueError(f"Unknown kv_quant: {self.kv_quant}")
+        if self.budget_source not in ("total", "free"):
+            raise ValueError(f"Unknown budget_source: {self.budget_source}")
         if self.spec == "draft" and not self.spec_draft.strip():
             raise ValueError("spec_draft is required for draft speculation")
         if self.spec_n_max < 1:
@@ -131,6 +139,14 @@ class Policy:
             raise ValueError("sleep_idle_seconds must be >= 0")
         if self.cache_reuse < 0:
             raise ValueError("cache_reuse must be >= 0")
+        if self.max_context is not None and self.max_context < 1:
+            raise ValueError("max_context must be positive")
+        if self.parallel_slots is not None and self.parallel_slots < 1:
+            raise ValueError("parallel_slots must be positive")
+        if not math.isfinite(self.min_decode_tps) or self.min_decode_tps < 0:
+            raise ValueError("min_decode_tps must be a finite number >= 0")
+        if not math.isfinite(self.allow_download_gb) or self.allow_download_gb < 0:
+            raise ValueError("allow_download_gb must be a finite number >= 0")
 
 
 @dataclass(frozen=True)
@@ -618,9 +634,14 @@ def _download_repo_for(backend: str, model: ModelSpec) -> str | None:
 
 def _service_port_base() -> int:
     try:
-        return int(os.environ.get("NMESH_SERVICE_PORT_BASE", "18010"))
+        value = int(os.environ.get("NMESH_SERVICE_PORT_BASE", "18010"))
     except ValueError:
         return 18010
+    if not 1 <= value <= 65535:
+        raise ValueError(
+            f"NMESH_SERVICE_PORT_BASE {value} is outside the port range 1-65535"
+        )
+    return value
 
 
 def _has_source(backend: str, model: ModelSpec) -> bool:
@@ -698,6 +719,13 @@ def _launch(
             argv += ["--tensor-parallel-size", str(tensor_parallel)]
         if gpu_fraction is not None:
             argv += ["--gpu-memory-utilization", f"{gpu_fraction:.3f}"]
+        if warnings is not None and os.environ.get("VLLM_API_KEY") is not None:
+            # VLLM_API_KEY makes vllm serve require bearer auth, which the
+            # gateway's unauthenticated loopback upstream cannot satisfy.
+            warnings.append(
+                t("warn.upstream_env_conflict", language,
+                  env="VLLM_API_KEY", service=model.id)
+            )
         if embed_only and warnings is not None:
             warnings.append(
                 t("warn.embeddings_backend_unverified", language, model=model.id)
@@ -731,7 +759,35 @@ def _launch(
             warnings.append(
                 t("warn.parallel_unsupported", language)
             )
-        argv += ["--port", str(port)]
+        argv += ["--port", str(port), "--host", "127.0.0.1"]
+        # The logical batch size (-b) bounds how large a prompt llama.cpp
+        # accepts per call (default 2048); KV headroom does not raise it, so
+        # emit the plan's context to keep the full window usable.
+        batch_flag = None
+        if not known or "-b" in flags:
+            batch_flag = "-b"
+        elif "--batch-size" in flags:
+            batch_flag = "--batch-size"
+        if batch_flag is not None:
+            argv += [batch_flag, str(context)]
+        if backend == "llamacpp" and warnings is not None:
+            # These envs only apply to argv-unset options, and the
+            # gateway assumes an unauthenticated plain-HTTP loopback
+            # upstream — auth, a path prefix, or TLS all break that
+            # contract and have no argv negation, so warn instead.
+            # (llama.cpp keeps --api-key's env as LLAMA_API_KEY; the
+            # LLAMA_ARG_ prefix was never applied to it.)
+            for env_var in (
+                "LLAMA_API_KEY", "LLAMA_ARG_API_KEY_FILE",
+                "LLAMA_ARG_API_PREFIX",
+                "LLAMA_ARG_SSL_KEY_FILE", "LLAMA_ARG_SSL_CERT_FILE",
+            ):
+                value = os.environ.get(env_var)
+                if value is not None:
+                    warnings.append(
+                        t("warn.upstream_env_conflict", language,
+                          env=env_var, service=model.id)
+                    )
         # llama-server's default read/write timeout (3600s) silently drops
         # requests whose prompt processing or full generation exceeds it;
         # a single slot may legitimately spend up to `context` tokens on
@@ -832,35 +888,17 @@ def _launch(
                     t("warn.embeddings_pooling_unknown", language, model=model.id)
                 )
             if context > 512:
-                if not known:
-                    logical_batch_flag = "-b"
-                    physical_batch_flag = "-ub"
-                else:
-                    logical_batch_flag = (
-                        "-b" if "-b" in flags else "--batch-size"
-                    )
-                    physical_batch_flag = (
-                        "-ub" if "-ub" in flags else "--ubatch-size"
-                    )
-                batch_supported = not known or (
-                    any(
-                        flag in flags
-                        for flag in ("-b", "--batch-size")
-                    )
-                    and any(
-                        flag in flags
-                        for flag in ("-ub", "--ubatch-size")
-                    )
+                physical_batch_supported = not known or any(
+                    flag in flags
+                    for flag in ("-ub", "--ubatch-size")
                 )
-                if batch_supported:
-                    argv.extend(
-                        [
-                            logical_batch_flag,
-                            str(context),
-                            physical_batch_flag,
-                            str(context),
-                        ]
+                if physical_batch_supported:
+                    physical_batch_flag = (
+                        "-ub"
+                        if not known or "-ub" in flags
+                        else "--ubatch-size"
                     )
+                    argv += [physical_batch_flag, str(context)]
                 elif warnings is not None:
                     warnings.append(
                         t(
@@ -1577,6 +1615,10 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
     tensor_parallel = 1
     name = group[0]
     port = _service_port_base() + len(services)
+    if port > 65535:
+        raise ValueError(
+            f"service port {port} (base + {len(services)}) exceeds 65535"
+        )
     layers = candidate.n_gpu_layers
     memory = candidate.memory
     spec_kind, spec_draft, memory = _spec_for_service(
@@ -1859,38 +1901,8 @@ def _place_services(
                 )
             )
 
-    # Resident ollama services should stay loaded; the daemon's default
-    # keep_alive unloads them after ~5 minutes of inactivity. The shared
-    # daemon cannot discriminate, so only pin when no ollama swap member
-    # exists, and respect a user-provided OLLAMA_KEEP_ALIVE.
-    ollama_resident_pin = (
-        any(s.backend == "ollama" and s.resident for s in services)
-        and not any(
-            s.backend == "ollama" and not s.resident for s in services
-        )
-        and not os.environ.get("OLLAMA_KEEP_ALIVE")
-    )
-
-    def _pin_ollama_keep_alive(service: PlannedService) -> PlannedService:
-        if (
-            not ollama_resident_pin
-            or service.backend != "ollama"
-            or "OLLAMA_KEEP_ALIVE" in service.launch.env
-        ):
-            return service
-        warnings.append(
-            t("note.ollama_keep_alive", policy.lang, service=service.name)
-        )
-        return replace(
-            service,
-            launch=replace(
-                service.launch,
-                env={**service.launch.env, "OLLAMA_KEEP_ALIVE": "-1"},
-            ),
-        )
-
     if not profile.gpus:
-        return [_pin_ollama_keep_alive(service) for service in services]
+        return services
     indices = [gpu.index for gpu in profile.gpus]
     budgets = {
         gpu.index: _gpu_budget(gpu, policy.budget_source) for gpu in profile.gpus
@@ -1953,7 +1965,17 @@ def _place_services(
                 swap_reserved[target] = committed
             else:
                 remaining[target] -= committed
-        elif service.backend in {"llamacpp", "vllm"} and len(indices) > 1:
+        elif (
+            service.backend in {"llamacpp", "vllm"}
+            and len(indices) > 1
+            and (
+                service.backend == "llamacpp"
+                or service.memory.gpu_bytes
+                <= min(remaining[index] for index in indices)
+                * len(indices)
+                + 1
+            )
+        ):
             assigned = indices
             tensor_parallel = len(indices)
             proportional = service.backend == "llamacpp"
@@ -2164,9 +2186,7 @@ def _place_services(
         warn_cpu_fallback(current)
         placed[service.name] = current
         ram_used += current.memory.cpu_bytes
-    return [
-        _pin_ollama_keep_alive(placed[service.name]) for service in services
-    ]
+    return [placed[service.name] for service in services]
 
 
 SLOT_CAPS = {"llamacpp": 8, "vllm": 32, "mlx": 1, "ollama": 1}
@@ -3405,6 +3425,12 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
         memory_values["parallel_slots"] = int(memory_values.get("parallel_slots", 1))
         memory_values["n_cpu_moe"] = int(memory_values.get("n_cpu_moe", 0))
         memory = MemoryEstimate(**memory_values)
+        service_spec = str(sd.get("spec", "none"))
+        service_kv_quant = str(sd.get("kv_quant", "f16"))
+        if service_spec not in KINDS:
+            raise ValueError("Invalid service spec")
+        if service_kv_quant not in ("f16", "q8_0"):
+            raise ValueError("Invalid service kv_quant")
         launch = LaunchSpec(
             [str(x) for x in ld["argv"]], {str(k): str(v) for k, v in ld["env"].items()},
             str(ld["health_url"]) if ld["health_url"] else None, bool(ld.get("shared_daemon", False)),
@@ -3421,8 +3447,8 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             bool(sd["estimated"]),
             launch,
             tuple(str(x) for x in sd.get("languages", ["en"])),
-            kv_quant=str(sd.get("kv_quant", "f16")),
-            spec=str(sd.get("spec", "none")),
+            kv_quant=service_kv_quant,
+            spec=service_spec,
             spec_draft=str(sd.get("spec_draft", "")),
             n_cpu_moe=int(sd.get("n_cpu_moe", 0)),
             tensor_split=tuple(
