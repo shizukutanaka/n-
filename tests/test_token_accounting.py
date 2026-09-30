@@ -32,6 +32,11 @@ from .test_planner import profile
 from .test_telemetry import _gateway_plan, _TelemetryHandler
 
 
+def test_load_sums_ignores_non_utf8_tokens_file(tmp_path) -> None:
+    (tmp_path / "tokens.json").write_bytes(b"\xff\xfegarbage")
+    assert load_sums("any") == Sums()
+
+
 def test_split_and_default_estimate_preserve_heuristic() -> None:
     assert split_chars("日本語abc") == (3, 3)
     assert estimate_tokens("日本語") == 3
