@@ -599,6 +599,30 @@ def test_embedding_plan_decode_tps_round_trip(tmp_path) -> None:
     assert loaded.services[0].decode_tps is None
 
 
+def _saved_plan(tmp_path, catalog: list[ModelSpec]) -> Path:
+    path = tmp_path / "plan.json"
+    save_plan(build_plan(profile(64), catalog), path)
+    return path
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        lambda payload: payload["services"][0].update({"spec": "weird"}),
+        lambda payload: payload["services"][0].update({"kv_quant": "q4"}),
+        lambda payload: payload["policy"].update({"prefer": "cheap"}),
+        lambda payload: payload["policy"].update({"budget_source": "used"}),
+    ],
+    ids=["service-spec", "service-kv-quant", "policy-prefer", "policy-budget-source"],
+)
+def test_load_plan_rejects_unknown_enum_values(tmp_path, catalog: list[ModelSpec], patch) -> None:
+    path = _saved_plan(tmp_path, catalog)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    patch(payload)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load_plan(path) is None
+
+
 def test_explicit_models_restrict_roles_and_warn_for_unknown() -> None:
     selected = ModelSpec(
         "selected", "test", 500_000_000, 24, 16, 2, 64, 1024,
