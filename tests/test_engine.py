@@ -172,6 +172,104 @@ def test_explicit_cuda_version_selects_matching_asset() -> None:
     assert asset.extra_assets == ("cudart-llama-bin-win-cuda-12.4-x64.zip",)
 
 
+def test_linux_arm64_nvidia_prefers_published_cuda_asset() -> None:
+    asset, warning = engine.select_asset(
+        "b10830",
+        [
+            "llama-b10830-bin-ubuntu-arm64.tar.gz",
+            "llama-b10830-bin-ubuntu-cuda-13.4-arm64.tar.gz",
+            "cudart-llama-b10830-bin-ubuntu-cuda-13.4-arm64.tar.gz",
+            "llama-b10830-bin-ubuntu-vulkan-arm64.tar.gz",
+        ],
+        system="linux",
+        machine="aarch64",
+        accelerator="nvidia",
+    )
+    assert asset.asset == "llama-b10830-bin-ubuntu-cuda-13.4-arm64.tar.gz"
+    assert asset.variant == "cuda-13.4"
+    assert asset.extra_assets == (
+        "cudart-llama-b10830-bin-ubuntu-cuda-13.4-arm64.tar.gz",
+    )
+    assert warning is None
+
+
+def test_linux_arm64_nvidia_falls_back_to_vulkan_with_warning() -> None:
+    asset, warning = engine.select_asset(
+        "b10830",
+        [
+            "llama-b10830-bin-ubuntu-arm64.tar.gz",
+            "llama-b10830-bin-ubuntu-vulkan-arm64.tar.gz",
+        ],
+        system="linux",
+        machine="aarch64",
+        accelerator="nvidia",
+    )
+    assert asset.variant == "vulkan"
+    assert "no ubuntu-cuda asset" in warning
+
+
+def test_linux_arm64_bare_cuda_selects_versioned_asset() -> None:
+    asset, _ = engine.select_asset(
+        "b10830",
+        [
+            "llama-b10830-bin-ubuntu-arm64.tar.gz",
+            "llama-b10830-bin-ubuntu-cuda-13.4-arm64.tar.gz",
+        ],
+        system="linux",
+        machine="arm64",
+        accelerator=None,
+        variant="cuda",
+    )
+    assert asset.asset == "llama-b10830-bin-ubuntu-cuda-13.4-arm64.tar.gz"
+
+
+def test_windows_arm64_nvidia_prefers_published_cuda_asset() -> None:
+    asset, warning = engine.select_asset(
+        "b10830",
+        [
+            "llama-b10830-bin-win-cpu-arm64.zip",
+            "llama-b10830-bin-win-cuda-13.4-arm64.zip",
+            "cudart-llama-bin-win-cuda-13.4-arm64.zip",
+        ],
+        system="windows",
+        machine="ARM64",
+        accelerator="nvidia",
+    )
+    assert asset.asset == "llama-b10830-bin-win-cuda-13.4-arm64.zip"
+    assert asset.extra_assets == ("cudart-llama-bin-win-cuda-13.4-arm64.zip",)
+    assert warning is None
+
+
+def test_windows_arm64_explicit_variant_uses_win_prefix() -> None:
+    asset, _ = engine.select_asset(
+        "b10830",
+        [
+            "llama-b10830-bin-win-cpu-arm64.zip",
+            "llama-b10830-bin-win-opencl-adreno-arm64.zip",
+        ],
+        system="windows",
+        machine="ARM64",
+        accelerator=None,
+        variant="opencl-adreno",
+    )
+    assert asset.asset == "llama-b10830-bin-win-opencl-adreno-arm64.zip"
+
+
+def test_macos_explicit_variant_uses_macos_prefix() -> None:
+    asset, _ = engine.select_asset(
+        "b10830",
+        [
+            "llama-b10830-bin-macos-arm64.tar.gz",
+            "llama-b10830-bin-macos-vulkan-arm64.tar.gz",
+        ],
+        system="macos",
+        machine="arm64",
+        accelerator=None,
+        variant="vulkan",
+    )
+    assert asset.asset == "llama-b10830-bin-macos-vulkan-arm64.tar.gz"
+
+
 def test_install_selects_shallowest_executable(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
     archive = io.BytesIO()

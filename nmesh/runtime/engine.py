@@ -237,19 +237,84 @@ def select_asset(
         else:
             chosen = _asset_name(tag, f"win-{requested_variant}-x64.zip")
     elif system == "windows":
-        chosen = cpu_name
-        if requested_variant not in {"auto", "cpu"}:
-            chosen = _asset_name(tag, f"{requested_variant}-arm64.zip")
+        if requested_variant == "auto":
+            if accelerator == "nvidia":
+                chosen = _asset_for(
+                    assets,
+                    rf"{re.escape(_asset_name(tag, 'win-cuda'))}-\d+\.\d+-arm64\.zip",
+                )
+                if chosen is not None:
+                    version = re.search(r"-cuda-(\d+\.\d+)-", chosen, re.IGNORECASE)
+                    if version:
+                        cudart = (
+                            f"cudart-llama-bin-win-cuda-{version.group(1)}-arm64.zip"
+                        )
+                        if cudart in published:
+                            extra = (cudart,)
+                else:
+                    warning = "no published CUDA asset; falling back to the CPU asset"
+            if chosen is None:
+                chosen = cpu_name
+        elif requested_variant == "cpu":
+            chosen = cpu_name
+        elif requested_variant in {"cuda", "rocm"}:
+            family = requested_variant
+            chosen = _asset_for(
+                assets,
+                rf"{re.escape(_asset_name(tag, f'win-{family}'))}-\d+\.\d+-arm64\.zip",
+            )
+            if chosen is not None and family == "cuda":
+                version = re.search(r"-cuda-(\d+\.\d+)-", chosen, re.IGNORECASE)
+                if version:
+                    cudart = (
+                        f"cudart-llama-bin-win-cuda-{version.group(1)}-arm64.zip"
+                    )
+                    if cudart in published:
+                        extra = (cudart,)
+        elif requested_variant.startswith("cuda"):
+            suffix = requested_variant.removeprefix("cuda-")
+            chosen = _asset_name(tag, f"win-cuda-{suffix}-arm64.zip")
+            extra_name = f"cudart-llama-bin-win-cuda-{suffix}-arm64.zip"
+            if extra_name in published:
+                extra = (extra_name,)
+        else:
+            chosen = _asset_name(tag, f"win-{requested_variant}-arm64.zip")
     elif system == "macos":
         chosen = cpu_name
         if requested_variant not in {"auto", "cpu"}:
-            chosen = _asset_name(tag, f"{requested_variant}-{machine}.tar.gz")
+            chosen = _asset_name(
+                tag, f"macos-{requested_variant}-{machine}.tar.gz"
+            )
     else:
         arm = "arm" in machine or "aarch" in machine
         if arm:
-            chosen = cpu_name if requested_variant in {"auto", "cpu"} else (
-                _asset_name(tag, f"ubuntu-{requested_variant}-arm64.tar.gz")
-            )
+            if requested_variant == "auto":
+                if accelerator == "nvidia":
+                    chosen = _asset_for(
+                        assets,
+                        rf"{re.escape(_asset_name(tag, 'ubuntu-cuda'))}"
+                        r"-\d+\.\d+-arm64\.tar\.gz",
+                    )
+                    if chosen is None:
+                        chosen = _asset_name(tag, "ubuntu-vulkan-arm64.tar.gz")
+                        warning = (
+                            "no ubuntu-cuda asset is published; using the "
+                            "published ubuntu-vulkan-arm64 asset for NVIDIA"
+                        )
+                if chosen is None:
+                    chosen = cpu_name
+            elif requested_variant == "cpu":
+                chosen = cpu_name
+            elif requested_variant == "cuda":
+                chosen = _asset_for(
+                    assets,
+                    rf"{re.escape(_asset_name(tag, 'ubuntu-cuda'))}"
+                    r"-\d+\.\d+-arm64\.tar\.gz",
+                )
+            else:
+                chosen = _asset_name(
+                    tag, f"ubuntu-{requested_variant}-arm64.tar.gz"
+                )
         elif requested_variant == "auto":
             if accelerator == "nvidia":
                 chosen = _asset_for(
@@ -300,13 +365,11 @@ def select_asset(
     if chosen is not None and chosen.startswith(
         _asset_name(tag, "ubuntu-cuda")
     ):
-        cuda_version = re.search(r"-cuda-(\d+\.\d+)-", chosen, re.IGNORECASE)
-        if cuda_version:
-            cudart = (
-                f"cudart-{_asset_name(tag, f'ubuntu-cuda-{cuda_version.group(1)}-x64.tar.gz')}"
-            )
-            if cudart in published:
-                extra = (cudart,)
+        # upstream ships the CUDA runtime as `cudart-<asset name>`; the
+        # prefix preserves the chosen arch (x64 and arm64 alike).
+        cudart = f"cudart-{chosen}"
+        if cudart in published:
+            extra = (cudart,)
 
     if chosen not in published:
         available = ", ".join(sorted(assets)) or "none"
