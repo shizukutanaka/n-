@@ -1145,6 +1145,51 @@ def test_context_shift_warns_when_unsupported(
     assert any("context-shift" in warning for warning in result.warnings)
 
 
+def test_server_timeout_scales_to_context_when_supported(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl", "--timeout")},
+    )
+    result = build_plan(machine, [model], Policy(roles=["chat"]))
+    service = result.services[0]
+    argv = service.launch.argv
+    assert argv[argv.index("--timeout") + 1] == str(service.context)
+
+
+def test_server_timeout_emitted_for_unprobed_build(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    result = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    assert "--timeout" in result.services[0].launch.argv
+
+
+def test_server_timeout_warns_when_unsupported(catalog: list[ModelSpec]) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={"llamacpp": ("--parallel", "-ngl")},
+    )
+    result = build_plan(machine, [model], Policy(roles=["chat"]))
+    assert "--timeout" not in result.services[0].launch.argv
+    assert any("timeout" in warning for warning in result.warnings)
+
+
+def test_server_timeout_omitted_below_upstream_default(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    result = build_plan(
+        profile(64, (24,)),
+        [model],
+        Policy(roles=["chat"], max_context=2048),
+    )
+    service = result.services[0]
+    assert service.context <= 3600
+    assert "--timeout" not in service.launch.argv
+
+
 def test_rerank_gets_dedicated_service_with_reranking_flag(
     catalog: list[ModelSpec],
 ) -> None:
@@ -2018,6 +2063,7 @@ def test_embedding_uses_supported_flag_aliases_without_warnings() -> None:
                 "--ubatch-size",
                 "--pooling",
                 "--parallel",
+                "--timeout",
                 "-ngl",
             ),
         },
