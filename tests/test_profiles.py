@@ -2,6 +2,8 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+import pytest
+
 from nmesh import cli
 from nmesh.catalog import load_catalog
 from nmesh.planner import Policy, build_plan
@@ -96,11 +98,8 @@ def test_4090_plans_larger_model_than_gtx1650() -> None:
     assert strong.memory.weight_bytes > weak.memory.weight_bytes
 
 
-def test_profile_plan_is_simulated_and_does_not_save(tmp_path, monkeypatch, capsys) -> None:
-    from nmesh.planner import core as planner_core
-
+def test_profile_plan_is_simulated_and_does_not_save(tmp_path, capsys) -> None:
     plan_path = tmp_path / "plan.json"
-    monkeypatch.setattr(planner_core, "PLAN_PATH", plan_path)
     profile_path = PROFILE_DIR / "t2-rtx3060-12gb.json"
     assert cli.main(["plan", "--profile", str(profile_path), "--roles", "chat", "--json"]) == 0
     output = json.loads(capsys.readouterr().out)
@@ -183,3 +182,16 @@ def test_speed_saturation_warning_requires_a_faster_candidate(tmp_path) -> None:
     assert _speed_saturation_warning(
         "chat", chosen, [chosen], Policy(roles=["chat"], prefer="speed"),
     ) is None
+
+
+def test_load_catalog_ignores_non_utf8_user_models(tmp_path) -> None:
+    user = tmp_path / "models.yaml"
+    user.write_bytes(b"\xff\xfegarbage")
+    assert load_catalog(user_path=user)
+
+
+def test_load_profile_rejects_non_utf8_file(tmp_path) -> None:
+    bad = tmp_path / "profile.json"
+    bad.write_bytes(b"\xff\xfegarbage")
+    with pytest.raises(ValueError):
+        cli._load_profile(bad)

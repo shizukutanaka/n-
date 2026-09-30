@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from nmesh.bench.cache import MIN_CONTROL_RATIO
+from nmesh.net import local_client
 
 if TYPE_CHECKING:
     from nmesh.planner import PlannedService
@@ -51,6 +52,15 @@ class ControlledBenchResult:
 
 
 _FILLER = "benchmark filler text "
+
+
+def _bench_timeout(prompt_tokens: int) -> httpx.Timeout:
+    # A single socket read cannot wait forever — an engine wedged mid-stream
+    # would stall the whole measurement — but prompt processing is a
+    # legitimate multi-minute silence on slow CPUs. Scale the read bound
+    # with the requested work: one second per prompt token admits prefill
+    # down to 1 token/s, and any decode gap is far shorter.
+    return httpx.Timeout(max(60.0, float(prompt_tokens)), connect=10.0)
 
 
 def _prompt(tokens: int, nonce: str) -> str:
@@ -106,7 +116,7 @@ def _measure_once(
     usage: dict[str, object] | None = None
     timings: dict[str, object] | None = None
     started = time.perf_counter()
-    with httpx.Client(timeout=httpx.Timeout(300.0, connect=10.0)) as client, \
+    with local_client(timeout=_bench_timeout(prefill_tokens)) as client, \
             client.stream(
                 "POST", f"{base_url}/v1/chat/completions", json=request,
             ) as response:
