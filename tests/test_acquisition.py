@@ -85,6 +85,26 @@ def test_hf_transport_error_surfaces_as_oserror(tmp_path, monkeypatch) -> None:
         acquisition.acquire(service)
 
 
+def test_hf2_transport_error_surfaces_as_oserror(tmp_path, monkeypatch) -> None:
+    """huggingface_hub 2.x raises its own httpx2 transport errors, which are
+    not httpx subclasses — they must be normalized the same way."""
+    httpx2 = pytest.importorskip("httpx2")
+    service = _llamacpp_service(tmp_path)
+    monkeypatch.setattr(
+        acquisition,
+        "_resolve_gguf",
+        lambda _repo, _quant: ("q4_k_m", ["model-Q4_K_M.gguf"], 100),
+    )
+
+    def boom(**_kwargs):
+        raise httpx2.ConnectError("connection refused")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", boom)
+
+    with pytest.raises(OSError, match="Download from repo failed"):
+        acquisition.acquire(service)
+
+
 def test_hf_http_errors_still_propagate_as_oserror(tmp_path, monkeypatch) -> None:
     """HfHubHTTPError subclasses are already OSError — they must pass through
     unchanged rather than being re-wrapped."""

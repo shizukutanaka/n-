@@ -368,7 +368,22 @@ def _enable_fast_download() -> None:
         constants.HF_HUB_ENABLE_HF_TRANSFER = True  # type: ignore[attr-defined]
 
 
-def _download_failed(repo_id: str, error: httpx.HTTPError) -> OSError:
+def _transport_errors() -> tuple[type[Exception], ...]:
+    # huggingface_hub 1.x speaks httpx; 2.x ships its own httpx2 fork whose
+    # exception tree is unrelated to httpx's, so both must be caught.
+    errors: list[type[Exception]] = [httpx.HTTPError]
+    try:
+        import httpx2
+    except ImportError:
+        return tuple(errors)
+    errors.append(httpx2.HTTPError)
+    return tuple(errors)
+
+
+_TRANSPORT_ERRORS = _transport_errors()
+
+
+def _download_failed(repo_id: str, error: Exception) -> OSError:
     # huggingface_hub re-raises raw httpx transport errors (ConnectError,
     # TimeoutException, RemoteProtocolError — none of them OSError) once its
     # own retry budget is exhausted. Normalize them so callers can rely on
@@ -430,7 +445,7 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
                 repo_id=snapshot_repo,
                 local_files_only=local_only,
             ))
-        except httpx.HTTPError as error:
+        except _TRANSPORT_ERRORS as error:
             if isinstance(error, OSError):
                 raise
             raise _download_failed(snapshot_repo, error) from error
@@ -507,7 +522,7 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
                 ))
                 for filename in files
             ]
-        except httpx.HTTPError as error:
+        except _TRANSPORT_ERRORS as error:
             if isinstance(error, OSError):
                 raise
             raise _download_failed(repo_id, error) from error
