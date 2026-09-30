@@ -456,6 +456,19 @@ def test_tar_hardlink_is_rejected(tmp_path: Path) -> None:
         engine._extract_archive(archive, tmp_path / "install")
 
 
+def test_engine_remove_rejects_traversal_tag(monkeypatch, tmp_path: Path) -> None:
+    engines = tmp_path / "engines"
+    engines.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("precious", encoding="utf-8")
+    monkeypatch.setattr(engine, "engines_dir", lambda: engines)
+    for tag in ("..", "../victim", "x/../.."):
+        with pytest.raises(ValueError, match="invalid engine tag"):
+            engine.remove(tag)
+    assert (victim / "keep.txt").exists()
+
+
 def test_models_rm_refuses_a_planned_file(monkeypatch, tmp_path: Path, capsys) -> None:
     model = tmp_path / "models" / "qwen-q4_k_m.gguf"
     model.parent.mkdir()
