@@ -226,21 +226,36 @@ def scan(stores: dict[str, Path]) -> list[Artifact]:
     return sorted(artifacts, key=lambda artifact: (artifact.store, str(artifact.path).casefold()))
 
 
+def _inode_key(path: Path) -> tuple[int, int] | None:
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
 def duplicates(artifacts: list[Artifact] | tuple[Artifact, ...]) -> list[DuplicateGroup]:
     grouped: dict[str, list[Artifact]] = {}
     for artifact in artifacts:
         grouped.setdefault(artifact.identity, []).append(artifact)
-    return [
-        DuplicateGroup(
+    groups: list[DuplicateGroup] = []
+    for identity, group in sorted(grouped.items()):
+        if len(group) < 2:
+            continue
+        # Hardlinked members share one inode — deleting a link while another
+        # remains frees nothing, so only distinct inodes count as reclaimable.
+        inode_bytes: dict[object, int] = {}
+        for item in group:
+            key: object = _inode_key(item.path)
+            if key is None:
+                key = ("unstatable", str(item.path))
+            inode_bytes[key] = max(inode_bytes.get(key, 0), item.bytes)
+        groups.append(DuplicateGroup(
             identity=identity,
             artifacts=tuple(group),
-            reclaimable_bytes=sum(item.bytes for item in group) - max(
-                item.bytes for item in group
-            ),
-        )
-        for identity, group in sorted(grouped.items())
-        if len(group) >= 2
-    ]
+            reclaimable_bytes=sum(inode_bytes.values()) - max(inode_bytes.values()),
+        ))
+    return groups
 
 
 def _normalized_name(name: str) -> str:
