@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 _FENCE = re.compile(r"^```[a-zA-Z0-9]*\s*|\s*```$")
 _ASCII_LETTER = re.compile(r"[A-Za-z]")
+_ASCII_DIGIT = re.compile(r"[0-9]")
 
 
 def normalize(text: str) -> str:
@@ -182,7 +183,11 @@ def _three_items(text: str) -> bool:
 def _japanese_only(required: str) -> Callable[[str], bool]:
     def check(text: str) -> bool:
         value = normalize(text)
-        return required in value and not _ASCII_LETTER.search(value)
+        return (
+            required in value
+            and not _ASCII_LETTER.search(value)
+            and not _ASCII_DIGIT.search(value)
+        )
     return check
 
 
@@ -315,6 +320,7 @@ TASKS: tuple[Task, ...] = (
         "次の英文を日本語に訳し、訳文だけを出力してください: 'The cat sleeps.'",
         48,
         _japanese_only("猫"),
+        rule="ja_only:v2",
         value_check=_contains_ci("猫"),
     ),
     Task(
@@ -323,6 +329,7 @@ TASKS: tuple[Task, ...] = (
         "日本の首都はどこですか。地名だけを日本語で出力してください。",
         32,
         _japanese_only("東京"),
+        rule="ja_only:v2",
         value_check=_contains_ci("東京"),
     ),
 )
