@@ -55,3 +55,21 @@ def test_version_reports_package_and_evidence_versions(
     assert "nmesh 0.1.0" in output
     assert f"bench={cli.BENCH_HARNESS_VERSION}" in output
     assert "probe_rules=" in output
+
+
+def test_console_renders_bracket_text_verbatim(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli._console().print("warn[zzz]here and [not-a-style]tag")
+    output = capsys.readouterr().out
+    assert "warn[zzz]here" in output
+    assert "[not-a-style]tag" in output
+
+
+def test_console_style_kwarg_does_not_leak_markup(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli._console().print("- path/to/x[0].log", style="yellow")
+    output = capsys.readouterr().out
+    assert "- path/to/x[0].log" in output
+    assert "[yellow]" not in output
