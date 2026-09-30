@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import statistics
 from collections.abc import Callable
@@ -89,6 +90,8 @@ def _legacy(value: object) -> BenchRecord | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     tps = float(value)
+    if not math.isfinite(tps) or tps < 0:
+        return None
     return BenchRecord(
         tps=tps,
         decode_tps_min=tps,
@@ -146,6 +149,15 @@ def _record(value: object) -> BenchRecord | None:
         last_rejected_epoch = str(value.get("last_rejected_epoch", "unknown"))
     except (KeyError, TypeError, ValueError):
         return None
+    values = (tps, minimum, maximum, *sessions, *rejected)
+    optional = (
+        ratio,
+        last_ratio,
+        last_min,
+        last_max,
+        reference_tps,
+        last_rejected_reference_tps,
+    )
     if (
         isinstance(stable, bool) is False
         or not isinstance(measured_at, str)
@@ -153,6 +165,11 @@ def _record(value: object) -> BenchRecord | None:
         or runs < 1
         or passes < 1
         or (not sessions and epoch != "degraded")
+        or any(not math.isfinite(item) or item < 0 for item in values)
+        or any(
+            item is not None and not math.isfinite(item)
+            for item in optional
+        )
     ):
         return None
     return BenchRecord(
