@@ -89,7 +89,7 @@ def test_delegate_model_sums_usage_when_allowed(monkeypatch) -> None:
     monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": record})
     endpoints: list[object] = []
 
-    def fake_delegate(client, prompt, max_tokens, *, lead, worker, ledger):
+    def fake_delegate(client, prompt, max_tokens, *, lead, worker, ledger, timeout=None):
         del client, prompt, max_tokens
         endpoints.extend((lead, worker))
         ledger.worker.add(Call("worker", 3, 4, False, 0.0))
@@ -268,9 +268,10 @@ def test_delegate_scales_upstream_timeout_with_max_tokens(monkeypatch) -> None:
     monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": _record(plan)})
     read_timeouts: list[float | None] = []
 
-    def fake_delegate(client, prompt, max_tokens, *, lead, worker, ledger):
+    def fake_delegate(client, prompt, max_tokens, *, lead, worker, ledger, timeout=None):
         del prompt, max_tokens, lead, worker
         read_timeouts.append(client.timeout.read)
+        assert timeout == client.timeout.read
         ledger.worker.add(Call("worker", 3, 4, False, 0.0))
         ledger.verify.add(Call("YES", 5, 1, False, 0.0))
         return Delegation(
