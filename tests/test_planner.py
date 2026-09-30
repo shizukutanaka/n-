@@ -2750,3 +2750,36 @@ def test_lfm2_24b_a2b_catalog_moe_anatomy(catalog: list[ModelSpec]) -> None:
     assert estimate.moe_expert_bytes_per_layer == pytest.approx(
         22_951_231_488 / 38 * estimate.weight_bytes / 24_000_000_000
     )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), -1.0, -0.5])
+def test_policy_rejects_non_finite_or_negative_min_decode_tps(value) -> None:
+    with pytest.raises(ValueError, match="min_decode_tps"):
+        Policy(min_decode_tps=value)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), -1.0])
+def test_policy_rejects_non_finite_or_negative_allow_download_gb(value) -> None:
+    with pytest.raises(ValueError, match="allow_download_gb"):
+        Policy(allow_download_gb=value)
+
+
+def test_policy_accepts_zero_budget_gates() -> None:
+    policy = Policy(min_decode_tps=0.0, allow_download_gb=0.0)
+    assert policy.min_decode_tps == 0.0
+    assert policy.allow_download_gb == 0.0
+
+
+def test_load_plan_rejects_nan_budget_gate(tmp_path, catalog: list[ModelSpec]) -> None:
+    plan = build_plan(profile(16, ()), catalog)
+    path = tmp_path / "plan.json"
+    save_plan(plan, path)
+    assert load_plan(path) is not None
+    payload = json.loads(path.read_text())
+    payload["policy"]["min_decode_tps"] = float("nan")
+    path.write_text(json.dumps(payload))
+    assert load_plan(path) is None
+    payload["policy"]["min_decode_tps"] = 8.0
+    payload["policy"]["allow_download_gb"] = float("inf")
+    path.write_text(json.dumps(payload))
+    assert load_plan(path) is None
