@@ -1829,3 +1829,25 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_log_max_bytes_invalid_falls_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Malformed NMESH_LOG_MAX_BYTES crashed open_log (raw int()), and a
+    # non-positive value made rotate() fire on every open — wiping the log
+    # to .1 at each spawn. Both now fall back to LOG_MAX_BYTES.
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    log = tmp_path / "logs" / "chat.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(b"x" * 16)
+    for bad in ("abc", "0", "-5"):
+        monkeypatch.setenv("NMESH_LOG_MAX_BYTES", bad)
+        handle = open_log("chat")
+        handle.close()
+        assert log.exists(), f"rotated on invalid {bad!r}"
+        assert not (tmp_path / "logs" / "chat.log.1").exists()
+    monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "8")
+    handle = open_log("chat")
+    handle.close()
+    assert (tmp_path / "logs" / "chat.log.1").exists()
