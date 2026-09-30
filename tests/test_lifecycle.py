@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import http.server
 import json
 import os
 import socket
 import sys
+import threading
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -995,7 +997,7 @@ def test_unload_cli(monkeypatch, capsys) -> None:
         def read(self):
             return b'{"unloaded": ["chat"]}'
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(cli, "local_urlopen", lambda *_args, **_kwargs: Response())
     assert cli.main(["unload", "chat"]) == 0
     assert "chat" in capsys.readouterr().out
 
@@ -1004,7 +1006,7 @@ def test_unload_cli(monkeypatch, capsys) -> None:
             return b'{"unloaded": []}'
 
     monkeypatch.setattr(
-        cli.urllib.request, "urlopen", lambda *_args, **_kwargs: EmptyResponse()
+        cli, "local_urlopen", lambda *_args, **_kwargs: EmptyResponse()
     )
     assert cli.main(["unload", "missing"]) == 1
     assert "not unloaded" in capsys.readouterr().err
@@ -1518,7 +1520,7 @@ def test_jobs_cli_lists_gateway_jobs(monkeypatch, tmp_path: Path, capsys) -> Non
             return json.dumps(payload).encode()
 
     monkeypatch.setattr(
-        "nmesh.cli.urllib.request.urlopen", lambda *_a, **_k: _Response()
+        "nmesh.cli.local_urlopen", lambda *_a, **_k: _Response()
     )
     assert cli.main(["jobs", "--json"]) == 0
     out = capsys.readouterr().out
@@ -1533,7 +1535,7 @@ def test_jobs_cli_gateway_unreachable(monkeypatch, tmp_path: Path, capsys) -> No
     def _raise(*_a, **_k):
         raise OSError("connection refused")
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _raise)
     assert cli.main(["jobs"]) == 1
     captured = capsys.readouterr()
     assert "18000" in captured.err
@@ -1544,7 +1546,7 @@ def test_jobs_cli_old_gateway_404(monkeypatch, tmp_path: Path, capsys) -> None:
     def _raise(*_a, **_k):
         raise HTTPError("http://x", 404, "not found", {}, None)
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _raise)
     assert cli.main(["jobs"]) == 1
     captured = capsys.readouterr()
     assert "older build" in captured.err or "古いビルド" in captured.err
@@ -1571,10 +1573,34 @@ def test_jobs_cli_cancel(monkeypatch, tmp_path: Path, capsys) -> None:
         seen.append(getattr(request, "method", "GET"))
         return _Response()
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _open)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _open)
     assert cli.main(["jobs", "--cancel", "job-2"]) == 0
     assert seen == ["DELETE"]
     assert "job-2" in capsys.readouterr().out
+
+
+def test_jobs_cli_cancel_sends_auth_header(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    monkeypatch.setenv("NMESH_API_KEY", "secret-key")
+    seen: list[object] = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps({"id": "job-2", "state": "cancelled"}).encode()
+
+    def _open(request, *_a, **_k):
+        seen.append(request)
+        return _Response()
+
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _open)
+    assert cli.main(["jobs", "--cancel", "job-2"]) == 0
+    assert seen[0].get_header("Authorization") == "Bearer secret-key"
 
 
 def test_jobs_cli_cancel_conflict(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -1583,7 +1609,7 @@ def test_jobs_cli_cancel_conflict(monkeypatch, tmp_path: Path, capsys) -> None:
     def _raise(*_a, **_k):
         raise HTTPError("http://x", 409, "conflict", {}, None)
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _raise)
     assert cli.main(["jobs", "--cancel", "job-1"]) == 1
     assert "queued" in capsys.readouterr().err
 
@@ -1619,7 +1645,7 @@ def test_reload_posts_admin_reload(monkeypatch, tmp_path: Path, capsys) -> None:
         seen.append(f"{request.get_method()} {request.full_url}")
         return _Response()
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _open)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _open)
     assert cli.main(["reload", "--port", "18000"]) == 0
     assert seen == ["POST http://127.0.0.1:18000/admin/reload"]
     assert "chat" in capsys.readouterr().out
@@ -1633,7 +1659,7 @@ def test_reload_unreachable_gateway_returns_1(
     def _raise(*_args, **_kwargs):
         raise OSError("connection refused")
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _raise)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _raise)
     assert cli.main(["reload"]) == 1
     assert "connection refused" in capsys.readouterr().err
 
@@ -1715,7 +1741,9 @@ def test_heartbeat_stops_services_dropped_by_plan_swap(
     )
     terminated: list[int] = []
     leftover = _KillableProcess()
-    adopted_pid = os.getpid() + 1
+    # Must be a live pid — drop-kills now verify the recorded pid is still
+    # the recorded process (create_time/liveness) before signalling.
+    adopted_pid = os.getpid()
     supervisor = Supervisor(
         lambda _item: _KillableProcess(),
         tmp_path / "state.json",
@@ -1818,7 +1846,7 @@ def test_status_surfaces_gateway_failed_services(
             ]})
         return _Response({})
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _open)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _open)
     assert cli.main(["status", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     chat = next(
@@ -1829,3 +1857,88 @@ def test_status_surfaces_gateway_failed_services(
         item for item in payload["services"] if item.get("service") == "embed"
     )
     assert embed["idle"] is True
+
+
+def test_load_state_ignores_non_utf8_state_file(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_bytes(b"\xff\xfegarbage")
+    supervisor = Supervisor(state_path=state_path, terminator=lambda _pid: None)
+    assert supervisor._load_state() is None
+
+
+def test_health_wait_bound_scales_with_model_weight(tmp_path: Path) -> None:
+    plan = build_plan(profile(32, (24,)), load_catalog(), Policy(roles=["chat"]))
+    service = plan.services[0]
+    supervisor = Supervisor(state_path=tmp_path / "state.json")
+
+    small = replace(service, memory=replace(service.memory, weight_bytes=1e9))
+    assert supervisor._health_wait_bound(small, 120.0) == 120.0
+
+    big = replace(service, memory=replace(service.memory, weight_bytes=40e9))
+    assert supervisor._health_wait_bound(
+        big, 120.0,
+    ) == pytest.approx(40e9 / (50.0 * 1024 * 1024))
+
+    huge = replace(service, memory=replace(service.memory, weight_bytes=1e13))
+    assert supervisor._health_wait_bound(huge, 120.0) == 1800.0
+
+
+def test_wait_health_survives_cold_load_beyond_flat_timeout(
+    tmp_path: Path,
+) -> None:
+    ready_at = time.monotonic() + 0.6
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200 if time.monotonic() >= ready_at else 503)
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        plan = build_plan(
+            profile(32, (24,)), load_catalog(), Policy(roles=["chat"]),
+        )
+        service = plan.services[0]
+        service = replace(
+            service,
+            launch=replace(
+                service.launch,
+                health_url=f"http://127.0.0.1:{server.server_port}/health",
+            ),
+            memory=replace(service.memory, weight_bytes=200e9),
+        )
+        supervisor = Supervisor(
+            state_path=tmp_path / "state.json", health_timeout=0.1,
+        )
+        # 200e9 B ≈ 1800 s bound — the flat 0.1 s timeout would have
+        # given up before the engine finishes its cold load.
+        assert supervisor._wait_health(service) is True
+    finally:
+        server.shutdown()
+
+
+def test_log_max_bytes_invalid_falls_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Malformed NMESH_LOG_MAX_BYTES crashed open_log (raw int()), and a
+    # non-positive value made rotate() fire on every open — wiping the log
+    # to .1 at each spawn. Both now fall back to LOG_MAX_BYTES.
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    log = tmp_path / "logs" / "chat.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(b"x" * 16)
+    for bad in ("abc", "0", "-5"):
+        monkeypatch.setenv("NMESH_LOG_MAX_BYTES", bad)
+        handle = open_log("chat")
+        handle.close()
+        assert log.exists(), f"rotated on invalid {bad!r}"
+        assert not (tmp_path / "logs" / "chat.log.1").exists()
+    monkeypatch.setenv("NMESH_LOG_MAX_BYTES", "8")
+    handle = open_log("chat")
+    handle.close()
+    assert (tmp_path / "logs" / "chat.log.1").exists()
