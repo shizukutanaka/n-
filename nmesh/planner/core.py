@@ -614,9 +614,14 @@ def _download_repo_for(backend: str, model: ModelSpec) -> str | None:
 
 def _service_port_base() -> int:
     try:
-        return int(os.environ.get("NMESH_SERVICE_PORT_BASE", "18010"))
+        value = int(os.environ.get("NMESH_SERVICE_PORT_BASE", "18010"))
     except ValueError:
         return 18010
+    if not 1 <= value <= 65535:
+        raise ValueError(
+            f"NMESH_SERVICE_PORT_BASE {value} is outside the port range 1-65535"
+        )
+    return value
 
 
 def _has_source(backend: str, model: ModelSpec) -> bool:
@@ -1590,6 +1595,10 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
     tensor_parallel = 1
     name = group[0]
     port = _service_port_base() + len(services)
+    if port > 65535:
+        raise ValueError(
+            f"service port {port} (base + {len(services)}) exceeds 65535"
+        )
     layers = candidate.n_gpu_layers
     memory = candidate.memory
     spec_kind, spec_draft, memory = _spec_for_service(

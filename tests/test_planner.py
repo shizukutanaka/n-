@@ -2752,6 +2752,22 @@ def test_lfm2_24b_a2b_catalog_moe_anatomy(catalog: list[ModelSpec]) -> None:
     )
 
 
+def test_service_port_base_out_of_range_rejected(monkeypatch) -> None:
+    # NMESH_SERVICE_PORT_BASE=70000 used to emit `--port 70010` argv — an
+    # unbindable port discovered only at engine launch. Malformed values
+    # still fall back to 18010; parseable-but-out-of-range is rejected.
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "abc")
+    assert planner_core._service_port_base() == 18010
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "70000")
+    with pytest.raises(ValueError, match="port range"):
+        planner_core._service_port_base()
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "0")
+    with pytest.raises(ValueError):
+        planner_core._service_port_base()
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "18010")
+    assert planner_core._service_port_base() == 18010
+
+
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), -1.0, -0.5])
 def test_policy_rejects_non_finite_or_negative_min_decode_tps(value) -> None:
     with pytest.raises(ValueError, match="min_decode_tps"):
