@@ -136,6 +136,10 @@ class Policy:
             raise ValueError("sleep_idle_seconds must be >= 0")
         if self.cache_reuse < 0:
             raise ValueError("cache_reuse must be >= 0")
+        if self.max_context is not None and self.max_context < 1:
+            raise ValueError("max_context must be positive")
+        if self.parallel_slots is not None and self.parallel_slots < 1:
+            raise ValueError("parallel_slots must be positive")
         if not math.isfinite(self.min_decode_tps) or self.min_decode_tps < 0:
             raise ValueError("min_decode_tps must be a finite number >= 0")
         if not math.isfinite(self.allow_download_gb) or self.allow_download_gb < 0:

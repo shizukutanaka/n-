@@ -2810,6 +2810,21 @@ def test_lfm2_24b_a2b_catalog_moe_anatomy(catalog: list[ModelSpec]) -> None:
     )
 
 
+def test_policy_rejects_nonpositive_context_and_slots() -> None:
+    # --context 0 silently became 8192 (falsy `or` default) and negative
+    # values propagated into `-c <n>` argv; --parallel-slots 0/-2 silently
+    # clamped to 1. Both are silent overrides of the explicit request.
+    with pytest.raises(ValueError):
+        Policy(max_context=0)
+    with pytest.raises(ValueError):
+        Policy(max_context=-5)
+    with pytest.raises(ValueError):
+        Policy(parallel_slots=0)
+    with pytest.raises(ValueError):
+        Policy(parallel_slots=-2)
+    Policy(max_context=1, parallel_slots=1)
+
+
 def test_service_port_base_out_of_range_rejected(monkeypatch) -> None:
     # NMESH_SERVICE_PORT_BASE=70000 used to emit `--port 70010` argv — an
     # unbindable port discovered only at engine launch. Malformed values
