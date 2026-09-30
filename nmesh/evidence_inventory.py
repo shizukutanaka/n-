@@ -282,7 +282,7 @@ def _retrieval_rows() -> list[dict[str, object]]:
         usable = (
             record.harness == RETRIEVAL_HARNESS_VERSION
             and record.digest == digest
-            and record.control_passed
+            and record.degraded_tokens is not None
         )
         chunk = record.chunk
         chunk_status = (
