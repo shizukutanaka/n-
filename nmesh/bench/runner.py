@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from nmesh.bench.cache import MIN_CONTROL_RATIO
+from nmesh.net import local_client
 
 if TYPE_CHECKING:
     from nmesh.planner import PlannedService
@@ -18,6 +19,11 @@ if TYPE_CHECKING:
 # A decode rate needs at least one decode step; llama.cpp reports predicted_ms
 # over the n-1 steps after prefill, so a single served token measures nothing.
 MIN_DECODE_TOKENS = 2
+# One request cannot decode faster than memory bandwidth: even a ~100 MB
+# model on a ~1 TB/s machine stays under ~10^4 tok/s. A reported rate beyond
+# that means the transport burst-delivered chunks (e.g. a buffering proxy)
+# or the server reported nonsense — either way it is not a measurement.
+MAX_MEASURED_DECODE_TPS = 10_000.0
 
 
 @dataclass(frozen=True)
@@ -46,6 +52,15 @@ class ControlledBenchResult:
 
 
 _FILLER = "benchmark filler text "
+
+
+def _bench_timeout(prompt_tokens: int) -> httpx.Timeout:
+    # A single socket read cannot wait forever — an engine wedged mid-stream
+    # would stall the whole measurement — but prompt processing is a
+    # legitimate multi-minute silence on slow CPUs. Scale the read bound
+    # with the requested work: one second per prompt token admits prefill
+    # down to 1 token/s, and any decode gap is far shorter.
+    return httpx.Timeout(max(60.0, float(prompt_tokens)), connect=10.0)
 
 
 def _prompt(tokens: int, nonce: str) -> str:
@@ -101,7 +116,7 @@ def _measure_once(
     usage: dict[str, object] | None = None
     timings: dict[str, object] | None = None
     started = time.perf_counter()
-    with httpx.Client(timeout=httpx.Timeout(300.0, connect=10.0)) as client, \
+    with local_client(timeout=_bench_timeout(prefill_tokens)) as client, \
             client.stream(
                 "POST", f"{base_url}/v1/chat/completions", json=request,
             ) as response:
@@ -181,6 +196,10 @@ def _measure_once(
         decode_tps = max(chunks - 1, 0) / elapsed
     else:
         decode_tps = 0.0
+    if decode_tps > MAX_MEASURED_DECODE_TPS:
+        raise RuntimeError(
+            f"decode rate of {decode_tps:.0f} tok/s exceeds the physical bound"
+        )
     decode_tokens_served = (
         completion_count
         if completion_count is not None
