@@ -158,7 +158,7 @@ def _now() -> str:
 
 
 def load_history(path: Path | None = None) -> dict[str, tuple[EpochSample, ...]]:
-    target = path or EPOCH_PATH
+    target = path or (nmesh_home() / "epoch.json")
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
@@ -197,7 +197,7 @@ def save_history(
     history: dict[str, tuple[EpochSample, ...]],
     path: Path | None = None,
 ) -> Path:
-    target = path or EPOCH_PATH
+    target = path or (nmesh_home() / "epoch.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         key: [asdict(sample) for sample in samples[:EPOCH_HISTORY]]
