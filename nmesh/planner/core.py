@@ -300,7 +300,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 9
+LAUNCH_REVISION = 10
 
 # llama-server's built-in read/write timeout when `--timeout` is not given.
 _LLAMACPP_DEFAULT_TIMEOUT_SECONDS = 3600
@@ -687,7 +687,7 @@ def _launch(
     rerank_only = list(roles) == ["rerank"]
     ref = _source_for(backend, model, quant)
     if backend == "ollama":
-        env: dict[str, str] = {}
+        env = {}
         num_parallel = os.environ.get("OLLAMA_NUM_PARALLEL")
         if num_parallel is None:
             # The daemon auto-selects up to 4 parallel slots per model when
@@ -713,6 +713,7 @@ def _launch(
             "http://127.0.0.1:11434/api/tags",
             True,
         )
+    env = {}
     if backend == "vllm":
         argv = [
             binary or "vllm", "serve", ref, "--host", "127.0.0.1",
@@ -734,6 +735,10 @@ def _launch(
             warnings.append(
                 t("warn.embeddings_backend_unverified", language, model=model.id)
             )
+        if os.environ.get("VLLM_CACHE_ROOT") is None:
+            # vLLM writes compile/triton caches to ~/.cache/vllm by default —
+            # outside NMESH_HOME, never reclaimed by `nmesh down`/`models`.
+            env["VLLM_CACHE_ROOT"] = str(nmesh_home() / "cache" / "vllm")
     elif backend == "mlx":
         argv = ["python", "-m", "mlx_lm.server", "--model", ref, "--port", str(port)]
         if embed_only and warnings is not None:
@@ -922,7 +927,7 @@ def _launch(
                     t("warn.rerank_unsupported", language, model=model.id)
                 )
     health_path = "/health" if backend == "llamacpp" else "/v1/models"
-    return LaunchSpec(argv, {}, f"http://127.0.0.1:{port}{health_path}")
+    return LaunchSpec(argv, env, f"http://127.0.0.1:{port}{health_path}")
 
 
 @dataclass(frozen=True)
@@ -1612,7 +1617,13 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
                  resident_override: bool | None = None,
                  spec_policy: Policy | None = None) -> None:
     if not candidate.installed:
-        hints.append(t(INSTALL_HINTS[candidate.backend], language))
+        if candidate.backend == "llamacpp":
+            hints.append(t(
+                INSTALL_HINTS["llamacpp"], language,
+                tools=t(f"install.llamacpp.tools_{profile.os}", language),
+            ))
+        else:
+            hints.append(t(INSTALL_HINTS[candidate.backend], language))
         if candidate.backend not in missing_backends:
             missing_backends.append(candidate.backend)
     indices: list[int] = []
