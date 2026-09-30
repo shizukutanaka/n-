@@ -574,6 +574,31 @@ def test_local_only_rejects_corrupt_gguf(tmp_path, monkeypatch) -> None:
         acquisition.acquire(service, local_only=True)
 
 
+def test_local_only_zero_recorded_size_adopts_healthy_gguf(
+    tmp_path, monkeypatch
+) -> None:
+    """The no-download path must honor the same rule: a recorded 0 is no
+    reference and must not condemn a healthy local file as corrupt."""
+    service = _llamacpp_service(tmp_path)
+    service.model_id = "qwen3-0.6b"
+    service.download_repo = "org/repo"
+    real = tmp_path / "Qwen3-0.6B-Q4_K_M.gguf"
+    real.write_bytes(b"artifact")
+
+    from nmesh.artifacts import artifact_key
+
+    monkeypatch.setattr(
+        acquisition,
+        "load_cache",
+        lambda *a, **k: {artifact_key("org/repo", "q4_k_m"): 0},
+    )
+
+    acquired = acquisition.acquire(service, local_only=True)
+
+    assert acquired.path == real
+    assert acquired.warning is None or "corrupt" not in acquired.warning
+
+
 def test_local_only_skips_corrupt_for_valid_candidate(tmp_path, monkeypatch) -> None:
     """A corrupt file must not shadow a usable one: skip it and adopt the
     valid candidate, surfacing the corruption in the warning."""

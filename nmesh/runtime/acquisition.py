@@ -268,7 +268,7 @@ def _local_gguf(
             continue
         size = sum(part.stat().st_size for part in parts)
         expected = _recorded_artifact_bytes(service, label)
-        if expected is not None and size != expected:
+        if expected is not None and expected > 0 and size != expected:
             if corrupt_note is None:
                 corrupt_note = i18n.t(
                     "warn.gguf_corrupt",
