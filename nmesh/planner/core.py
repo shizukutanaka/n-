@@ -300,7 +300,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 11
+LAUNCH_REVISION = 12
 
 # llama-server's built-in read/write timeout when `--timeout` is not given.
 _LLAMACPP_DEFAULT_TIMEOUT_SECONDS = 3600
@@ -696,6 +696,7 @@ def _launch(
     n_cpu_moe: int = 0,
     *,
     binary: str | None = None,
+    requested_kv_quant: str = "",
 ) -> LaunchSpec:
     embed_only = list(roles) == ["embed"]
     rerank_only = list(roles) == ["rerank"]
@@ -721,6 +722,20 @@ def _launch(
                         parallel=num_parallel,
                     )
                 )
+        # Quantized KV on Ollama is a daemon-level env knob — there is no
+        # argv equivalent, so without these the daemon always keeps the KV
+        # at f16 and the requested precision is silently dropped. Whether
+        # the daemon honors them cannot be verified at plan time (env
+        # knobs are not probe-able), so accounting stays at f16 and the
+        # plan warns instead of claiming the savings.
+        kv_request = requested_kv_quant or kv_quant
+        if kv_request != "f16":
+            if os.environ.get("OLLAMA_KV_CACHE_TYPE") is None:
+                env["OLLAMA_KV_CACHE_TYPE"] = kv_request
+            if os.environ.get("OLLAMA_FLASH_ATTENTION") is None:
+                # A quantized V cache requires flash attention — the same
+                # restriction llama.cpp applies; Ollama leaves FA opt-in.
+                env["OLLAMA_FLASH_ATTENTION"] = "1"
         return LaunchSpec(
             [binary or "ollama", "serve"],
             env,
@@ -1754,6 +1769,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         ),
         n_cpu_moe=candidate.n_cpu_moe,
         binary=profile.backend_paths.get(candidate.backend),
+        requested_kv_quant=candidate.requested_kv_quant,
     )
     service = PlannedService(
         name, group, candidate.model.id, _source_for(candidate.backend, candidate.model, candidate.quant),
@@ -1789,7 +1805,11 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
     if candidate.requested_kv_quant != candidate.kv_quant:
         warnings.append(
             t(
-                "warn.kv_quant_unsupported",
+                (
+                    "warn.ollama_kv_quant_env"
+                    if candidate.backend == "ollama"
+                    else "warn.kv_quant_unsupported"
+                ),
                 language,
                 service=name,
                 backend=candidate.backend,
