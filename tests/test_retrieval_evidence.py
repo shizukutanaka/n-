@@ -290,6 +290,24 @@ def test_usable_retrieval_record_does_not_nag_for_remeasure(
     assert row["remeasure"] == ""
 
 
+def test_never_degraded_retrieval_record_is_not_planner_usable(
+    tmp_path, monkeypatch,
+) -> None:
+    # A ladder that passed every rung observed no degradation boundary, so the
+    # planner has no limit to consume — the inventory must not call it usable.
+    record = _record(_ladder((8, 8, 8, 8, 8, 8)))
+    assert record.control_passed is True
+    assert record.degraded_tokens is None
+    save_retrieval(record, tmp_path / "retrieval.json")
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    assert cli._embed_retrieval_limits() == {}
+    row = next(
+        row for row in collect_evidence()["records"] if row["kind"] == "retrieval"
+    )
+    assert row["usable"] is False
+    assert "unmeasured" in row["reasons"]
+
+
 def test_nondefault_retrieval_digest_is_ignored_by_planner(tmp_path, monkeypatch) -> None:
     record = replace(
         _record(_ladder((8, 8, 8, 2))),
