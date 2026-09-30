@@ -2632,6 +2632,29 @@ def test_download_budget_warning_silent_within_limit(
     assert not any("download budget" in w for w in result.warnings)
 
 
+def test_plan_warns_when_download_exceeds_free_disk(
+    catalog: list[ModelSpec],
+) -> None:
+    nearly_full = replace(profile(64, (96,)), free_disk_bytes=1)
+    result = build_plan(
+        nearly_full, catalog, Policy(roles=["chat"], min_decode_tps=0),
+    )
+    warning = next(
+        (w for w in result.warnings if "free on disk" in w), None
+    )
+    assert warning is not None, result.warnings
+    assert "GiB" in warning
+
+
+def test_plan_free_disk_warning_silent_when_space_fits(
+    catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(
+        profile(64, (96,)), catalog, Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert not any("free on disk" in w for w in result.warnings)
+
+
 def moe_model() -> ModelSpec:
     # gpt-oss-20b-shaped MoE: 24 layers, experts ~19.1B of 20.9B params.
     return ModelSpec(
