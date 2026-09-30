@@ -954,11 +954,12 @@ def _print_plan_failure(plan: Plan, *, json_output: bool = False) -> None:
         _print_json(_plan_json_data(plan))
 
 
+# Flags that a saved plan renders inert — warn the user they are ignored.
+# --lang/--model/--ignore-eval-evidence are NOT listed: the up handler
+# honors them by rebuilding the plan below, so warning would be a lie.
 _UP_PLAN_FLAG_DEFAULTS: tuple[tuple[str, object, str], ...] = (
     ("roles", None, "--roles"),
     ("kv_quant", "f16", "--kv-quant"),
-    ("model", None, "--model"),
-    ("ignore_eval_evidence", False, "--ignore-eval-evidence"),
     ("allow_download_gb", 60.0, "--allow-download-gb"),
     ("spec", "none", "--spec"),
     ("spec_draft", "", "--spec-draft"),
@@ -4458,7 +4459,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     measure_parser.add_argument("--worker", default="worker")
     measure_parser.add_argument("--lead-url")
     measure_parser.add_argument("--worker-url")
-    measure_parser.add_argument("--reasoning-allowance", type=int, default=0)
+    measure_parser.add_argument("--reasoning-allowance", type=_non_negative_int, default=0)
     measure_parser.add_argument("--repeats", type=_positive_int, default=2)
     measure_parser.add_argument("--limit", type=_positive_int)
     measure_parser.add_argument("--no-reference", action="store_true")

@@ -1612,7 +1612,13 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
                  resident_override: bool | None = None,
                  spec_policy: Policy | None = None) -> None:
     if not candidate.installed:
-        hints.append(t(INSTALL_HINTS[candidate.backend], language))
+        if candidate.backend == "llamacpp":
+            hints.append(t(
+                INSTALL_HINTS["llamacpp"], language,
+                tools=t(f"install.llamacpp.tools_{profile.os}", language),
+            ))
+        else:
+            hints.append(t(INSTALL_HINTS[candidate.backend], language))
         if candidate.backend not in missing_backends:
             missing_backends.append(candidate.backend)
     indices: list[int] = []
