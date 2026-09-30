@@ -300,7 +300,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 10
+LAUNCH_REVISION = 11
 
 # llama-server's built-in read/write timeout when `--timeout` is not given.
 _LLAMACPP_DEFAULT_TIMEOUT_SECONDS = 3600
@@ -720,6 +720,11 @@ def _launch(
             "--port", str(port), "--max-model-len", str(context),
             "--max-num-seqs", str(slots),
         ]
+        # vLLM phones home anonymous usage stats by default; the orchestrator's
+        # contract is local-only operation, so opt out unless the user already
+        # set the variable (including "0").
+        if "VLLM_NO_USAGE_STATS" not in os.environ:
+            env["VLLM_NO_USAGE_STATS"] = "1"
         if tensor_parallel > 1:
             argv += ["--tensor-parallel-size", str(tensor_parallel)]
         if gpu_fraction is not None:

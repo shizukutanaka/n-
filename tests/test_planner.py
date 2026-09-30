@@ -914,6 +914,37 @@ def test_ollama_daemon_env_no_warn_when_user_parallel_matches(
     )
 
 
+def _vllm_only_model() -> ModelSpec:
+    return ModelSpec(
+        "vllm-only", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"hf": "test/model"},
+    )
+
+
+def _vllm_profile() -> HardwareProfile:
+    return profile(
+        8,
+        (8,),
+        os_name="linux",
+        backends={"ollama": None, "llamacpp": None, "vllm": "installed", "mlx": None},
+    )
+
+
+def test_vllm_env_disables_usage_stats(monkeypatch) -> None:
+    # vLLM reports anonymous usage stats by default; the plan opts out
+    # unless the user set the variable themselves.
+    monkeypatch.delenv("VLLM_NO_USAGE_STATS", raising=False)
+    result = build_plan(_vllm_profile(), [_vllm_only_model()], Policy(roles=["chat"]))
+    assert result.services[0].backend == "vllm"
+    assert result.services[0].launch.env["VLLM_NO_USAGE_STATS"] == "1"
+
+
+def test_vllm_env_respects_user_usage_stats(monkeypatch) -> None:
+    monkeypatch.setenv("VLLM_NO_USAGE_STATS", "0")
+    result = build_plan(_vllm_profile(), [_vllm_only_model()], Policy(roles=["chat"]))
+    assert "VLLM_NO_USAGE_STATS" not in result.services[0].launch.env
+
+
 def test_llamacpp_launch_pins_loopback_host() -> None:
     model = ModelSpec(
         "llamacpp-chat", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
