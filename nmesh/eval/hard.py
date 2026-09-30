@@ -267,6 +267,7 @@ HARD_TASKS: tuple[Task, ...] = (
         "multilingual.lang_lock.paris", "multilingual",
         "Answer only in Japanese, using no Latin letters at all: what is the "
         "capital of France?", 32, _japanese_only("パリ"),
+        rule="ja_only:v2",
         value_check=_contains_any(("パリ", "paris")),
     ),
     Task(
@@ -274,6 +275,7 @@ HARD_TASKS: tuple[Task, ...] = (
         "Answer only in Japanese with no Latin letters and no digits: how many "
         "days are in one week? Output the kanji numeral alone.",
         32, _japanese_only("七"),
+        rule="ja_only:v2",
         value_check=_contains_any(("七", "7", "seven")),
     ),
     Task(

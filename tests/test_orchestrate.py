@@ -6,12 +6,13 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 import nmesh.orchestrate.protocol as protocol_module
 from nmesh import cli
 from nmesh.bench import EPOCH_MIN_RATIO, EpochSample
-from nmesh.eval import Task
+from nmesh.eval import SUITES, Task, suite_digest
 from nmesh.orchestrate import (
     ALLOW,
     CHEAPER,
@@ -58,7 +59,7 @@ def test_complete_only_sends_cache_prompt_when_configured() -> None:
         def __init__(self) -> None:
             self.payloads: list[dict[str, object]] = []
 
-        def post(self, _url: str, *, json: dict[str, object]) -> Response:
+        def post(self, _url: str, *, json: dict[str, object], timeout=None) -> Response:
             self.payloads.append(json)
             return Response()
 
@@ -71,6 +72,42 @@ def test_complete_only_sends_cache_prompt_when_configured() -> None:
     assert client.payloads[1]["cache_prompt"] is False
 
 
+def test_complete_scales_timeout_with_prompt_and_budget() -> None:
+    class Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+            }
+
+    class Client:
+        def __init__(self) -> None:
+            self.timeouts: list[object] = []
+
+        def post(self, _url: str, *, json: dict[str, object], timeout=None) -> Response:
+            del json
+            self.timeouts.append(timeout)
+            return Response()
+
+    client = Client()
+    protocol_module.complete(client, Endpoint("url", "model"), "hi", 4)
+    protocol_module.complete(client, Endpoint("url", "model"), "hi", 800)
+    small, large = client.timeouts
+    assert isinstance(small, httpx.Timeout)
+    assert small.connect == 10.0
+    # A 4-token budget needs far less than the old flat 300s; an 800-token
+    # budget at the 2 tok/s decode floor needs 30 + 400 = 430s.
+    assert small.read < 300.0
+    assert large.read >= 430.0
+    protocol_module.complete(
+        client, Endpoint("url", "model"), "hi", 4, timeout=600.0,
+    )
+    assert client.timeouts[2].read == 600.0
+
+
 def _record_run() -> measure_module.DelegationRun:
     lead = RoleIdentity("lead", "q4", "llamacpp")
     worker = RoleIdentity("worker", "q4", "llamacpp")
@@ -78,7 +115,7 @@ def _record_run() -> measure_module.DelegationRun:
         lead=lead,
         worker=worker,
         suite="hard",
-        digest="digest",
+        digest=suite_digest(SUITES["hard"]),
         n_tasks=2,
         worker_passed=1,
         lead_passed=1,
@@ -200,7 +237,7 @@ def test_orchestrate_show_json_handles_empty_cache(
 def test_delegate_escalates_once_on_unreadable_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
-    def fake_complete(_client: object, endpoint: Endpoint, prompt: str, max_tokens: int) -> Call:
+    def fake_complete(_client: object, endpoint: Endpoint, prompt: str, max_tokens: int, timeout: float | None = None) -> Call:
         del max_tokens
         calls.append(endpoint.model_ref)
         if endpoint.model_ref == "verify":
@@ -222,7 +259,7 @@ def test_measure_reports_paired_arms_and_costs(monkeypatch: pytest.MonkeyPatch) 
         Task("two", "test", "two", 8, lambda text: text == "good"),
     )
 
-    def fake_complete(_client: object, endpoint: Endpoint, prompt: str, max_tokens: int) -> Call:
+    def fake_complete(_client: object, endpoint: Endpoint, prompt: str, max_tokens: int, timeout: float | None = None) -> Call:
         del max_tokens
         if endpoint.model_ref == "worker":
             text = "good" if prompt == "one" else "bad"
@@ -250,6 +287,86 @@ def test_measure_reports_paired_arms_and_costs(monkeypatch: pytest.MonkeyPatch) 
     assert run.verifier.rejected_but_right == 0
 
 
+def test_measure_ignores_env_proxies_for_loopback_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[bool] = []
+
+    class FakeClient:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            seen.append(kwargs.get("trust_env", True))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc: object) -> bool:
+            return False
+
+    def fake_complete(
+        _client: object, endpoint: Endpoint, prompt: str, max_tokens: int,
+        timeout: float | None = None,
+    ) -> Call:
+        del prompt, max_tokens
+        return Call("YES" if endpoint.model_ref == "lead" else "good", 1, 1, False, 0.0)
+
+    monkeypatch.setattr(measure_module.httpx, "Client", FakeClient)
+    monkeypatch.setattr(measure_module, "complete", fake_complete)
+    monkeypatch.setattr(protocol_module, "complete", fake_complete)
+    run = measure(
+        (Task("one", "test", "one", 8, lambda text: text == "good"),),
+        lead=Endpoint("http://127.0.0.1:8000", "lead"),
+        worker=Endpoint("https://remote.example.com", "worker"),
+        lead_identity=RoleIdentity("lead", "q4", "llamacpp"),
+        worker_identity=RoleIdentity("worker", "q4", "external"),
+    )
+    assert seen == [False, True]
+    assert run.delegated_passed == 1
+
+
+def test_delegate_routes_worker_call_through_worker_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    used: list[object] = []
+    lead_client, worker_client = object(), object()
+
+    def fake_complete(
+        client: object, endpoint: Endpoint, prompt: str, max_tokens: int,
+        timeout: float | None = None,
+    ) -> Call:
+        del prompt, max_tokens
+        used.append(client)
+        return Call("YES" if endpoint.model_ref == "lead" else "good", 1, 1, False, 0.0)
+
+    monkeypatch.setattr(protocol_module, "complete", fake_complete)
+    result = delegate(
+        lead_client,
+        "task",
+        10,
+        lead=Endpoint("lead", "lead"),
+        worker=Endpoint("worker", "worker"),
+        worker_client=worker_client,
+    )
+    assert result.accepted
+    assert used == [worker_client, lead_client]
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("http://127.0.0.1:11434", True),
+        ("http://127.20.0.9", True),
+        ("http://localhost:8000", True),
+        ("http://api.localhost:8000", True),
+        ("http://[::1]:8000", True),
+        ("https://remote.example.com", False),
+        ("https://169.254.0.1", False),
+        ("not-a-url", False),
+    ],
+)
+def test_loopback_detection(url: str, expected: bool) -> None:
+    assert measure_module._loopback(url) is expected
+
+
 def test_record_round_trip_and_gate(tmp_path: Path) -> None:
     lead = RoleIdentity("lead", "q4", "llamacpp")
     worker = RoleIdentity("worker", "q4", "llamacpp")
@@ -257,7 +374,7 @@ def test_record_round_trip_and_gate(tmp_path: Path) -> None:
         lead=lead,
         worker=worker,
         suite="hard",
-        digest="digest",
+        digest=suite_digest(SUITES["hard"]),
         n_tasks=2,
         worker_passed=1,
         lead_passed=1,
@@ -292,7 +409,8 @@ def test_gate_rejects_non_superior_records(tmp_path: Path) -> None:
     lead = RoleIdentity("lead", "q4", "llamacpp")
     worker = RoleIdentity("worker", "q4", "llamacpp")
     run = measure_module.DelegationRun(
-        lead=lead, worker=worker, suite="hard", digest="digest", n_tasks=2,
+        lead=lead, worker=worker, suite="hard",
+        digest=suite_digest(SUITES["hard"]), n_tasks=2,
         worker_passed=1, lead_passed=2, delegated_passed=1, ceiling_passed=2,
         delegated_vs_lead=measure_module.Comparison(0, 1, 0.9),
         ceiling_vs_lead=measure_module.Comparison(0, 1, 0.9),
@@ -305,6 +423,29 @@ def test_gate_rejects_non_superior_records(tmp_path: Path) -> None:
     assert decide(record) == (NOT_SUPERIOR, NOT_SUPERIOR)
     assert best_for({record.digest: record}, lead, worker, PROTOCOL_VERSION) == record
     assert decide(None) == (NO_EVIDENCE, NO_EVIDENCE)
+
+
+def test_best_for_ignores_foreign_measurements() -> None:
+    lead = RoleIdentity("lead", "q4", "llamacpp")
+    worker = RoleIdentity("worker", "q4", "llamacpp")
+    current = from_run(replace(_record_run(), at=1.0))
+    stale_digest = from_run(replace(_record_run(), digest="superseded", at=9.0))
+    allowance = from_run(replace(_record_run(), reasoning_allowance=512, at=8.0))
+    unknown_suite = from_run(replace(_record_run(), suite="custom", at=7.0))
+    cache = {
+        key: record
+        for key, record in {
+            "current": current,
+            "stale": stale_digest,
+            "allowance": allowance,
+            "foreign": unknown_suite,
+        }.items()
+    }
+    # The newest matching record is stale or measured under a different token
+    # budget — the older current record still wins.
+    assert best_for(cache, lead, worker, PROTOCOL_VERSION) == current
+    for record in (stale_digest, allowance, unknown_suite):
+        assert best_for({"only": record}, lead, worker, PROTOCOL_VERSION) is None
 
 
 def test_quality_gate_is_independent_of_host_epoch() -> None:
