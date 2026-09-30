@@ -172,10 +172,21 @@ def delegate(
     lead: Endpoint,
     worker: Endpoint,
     ledger: Ledger | None = None,
+    worker_client: httpx.Client | None = None,
 ) -> Delegation:
-    """Run one bounded delegate/verify/escalate round for ``prompt``."""
+    """Run one bounded delegate/verify/escalate round for ``prompt``.
+
+    ``client`` reaches the lead; ``worker_client`` may differ when the two
+    endpoints need different transports (e.g. only one sits behind an env
+    proxy).
+    """
     book = ledger if ledger is not None else Ledger()
-    answer = complete(client, worker, prompt, max_tokens)
+    answer = complete(
+        client if worker_client is None else worker_client,
+        worker,
+        prompt,
+        max_tokens,
+    )
     book.worker.add(answer)
     verify = complete(
         client,
