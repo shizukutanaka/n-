@@ -494,6 +494,53 @@ def test_local_only_without_match_raises(tmp_path) -> None:
         acquisition.acquire(service, local_only=True)
 
 
+def test_local_only_rejects_corrupt_gguf(tmp_path, monkeypatch) -> None:
+    """A no-download launch must apply the same recorded-size check as the
+    download path: a file whose bytes contradict the recorded artifact is
+    corrupt, and handing it to llama-server crashes at load."""
+    service = _llamacpp_service(tmp_path)
+    service.model_id = "qwen3-0.6b"
+    service.download_repo = "org/repo"
+    real = tmp_path / "Qwen3-0.6B-Q4_K_M.gguf"
+    real.write_bytes(b"short")
+
+    from nmesh.artifacts import artifact_key
+
+    monkeypatch.setattr(
+        acquisition,
+        "load_cache",
+        lambda *a, **k: {artifact_key("org/repo", "q4_k_m"): 2000},
+    )
+
+    with pytest.raises(RuntimeError, match="corrupt"):
+        acquisition.acquire(service, local_only=True)
+
+
+def test_local_only_skips_corrupt_for_valid_candidate(tmp_path, monkeypatch) -> None:
+    """A corrupt file must not shadow a usable one: skip it and adopt the
+    valid candidate, surfacing the corruption in the warning."""
+    service = _llamacpp_service(tmp_path)
+    service.model_id = "qwen3-0.6b"
+    service.download_repo = "org/repo"
+    corrupt = tmp_path / "Qwen3-0.6B-Q4_K_M.gguf"
+    corrupt.write_bytes(b"short")
+    good = tmp_path / "Qwen3-0.6B-Q3_K_M.gguf"
+    good.write_bytes(b"artifact")
+
+    from nmesh.artifacts import artifact_key
+
+    monkeypatch.setattr(
+        acquisition,
+        "load_cache",
+        lambda *a, **k: {artifact_key("org/repo", "q4_k_m"): 2000},
+    )
+
+    acquired = acquisition.acquire(service, local_only=True)
+
+    assert acquired.path == good
+    assert acquired.warning is not None and "corrupt" in acquired.warning
+
+
 def test_local_only_ollama_skips_pull(tmp_path, monkeypatch) -> None:
     """pull is the network step; create is local and must still run so the
     derived context model exists."""

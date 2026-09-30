@@ -17,7 +17,11 @@ def _safe(name: str) -> bool:
 
 
 def _max_bytes() -> int:
-    return int(os.environ.get("NMESH_LOG_MAX_BYTES", LOG_MAX_BYTES))
+    try:
+        value = int(os.environ.get("NMESH_LOG_MAX_BYTES", LOG_MAX_BYTES))
+    except ValueError:
+        return LOG_MAX_BYTES
+    return value if value > 0 else LOG_MAX_BYTES
 
 
 def log_dir() -> Path:

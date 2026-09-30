@@ -312,8 +312,12 @@ def test_jobs_report_decode_progress_from_llamacpp_slots(monkeypatch) -> None:
             {"is_processing": True,
              "next_token": [{"n_decoded": 12, "n_remain": 88}]},
         ]
+
+        async def _running(_service: object) -> bool:
+            return True
+
         monkeypatch.setattr(
-            gateway_module, "_service_is_running_llamacpp", lambda _s: True
+            gateway_module, "_service_is_running_llamacpp", _running
         )
         with TestClient(create_app(plan)) as client:
             _LimitHandler.block = True
@@ -350,8 +354,12 @@ def test_jobs_omit_progress_when_slot_mapping_is_ambiguous(monkeypatch) -> None:
             {"is_processing": True, "next_token": [{"n_decoded": 1}]},
             {"is_processing": True, "next_token": [{"n_decoded": 2}]},
         ]
+
+        async def _running(_service: object) -> bool:
+            return True
+
         monkeypatch.setattr(
-            gateway_module, "_service_is_running_llamacpp", lambda _s: True
+            gateway_module, "_service_is_running_llamacpp", _running
         )
         with TestClient(create_app(plan)) as client:
             _LimitHandler.block = True
@@ -409,6 +417,58 @@ def test_jobs_show_queued_state_and_queue_timeout_failure(monkeypatch) -> None:
     finally:
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_queued_wait_failure_finishes_job(monkeypatch) -> None:
+    """A queue wait that dies (client disconnect cancels it, or an
+    unexpected error) must not leave the job "queued" forever — phantom
+    queued jobs inflate queue positions and are never evicted."""
+    upstream = _limit_upstream()
+    try:
+        plan = _llama_plan(1)
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        calls = 0
+        real_acquire = SlotLimiter.acquire
+
+        async def flaky_acquire(self, svc, timeout):
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise RuntimeError("simulated queue wait failure")
+            return await real_acquire(self, svc, timeout)
+
+        monkeypatch.setattr(SlotLimiter, "acquire", flaky_acquire)
+        with TestClient(
+            create_app(plan), raise_server_exceptions=False
+        ) as client:
+            _LimitHandler.block = True
+            first = threading.Thread(
+                target=lambda: client.post(
+                    "/v1/chat/completions", json={"messages": []}
+                )
+            )
+            first.start()
+            assert _LimitHandler.started.wait(timeout=2)
+            response = client.post(
+                "/v1/chat/completions", json={"messages": []}
+            )
+            assert response.status_code == 500
+            jobs = client.get("/v1/jobs").json()["jobs"]
+            assert jobs
+            assert not any(j["state"] == "queued" for j in jobs)
+            assert any(
+                j["state"] == "failed" and j["detail"] == "aborted"
+                for j in jobs
+            )
+            _LimitHandler.release.set()
+            first.join(timeout=5)
+            _LimitHandler.block = False
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
 def test_job_registry_transitions_and_capacity() -> None:
     from nmesh.gateway.jobs import JobRegistry
 
@@ -498,3 +558,18 @@ def test_job_registry_cancel() -> None:
     assert registry.cancel(running) is False
     listed = [j.id for j in registry.list()]
     assert queued.id in listed and running.id in listed
+
+
+def test_env_timeout_rejects_non_finite_and_negative(monkeypatch) -> None:
+    from nmesh.gateway import _env_timeout
+
+    for bad in ("nan", "inf", "-inf", "-5", "abc"):
+        monkeypatch.setenv("NMESH_TEST_TIMEOUT", bad)
+        assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 7.5
+    monkeypatch.setenv("NMESH_TEST_TIMEOUT", "0")
+    assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 0.0
+    assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5, allow_zero=False) == 7.5
+    monkeypatch.setenv("NMESH_TEST_TIMEOUT", "2.5")
+    assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 2.5
+    monkeypatch.delenv("NMESH_TEST_TIMEOUT")
+    assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 7.5
