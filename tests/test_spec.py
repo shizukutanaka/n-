@@ -36,6 +36,7 @@ from nmesh.spec import (
     engine_identity,
     from_arms,
     load_cache,
+    request_timeout,
     save,
 )
 
@@ -408,6 +409,20 @@ def test_run_arm_uses_medians_and_preserves_rate_extremes(
     assert item.seconds == 2.0
     assert item.decode_tps_min == 1.0
     assert item.decode_tps_max == 100.0
+
+
+def test_request_timeout_scales_with_token_budget() -> None:
+    # Arm requests decode up to max_tokens each, so the wall bound must scale
+    # with generation: a fixed budget would cut legitimate runs on slow hosts.
+    assert spec_measure.request_timeout(
+        (Workload("code", "", 256),)
+    ) == 30.0 + 256
+    assert spec_measure.request_timeout(
+        (Workload("code", "", 256), Workload("prose", "", 512))
+    ) == 30.0 + 512
+    assert request_timeout() == 30.0 + max(
+        workload.max_tokens for workload in spec_measure.WORKLOADS
+    )
 
 
 def test_run_arm_rejects_fewer_than_three_repeats() -> None:
@@ -893,3 +908,14 @@ def test_spec_cli_transport_failure_writes_nothing(
     ]) == 1
     assert "transport" in capsys.readouterr().err.lower()
     assert not (tmp_path / "spec.json").exists()
+
+
+def test_spec_measure_rejects_nonpositive_n_max() -> None:
+    # --n-max 0/-1 flowed raw into `--spec-draft-n-max` argv — the draft arm
+    # would launch with a nonsense flag mid-measurement — and into the
+    # SpecConfig evidence record.
+    for bad in ("0", "-2"):
+        with pytest.raises(SystemExit) as raised:
+            cli.main(["spec", "measure", "--kind", "draft",
+                      "--draft", "d", "--n-max", bad])
+        assert raised.value.code == 2
