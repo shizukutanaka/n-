@@ -300,7 +300,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 8
+LAUNCH_REVISION = 9
 
 # llama-server's built-in read/write timeout when `--timeout` is not given.
 _LLAMACPP_DEFAULT_TIMEOUT_SECONDS = 3600
