@@ -300,7 +300,7 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 9
+LAUNCH_REVISION = 10
 
 # llama-server's built-in read/write timeout when `--timeout` is not given.
 _LLAMACPP_DEFAULT_TIMEOUT_SECONDS = 3600
@@ -1617,7 +1617,13 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
                  resident_override: bool | None = None,
                  spec_policy: Policy | None = None) -> None:
     if not candidate.installed:
-        hints.append(t(INSTALL_HINTS[candidate.backend], language))
+        if candidate.backend == "llamacpp":
+            hints.append(t(
+                INSTALL_HINTS["llamacpp"], language,
+                tools=t(f"install.llamacpp.tools_{profile.os}", language),
+            ))
+        else:
+            hints.append(t(INSTALL_HINTS[candidate.backend], language))
         if candidate.backend not in missing_backends:
             missing_backends.append(candidate.backend)
     indices: list[int] = []
