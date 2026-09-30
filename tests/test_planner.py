@@ -804,6 +804,37 @@ def test_server_vllm_single_gpu(catalog: list[ModelSpec]) -> None:
     assert len(result.services[0].gpu_indices) == 1
 
 
+def test_vllm_env_pins_cache_root(
+    monkeypatch, catalog: list[ModelSpec]
+) -> None:
+    monkeypatch.delenv("VLLM_CACHE_ROOT", raising=False)
+    result = build_plan(
+        profile(128, (80, 80), os_name="linux"),
+        catalog,
+        Policy(roles=["chat"], model_ids=("phi-4-14b",)),
+    )
+    service = next(
+        item for item in result.services if item.backend == "vllm"
+    )
+    root = service.launch.env["VLLM_CACHE_ROOT"]
+    assert root == str(planner_core.nmesh_home() / "cache" / "vllm")
+
+
+def test_vllm_env_respects_user_cache_root(
+    monkeypatch, catalog: list[ModelSpec]
+) -> None:
+    monkeypatch.setenv("VLLM_CACHE_ROOT", "/custom/vcache")
+    result = build_plan(
+        profile(128, (80, 80), os_name="linux"),
+        catalog,
+        Policy(roles=["chat"], model_ids=("phi-4-14b",)),
+    )
+    service = next(
+        item for item in result.services if item.backend == "vllm"
+    )
+    assert "VLLM_CACHE_ROOT" not in service.launch.env
+
+
 def test_apple_mlx(catalog: list[ModelSpec]) -> None:
     # model_ids pins the model: on unified memory a heavier MoE entry can
     # legitimately fill the shared RAM pool beyond the GPU-side budget.
@@ -896,6 +927,37 @@ def test_plan_no_resolution_env_warning_when_unset(monkeypatch) -> None:
     assert not any(
         "resolve different code" in warning for warning in result.warnings
     )
+
+
+def _vllm_only_model() -> ModelSpec:
+    return ModelSpec(
+        "vllm-only", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"hf": "test/model"},
+    )
+
+
+def _vllm_profile() -> HardwareProfile:
+    return profile(
+        8,
+        (8,),
+        os_name="linux",
+        backends={"ollama": None, "llamacpp": None, "vllm": "installed", "mlx": None},
+    )
+
+
+def test_vllm_env_disables_usage_stats(monkeypatch) -> None:
+    # vLLM reports anonymous usage stats by default; the plan opts out
+    # unless the user set the variable themselves.
+    monkeypatch.delenv("VLLM_NO_USAGE_STATS", raising=False)
+    result = build_plan(_vllm_profile(), [_vllm_only_model()], Policy(roles=["chat"]))
+    assert result.services[0].backend == "vllm"
+    assert result.services[0].launch.env["VLLM_NO_USAGE_STATS"] == "1"
+
+
+def test_vllm_env_respects_user_usage_stats(monkeypatch) -> None:
+    monkeypatch.setenv("VLLM_NO_USAGE_STATS", "0")
+    result = build_plan(_vllm_profile(), [_vllm_only_model()], Policy(roles=["chat"]))
+    assert "VLLM_NO_USAGE_STATS" not in result.services[0].launch.env
 
 
 def test_llamacpp_launch_pins_loopback_host() -> None:
