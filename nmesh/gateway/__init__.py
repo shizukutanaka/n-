@@ -1996,6 +1996,7 @@ def create_app(
                         lead=Endpoint(_base_url(lead), lead.model_ref),
                         worker=Endpoint(_base_url(worker), worker.model_ref),
                         ledger=ledger,
+                        timeout=30.0 + max(1, max_tokens),
                     )
 
             try:
