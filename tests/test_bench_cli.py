@@ -748,3 +748,13 @@ def test_autotune_restores_after_httpx_measure_failure(monkeypatch, capsys) -> N
     assert events[-1] == "disarm"
     captured = capsys.readouterr()
     assert "connection refused" in captured.err
+
+
+def test_bench_rejects_nonpositive_tokens(capsys) -> None:
+    # --tokens -5/0 was accepted and flowed into `max_tokens` while sibling
+    # flags (--runs/--passes/--repeats) were already _positive_int-validated.
+    for bad in ("0", "-5"):
+        with pytest.raises(SystemExit) as raised:
+            cli.main(["bench", "--tokens", bad])
+        assert raised.value.code == 2
+        assert "at least 1" in capsys.readouterr().err
