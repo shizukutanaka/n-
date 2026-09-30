@@ -36,6 +36,7 @@ from nmesh.spec import (
     engine_identity,
     from_arms,
     load_cache,
+    request_timeout,
     save,
 )
 
@@ -408,6 +409,20 @@ def test_run_arm_uses_medians_and_preserves_rate_extremes(
     assert item.seconds == 2.0
     assert item.decode_tps_min == 1.0
     assert item.decode_tps_max == 100.0
+
+
+def test_request_timeout_scales_with_token_budget() -> None:
+    # Arm requests decode up to max_tokens each, so the wall bound must scale
+    # with generation: a fixed budget would cut legitimate runs on slow hosts.
+    assert spec_measure.request_timeout(
+        (Workload("code", "", 256),)
+    ) == 30.0 + 256
+    assert spec_measure.request_timeout(
+        (Workload("code", "", 256), Workload("prose", "", 512))
+    ) == 30.0 + 512
+    assert request_timeout() == 30.0 + max(
+        workload.max_tokens for workload in spec_measure.WORKLOADS
+    )
 
 
 def test_run_arm_rejects_fewer_than_three_repeats() -> None:
