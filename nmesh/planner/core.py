@@ -283,6 +283,9 @@ class RoutingRules:
 # `up` can flag saved plans that predate launch-flag improvements.
 LAUNCH_REVISION = 8
 
+# llama-server's built-in read/write timeout when `--timeout` is not given.
+_LLAMACPP_DEFAULT_TIMEOUT_SECONDS = 3600
+
 
 @dataclass(frozen=True)
 class Plan:
@@ -725,6 +728,19 @@ def _launch(
                 t("warn.parallel_unsupported", language)
             )
         argv += ["--port", str(port)]
+        # llama-server's default read/write timeout (3600s) silently drops
+        # requests whose prompt processing or full generation exceeds it;
+        # a single slot may legitimately spend up to `context` tokens on
+        # either path, so scale the timeout to the slot window.
+        if context > _LLAMACPP_DEFAULT_TIMEOUT_SECONDS:
+            if not known or any(
+                flag in flags for flag in ("-to", "--timeout")
+            ):
+                argv += ["--timeout", str(context)]
+            elif warnings is not None:
+                warnings.append(
+                    t("warn.server_timeout_unsupported", language, model=model.id)
+                )
         if gpu_layers:
             argv += ["-ngl", str(layers)]
         elif warnings is not None and gpu_devices != ():
