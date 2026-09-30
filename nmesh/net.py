@@ -26,7 +26,7 @@ _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def local_urlopen(
-    request: urllib.request.Request | str, *, timeout: float
+    request: urllib.request.Request | str, *, timeout: float | None
 ) -> urllib.response.addinfourl:
     """urlopen that ignores env proxy settings; for loopback endpoints."""
     return _LOCAL_OPENER.open(request, timeout=timeout)
