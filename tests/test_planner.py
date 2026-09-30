@@ -928,6 +928,58 @@ def test_ollama_daemon_env_no_warn_when_user_parallel_matches(
     )
 
 
+def test_ollama_launch_env_emits_kv_cache_type_for_requested_quant() -> None:
+    model = _ollama_only_model()
+    launch = planner_core._launch(
+        "ollama", model, "q4_k_m", 4096, 11434, 0, 1,
+        requested_kv_quant="q8_0",
+    )
+    assert launch.env["OLLAMA_KV_CACHE_TYPE"] == "q8_0"
+    # A quantized V cache requires flash attention; Ollama's FA is opt-in.
+    assert launch.env["OLLAMA_FLASH_ATTENTION"] == "1"
+
+
+def test_ollama_launch_env_respects_user_kv_env(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "q4_0")
+    monkeypatch.setenv("OLLAMA_FLASH_ATTENTION", "0")
+    model = _ollama_only_model()
+    launch = planner_core._launch(
+        "ollama", model, "q4_k_m", 4096, 11434, 0, 1,
+        requested_kv_quant="q8_0",
+    )
+    assert "OLLAMA_KV_CACHE_TYPE" not in launch.env
+    assert "OLLAMA_FLASH_ATTENTION" not in launch.env
+
+
+def test_ollama_launch_env_no_kv_env_for_f16() -> None:
+    model = _ollama_only_model()
+    launch = planner_core._launch(
+        "ollama", model, "q4_k_m", 4096, 11434, 0, 1,
+        requested_kv_quant="f16",
+    )
+    assert "OLLAMA_KV_CACHE_TYPE" not in launch.env
+    assert "OLLAMA_FLASH_ATTENTION" not in launch.env
+
+
+def test_ollama_kv_quant_emits_env_but_still_accounts_f16(monkeypatch) -> None:
+    # Ollama honors quantized KV only via daemon env, and honoring cannot
+    # be verified at plan time — so the env is emitted but the estimate
+    # stays at f16 and the warn names the env, not "does not support".
+    monkeypatch.delenv("OLLAMA_KV_CACHE_TYPE", raising=False)
+    monkeypatch.delenv("OLLAMA_FLASH_ATTENTION", raising=False)
+    result = build_plan(
+        profile(8), [_ollama_only_model()],
+        Policy(roles=["chat"], kv_quant="q8_0"),
+    )
+    service = result.services[0]
+    assert service.backend == "ollama"
+    assert service.kv_quant == "f16"
+    assert service.launch.env["OLLAMA_KV_CACHE_TYPE"] == "q8_0"
+    assert service.launch.env["OLLAMA_FLASH_ATTENTION"] == "1"
+    assert any("OLLAMA_KV_CACHE_TYPE" in warning for warning in result.warnings)
+    assert not any("does not support" in warning for warning in result.warnings)
+
+
 def _vllm_only_model() -> ModelSpec:
     return ModelSpec(
         "vllm-only", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
