@@ -442,6 +442,31 @@ def test_catalog_rejects_non_positive_dimensions() -> None:
         assert _model_from_mapping({**base, field: 0}) is not None
 
 
+def test_catalog_rejects_path_unsafe_ids() -> None:
+    base = {
+        "id": "candidate",
+        "family": "Candidate",
+        "params": 1,
+        "n_layers": 1,
+        "n_heads": 1,
+        "n_kv_heads": 1,
+        "head_dim": 1,
+        "hidden_size": 1,
+        "max_context": 1,
+        "roles": ["chat"],
+        "quality": None,
+        "license": "apache",
+        "sources": {"hf": "org/candidate"},
+    }
+    for unsafe in (
+        "", ".", "..", "../escape", "a/../../b", "a/b", "a\\b",
+        "-leading", "has space", "has:colon", ".hidden",
+    ):
+        assert _model_from_mapping({**base, "id": unsafe}) is None, unsafe
+    for safe in ("qwen3-4b", "Model.X_1", "gpt-oss-20b"):
+        assert _model_from_mapping({**base, "id": safe}) is not None, safe
+
+
 def test_catalog_reports_skipped_entries(tmp_path: Path) -> None:
     base = {
         "id": "candidate",
