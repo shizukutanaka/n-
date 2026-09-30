@@ -93,6 +93,20 @@ def test_worker_role_omits_larger_model_than_small_lead(
     assert any("strictly smaller" in warning for warning in result.warnings)
 
 
+def test_unknown_role_is_named_in_warnings(
+    catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(
+        profile(16),
+        catalog,
+        Policy(roles=["chat", "chatt"], min_decode_tps=0, roles_explicit=True),
+    )
+    assert not result.runnable
+    assert any(
+        "chatt" in warning for warning in result.warnings
+    )
+
+
 def test_worker_role_warns_with_planned_lead_but_no_worker(
     catalog: list[ModelSpec],
 ) -> None:
@@ -914,6 +928,73 @@ def test_ollama_daemon_env_no_warn_when_user_parallel_matches(
     )
 
 
+def test_plan_warns_about_resolution_env_leak(monkeypatch) -> None:
+    monkeypatch.setenv("DYLD_INSERT_LIBRARIES", "/tmp/inject.dylib")
+    result = build_plan(profile(8), [_ollama_only_model()], Policy(roles=["chat"]))
+    assert any("DYLD_INSERT_LIBRARIES" in warning for warning in result.warnings)
+
+
+def test_plan_no_resolution_env_warning_when_unset(monkeypatch) -> None:
+    for name in planner_core._RESOLUTION_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    result = build_plan(profile(8), [_ollama_only_model()], Policy(roles=["chat"]))
+    assert not any(
+        "resolve different code" in warning for warning in result.warnings
+    )
+
+
+def test_ollama_launch_env_emits_kv_cache_type_for_requested_quant() -> None:
+    model = _ollama_only_model()
+    launch = planner_core._launch(
+        "ollama", model, "q4_k_m", 4096, 11434, 0, 1,
+        requested_kv_quant="q8_0",
+    )
+    assert launch.env["OLLAMA_KV_CACHE_TYPE"] == "q8_0"
+    # A quantized V cache requires flash attention; Ollama's FA is opt-in.
+    assert launch.env["OLLAMA_FLASH_ATTENTION"] == "1"
+
+
+def test_ollama_launch_env_respects_user_kv_env(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_KV_CACHE_TYPE", "q4_0")
+    monkeypatch.setenv("OLLAMA_FLASH_ATTENTION", "0")
+    model = _ollama_only_model()
+    launch = planner_core._launch(
+        "ollama", model, "q4_k_m", 4096, 11434, 0, 1,
+        requested_kv_quant="q8_0",
+    )
+    assert "OLLAMA_KV_CACHE_TYPE" not in launch.env
+    assert "OLLAMA_FLASH_ATTENTION" not in launch.env
+
+
+def test_ollama_launch_env_no_kv_env_for_f16() -> None:
+    model = _ollama_only_model()
+    launch = planner_core._launch(
+        "ollama", model, "q4_k_m", 4096, 11434, 0, 1,
+        requested_kv_quant="f16",
+    )
+    assert "OLLAMA_KV_CACHE_TYPE" not in launch.env
+    assert "OLLAMA_FLASH_ATTENTION" not in launch.env
+
+
+def test_ollama_kv_quant_emits_env_but_still_accounts_f16(monkeypatch) -> None:
+    # Ollama honors quantized KV only via daemon env, and honoring cannot
+    # be verified at plan time — so the env is emitted but the estimate
+    # stays at f16 and the warn names the env, not "does not support".
+    monkeypatch.delenv("OLLAMA_KV_CACHE_TYPE", raising=False)
+    monkeypatch.delenv("OLLAMA_FLASH_ATTENTION", raising=False)
+    result = build_plan(
+        profile(8), [_ollama_only_model()],
+        Policy(roles=["chat"], kv_quant="q8_0"),
+    )
+    service = result.services[0]
+    assert service.backend == "ollama"
+    assert service.kv_quant == "f16"
+    assert service.launch.env["OLLAMA_KV_CACHE_TYPE"] == "q8_0"
+    assert service.launch.env["OLLAMA_FLASH_ATTENTION"] == "1"
+    assert any("OLLAMA_KV_CACHE_TYPE" in warning for warning in result.warnings)
+    assert not any("does not support" in warning for warning in result.warnings)
+
+
 def _vllm_only_model() -> ModelSpec:
     return ModelSpec(
         "vllm-only", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
@@ -1235,6 +1316,27 @@ def test_supported_llamacpp_kv_quantization_is_launched(
         if "planned throughput does not model KV cache type" in warning
     ]
     assert len(speed_warnings) == 1
+
+
+def test_kv_quant_emission_warns_v_needs_flash_attention(
+    catalog: list[ModelSpec],
+) -> None:
+    model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
+    machine = replace(
+        profile(64, (24,)),
+        backend_flags={
+            "llamacpp": (
+                "--parallel", "-ngl", "--tensor-split",
+                "--cache-type-k", "--cache-type-v",
+            ),
+        },
+    )
+    result = build_plan(machine, [model], Policy(roles=["chat"], kv_quant="q8_0"))
+    assert "--cache-type-v" in result.services[0].launch.argv
+    assert any(
+        "requires llama.cpp flash attention" in warning
+        for warning in result.warnings
+    )
 
 
 def test_sleep_idle_seconds_is_launched_when_supported(
@@ -2564,6 +2666,29 @@ def test_download_budget_warning_silent_within_limit(
         Policy(roles=["chat"], min_decode_tps=0, allow_download_gb=4096.0),
     )
     assert not any("download budget" in w for w in result.warnings)
+
+
+def test_plan_warns_when_download_exceeds_free_disk(
+    catalog: list[ModelSpec],
+) -> None:
+    nearly_full = replace(profile(64, (96,)), free_disk_bytes=1)
+    result = build_plan(
+        nearly_full, catalog, Policy(roles=["chat"], min_decode_tps=0),
+    )
+    warning = next(
+        (w for w in result.warnings if "free on disk" in w), None
+    )
+    assert warning is not None, result.warnings
+    assert "GiB" in warning
+
+
+def test_plan_free_disk_warning_silent_when_space_fits(
+    catalog: list[ModelSpec],
+) -> None:
+    result = build_plan(
+        profile(64, (96,)), catalog, Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert not any("free on disk" in w for w in result.warnings)
 
 
 def moe_model() -> ModelSpec:

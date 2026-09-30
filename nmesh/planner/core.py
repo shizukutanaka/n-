@@ -300,10 +300,24 @@ class RoutingRules:
 
 # Bump when service launch argv semantics change; stored in plan.json so
 # `up` can flag saved plans that predate launch-flag improvements.
-LAUNCH_REVISION = 11
+LAUNCH_REVISION = 12
 
 # llama-server's built-in read/write timeout when `--timeout` is not given.
 _LLAMACPP_DEFAULT_TIMEOUT_SECONDS = 3600
+
+# Process-spawn env vars that change module/library resolution for engines;
+# nmesh warns at plan time when they are set because spawned services inherit
+# them and may resolve different code than the probe verified.
+_RESOLUTION_ENV_VARS = (
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+)
 
 
 @dataclass(frozen=True)
@@ -682,6 +696,7 @@ def _launch(
     n_cpu_moe: int = 0,
     *,
     binary: str | None = None,
+    requested_kv_quant: str = "",
 ) -> LaunchSpec:
     embed_only = list(roles) == ["embed"]
     rerank_only = list(roles) == ["rerank"]
@@ -707,6 +722,20 @@ def _launch(
                         parallel=num_parallel,
                     )
                 )
+        # Quantized KV on Ollama is a daemon-level env knob — there is no
+        # argv equivalent, so without these the daemon always keeps the KV
+        # at f16 and the requested precision is silently dropped. Whether
+        # the daemon honors them cannot be verified at plan time (env
+        # knobs are not probe-able), so accounting stays at f16 and the
+        # plan warns instead of claiming the savings.
+        kv_request = requested_kv_quant or kv_quant
+        if kv_request != "f16":
+            if os.environ.get("OLLAMA_KV_CACHE_TYPE") is None:
+                env["OLLAMA_KV_CACHE_TYPE"] = kv_request
+            if os.environ.get("OLLAMA_FLASH_ATTENTION") is None:
+                # A quantized V cache requires flash attention — the same
+                # restriction llama.cpp applies; Ollama leaves FA opt-in.
+                env["OLLAMA_FLASH_ATTENTION"] = "1"
         return LaunchSpec(
             [binary or "ollama", "serve"],
             env,
@@ -831,6 +860,15 @@ def _launch(
             and _honors_kv_quant(backend, backend_flags)
         ):
             argv += ["--cache-type-k", kv_quant, "--cache-type-v", kv_quant]
+            if warnings is not None:
+                warnings.append(
+                    t(
+                        "warn.kv_quant_v_fa",
+                        language,
+                        model=model.id,
+                        kv_quant=kv_quant,
+                    )
+                )
         if backend == "llamacpp" and n_cpu_moe > 0:
             if not known or "--n-cpu-moe" in flags:
                 argv += ["--n-cpu-moe", str(n_cpu_moe)]
@@ -1740,6 +1778,7 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         ),
         n_cpu_moe=candidate.n_cpu_moe,
         binary=profile.backend_paths.get(candidate.backend),
+        requested_kv_quant=candidate.requested_kv_quant,
     )
     service = PlannedService(
         name, group, candidate.model.id, _source_for(candidate.backend, candidate.model, candidate.quant),
@@ -1775,7 +1814,11 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
     if candidate.requested_kv_quant != candidate.kv_quant:
         warnings.append(
             t(
-                "warn.kv_quant_unsupported",
+                (
+                    "warn.ollama_kv_quant_env"
+                    if candidate.backend == "ollama"
+                    else "warn.kv_quant_unsupported"
+                ),
                 language,
                 service=name,
                 backend=candidate.backend,
@@ -2577,6 +2620,15 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         )
         for index, warning in enumerate(profile.warnings)
     ]
+    leaked = [
+        name
+        for name in _RESOLUTION_ENV_VARS
+        if os.environ.get(name)
+    ]
+    if leaked:
+        warnings.append(
+            t("warn.resolution_env_leak", selected.lang, vars=", ".join(leaked))
+        )
     stale_bench_records = sum(
         record.harness != BENCH_HARNESS_VERSION
         for record in (bench_records or {}).values()
@@ -3367,6 +3419,12 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             total_gb=total_download / GIB,
             limit_gb=selected.allow_download_gb,
         ))
+    if 0 < profile.free_disk_bytes < total_download:
+        warnings.append(t(
+            "warn.download_free_disk", selected.lang,
+            total_gb=total_download / GIB,
+            free_gb=profile.free_disk_bytes / GIB,
+        ))
     if selected.languages:
         requested = set(selected.languages)
         for service in services:
@@ -3377,6 +3435,13 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     model=service.model_id, languages=", ".join(missing),
                 ))
     covered = set(role_to_service)
+    if selected.roles_explicit:
+        uncovered = sorted(set(roles) - covered)
+        if uncovered:
+            warnings.append(t(
+                "warn.roles_uncovered", selected.lang,
+                roles=", ".join(uncovered),
+            ))
     runnable = (
         bool(services)
         and not hints

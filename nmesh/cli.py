@@ -147,6 +147,7 @@ from nmesh.orchestrate import (
 from nmesh.paths import is_windows, nmesh_home
 from nmesh.planner import (
     LAUNCH_REVISION,
+    PLAN_PATH,
     Plan,
     PlannedService,
     Policy,
@@ -401,6 +402,8 @@ def _doctor(as_json: bool, profile_path: str | None = None) -> int:
     language = i18n.lang()
     free_vram, free_ram = free_budgets(profile)
     selected = None if profile_path else load_plan()
+    if selected is None and not profile_path and PLAN_PATH.is_file():
+        print(i18n.t("warn.plan_unreadable", language), file=sys.stderr)
     selected_models: list[dict[str, str | list[str]]] = [
         {"service": service.name, "model": service.model_id,
          "languages": list(service.languages)}
@@ -999,6 +1002,10 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
                 file=sys.stderr,
             )
         return plan
+    if plan is None and PLAN_PATH.is_file():
+        # The file exists but could not be parsed — the user's saved plan is
+        # being silently replaced; say so before rebuilding.
+        print(i18n.t("warn.plan_unreadable", i18n.lang()), file=sys.stderr)
     plan_args = _up_plan_args(args)
     try:
         plan = _make_plan(plan_args)
