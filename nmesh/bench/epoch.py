@@ -18,6 +18,7 @@ from pathlib import Path
 
 from nmesh import evidence
 from nmesh.paths import nmesh_home
+from nmesh.persist import read_json_file
 
 EPOCH_MIN_RATIO = evidence.EPOCH_MIN_RATIO
 refutes = evidence.refutes
@@ -159,10 +160,7 @@ def _now() -> str:
 
 def load_history(path: Path | None = None) -> dict[str, tuple[EpochSample, ...]]:
     target = path or (nmesh_home() / "epoch.json")
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return {}
+    payload = read_json_file(target)
     if not isinstance(payload, dict):
         return {}
     history: dict[str, tuple[EpochSample, ...]] = {}
