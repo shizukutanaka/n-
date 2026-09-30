@@ -89,6 +89,36 @@ def test_corrupt_json_is_empty(tmp_path) -> None:
     assert Telemetry(path).samples() == []
 
 
+def test_nonfinite_samples_are_skipped_on_read(tmp_path) -> None:
+    # json.loads accepts the Infinity/NaN literals json.dumps writes, so a
+    # corrupted or hand-edited file can carry them; without validation they
+    # propagate into bench_overlay medians and poison the live plan cache.
+    path = tmp_path / "telemetry.json"
+    path.write_text(json.dumps({"samples": [
+        {"service": "chat", "key": "k", "decode_tps": float("inf"),
+         "total_s": 1, "completion_tokens": 20, "at": 1},
+        {"service": "chat", "key": "k", "decode_tps": 10.0,
+         "total_s": float("nan"), "completion_tokens": 20, "at": 2},
+        {"service": "chat", "key": "k", "decode_tps": 10.0,
+         "total_s": 1, "completion_tokens": -5, "at": 3},
+        {"service": "chat", "key": "k", "decode_tps": 10.0,
+         "total_s": 1, "completion_tokens": 20, "at": -1},
+        {"service": "chat", "key": "k", "decode_tps": 12.0,
+         "total_s": 1, "completion_tokens": 20, "at": 4},
+    ]}), encoding="utf-8")
+    assert [item.at for item in Telemetry(path).samples()] == [4]
+
+
+def test_record_rejects_nonfinite_sample(tmp_path) -> None:
+    store = Telemetry(tmp_path / "telemetry.json")
+    store.record(sample(decode_tps=float("inf")))
+    store.record(sample(decode_tps=float("nan")))
+    store.record(sample(total_s=float("inf")))
+    store.record(sample(decode_tps=-1.0))
+    store.record(sample(decode_tps=10.0))
+    assert [item.decode_tps for item in store.samples()] == [10.0]
+
+
 def test_old_telemetry_samples_default_to_approximate(tmp_path) -> None:
     path = tmp_path / "telemetry.json"
     path.write_text(json.dumps({"samples": [{
