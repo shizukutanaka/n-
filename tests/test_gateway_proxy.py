@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import threading
+import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
@@ -34,6 +35,8 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         self.wfile.write(b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n')
+        self.wfile.flush()
+        time.sleep(0.005)
         self.wfile.write(b'data: {"choices":[{"delta":{}}]}\n\n')
         self.wfile.write(b"data: [DONE]\n\n")
 
@@ -117,6 +120,7 @@ class _UsageHandler(BaseHTTPRequestHandler):
             payload = json.dumps(data).encode()
             self.wfile.write(b"data: " + payload + b"\n\n")
             self.wfile.flush()
+            time.sleep(0.001)
         usage = {"completion_tokens": 17}
         if self.__class__.prompt_tokens is not None:
             usage["prompt_tokens"] = self.__class__.prompt_tokens
@@ -825,7 +829,6 @@ def test_gateway_admin_reload_refreshes_plan_and_telemetry(
         old, new = _reload_plans(upstream.server_address[1])
         path = tmp_path / "plan.json"
         save_plan(old, path)
-        monkeypatch.setattr(gateway_module, "PLAN_PATH", path)
         client = TestClient(create_app(old))
 
         assert client.post("/v1/chat/completions", json={
@@ -864,7 +867,6 @@ def test_gateway_auto_reload_uses_plan_mtime(tmp_path, monkeypatch) -> None:
         old, new = _reload_plans(upstream.server_address[1])
         path = tmp_path / "plan.json"
         save_plan(old, path)
-        monkeypatch.setattr(gateway_module, "PLAN_PATH", path)
         client = TestClient(create_app())
         save_plan(new, path)
         mtime_ns = path.stat().st_mtime_ns + 1_000_000_000
@@ -886,7 +888,6 @@ def test_gateway_request_keeps_plan_snapshot_during_reload(tmp_path, monkeypatch
         old, new = _reload_plans(upstream.server_address[1])
         path = tmp_path / "plan.json"
         save_plan(old, path)
-        monkeypatch.setattr(gateway_module, "PLAN_PATH", path)
         client = TestClient(create_app(old))
         responses: list[object] = []
         thread = threading.Thread(target=lambda: responses.append(client.post(
@@ -1177,3 +1178,64 @@ def test_gateway_ollama_keep_alive_matches_residency(monkeypatch) -> None:
         _UsageHandler.request_body = {}
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_swap_timeout_scales_with_incoming_weight() -> None:
+    """The swap wait must outlive the loader: drain allowance stays at the
+    historical 300s while the load bound scales with weight bytes."""
+    model = ModelSpec("swap-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = plan.services[0]
+
+    small = replace(
+        service,
+        memory=replace(service.memory, weight_bytes=1 * 1024**3),
+    )
+    assert gateway_module._swap_timeout(small) == pytest.approx(
+        gateway_module.SWAP_DRAIN_TIMEOUT + 1 * 1024**3 / gateway_module.SWAP_LOAD_FLOOR_BPS
+    )
+
+    heavy = replace(
+        service,
+        memory=replace(service.memory, weight_bytes=200 * 1024**3),
+    )
+    assert gateway_module._swap_timeout(heavy) == pytest.approx(
+        gateway_module.SWAP_DRAIN_TIMEOUT + gateway_module.SWAP_LOAD_TIMEOUT_MAX
+    )
+    assert gateway_module._swap_timeout(heavy) > gateway_module._swap_timeout(small)
+
+
+def test_swap_gated_request_waits_beyond_flat_300s(monkeypatch) -> None:
+    """A swap request for a heavy model must not 504 at 300s while the engine
+    is still legitimately cold-loading."""
+    model = ModelSpec("swap-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        memory=replace(plan.services[0].memory, weight_bytes=200 * 1024**3),
+    )
+    plan = replace(plan, services=[service], swap_group={service.name})
+
+    seen: list[float] = []
+    real_wait_for = asyncio.wait_for
+
+    async def spy(awaitable, timeout):  # type: ignore[no-untyped-def]
+        seen.append(timeout)
+        return await real_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(gateway_module.asyncio, "wait_for", spy)
+    monkeypatch.setattr(gateway_module, "ensure_running", lambda name, snap: None)
+    monkeypatch.setattr(
+        gateway_module, "_base_url",
+        lambda service: "http://127.0.0.1:1",
+    )
+    client = TestClient(create_app(plan))
+    client.post("/v1/chat/completions", json={
+        "model": "nmesh-auto",
+        "messages": [{"role": "user", "content": "hello"}],
+    })
+    # The list also records the slot acquire's sub-second polls; the swap wait
+    # is the one that must exceed the old flat 300s bound.
+    assert any(value > 300.0 for value in seen)
