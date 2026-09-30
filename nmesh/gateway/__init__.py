@@ -535,7 +535,7 @@ def _upstream_body(request: Mapping[str, object], service: PlannedService) -> di
     body = dict(request)
     body["model"] = service.model_ref
     if service.backend == "ollama":
-        body["keep_alive"] = "5m" if service.resident else "30s"
+        body["keep_alive"] = -1 if service.resident else "30s"
     return body
 
 
