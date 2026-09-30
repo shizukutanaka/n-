@@ -690,6 +690,13 @@ def _launch(
             argv += ["--tensor-parallel-size", str(tensor_parallel)]
         if gpu_fraction is not None:
             argv += ["--gpu-memory-utilization", f"{gpu_fraction:.3f}"]
+        if warnings is not None and os.environ.get("VLLM_API_KEY") is not None:
+            # VLLM_API_KEY makes vllm serve require bearer auth, which the
+            # gateway's unauthenticated loopback upstream cannot satisfy.
+            warnings.append(
+                t("warn.upstream_env_conflict", language,
+                  env="VLLM_API_KEY", service=model.id)
+            )
         if embed_only and warnings is not None:
             warnings.append(
                 t("warn.embeddings_backend_unverified", language, model=model.id)
@@ -723,7 +730,7 @@ def _launch(
             warnings.append(
                 t("warn.parallel_unsupported", language)
             )
-        argv += ["--port", str(port)]
+        argv += ["--port", str(port), "--host", "127.0.0.1"]
         # The logical batch size (-b) bounds how large a prompt llama.cpp
         # accepts per call (default 2048); KV headroom does not raise it, so
         # emit the plan's context to keep the full window usable.
@@ -734,6 +741,24 @@ def _launch(
             batch_flag = "--batch-size"
         if batch_flag is not None:
             argv += [batch_flag, str(context)]
+        if backend == "llamacpp" and warnings is not None:
+            # These envs only apply to argv-unset options, and the
+            # gateway assumes an unauthenticated plain-HTTP loopback
+            # upstream — auth, a path prefix, or TLS all break that
+            # contract and have no argv negation, so warn instead.
+            # (llama.cpp keeps --api-key's env as LLAMA_API_KEY; the
+            # LLAMA_ARG_ prefix was never applied to it.)
+            for env_var in (
+                "LLAMA_API_KEY", "LLAMA_ARG_API_KEY_FILE",
+                "LLAMA_ARG_API_PREFIX",
+                "LLAMA_ARG_SSL_KEY_FILE", "LLAMA_ARG_SSL_CERT_FILE",
+            ):
+                value = os.environ.get(env_var)
+                if value is not None:
+                    warnings.append(
+                        t("warn.upstream_env_conflict", language,
+                          env=env_var, service=model.id)
+                    )
         # llama-server's default read/write timeout (3600s) silently drops
         # requests whose prompt processing or full generation exceeds it;
         # a single slot may legitimately spend up to `context` tokens on
@@ -1906,7 +1931,17 @@ def _place_services(
                 swap_reserved[target] = committed
             else:
                 remaining[target] -= committed
-        elif service.backend in {"llamacpp", "vllm"} and len(indices) > 1:
+        elif (
+            service.backend in {"llamacpp", "vllm"}
+            and len(indices) > 1
+            and (
+                service.backend == "llamacpp"
+                or service.memory.gpu_bytes
+                <= min(remaining[index] for index in indices)
+                * len(indices)
+                + 1
+            )
+        ):
             assigned = indices
             tensor_parallel = len(indices)
             proportional = service.backend == "llamacpp"
