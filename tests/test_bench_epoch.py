@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from nmesh.bench import (
     EPOCH_MIN_RATIO,
@@ -18,6 +21,7 @@ from nmesh.bench.epoch import (
     classify,
     find_reference_binary,
     load_history,
+    measure_reference,
     prune_degraded,
     refutes,
     save_history,
@@ -73,6 +77,47 @@ def test_history_is_trimmed_and_reference_ids_are_isolated(tmp_path) -> None:
     assert baseline(loaded, "two") == 82.5
 
 
+def test_history_rejects_non_finite_and_non_positive_tps(tmp_path) -> None:
+    path = tmp_path / "epoch.json"
+    path.write_text(
+        json.dumps(
+            {
+                "ref": [
+                    {"reference_id": "ref", "tps": float("nan"),
+                     "measured_at": "2025-01-01T00:00:00+00:00"},
+                    {"reference_id": "ref", "tps": float("inf"),
+                     "measured_at": "2025-01-01T00:00:01+00:00"},
+                    {"reference_id": "ref", "tps": -3.0,
+                     "measured_at": "2025-01-01T00:00:02+00:00"},
+                    {"reference_id": "ref", "tps": 12.5,
+                     "measured_at": "2025-01-01T00:00:03+00:00"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_history(path)
+    assert [sample.tps for sample in loaded["ref"]] == [12.5]
+
+
+def test_measure_reference_rejects_non_finite_tps(monkeypatch, tmp_path) -> None:
+    import subprocess as _subprocess
+
+    binary = tmp_path / "llama-bench"
+    binary.write_text("", encoding="utf-8")
+    model = tmp_path / "model.gguf"
+    model.write_text("x", encoding="utf-8")
+
+    def fake_run(command, **kwargs):
+        return _subprocess.CompletedProcess(
+            command, 0, stdout='[{"avg_ts": NaN}]', stderr=""
+        )
+
+    monkeypatch.setattr("nmesh.bench.epoch.subprocess.run", fake_run)
+    with pytest.raises(RuntimeError):
+        measure_reference(binary, model)
+
+
 def test_reference_discovery_uses_smallest_model_and_windows_sibling(tmp_path) -> None:
     server = tmp_path / "llama-server.exe"
     binary = tmp_path / "llama-bench.exe"
@@ -105,6 +150,67 @@ def test_measure_reference_reads_llama_bench_json_without_shelling_out(monkeypat
         "llama-bench", "-m", "reference.gguf", "-p", "0", "-n", "32",
         "-r", "2", "-t", "8", "-o", "json",
     ]
+
+
+def test_measure_reference_timeout_scales_with_model_size(monkeypatch, tmp_path) -> None:
+    from nmesh.bench import epoch
+
+    seen_timeouts: list[float] = []
+
+    def fake_run(command, **kwargs):
+        seen_timeouts.append(kwargs["timeout"])
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": '[{"avg_ts": 42.0}]', "stderr": ""},
+        )()
+
+    monkeypatch.setattr(epoch.subprocess, "run", fake_run)
+
+    small = tmp_path / "small.gguf"
+    small.write_bytes(b"\0" * 1024)
+    assert epoch.measure_reference(Path("llama-bench"), small) == 42.0
+    # Small model: flat floor applies (300s, decode floor is below it).
+    assert seen_timeouts[-1] == 300.0
+
+    big = tmp_path / "big.gguf"
+    # Sparse file: st_size reports 40 GiB without allocating the bytes.
+    with big.open("wb") as handle:
+        handle.truncate(40 * 1024**3)
+    epoch.measure_reference(Path("llama-bench"), big)
+    # 40 GiB at a 50 MiB/s floor: ~858s of cold-load bound + decode floor.
+    assert seen_timeouts[-1] > 800.0
+    assert seen_timeouts[-1] <= 3600.0
+
+
+def test_measure_reference_timeout_budgets_all_split_shards(
+    monkeypatch, tmp_path,
+) -> None:
+    from nmesh.bench import epoch
+
+    seen_timeouts: list[float] = []
+
+    def fake_run(command, **kwargs):
+        seen_timeouts.append(kwargs["timeout"])
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": '[{"avg_ts": 42.0}]', "stderr": ""},
+        )()
+
+    monkeypatch.setattr(epoch.subprocess, "run", fake_run)
+
+    for part in range(1, 5):
+        shard = tmp_path / f"model-0000{part}-of-00004.gguf"
+        with shard.open("wb") as handle:
+            handle.truncate(10 * 1024**3)
+    epoch.measure_reference(
+        Path("llama-bench"), tmp_path / "model-00001-of-00004.gguf",
+    )
+    # llama-bench reads all four 10 GiB shards — 40 GiB total — even though
+    # only part 1 is named on the command line.
+    assert seen_timeouts[-1] > 800.0
+    assert seen_timeouts[-1] <= 3600.0
 
 
 def _record(reference_id: str, reference_tps: float | None) -> BenchRecord:

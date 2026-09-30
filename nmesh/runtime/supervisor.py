@@ -21,6 +21,7 @@ import psutil
 from nmesh import __version__, i18n
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.catalog import ModelSpec, load_catalog
+from nmesh.net import local_urlopen
 from nmesh.paths import is_windows, nmesh_home
 from nmesh.planner import (
     BPW,
@@ -41,6 +42,11 @@ from .logs import log_path, open_log, tail
 
 STATE_PATH = nmesh_home() / "state.json"
 HEALTH_TIMEOUT = 120.0
+# A cold engine start must read the full weight bytes from storage;
+# a health bound shorter than that read would kill-and-restart a
+# healthy load forever. Scale the bound to a HDD-class read floor.
+HEALTH_LOAD_FLOOR_BPS = 50.0 * 1024 * 1024
+HEALTH_WAIT_MAX = 1800.0
 MAX_RESTARTS = 3
 RESTART_WINDOW = 300.0
 GIB = 1024**3
@@ -283,7 +289,7 @@ class Supervisor:
         if not isinstance(url, str) or not url:
             return False
         try:
-            with urllib.request.urlopen(url, timeout=2):
+            with local_urlopen(url, timeout=2):
                 return True
         except urllib.error.HTTPError as error:
             return error.code < 500
@@ -301,7 +307,7 @@ class Supervisor:
             request = urllib.request.Request(
                 f"http://127.0.0.1:{service.port}/{path}", method="POST"
             )
-            with urllib.request.urlopen(request, timeout=timeout):
+            with local_urlopen(request, timeout=timeout):
                 return True
         except (OSError, ValueError):
             return False
@@ -322,7 +328,7 @@ class Supervisor:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(request, timeout=5):
+            with local_urlopen(request, timeout=5):
                 pass
         except (OSError, ValueError):
             pass
@@ -332,7 +338,7 @@ class Supervisor:
         """GET /is_sleeping on a sleep-capable engine; any failure means the
         engine is not parked (or not sleep-capable at all)."""
         try:
-            with urllib.request.urlopen(
+            with local_urlopen(
                 f"http://127.0.0.1:{service.port}/is_sleeping", timeout=2
             ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
@@ -409,7 +415,7 @@ class Supervisor:
     def _load_state(self) -> dict[str, object] | None:
         try:
             payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return None
         return payload if isinstance(payload, dict) else None
 
@@ -524,6 +530,19 @@ class Supervisor:
         process = self.processes.get(name)
         return process is not None and process.poll() is None
 
+    def _terminate_record(self, record: Mapping[str, object]) -> None:
+        """Kill the pid an adopted/orphan record names — but only while it
+        still is that process. A dead pid may have been recycled; every
+        other kill path proves liveness (listener port or _entry_alive)
+        before signalling."""
+        pid = record.get("pid")
+        if (
+            isinstance(pid, int)
+            and not isinstance(pid, bool)
+            and self._entry_alive(record)
+        ):
+            self._terminator(pid)
+
     def _adopt(self, service: PlannedService) -> bool:
         if service.name in self.processes or service.launch.health_url is None:
             return False
@@ -563,8 +582,27 @@ class Supervisor:
                     if engine_listener_pid(service.port) == pid:
                         self._terminator(int(pid))
                     return False
+            recorded_argv = entry.get("argv")
+            if not isinstance(recorded_argv, list) or not recorded_argv:
+                recorded_argv = None
+            if recorded_argv is not None and list(recorded_argv[1:]) != list(
+                service.launch.argv[1:]
+            ):
+                # Same drift check _spec_drift applies to self-spawned
+                # processes: the plan changed flags under an engine a prior
+                # supervisor recorded. Entries without argv (written before
+                # the field existed) fall back to model/exe identity only.
+                if engine_listener_pid(service.port) == pid:
+                    self._terminator(int(pid))
+                return False
             create_time = entry.get("create_time")
             port = entry.get("port")
+            carried_argv: object = recorded_argv
+            if carried_argv is None:
+                try:
+                    carried_argv = psutil.Process(int(pid)).cmdline()
+                except (psutil.Error, OSError):
+                    carried_argv = None
             self.adopted[service.name] = {
                 "pid": pid,
                 "create_time": (
@@ -578,6 +616,7 @@ class Supervisor:
                     if isinstance(port, int) and not isinstance(port, bool)
                     else None
                 ),
+                "argv": carried_argv,
             }
             if getattr(service, "sleep_mode", False) and self._engine_sleeping(service):
                 # Entry-verified engine parked by an earlier supervisor —
@@ -625,9 +664,7 @@ class Supervisor:
         for name, record in list(self.adopted.items()):
             if name in planned or name in self.external_shared:
                 continue
-            pid = record.get("pid")
-            if isinstance(pid, int) and not isinstance(pid, bool):
-                self._terminator(pid)
+            self._terminate_record(record)
             self.adopted.pop(name, None)
             self.idle.discard(name)
             dropped = True
@@ -913,13 +950,23 @@ class Supervisor:
         if service.launch.health_url is None:
             return True
         try:
-            with urllib.request.urlopen(service.launch.health_url, timeout=2) as response:
-                return 200 <= response.status < 500
+            with local_urlopen(service.launch.health_url, timeout=2) as response:
+                status = response.status
+                return status is not None and 200 <= status < 500
         except (OSError, ValueError):
             return False
 
+    @staticmethod
+    def _health_wait_bound(service: PlannedService, timeout: float) -> float:
+        weight_bytes = float(service.memory.weight_bytes)
+        if weight_bytes <= 0:
+            return timeout
+        scaled = weight_bytes / HEALTH_LOAD_FLOOR_BPS
+        return min(max(timeout, scaled), HEALTH_WAIT_MAX)
+
     def _wait_health(self, service: PlannedService, timeout: float | None = None) -> bool:
         timeout = self.health_timeout if timeout is None else timeout
+        timeout = self._health_wait_bound(service, timeout)
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             process = self.processes.get(service.name)
@@ -959,6 +1006,7 @@ class Supervisor:
                 "started_at": time.time(),
                 "create_time": self._create_time(process.pid),
                 "exe": _entry_exe(process),
+                "argv": self.launched_argv.get(name),
                 "shared": False,
                 "external": False,
                 "parallel_slots": _slots(plan, name),
@@ -988,6 +1036,7 @@ class Supervisor:
                 "started_at": time.time(),
                 "create_time": record.get("create_time"),
                 "exe": record.get("exe"),
+                "argv": record.get("argv"),
                 "shared": False,
                 "external": True,
                 "adopted": True,
@@ -1157,7 +1206,7 @@ class Supervisor:
                     )
             self.active_plan = current
             self._drop_unplanned(current)
-            for attempt in range(1, 4):
+            for attempt in range(1, 5):
                 self._sleep_probe = self._probe_sleeping(current.services)
                 try:
                     for index in range(len(current.services)):
@@ -1199,11 +1248,24 @@ class Supervisor:
                             and admit
                             and not replan_done
                         ):
-                            current = self._admit(
-                                current,
-                                bench_cache,
-                                drop_unaffordable=True,
-                            )
+                            try:
+                                current = self._admit(
+                                    current,
+                                    bench_cache,
+                                    drop_unaffordable=True,
+                                )
+                            except Exception as error:  # noqa: BLE001
+                                current = replace(
+                                    current,
+                                    warnings=[
+                                        *current.warnings,
+                                        i18n.t(
+                                            "warn.free_admission_fallback",
+                                            i18n.lang(),
+                                            error=error,
+                                        ),
+                                    ],
+                                )
                             replan_done = True
                             refreshed = next(
                                 (
@@ -1271,7 +1333,7 @@ class Supervisor:
                     return result
                 except (OSError, RuntimeError):
                     self.down()
-                    if attempt == 3:
+                    if attempt == 4:
                         raise
                     current = self._fallback(current, attempt)
                 finally:
@@ -1341,7 +1403,7 @@ class Supervisor:
             for name, record in self.adopted.items():
                 pid = record.get("pid")
                 if isinstance(pid, int) and not isinstance(pid, bool):
-                    self._terminator(pid)
+                    self._terminate_record(record)
                     report(name, record)
             for name, process in list(self.processes.items()):
                 report_fields: dict[str, object] = {"pid": process.pid}
@@ -1516,9 +1578,8 @@ class Supervisor:
                     self._persist(selected)
                     return self.status()
                 record = self.adopted.pop(service_name, None)
-                pid = record.get("pid") if isinstance(record, dict) else None
-                if isinstance(pid, int) and not isinstance(pid, bool):
-                    self._terminator(pid)
+                if isinstance(record, dict):
+                    self._terminate_record(record)
                 adopted = False
             if adopted:
                 pass
@@ -1615,7 +1676,7 @@ class Supervisor:
                 pid = adopted.get("pid")
                 if not isinstance(pid, int) or isinstance(pid, bool):
                     return False
-                self._terminator(pid)
+                self._terminate_record(adopted)
                 self.adopted.pop(service_name, None)
                 self.notes.pop(service_name, None)
             elif service_name not in self.processes:
@@ -1890,6 +1951,22 @@ class Supervisor:
                     self.adopted.pop(service.name, None)
                     self.external_shared.discard(service.name)
                     changed = True
+                if service.name in self.sleeping and not (
+                    self._alive(service.name)
+                    or service.name in self.adopted
+                    or service.name in self.external_shared
+                ):
+                    # A parked (sleep-mode) engine that died holds no
+                    # weights — letting the restart path below resurrect it
+                    # would commit its full VRAM while another swap member
+                    # is active. Drop the bookkeeping; ensure_running()
+                    # cold-launches it on the next request, the same
+                    # degrade its failed /wake_up already takes.
+                    self.processes.pop(service.name, None)
+                    self.launched_argv.pop(service.name, None)
+                    self.sleeping.discard(service.name)
+                    changed = True
+                    continue
                 if (
                     service.name in self.active_plan.swap_group
                     and service.name not in self.processes
