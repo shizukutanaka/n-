@@ -934,7 +934,9 @@ also watches release notes for `ggml-org/llama.cpp`, `vllm-project/vllm`, and
 local-inference topics. `--sources hf` lists the newest `gguf`-tagged
 Hugging Face models and feeds their card READMEs into extraction — new
 community quants surface as `catalog_gap` candidates with verified metadata;
-`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN` authenticates the calls. GitHub's
+`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN` authenticates the calls. Qiita
+rate-limits anonymous API calls (60/h per IP against 1,000/h when
+authenticated) — `QIITA_TOKEN` authenticates those calls. GitHub's
 anonymous API quota (60/h per IP) is
 sometimes spent on shared-egress boxes — `GITHUB_TOKEN` or `GH_TOKEN`
 authenticates the calls; arXiv throttles bursts. Either way a rate-limited
