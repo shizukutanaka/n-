@@ -8,6 +8,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
+
 from nmesh import i18n
 from nmesh.artifacts import artifact_key, load_cache, record
 from nmesh.paths import nmesh_home
@@ -366,6 +368,29 @@ def _enable_fast_download() -> None:
         constants.HF_HUB_ENABLE_HF_TRANSFER = True  # type: ignore[attr-defined]
 
 
+def _transport_errors() -> tuple[type[Exception], ...]:
+    # huggingface_hub 1.x speaks httpx; 2.x ships its own httpx2 fork whose
+    # exception tree is unrelated to httpx's, so both must be caught.
+    errors: list[type[Exception]] = [httpx.HTTPError]
+    try:
+        import httpx2
+    except ImportError:
+        return tuple(errors)
+    errors.append(httpx2.HTTPError)
+    return tuple(errors)
+
+
+_TRANSPORT_ERRORS = _transport_errors()
+
+
+def _download_failed(repo_id: str, error: Exception) -> OSError:
+    # huggingface_hub re-raises raw httpx transport errors (ConnectError,
+    # TimeoutException, RemoteProtocolError — none of them OSError) once its
+    # own retry budget is exhausted. Normalize them so callers can rely on
+    # the (OSError, RuntimeError) failure contract for acquisition.
+    return OSError(f"Download from {repo_id} failed: {error}")
+
+
 def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
     """Resolve *service*'s artifact to a real path.
 
@@ -375,7 +400,14 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
     upstream filenames)."""
     if service.backend == "ollama":
         if not local_only:
-            subprocess.run(["ollama", "pull", service.model_ref], check=True)
+            try:
+                subprocess.run(
+                    ["ollama", "pull", service.model_ref], check=True
+                )
+            except subprocess.CalledProcessError as error:
+                raise RuntimeError(
+                    f"ollama pull failed for {service.model_ref}: {error}"
+                ) from error
         name = f"nmesh-{service.model_id}-c{service.context}"
         modelfile = nmesh_home() / "ollama" / f"{name}.Modelfile"
         modelfile.parent.mkdir(parents=True, exist_ok=True)
@@ -407,14 +439,17 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
         _enable_fast_download()
         from huggingface_hub import snapshot_download
 
-        return Acquired(
-            Path(snapshot_download(
-                repo_id=service.download_repo or service.model_ref,
+        snapshot_repo = service.download_repo or service.model_ref
+        try:
+            snapshot = Path(snapshot_download(
+                repo_id=snapshot_repo,
                 local_files_only=local_only,
-            )),
-            None,
-            False,
-        )
+            ))
+        except _TRANSPORT_ERRORS as error:
+            if isinstance(error, OSError):
+                raise
+            raise _download_failed(snapshot_repo, error) from error
+        return Acquired(snapshot, None, False)
     if service.backend == "llamacpp":
         target = Path(service.model_ref)
         parts = _split_gguf_parts(target)
@@ -474,18 +509,23 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
         repo_id = service.download_repo
         if repo_id is None:
             raise RuntimeError("No Hugging Face GGUF repository configured")
-        chosen, files, total_bytes = _resolve_gguf(repo_id, service.quant)
-        _enable_fast_download()
-        from huggingface_hub import hf_hub_download
+        try:
+            chosen, files, total_bytes = _resolve_gguf(repo_id, service.quant)
+            _enable_fast_download()
+            from huggingface_hub import hf_hub_download
 
-        paths = [
-            Path(hf_hub_download(
-                repo_id=repo_id,
-                filename=filename,
-                local_dir=str(target.parent),
-            ))
-            for filename in files
-        ]
+            paths = [
+                Path(hf_hub_download(
+                    repo_id=repo_id,
+                    filename=filename,
+                    local_dir=str(target.parent),
+                ))
+                for filename in files
+            ]
+        except _TRANSPORT_ERRORS as error:
+            if isinstance(error, OSError):
+                raise
+            raise _download_failed(repo_id, error) from error
         try:
             measured = sum(path.stat().st_size for path in paths)
         except OSError:
