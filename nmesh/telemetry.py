@@ -129,11 +129,15 @@ class OverlayReport:
 class Telemetry:
     def __init__(self, path: Path | None = None,
                  max_samples: int = 200) -> None:
-        self.path = path or nmesh_home() / "telemetry.json"
+        self._path = path
         self.max_samples = max_samples
         self._lock = threading.Lock()
         self._cached: list[Sample] | None = None
         self._cached_stamp: tuple[int, int] | None = None
+
+    @property
+    def path(self) -> Path:
+        return self._path or nmesh_home() / "telemetry.json"
 
     def _stamp(self) -> tuple[int, int] | None:
         try:
