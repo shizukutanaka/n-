@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import huggingface_hub
 import pytest
 
@@ -48,6 +49,89 @@ def test_ollama_acquisition_creates_context_model(tmp_path, monkeypatch) -> None
     ]
     assert acquired.model_ref == "nmesh-probe-model-c8192"
     assert acquired.path is None
+
+
+def test_ollama_pull_failure_raises_runtime_error(tmp_path, monkeypatch) -> None:
+    """A failed pull must surface through the (OSError, RuntimeError)
+    acquisition contract — not leak CalledProcessError past supervisor.up's
+    retry/cleanup handling."""
+
+    def run(argv, check):
+        raise acquisition.subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(acquisition, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(acquisition.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match="ollama pull failed"):
+        acquisition.acquire(_ollama_service())
+
+
+def test_hf_transport_error_surfaces_as_oserror(tmp_path, monkeypatch) -> None:
+    """huggingface_hub re-raises raw httpx transport errors once its retry
+    budget is exhausted; acquire must normalize them into OSError."""
+    service = _llamacpp_service(tmp_path)
+    monkeypatch.setattr(
+        acquisition,
+        "_resolve_gguf",
+        lambda _repo, _quant: ("q4_k_m", ["model-Q4_K_M.gguf"], 100),
+    )
+
+    def boom(**_kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", boom)
+
+    with pytest.raises(OSError, match="Download from repo failed"):
+        acquisition.acquire(service)
+
+
+def test_hf2_transport_error_surfaces_as_oserror(tmp_path, monkeypatch) -> None:
+    """huggingface_hub 2.x raises its own httpx2 transport errors, which are
+    not httpx subclasses — they must be normalized the same way."""
+    httpx2 = pytest.importorskip("httpx2")
+    service = _llamacpp_service(tmp_path)
+    monkeypatch.setattr(
+        acquisition,
+        "_resolve_gguf",
+        lambda _repo, _quant: ("q4_k_m", ["model-Q4_K_M.gguf"], 100),
+    )
+
+    def boom(**_kwargs):
+        raise httpx2.ConnectError("connection refused")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", boom)
+
+    with pytest.raises(OSError, match="Download from repo failed"):
+        acquisition.acquire(service)
+
+
+def test_hf_http_errors_still_propagate_as_oserror(tmp_path, monkeypatch) -> None:
+    """HfHubHTTPError subclasses are already OSError — they must pass through
+    unchanged rather than being re-wrapped."""
+    from huggingface_hub.utils import HfHubHTTPError
+
+    service = _llamacpp_service(tmp_path)
+    monkeypatch.setattr(
+        acquisition,
+        "_resolve_gguf",
+        lambda _repo, _quant: ("q4_k_m", ["model-Q4_K_M.gguf"], 100),
+    )
+
+    sentinel = HfHubHTTPError(
+        "boom",
+        response=httpx.Response(
+            500, request=httpx.Request("GET", "https://hf.test")
+        ),
+    )
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda **_kwargs: (_ for _ in ()).throw(sentinel),
+    )
+
+    with pytest.raises(OSError) as captured:
+        acquisition.acquire(service)
+    assert captured.value is sentinel
 
 
 def test_ollama_create_failure_returns_context_warning(tmp_path, monkeypatch) -> None:
@@ -448,6 +532,64 @@ def test_unrecorded_cached_gguf_still_adopted(tmp_path, monkeypatch) -> None:
     assert acquired.path == target
 
 
+def test_zero_recorded_size_does_not_reject_healthy_cache(
+    tmp_path, monkeypatch
+) -> None:
+    """A recorded 0 (written when upstream metadata omitted sizes) can
+    never match real bytes — it must not flag a healthy cache as corrupt
+    and delete + re-download it on every up."""
+    target = tmp_path / "model-Q4_K_M.gguf"
+    target.write_bytes(b"artifact")
+    service = _llamacpp_service(tmp_path)
+    service.model_ref = str(target)
+    service.download_repo = "org/repo"
+
+    monkeypatch.setattr(
+        acquisition,
+        "load_cache",
+        lambda *a, **k: {
+            artifacts.artifact_key("org/repo", "q4_k_m"): 0
+        },
+    )
+
+    def fail_download(**kwargs: object) -> str:
+        raise AssertionError("healthy cache was condemned and re-downloaded")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fail_download)
+
+    acquired = acquisition.acquire(service)
+
+    assert acquired.path == target
+
+
+def test_download_records_actual_disk_bytes_when_metadata_missing(
+    tmp_path, monkeypatch
+) -> None:
+    """When upstream metadata has no sizes the record must hold the bytes
+    actually written — a 0/partial record makes the next up reject the
+    healthy cache as corrupt and re-download it."""
+    service = _llamacpp_service(tmp_path)
+    monkeypatch.setattr(
+        acquisition,
+        "_resolve_gguf",
+        lambda _repo, _quant: ("q4_k_m", ["model-Q4_K_M.gguf"], 0),
+    )
+
+    def fake_download(**kwargs: object) -> str:
+        path = tmp_path / str(kwargs["filename"])
+        path.write_bytes(b"real-bytes")
+        return str(path)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+
+    acquired = acquisition.acquire(service)
+
+    assert acquired.artifact_bytes == len(b"real-bytes")
+    assert artifacts.load_cache()[
+        artifacts.artifact_key("repo", "q4_k_m")
+    ] == len(b"real-bytes")
+
+
 def test_local_only_adopts_matching_gguf(tmp_path, monkeypatch) -> None:
     """Planned names ({id}-{quant}.gguf) differ from downloaded filenames,
     so a no-download acquire must resolve the real on-disk artifact by
@@ -492,6 +634,78 @@ def test_local_only_without_match_raises(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="downloads are disabled"):
         acquisition.acquire(service, local_only=True)
+
+
+def test_local_only_rejects_corrupt_gguf(tmp_path, monkeypatch) -> None:
+    """A no-download launch must apply the same recorded-size check as the
+    download path: a file whose bytes contradict the recorded artifact is
+    corrupt, and handing it to llama-server crashes at load."""
+    service = _llamacpp_service(tmp_path)
+    service.model_id = "qwen3-0.6b"
+    service.download_repo = "org/repo"
+    real = tmp_path / "Qwen3-0.6B-Q4_K_M.gguf"
+    real.write_bytes(b"short")
+
+    from nmesh.artifacts import artifact_key
+
+    monkeypatch.setattr(
+        acquisition,
+        "load_cache",
+        lambda *a, **k: {artifact_key("org/repo", "q4_k_m"): 2000},
+    )
+
+    with pytest.raises(RuntimeError, match="corrupt"):
+        acquisition.acquire(service, local_only=True)
+
+
+def test_local_only_zero_recorded_size_adopts_healthy_gguf(
+    tmp_path, monkeypatch
+) -> None:
+    """The no-download path must honor the same rule: a recorded 0 is no
+    reference and must not condemn a healthy local file as corrupt."""
+    service = _llamacpp_service(tmp_path)
+    service.model_id = "qwen3-0.6b"
+    service.download_repo = "org/repo"
+    real = tmp_path / "Qwen3-0.6B-Q4_K_M.gguf"
+    real.write_bytes(b"artifact")
+
+    from nmesh.artifacts import artifact_key
+
+    monkeypatch.setattr(
+        acquisition,
+        "load_cache",
+        lambda *a, **k: {artifact_key("org/repo", "q4_k_m"): 0},
+    )
+
+    acquired = acquisition.acquire(service, local_only=True)
+
+    assert acquired.path == real
+    assert acquired.warning is None or "corrupt" not in acquired.warning
+
+
+def test_local_only_skips_corrupt_for_valid_candidate(tmp_path, monkeypatch) -> None:
+    """A corrupt file must not shadow a usable one: skip it and adopt the
+    valid candidate, surfacing the corruption in the warning."""
+    service = _llamacpp_service(tmp_path)
+    service.model_id = "qwen3-0.6b"
+    service.download_repo = "org/repo"
+    corrupt = tmp_path / "Qwen3-0.6B-Q4_K_M.gguf"
+    corrupt.write_bytes(b"short")
+    good = tmp_path / "Qwen3-0.6B-Q3_K_M.gguf"
+    good.write_bytes(b"artifact")
+
+    from nmesh.artifacts import artifact_key
+
+    monkeypatch.setattr(
+        acquisition,
+        "load_cache",
+        lambda *a, **k: {artifact_key("org/repo", "q4_k_m"): 2000},
+    )
+
+    acquired = acquisition.acquire(service, local_only=True)
+
+    assert acquired.path == good
+    assert acquired.warning is not None and "corrupt" in acquired.warning
 
 
 def test_local_only_ollama_skips_pull(tmp_path, monkeypatch) -> None:
