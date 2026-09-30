@@ -109,19 +109,19 @@ _SUBSTRINGS = (
 _JAPANESE = (
     (
         "次の英文を日本語に訳し、訳文だけを出力してください: 'The dog runs.'",
-        "犬", _contains_ci("犬"), "",
+        "犬", _contains_ci("犬"), "ja_only:v2",
     ),
     (
         "次の英文を日本語に訳し、訳文だけを出力してください: 'I drink water.'",
-        "水", _contains_ci("水"), "",
+        "水", _contains_ci("水"), "ja_only:v2",
     ),
     (
         "次の英文を日本語に訳し、訳文だけを出力してください: 'The book is new.'",
-        "本", _contains_standalone("本", "日"), "ja_token:v2",
+        "本", _contains_standalone("本", "日"), "ja_only:v2",
     ),
     (
         "日本で最も高い山の名前だけを日本語で出力してください。",
-        "富士", _contains_ci("富士"), "",
+        "富士", _contains_ci("富士"), "ja_only:v2",
     ),
 )
 
