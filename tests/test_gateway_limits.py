@@ -312,8 +312,12 @@ def test_jobs_report_decode_progress_from_llamacpp_slots(monkeypatch) -> None:
             {"is_processing": True,
              "next_token": [{"n_decoded": 12, "n_remain": 88}]},
         ]
+
+        async def _running(_service: object) -> bool:
+            return True
+
         monkeypatch.setattr(
-            gateway_module, "_service_is_running_llamacpp", lambda _s: True
+            gateway_module, "_service_is_running_llamacpp", _running
         )
         with TestClient(create_app(plan)) as client:
             _LimitHandler.block = True
@@ -350,8 +354,12 @@ def test_jobs_omit_progress_when_slot_mapping_is_ambiguous(monkeypatch) -> None:
             {"is_processing": True, "next_token": [{"n_decoded": 1}]},
             {"is_processing": True, "next_token": [{"n_decoded": 2}]},
         ]
+
+        async def _running(_service: object) -> bool:
+            return True
+
         monkeypatch.setattr(
-            gateway_module, "_service_is_running_llamacpp", lambda _s: True
+            gateway_module, "_service_is_running_llamacpp", _running
         )
         with TestClient(create_app(plan)) as client:
             _LimitHandler.block = True
@@ -550,3 +558,18 @@ def test_job_registry_cancel() -> None:
     assert registry.cancel(running) is False
     listed = [j.id for j in registry.list()]
     assert queued.id in listed and running.id in listed
+
+
+def test_env_timeout_rejects_non_finite_and_negative(monkeypatch) -> None:
+    from nmesh.gateway import _env_timeout
+
+    for bad in ("nan", "inf", "-inf", "-5", "abc"):
+        monkeypatch.setenv("NMESH_TEST_TIMEOUT", bad)
+        assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 7.5
+    monkeypatch.setenv("NMESH_TEST_TIMEOUT", "0")
+    assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 0.0
+    assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5, allow_zero=False) == 7.5
+    monkeypatch.setenv("NMESH_TEST_TIMEOUT", "2.5")
+    assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 2.5
+    monkeypatch.delenv("NMESH_TEST_TIMEOUT")
+    assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 7.5

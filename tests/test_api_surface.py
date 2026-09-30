@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import ClassVar
 
+import httpx
 from fastapi.testclient import TestClient
 
 import nmesh.gateway as gateway_module
@@ -15,6 +17,7 @@ from nmesh import cli, telemetry
 from nmesh.catalog import ModelSpec
 from nmesh.gateway import create_app, route
 from nmesh.planner import Policy, build_plan
+from nmesh.runtime import RuntimeStatus
 from nmesh.runtime.logs import log_path
 
 from .test_planner import profile
@@ -400,6 +403,51 @@ def test_gateway_admin_requires_api_key(monkeypatch) -> None:
     with TestClient(create_app(plan)) as client:
         response = client.post("/admin/unload")
     assert response.status_code == 401
+
+
+def test_status_endpoint_requires_api_key_when_set(monkeypatch) -> None:
+    monkeypatch.delenv("NMESH_API_KEY", raising=False)
+    monkeypatch.setattr(
+        gateway_module, "runtime_status", lambda: RuntimeStatus(True, [])
+    )
+    plan = _completion_plan(1)
+    with TestClient(create_app(plan)) as client:
+        assert client.get("/status").status_code == 200
+    monkeypatch.setenv("NMESH_API_KEY", "test-secret")
+    with TestClient(create_app(plan)) as client:
+        assert client.get("/status").status_code == 401
+        assert client.get("/health").status_code == 200
+        authed = client.get(
+            "/status", headers={"Authorization": "Bearer test-secret"}
+        )
+    assert authed.status_code == 200
+
+
+def test_status_endpoint_does_not_block_event_loop(monkeypatch) -> None:
+    order: list[str] = []
+
+    def slow_status():
+        order.append("status:start")
+        time.sleep(0.15)
+        order.append("status:end")
+        return RuntimeStatus(True, [])
+
+    async def scenario() -> None:
+        plan = _completion_plan(1)
+        app = create_app(plan)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            async def marker() -> None:
+                await asyncio.sleep(0.03)
+                order.append("marker")
+
+            await asyncio.gather(client.get("/status"), marker())
+
+    monkeypatch.setattr(gateway_module, "runtime_status", slow_status)
+    asyncio.run(scenario())
+    assert order == ["status:start", "marker", "status:end"]
 
 
 def test_gateway_reaper_skips_in_flight(monkeypatch) -> None:
