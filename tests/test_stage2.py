@@ -492,6 +492,36 @@ def test_supervisor_heartbeat_skips_unloaded_swap_member(
     supervisor.down()
 
 
+def test_supervisor_heartbeat_drops_dead_sleeping_swap_member(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    plan = replace(plan, swap_group=["chat"])
+    calls: list[str] = []
+    supervisor = Supervisor(
+        lambda service: calls.append(service.name) or _AdmissionProcess(),
+        tmp_path / "sleeping-heartbeat.json",
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor.active_plan = plan
+    parked = _RecoverProcess()
+    supervisor.processes["chat"] = parked
+    supervisor.launched_argv["chat"] = ["stub"]
+    supervisor.sleeping.add("chat")
+    parked.exit_code = 137
+    supervisor.heartbeat()
+    assert calls == []
+    assert "chat" not in supervisor.processes
+    assert "chat" not in supervisor.sleeping
+    assert "chat" not in supervisor.failed
+    supervisor.down()
+
+
 def test_supervisor_idle_unload_does_not_restart_and_revives(
     tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
@@ -634,6 +664,144 @@ def test_supervisor_adopts_recorded_pid_and_unloads_it(
     assert supervisor.idle_services() == {"chat"}
     payload = json.loads(state_path.read_text(encoding="utf-8"))
     assert payload["services"] == []
+
+
+def test_supervisor_rejects_adopted_engine_with_drifted_argv(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    plan = replace(plan, services=[service])
+    state_path = tmp_path / "drifted.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "services": [{
+                "service": "chat",
+                "pid": os.getpid(),
+                "create_time": psutil.Process(os.getpid()).create_time(),
+                "port": 18010,
+                "argv": ["llama-server", "-m", "/old/model.gguf", "-c", "2048"],
+            }],
+        }),
+        encoding="utf-8",
+    )
+    launched: list[str] = []
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda item: launched.append(item.name) or _AdmissionProcess(),
+        state_path,
+        health_timeout=0.01,
+        terminator=terminated.append,
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+    monkeypatch.setattr(
+        supervisor_module, "engine_listener_pid", lambda _port: os.getpid()
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+
+    supervisor.ensure_running("chat", plan)
+
+    assert "chat" not in supervisor.adopted
+    assert terminated == [os.getpid()]
+    assert launched == ["chat"]
+
+
+def test_supervisor_adopts_engine_with_matching_argv(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    plan = replace(plan, services=[service])
+    state_path = tmp_path / "matching.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "services": [{
+                "service": "chat",
+                "pid": os.getpid(),
+                "create_time": psutil.Process(os.getpid()).create_time(),
+                "port": 18010,
+                "argv": list(service.launch.argv),
+            }],
+        }),
+        encoding="utf-8",
+    )
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("matching process should be adopted"),
+        state_path,
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+
+    supervisor.ensure_running("chat", plan)
+
+    assert supervisor.adopted["chat"]["pid"] == os.getpid()
+    assert supervisor.adopted["chat"]["argv"] == list(service.launch.argv)
+
+
+def test_supervisor_unload_kills_live_adopted_pid(tmp_path) -> None:
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("nothing to launch"),
+        tmp_path / "state.json",
+        terminator=terminated.append,
+    )
+    supervisor.adopted["chat"] = {
+        "pid": os.getpid(),
+        "create_time": psutil.Process(os.getpid()).create_time(),
+        "port": 18010,
+    }
+
+    assert supervisor.unload("chat") is True
+    assert terminated == [os.getpid()]
+
+
+def test_supervisor_unload_skips_kill_when_adopted_pid_recycled(tmp_path) -> None:
+    # A stale record naming a recycled pid must not kill the process that
+    # now holds it — create_time mismatch means "not our engine".
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("nothing to launch"),
+        tmp_path / "state.json",
+        terminator=terminated.append,
+    )
+    supervisor.adopted["chat"] = {
+        "pid": os.getpid(),
+        "create_time": psutil.Process(os.getpid()).create_time() + 1_000_000.0,
+        "port": 18010,
+    }
+
+    assert supervisor.unload("chat") is True
+    assert terminated == []
+    assert "chat" not in supervisor.adopted
+
+
+def test_supervisor_down_skips_kill_when_adopted_pid_recycled(tmp_path) -> None:
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("nothing to launch"),
+        tmp_path / "state.json",
+        terminator=terminated.append,
+    )
+    supervisor.adopted["chat"] = {
+        "pid": os.getpid(),
+        "create_time": psutil.Process(os.getpid()).create_time() + 1_000_000.0,
+        "port": 18010,
+    }
+
+    supervisor.down()
+    assert terminated == []
 
 
 def test_supervisor_heartbeat_relaunches_dead_adopted_service(
