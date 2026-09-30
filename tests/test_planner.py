@@ -442,6 +442,31 @@ def test_catalog_rejects_non_positive_dimensions() -> None:
         assert _model_from_mapping({**base, field: 0}) is not None
 
 
+def test_catalog_rejects_path_unsafe_ids() -> None:
+    base = {
+        "id": "candidate",
+        "family": "Candidate",
+        "params": 1,
+        "n_layers": 1,
+        "n_heads": 1,
+        "n_kv_heads": 1,
+        "head_dim": 1,
+        "hidden_size": 1,
+        "max_context": 1,
+        "roles": ["chat"],
+        "quality": None,
+        "license": "apache",
+        "sources": {"hf": "org/candidate"},
+    }
+    for unsafe in (
+        "", ".", "..", "../escape", "a/../../b", "a/b", "a\\b",
+        "-leading", "has space", "has:colon", ".hidden",
+    ):
+        assert _model_from_mapping({**base, "id": unsafe}) is None, unsafe
+    for safe in ("qwen3-4b", "Model.X_1", "gpt-oss-20b"):
+        assert _model_from_mapping({**base, "id": safe}) is not None, safe
+
+
 def test_catalog_reports_skipped_entries(tmp_path: Path) -> None:
     base = {
         "id": "candidate",
@@ -479,6 +504,32 @@ def test_catalog_reports_skipped_entries(tmp_path: Path) -> None:
         "entry 1" in problem and "entry is not a mapping" in problem
         for problem in problems
     )
+
+
+def test_catalog_reports_unreadable_files(tmp_path: Path) -> None:
+    problems: list[str] = []
+    bad_utf8 = tmp_path / "bad.yaml"
+    bad_utf8.write_bytes(b"\xff\xfe- not utf8")
+    assert (
+        load_catalog(
+            bundled_path=tmp_path / "missing.yaml",
+            user_path=bad_utf8,
+            problems=problems,
+        )
+        == []
+    )
+    assert any("cannot decode as UTF-8" in problem for problem in problems)
+
+    problems.clear()
+    assert (
+        load_catalog(
+            bundled_path=tmp_path / "missing.yaml",
+            user_path=tmp_path,
+            problems=problems,
+        )
+        == []
+    )
+    assert any("cannot read" in problem for problem in problems)
 
 
 def test_unmeasured_models_require_explicit_selection() -> None:
@@ -805,6 +856,84 @@ def test_ollama_daemon_env_no_warn_when_user_parallel_matches(
     assert "OLLAMA_NUM_PARALLEL" not in result.services[0].launch.env
     assert not any(
         "OLLAMA_NUM_PARALLEL" in warning for warning in result.warnings
+    )
+
+
+def test_llamacpp_launch_pins_loopback_host() -> None:
+    model = ModelSpec(
+        "llamacpp-chat", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"hf_gguf": "repo"},
+    )
+    available = profile(
+        8,
+        backends={"ollama": None, "llamacpp": "installed",
+                  "vllm": None, "mlx": None},
+    )
+    result = build_plan(available, [model], Policy(roles=["chat"]))
+    argv = result.services[0].launch.argv
+    assert "--host" in argv
+    assert argv[argv.index("--host") + 1] == "127.0.0.1"
+
+
+@pytest.mark.parametrize(
+    "env_var", ["LLAMA_API_KEY", "LLAMA_ARG_API_KEY_FILE"]
+)
+def test_llamacpp_launch_warns_on_llama_api_key_envs(
+    monkeypatch, env_var
+) -> None:
+    monkeypatch.setenv(env_var, "secret")
+    model = ModelSpec(
+        "llamacpp-chat", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"hf_gguf": "repo"},
+    )
+    available = profile(
+        8,
+        backends={"ollama": None, "llamacpp": "installed",
+                  "vllm": None, "mlx": None},
+    )
+    result = build_plan(available, [model], Policy(roles=["chat"]))
+    assert any(
+        env_var in warning for warning in result.warnings
+    )
+
+
+def test_vllm_launch_warns_on_vllm_api_key(monkeypatch) -> None:
+    monkeypatch.setenv("VLLM_API_KEY", "secret")
+    model = ModelSpec(
+        "oversized", "test", 150_000_000_000, 100, 100, 100, 128,
+        12800, 4096, ["chat"], 99.0, "test", {"hf": "test/model"},
+    )
+    result = build_plan(
+        profile(128, (80, 80), os_name="linux",
+                backends={"ollama": None, "llamacpp": None,
+                          "vllm": "installed", "mlx": None}),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+    assert result.services[0].backend == "vllm"
+    assert any(
+        "VLLM_API_KEY" in warning for warning in result.warnings
+    )
+
+
+def test_no_upstream_env_warn_when_unset(monkeypatch) -> None:
+    for var in ("LLAMA_API_KEY", "LLAMA_ARG_API_KEY_FILE",
+                "LLAMA_ARG_API_PREFIX",
+                "LLAMA_ARG_SSL_KEY_FILE", "LLAMA_ARG_SSL_CERT_FILE",
+                "VLLM_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    model = ModelSpec(
+        "llamacpp-chat", "test", 500_000_000, 24, 14, 2, 64, 896, 4096,
+        ["chat"], 90.0, "apache", {"hf_gguf": "repo"},
+    )
+    available = profile(
+        8,
+        backends={"ollama": None, "llamacpp": "installed",
+                  "vllm": None, "mlx": None},
+    )
+    result = build_plan(available, [model], Policy(roles=["chat"]))
+    assert not any(
+        "loopback upstream" in warning for warning in result.warnings
     )
 
 
@@ -1932,9 +2061,12 @@ def test_embedding_launch_flags_are_role_aware(catalog: list[ModelSpec]) -> None
     assert embed.launch.argv[embed.launch.argv.index("--pooling") + 1] == "cls"
     assert embed.launch.argv[embed.launch.argv.index("-b") + 1] == str(embed.context)
     assert embed.launch.argv[embed.launch.argv.index("-ub") + 1] == str(embed.context)
+    # The logical batch cap (-b) bounds prompt size on every service —
+    # without it llama.cpp's 2048 default rejects prompts the plan sized KV for.
+    assert chat.launch.argv[chat.launch.argv.index("-b") + 1] == str(chat.context)
     assert not any(
         flag in chat.launch.argv
-        for flag in ("--embeddings", "--embedding", "--pooling", "-b", "-ub")
+        for flag in ("--embeddings", "--embedding", "--pooling", "-ub")
     )
 
 
@@ -1951,6 +2083,40 @@ def test_nomic_embed_context_matches_upstream(
     )
     assert model.max_context == 2048
     assert model.vocab_size == 30528
+
+
+def test_qwen3_embed_rerank_head_dim_matches_upstream(
+    catalog: list[ModelSpec],
+) -> None:
+    # Every qwen3-embedding/reranker config.json declares head_dim 128
+    # (qwen3 fixes head_dim instead of deriving hidden_size/n_heads).
+    # A smaller value under-budgets the KV cache — 2*kv_heads*head_dim
+    # per token — and lets the plan overrun VRAM silently.
+    for model_id in (
+        "qwen3-embedding-0.6b",
+        "qwen3-embedding-4b",
+        "qwen3-embedding-8b",
+        "qwen3-reranker-0.6b",
+        "qwen3-reranker-4b",
+        "qwen3-reranker-8b",
+    ):
+        model = next(item for item in catalog if item.id == model_id)
+        assert model.head_dim == 128, model_id
+
+
+def test_llama3_ollama_tags_exist_on_registry(
+    catalog: list[ModelSpec],
+) -> None:
+    # Ollama's llama3.x default tags are the bare size (`8b`, `70b`) and
+    # point at the instruct weights; the `*-instruct` suffix does not
+    # exist on the registry, so `ollama pull` would 404 at acquisition.
+    tags = {
+        item.id: (item.sources or {}).get("ollama")
+        for item in catalog
+        if item.id.startswith("llama3")
+    }
+    assert tags["llama3.1-8b-instruct"] == "llama3.1:8b"
+    assert tags["llama3.3-70b-instruct"] == "llama3.3:70b"
 
 
 def test_embedding_capability_warnings_and_flags() -> None:
@@ -2469,6 +2635,38 @@ def test_tensor_split_proportional_to_gpu_budgets() -> None:
     assert warning in result.warnings
 
 
+def test_vllm_oversized_split_falls_back_with_warning() -> None:
+    """vLLM has no partial-layer fit: when equal split would overflow the
+    smallest card it must not be committed silently — fall to the single
+    largest card with the over-budget warning (or CPU when RAM allows)."""
+    result = build_plan(
+        profile(8, (24, 8)),
+        placement_catalog(),
+        Policy(roles=["chat"]),
+    )
+    service = result.services[0]
+    # 23 GiB fits no single card (22.1 / 7.4 GiB budgets) and exceeds the
+    # equal-split ceiling (7.4 x 2) — the split path must decline it.
+    oversized = replace(
+        service,
+        backend="vllm",
+        gpu_indices=[],
+        memory=replace(service.memory, gpu_bytes=23 * GIB),
+    )
+    warnings: list[str] = []
+    resolved = planner_core._place_services(
+        [oversized], result.profile, result.policy, [], warnings,
+    )[0]
+    assert resolved.gpu_indices == [0]
+    assert resolved.tensor_split == ()
+    assert i18n.t(
+        "warn.gpu_over_budget", "en",
+        service=service.name,
+        committed=23 * GIB,
+        budget=planner_core._gpu_budget(result.profile.gpus[0]),
+    ) in warnings
+
+
 def test_tensor_split_uniform_when_budgets_equal(tmp_path) -> None:
     model = ModelSpec(
         "oversized-llamacpp", "test", 40_000_000_000, 80, 32, 8, 128,
@@ -2586,3 +2784,52 @@ def test_lfm2_24b_a2b_catalog_moe_anatomy(catalog: list[ModelSpec]) -> None:
     assert estimate.moe_expert_bytes_per_layer == pytest.approx(
         22_951_231_488 / 38 * estimate.weight_bytes / 24_000_000_000
     )
+
+
+def test_service_port_base_out_of_range_rejected(monkeypatch) -> None:
+    # NMESH_SERVICE_PORT_BASE=70000 used to emit `--port 70010` argv — an
+    # unbindable port discovered only at engine launch. Malformed values
+    # still fall back to 18010; parseable-but-out-of-range is rejected.
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "abc")
+    assert planner_core._service_port_base() == 18010
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "70000")
+    with pytest.raises(ValueError, match="port range"):
+        planner_core._service_port_base()
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "0")
+    with pytest.raises(ValueError):
+        planner_core._service_port_base()
+    monkeypatch.setenv("NMESH_SERVICE_PORT_BASE", "18010")
+    assert planner_core._service_port_base() == 18010
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), -1.0, -0.5])
+def test_policy_rejects_non_finite_or_negative_min_decode_tps(value) -> None:
+    with pytest.raises(ValueError, match="min_decode_tps"):
+        Policy(min_decode_tps=value)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), -1.0])
+def test_policy_rejects_non_finite_or_negative_allow_download_gb(value) -> None:
+    with pytest.raises(ValueError, match="allow_download_gb"):
+        Policy(allow_download_gb=value)
+
+
+def test_policy_accepts_zero_budget_gates() -> None:
+    policy = Policy(min_decode_tps=0.0, allow_download_gb=0.0)
+    assert policy.min_decode_tps == 0.0
+    assert policy.allow_download_gb == 0.0
+
+
+def test_load_plan_rejects_nan_budget_gate(tmp_path, catalog: list[ModelSpec]) -> None:
+    plan = build_plan(profile(16, ()), catalog)
+    path = tmp_path / "plan.json"
+    save_plan(plan, path)
+    assert load_plan(path) is not None
+    payload = json.loads(path.read_text())
+    payload["policy"]["min_decode_tps"] = float("nan")
+    path.write_text(json.dumps(payload))
+    assert load_plan(path) is None
+    payload["policy"]["min_decode_tps"] = 8.0
+    payload["policy"]["allow_download_gb"] = float("inf")
+    path.write_text(json.dumps(payload))
+    assert load_plan(path) is None
