@@ -112,11 +112,27 @@ class Ledger:
         return self.worker.seconds + self.verify.seconds + self.rescue.seconds
 
 
+def _request_timeout(prompt: str, max_tokens: int) -> float:
+    """Per-request bound: prefill at >=20 tok/s, decode at >=2 tok/s.
+
+    The flat client-wide timeout predates prompt-aware budgeting; a large
+    prompt or token budget on a slow host would trip it mid-generation and
+    count as a transport failure instead of a slow-but-valid measurement.
+    Mirrors the floors in ``nmesh.eval.runner``.
+    """
+    # A top-level import would cycle through gateway, orchestrate, and eval.
+    from nmesh.gateway.tokens import estimate_tokens
+
+    return 30.0 + estimate_tokens(prompt) / 20.0 + max(0, max_tokens) / 2.0
+
+
 def complete(
     client: httpx.Client,
     endpoint: Endpoint,
     prompt: str,
     max_tokens: int,
+    *,
+    timeout: float | None = None,
 ) -> Call:
     """Send one deterministic single-turn completion and measure it."""
     started = time.monotonic()
@@ -129,9 +145,13 @@ def complete(
     }
     if endpoint.cache_prompt is not None:
         payload["cache_prompt"] = endpoint.cache_prompt
+    bound = _request_timeout(prompt, max_tokens)
+    if timeout is not None:
+        bound = max(bound, timeout)
     response = client.post(
         f"{endpoint.base_url.rstrip('/')}/v1/chat/completions",
         json=payload,
+        timeout=httpx.Timeout(bound, connect=10.0),
     )
     response.raise_for_status()
     body = response.json()
@@ -173,6 +193,7 @@ def delegate(
     worker: Endpoint,
     ledger: Ledger | None = None,
     worker_client: httpx.Client | None = None,
+    timeout: float | None = None,
 ) -> Delegation:
     """Run one bounded delegate/verify/escalate round for ``prompt``.
 
@@ -186,6 +207,7 @@ def delegate(
         worker,
         prompt,
         max_tokens,
+        timeout=timeout,
     )
     book.worker.add(answer)
     verify = complete(
@@ -193,6 +215,7 @@ def delegate(
         lead,
         VERIFY_PROMPT.format(prompt=prompt, answer=answer.text),
         VERIFY_MAX_TOKENS,
+        timeout=timeout,
     )
     book.verify.add(verify)
     decision = read_verdict(verify.text)
@@ -205,7 +228,7 @@ def delegate(
             worker=answer,
             verify=verify,
         )
-    rescue = complete(client, lead, prompt, max_tokens)
+    rescue = complete(client, lead, prompt, max_tokens, timeout=timeout)
     book.rescue.add(rescue)
     return Delegation(
         answer=rescue.text,
