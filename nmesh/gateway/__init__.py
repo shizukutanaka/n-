@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
 import secrets
@@ -23,6 +24,7 @@ from nmesh.bench.retrieval import (
     pool_embeddings,
     retrieval_digest,
 )
+from nmesh.net import local_async_client, local_client
 from nmesh.orchestrate import (
     PROTOCOL_VERSION,
     Delegation,
@@ -60,20 +62,20 @@ from .tokens import (
     record as record_token_calibration,
 )
 
-try:
-    QUEUE_TIMEOUT = float(os.environ.get("NMESH_QUEUE_TIMEOUT", "120.0"))
-except ValueError:
-    QUEUE_TIMEOUT = 120.0
 
-try:
-    KEEP_ALIVE = float(os.environ.get("NMESH_KEEP_ALIVE", "0"))
-except ValueError:
-    KEEP_ALIVE = 0.0
+def _env_timeout(name: str, default: float, *, allow_zero: bool = True) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    if not math.isfinite(value) or value < 0 or (value == 0 and not allow_zero):
+        return default
+    return value
 
-try:
-    CONNECT_TIMEOUT = float(os.environ.get("NMESH_CONNECT_TIMEOUT", "10.0"))
-except ValueError:
-    CONNECT_TIMEOUT = 10.0
+
+QUEUE_TIMEOUT = _env_timeout("NMESH_QUEUE_TIMEOUT", 120.0)
+KEEP_ALIVE = _env_timeout("NMESH_KEEP_ALIVE", 0.0)
+CONNECT_TIMEOUT = _env_timeout("NMESH_CONNECT_TIMEOUT", 10.0, allow_zero=False)
 
 # Backends whose OpenAI-compat stream accepts stream_options.include_usage.
 # The gateway injects it so decode telemetry uses the upstream's exact
@@ -553,11 +555,11 @@ def _chat_service(plan: Plan) -> PlannedService | None:
     return next((item for item in plan.services if item.name == name), None)
 
 
-def _service_is_running_llamacpp(service: PlannedService) -> bool:
+async def _service_is_running_llamacpp(service: PlannedService) -> bool:
     if service.backend != "llamacpp":
         return False
     try:
-        runtime = runtime_status()
+        runtime = await asyncio.to_thread(runtime_status)
     except (OSError, ValueError, RuntimeError):
         return False
     return any(
@@ -583,10 +585,10 @@ async def _routing_token_hint(
     if (
         threshold > 0
         and 0.5 * threshold <= count <= 2 * threshold
-        and _service_is_running_llamacpp(chat)
+        and await _service_is_running_llamacpp(chat)
     ):
         assert httpx is not None
-        client = httpx.AsyncClient()
+        client = local_async_client()
         try:
             exact = await exact_tokens(_base_url(chat), content, client)
             if exact is not None:
@@ -674,7 +676,7 @@ async def _confirm_embedding_truncation(
     }
     assert httpx is not None
     try:
-        async with httpx.AsyncClient(
+        async with local_async_client(
             timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
         ) as client:
             response = await client.post(url, json=probe)
@@ -756,7 +758,7 @@ async def _verify_embedding_batch(
     if len(suspects) > _EMBED_BATCH_PROBE_LIMIT:
         return "unverified"
     assert httpx is not None
-    async with httpx.AsyncClient(
+    async with local_async_client(
         timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
     ) as client:
         for index, element in suspects:
@@ -1058,10 +1060,10 @@ async def _slot_progress(
         service = next(
             (item for item in services if item.name == service_name), None
         )
-        if service is None or not _service_is_running_llamacpp(service):
+        if service is None or not await _service_is_running_llamacpp(service):
             continue
         try:
-            async with httpx.AsyncClient(
+            async with local_async_client(
                 base_url=_base_url(service), timeout=0.8
             ) as client:
                 response = await client.get("/slots")
@@ -1227,7 +1229,7 @@ def create_app(
                 },
             )
         if api_key_bytes is not None and path.startswith(
-            ("/v1/", "/metrics", "/admin/", "/logs")
+            ("/v1/", "/metrics", "/admin/", "/logs", "/status")
         ):
             authorization = request.headers.get("authorization", "")
             prefix = "Bearer "
@@ -1261,13 +1263,21 @@ def create_app(
         job = jobs.submit(service.name, path)
         if limit_slots:
             deadline = time.monotonic() + QUEUE_TIMEOUT
-            while job.state == "queued" and slot_token is None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                slot_token = await limiter.acquire(
-                    service, min(0.5, remaining)
-                )
+            try:
+                while job.state == "queued" and slot_token is None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    slot_token = await limiter.acquire(
+                        service, min(0.5, remaining)
+                    )
+            except BaseException:
+                # A wait that ends without reaching start (cancellation,
+                # unexpected error) must still finish the job: a job left
+                # "queued" is a permanent phantom entry that never evicts
+                # and inflates queue positions for every later request.
+                jobs.finish(job, ok=False, detail="aborted")
+                raise
             if job.state == "cancelled":
                 if slot_token is not None:
                     limiter.release(slot_token)
@@ -1336,7 +1346,7 @@ def create_app(
                 else None
             )
             assert httpx is not None
-            client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT))
+            client = local_async_client(timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT))
             ticket = in_flight.enter(service.name)
         except BaseException as error:
             # A failed acquire/revive must not keep the slot (or a held swap
@@ -1956,7 +1966,7 @@ def create_app(
 
             def run() -> Delegation:
                 assert httpx is not None
-                with httpx.Client(
+                with local_client(
                     timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
                 ) as client:
                     return delegate(
@@ -2017,7 +2027,8 @@ def create_app(
 
     @app.get("/status")
     async def status_endpoint() -> dict[str, object]:
-        return asdict(runtime_status())
+        runtime = await asyncio.to_thread(runtime_status)
+        return asdict(runtime)
 
     @app.get("/v1/models")
     async def models() -> dict[str, object]:
