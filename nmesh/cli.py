@@ -372,7 +372,7 @@ def _load_profile(path: str) -> HardwareProfile:
         if not isinstance(payload, dict):
             raise TypeError("profile must be an object")
         return profile_from_dict(payload)
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError(str(error)) from error
 
 
@@ -1174,7 +1174,7 @@ def _runtime(args: argparse.Namespace) -> int:
                     jobs_data = json.loads(jobs_response.read().decode())
                 if isinstance(jobs_data, dict) and jobs_data.get("counts"):
                     status_data_jobs = jobs_data["counts"]
-            except (OSError, HTTPError, json.JSONDecodeError):
+            except (OSError, HTTPError, UnicodeDecodeError, json.JSONDecodeError):
                 pass
             try:
                 with local_urlopen(
@@ -1207,7 +1207,7 @@ def _runtime(args: argparse.Namespace) -> int:
                                 local["failed"] = gw_item["failed"]
                             if gw_item.get("idle"):
                                 local["idle"] = True
-            except (OSError, HTTPError, json.JSONDecodeError):
+            except (OSError, HTTPError, UnicodeDecodeError, json.JSONDecodeError):
                 pass
         except OSError:
             if gateway is None:
@@ -1360,7 +1360,7 @@ def _unload(args: argparse.Namespace) -> int:
         else:
             print(i18n.t("err.gateway_unload", i18n.lang(), error=error), file=sys.stderr)
         return 1
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         print(i18n.t("err.gateway_unload", i18n.lang(), error=error), file=sys.stderr)
         return 1
     unloaded = data.get("unloaded", [])
@@ -1413,7 +1413,7 @@ def _jobs(args: argparse.Namespace) -> int:
                 print(i18n.t("err.jobs_gateway", language, port=args.port),
                       file=sys.stderr)
             return 1
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             print(i18n.t("err.jobs_gateway", language, port=args.port),
                   file=sys.stderr)
             return 1
@@ -1439,7 +1439,7 @@ def _jobs(args: argparse.Namespace) -> int:
             print(i18n.t("err.jobs_gateway", language, port=args.port),
                   file=sys.stderr)
         return 1
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         print(i18n.t("err.jobs_gateway", language, port=args.port),
               file=sys.stderr)
         return 1
@@ -1527,7 +1527,7 @@ def _gateway_recorded_version(pid: int) -> str | None:
         state = json.loads(
             (nmesh_home() / "state.json").read_text(encoding="utf-8")
         )
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     gateway = state.get("gateway") if isinstance(state, dict) else None
     if not isinstance(gateway, dict) or gateway.get("pid") != pid:
@@ -1614,7 +1614,7 @@ def _reload(args: argparse.Namespace) -> int:
             if response.status is not None and response.status >= 400:
                 return 1
             data = json.loads(response.read().decode())
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         print(i18n.t("err.gateway_reload", i18n.lang(), error=error), file=sys.stderr)
         return 1
     if args.json:
@@ -4172,12 +4172,12 @@ def _run_prompt(args: argparse.Namespace) -> int:
             upstream = body.get("error", {}) if isinstance(body, dict) else {}
             if isinstance(upstream, dict) and upstream.get("message"):
                 detail = str(upstream["message"])
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             detail = ""
         print(i18n.t("err.gateway_http", i18n.lang(), code=error.code,
                      detail=detail or str(error)), file=sys.stderr)
         return 1
-    except (OSError, json.JSONDecodeError, KeyError, IndexError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError) as error:
         output = i18n.t("err.gateway_unavailable", i18n.lang(), error=error)
     print(output, file=sys.stderr)
     print(i18n.t("err.gateway_unavailable.hint", i18n.lang()), file=sys.stderr)

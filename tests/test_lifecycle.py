@@ -1859,6 +1859,13 @@ def test_status_surfaces_gateway_failed_services(
     assert embed["idle"] is True
 
 
+def test_load_state_ignores_non_utf8_state_file(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_bytes(b"\xff\xfegarbage")
+    supervisor = Supervisor(state_path=state_path, terminator=lambda _pid: None)
+    assert supervisor._load_state() is None
+
+
 def test_health_wait_bound_scales_with_model_weight(tmp_path: Path) -> None:
     plan = build_plan(profile(32, (24,)), load_catalog(), Policy(roles=["chat"]))
     service = plan.services[0]
