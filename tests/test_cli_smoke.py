@@ -69,3 +69,21 @@ def test_watch_rejects_unknown_source(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "bogus" in captured.err
+
+
+def test_console_renders_bracket_text_verbatim(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli._console().print("warn[zzz]here and [not-a-style]tag")
+    output = capsys.readouterr().out
+    assert "warn[zzz]here" in output
+    assert "[not-a-style]tag" in output
+
+
+def test_console_style_kwarg_does_not_leak_markup(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli._console().print("- path/to/x[0].log", style="yellow")
+    output = capsys.readouterr().out
+    assert "- path/to/x[0].log" in output
+    assert "[yellow]" not in output
