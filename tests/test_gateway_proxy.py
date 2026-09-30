@@ -825,7 +825,6 @@ def test_gateway_admin_reload_refreshes_plan_and_telemetry(
         old, new = _reload_plans(upstream.server_address[1])
         path = tmp_path / "plan.json"
         save_plan(old, path)
-        monkeypatch.setattr(gateway_module, "PLAN_PATH", path)
         client = TestClient(create_app(old))
 
         assert client.post("/v1/chat/completions", json={
@@ -864,7 +863,6 @@ def test_gateway_auto_reload_uses_plan_mtime(tmp_path, monkeypatch) -> None:
         old, new = _reload_plans(upstream.server_address[1])
         path = tmp_path / "plan.json"
         save_plan(old, path)
-        monkeypatch.setattr(gateway_module, "PLAN_PATH", path)
         client = TestClient(create_app())
         save_plan(new, path)
         mtime_ns = path.stat().st_mtime_ns + 1_000_000_000
@@ -886,7 +884,6 @@ def test_gateway_request_keeps_plan_snapshot_during_reload(tmp_path, monkeypatch
         old, new = _reload_plans(upstream.server_address[1])
         path = tmp_path / "plan.json"
         save_plan(old, path)
-        monkeypatch.setattr(gateway_module, "PLAN_PATH", path)
         client = TestClient(create_app(old))
         responses: list[object] = []
         thread = threading.Thread(target=lambda: responses.append(client.post(

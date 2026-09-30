@@ -37,7 +37,8 @@ from nmesh.orchestrate import (
     delegate,
     load_cache,
 )
-from nmesh.planner import PLAN_PATH, Plan, PlannedService, load_plan
+from nmesh.paths import nmesh_home
+from nmesh.planner import Plan, PlannedService, load_plan
 from nmesh.runtime import ensure_running, heartbeat, idle_services, unload
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime.logs import log_path
@@ -1016,7 +1017,7 @@ class _PlanState:
 
     def _plan_stamp(self) -> tuple[float, int] | None:
         try:
-            stat = PLAN_PATH.stat()
+            stat = (nmesh_home() / "plan.json").stat()
             return stat.st_mtime, stat.st_mtime_ns
         except OSError:
             return None
@@ -1029,7 +1030,7 @@ class _PlanState:
         if not force and mtime == self.mtime and mtime_ns == self._mtime_ns:
             return False
         try:
-            loaded = load_plan(PLAN_PATH)
+            loaded = load_plan()
         except Exception:  # noqa: BLE001
             return None if force else False
         if loaded is None:
@@ -1121,7 +1122,7 @@ def create_app(
     if FastAPI is None:
         raise ImportError("Install nmesh[gateway] to use the gateway")
     explicit = plan is not None
-    selected = plan if explicit else load_plan(PLAN_PATH)
+    selected = plan if explicit else load_plan()
     if selected is None:
         raise FileNotFoundError("No plan found")
     last_use = _LastUse(selected.services)
