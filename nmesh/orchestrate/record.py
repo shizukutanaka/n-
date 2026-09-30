@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+from nmesh.eval import SUITES, suite_digest
 from nmesh.evidence import refutes
 from nmesh.paths import nmesh_home
 from nmesh.persist import read_json_file
@@ -239,6 +240,21 @@ def demote_stale(
     return tuple(sorted(demoted))
 
 
+def _servable(item: DelegationRecord) -> bool:
+    """Whether the record measures the configuration the gate serves.
+
+    The serve path never adds a reasoning allowance to its token budget, and
+    the record's suite must still describe the current tasks and graders —
+    delegation_key keys both for exactly this reason.
+    """
+    tasks = SUITES.get(item.suite)
+    return (
+        item.reasoning_allowance == 0
+        and tasks is not None
+        and item.digest == suite_digest(tasks)
+    )
+
+
 def best_for(
     cache: Mapping[str, DelegationRecord],
     lead: RoleIdentity,
@@ -251,6 +267,7 @@ def best_for(
             item.lead == lead
             and item.worker == worker
             and item.protocol == protocol
+            and _servable(item)
         )
     ]
     return max(matches, key=lambda item: item.at, default=None)

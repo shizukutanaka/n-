@@ -8,6 +8,8 @@ from nmesh.paths import nmesh_home
 from nmesh.persist import read_json_file
 
 ArtifactCache = dict[str, int]
+# Retained for API compatibility; functions resolve nmesh_home() lazily so a
+# NMESH_HOME set after import is honored.
 CACHE_PATH = nmesh_home() / "artifacts.json"
 
 
@@ -16,7 +18,7 @@ def artifact_key(repo_id: str, label: str) -> str:
 
 
 def load_cache(path: Path | None = None) -> ArtifactCache:
-    target = path or CACHE_PATH
+    target = path or (nmesh_home() / "artifacts.json")
     payload = read_json_file(target)
     if not isinstance(payload, dict):
         return {}
@@ -28,7 +30,7 @@ def load_cache(path: Path | None = None) -> ArtifactCache:
 
 
 def save_cache(cache: ArtifactCache, path: Path | None = None) -> Path:
-    target = path or CACHE_PATH
+    target = path or (nmesh_home() / "artifacts.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(cache, indent=2), encoding="utf-8")
