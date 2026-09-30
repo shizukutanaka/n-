@@ -540,6 +540,19 @@ def test_tar_hardlink_is_rejected(tmp_path: Path) -> None:
         engine._extract_archive(archive, tmp_path / "install")
 
 
+def test_engine_remove_rejects_traversal_tag(monkeypatch, tmp_path: Path) -> None:
+    engines = tmp_path / "engines"
+    engines.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("precious", encoding="utf-8")
+    monkeypatch.setattr(engine, "engines_dir", lambda: engines)
+    for tag in ("..", "../victim", "x/../.."):
+        with pytest.raises(ValueError, match="invalid engine tag"):
+            engine.remove(tag)
+    assert (victim / "keep.txt").exists()
+
+
 def test_models_rm_refuses_a_planned_file(monkeypatch, tmp_path: Path, capsys) -> None:
     model = tmp_path / "models" / "qwen-q4_k_m.gguf"
     model.parent.mkdir()
@@ -585,7 +598,7 @@ def test_unload_empty_result_reports_reason(monkeypatch, capsys) -> None:
         def read(self):
             return b'{"unloaded": [], "results": [{"service": "chat", "reason": "idle"}]}'
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(cli, "local_urlopen", lambda *_args, **_kwargs: Response())
     args = type(
         "Args",
         (),
@@ -607,7 +620,7 @@ def test_unload_not_owned_points_to_foreign_down(monkeypatch, capsys) -> None:
         def read(self):
             return b'{"unloaded": [], "results": [{"service": "chat", "reason": "not_owned"}]}'
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    monkeypatch.setattr(cli, "local_urlopen", lambda *_args, **_kwargs: Response())
     args = type(
         "Args",
         (),
@@ -627,8 +640,8 @@ def test_unload_404_preserves_unknown_service(monkeypatch, capsys) -> None:
         None,
     )
     monkeypatch.setattr(
-        cli.urllib.request,
-        "urlopen",
+        cli,
+        "local_urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
     )
     args = type(
