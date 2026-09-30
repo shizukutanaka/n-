@@ -2810,6 +2810,67 @@ def test_lfm2_24b_a2b_catalog_moe_anatomy(catalog: list[ModelSpec]) -> None:
     )
 
 
+def test_estimate_memory_counts_recurrent_state_per_slot() -> None:
+    hybrid = ModelSpec(
+        "hybrid-rs", "nemotron-h", 30_000_000_000, 52, 32, 2, 128, 2688,
+        131072, ["chat"], 76.0, "nvidia-open-model-license",
+        {"hf_gguf": "test/repo"}, kv_layers=6,
+        recurrent_state_bytes=49_930_240,
+    )
+    one = estimate_memory(hybrid, "q4_k_m", 8192)
+    two = estimate_memory(hybrid, "q4_k_m", 8192, parallel_slots=2)
+    attention_kv = one.kv_bytes_per_tok * 8192
+    # llama_memory_recurrent sizes the conv+SSM state per sequence and it
+    # does not shrink with context — one fixed chunk per parallel slot.
+    assert one.recurrent_state_bytes == pytest.approx(49_930_240)
+    assert one.kv_cache_bytes == pytest.approx(attention_kv + 49_930_240)
+    assert two.kv_cache_bytes == pytest.approx((attention_kv + 49_930_240) * 2)
+    dense = estimate_memory(_ollama_only_model(), "q4_k_m", 8192)
+    assert dense.recurrent_state_bytes == 0
+
+
+def test_catalog_hybrid_models_carry_recurrent_state(catalog: list[ModelSpec]) -> None:
+    fields = {
+        model.id: model.recurrent_state_bytes
+        for model in catalog
+        if model.recurrent_state_bytes
+    }
+    # Values are derived in models.yaml from each model's public config
+    # and llama.cpp's llama_memory_recurrent conv+SSM sizing.
+    assert fields == {
+        "nemotron-3.5-lightning-30b": 49_930_240,
+        "qwen3-next-80b-a3b-instruct": 79_036_416,
+    }
+    for model in catalog:
+        if model.recurrent_state_bytes:
+            assert model.kv_layers and model.kv_layers < model.n_layers
+
+
+def test_hybrid_plan_counts_recurrent_state_in_slots(catalog: list[ModelSpec]) -> None:
+    model = next(
+        item for item in catalog if item.id == "nemotron-3.5-lightning-30b"
+    )
+    result = build_plan(
+        profile(96, (40,)),
+        [model],
+        Policy(
+            roles=["chat"], model_ids=("nemotron-3.5-lightning-30b",),
+            parallel_slots=4,
+        ),
+    )
+    service = result.services[0]
+    slots = service.memory.parallel_slots
+    assert slots > 1
+    assert service.memory.recurrent_state_bytes == pytest.approx(49_930_240)
+    assert service.memory.kv_cache_bytes == pytest.approx(
+        (
+            service.memory.kv_bytes_per_tok * service.context
+            + service.memory.recurrent_state_bytes
+        )
+        * slots
+    )
+
+
 def test_policy_rejects_nonpositive_context_and_slots() -> None:
     # --context 0 silently became 8192 (falsy `or` default) and negative
     # values propagated into `-c <n>` argv; --parallel-slots 0/-2 silently
