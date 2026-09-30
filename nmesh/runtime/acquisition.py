@@ -236,20 +236,26 @@ def _recorded_artifact_bytes(
 
 def _local_gguf(
     target: Path, service: PlannedService
-) -> tuple[Path, str, int] | None:
+) -> tuple[tuple[Path, str, int] | None, str | None]:
     """Best on-disk GGUF for *service*, without touching the network.
 
     Planned names ({id}-{quant}.gguf) differ from upstream filenames, so
     a no-download launch still has to resolve the real file. Mirrors
     _resolve_gguf's rule: exact quant label first, else the nearest
     label at or below the planned bits-per-weight.
+
+    The second return value names an on-disk candidate rejected because
+    its bytes contradict the recorded artifact size — like the planned
+    path, a corrupt file is never handed to llama-server; here it just
+    cannot be re-downloaded, so the caller reports it instead.
     """
     first_label = service.quant.split("+", 1)[0]
     planned_bpw = NOMINAL_GGUF_BPW.get(first_label)
     if planned_bpw is None:
-        return None
+        return None, None
     model_token = service.model_id.casefold()
     candidates: list[tuple[str, Path, int]] = []
+    corrupt_note: str | None = None
     for path in sorted(target.parent.glob("*.gguf")):
         label = parse_label(path.name)
         if label is None or label in _REPACK_LABELS:
@@ -262,9 +268,20 @@ def _local_gguf(
         parts = _split_gguf_parts(path)
         if not all(part.exists() for part in parts):
             continue
-        candidates.append(
-            (label, path, sum(part.stat().st_size for part in parts))
-        )
+        size = sum(part.stat().st_size for part in parts)
+        expected = _recorded_artifact_bytes(service, label)
+        if expected is not None and expected > 0 and size != expected:
+            if corrupt_note is None:
+                corrupt_note = i18n.t(
+                    "warn.gguf_corrupt",
+                    i18n.lang(),
+                    service=service.name,
+                    filename=path.name,
+                    actual=size,
+                    expected=expected,
+                )
+            continue
+        candidates.append((label, path, size))
     exact = [item for item in candidates if item[0] == service.quant]
     eligible = exact if exact else [
         item
@@ -273,7 +290,7 @@ def _local_gguf(
         and bpw <= planned_bpw
     ]
     if not eligible:
-        return None
+        return None, corrupt_note
     if not exact:
         eligible.sort(key=lambda item: (
             -NOMINAL_GGUF_BPW[item[0].split("+", 1)[0]],
@@ -282,7 +299,7 @@ def _local_gguf(
             item[0],
         ))
     label, path, size = eligible[0]
-    return path, label, size
+    return (path, label, size), corrupt_note
 
 
 def _artifact_warning(
@@ -426,7 +443,10 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
             artifact_bytes = sum(part.stat().st_size for part in parts)
             actual_label = parse_label(target.name)
             expected = _recorded_artifact_bytes(service, actual_label)
-            if expected is not None and artifact_bytes != expected:
+            # A recorded reference must be positive: a missing/zero record
+            # can never match real bytes and would only produce false
+            # corrupt verdicts that delete healthy caches on every up.
+            if expected is not None and expected > 0 and artifact_bytes != expected:
                 # Bytes differ from what a successful acquisition recorded —
                 # the cached artifact is corrupt/truncated; re-acquire it
                 # instead of handing llama-server a file it will crash on.
@@ -450,16 +470,23 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
                     artifact_bytes=artifact_bytes,
                 )
         if local_only:
-            local = _local_gguf(target, service)
+            local, local_corrupt_note = _local_gguf(target, service)
             if local is None:
+                note = corrupt_note or local_corrupt_note
+                detail = f"; on-disk file is corrupt: {note}" if note else ""
                 raise RuntimeError(
                     f"Model file for {service.model_id} ({service.quant}) is "
-                    "not downloaded and downloads are disabled"
+                    f"not downloaded and downloads are disabled{detail}"
                 )
             local_path, chosen, total_bytes = local
             warning = _artifact_warning(
                 service, chosen, local_path.name, total_bytes
             )
+            if local_corrupt_note is not None:
+                warning = (
+                    f"{local_corrupt_note} {warning}"
+                    if warning else local_corrupt_note
+                )
             return Acquired(
                 local_path, chosen, chosen != service.quant,
                 warning=warning, artifact_bytes=total_bytes,
@@ -484,15 +511,25 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
             if isinstance(error, OSError):
                 raise
             raise _download_failed(repo_id, error) from error
-        warning = _artifact_warning(service, chosen, files[0], total_bytes)
+        try:
+            measured = sum(path.stat().st_size for path in paths)
+        except OSError:
+            measured = 0
+        # The record must hold what was actually written to disk: upstream
+        # metadata can omit sizes (total_bytes then undercounts to 0 or a
+        # partial sum), and a wrong record makes every later up reject the
+        # healthy cache as corrupt and re-download it.
+        artifact_bytes = measured or total_bytes
+        warning = _artifact_warning(service, chosen, files[0], artifact_bytes)
         if corrupt_note is not None:
             warning = f"{corrupt_note} {warning}" if warning else corrupt_note
-        try:
-            record(repo_id, chosen, total_bytes)
-        except OSError:
-            pass
+        if artifact_bytes > 0:
+            try:
+                record(repo_id, chosen, artifact_bytes)
+            except OSError:
+                pass
         return Acquired(
             paths[0], chosen, chosen != service.quant, warning=warning,
-            artifact_bytes=total_bytes,
+            artifact_bytes=artifact_bytes,
         )
     return Acquired(Path(service.model_ref), None, False)
