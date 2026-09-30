@@ -120,6 +120,7 @@ from nmesh.inventory import (
 from nmesh.inventory import (
     variants as inventory_variants,
 )
+from nmesh.net import local_client, local_urlopen
 from nmesh.orchestrate import (
     Endpoint,
     RoleIdentity,
@@ -371,7 +372,7 @@ def _load_profile(path: str) -> HardwareProfile:
         if not isinstance(payload, dict):
             raise TypeError("profile must be an object")
         return profile_from_dict(payload)
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError(str(error)) from error
 
 
@@ -1154,7 +1155,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 if isinstance(recorded_port, (int, float, str))
                 else args.port
             )
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2):
+            with local_urlopen(f"http://127.0.0.1:{port}/health", timeout=2):
                 if gateway is None:
                     result.services.append({"service": "gateway", "port": port, "running": True})
                 elif gateway.get("pid") is not None and not gateway.get("running"):
@@ -1164,7 +1165,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 else:
                     gateway["running"] = True
             try:
-                with urllib.request.urlopen(
+                with local_urlopen(
                     urllib.request.Request(
                         f"http://127.0.0.1:{port}/v1/jobs?limit=20",
                         headers=_gateway_headers(),
@@ -1173,10 +1174,10 @@ def _runtime(args: argparse.Namespace) -> int:
                     jobs_data = json.loads(jobs_response.read().decode())
                 if isinstance(jobs_data, dict) and jobs_data.get("counts"):
                     status_data_jobs = jobs_data["counts"]
-            except (OSError, HTTPError, json.JSONDecodeError):
+            except (OSError, HTTPError, UnicodeDecodeError, json.JSONDecodeError):
                 pass
             try:
-                with urllib.request.urlopen(
+                with local_urlopen(
                     urllib.request.Request(
                         f"http://127.0.0.1:{port}/status",
                         headers=_gateway_headers(),
@@ -1206,7 +1207,7 @@ def _runtime(args: argparse.Namespace) -> int:
                                 local["failed"] = gw_item["failed"]
                             if gw_item.get("idle"):
                                 local["idle"] = True
-            except (OSError, HTTPError, json.JSONDecodeError):
+            except (OSError, HTTPError, UnicodeDecodeError, json.JSONDecodeError):
                 pass
         except OSError:
             if gateway is None:
@@ -1350,7 +1351,7 @@ def _unload(args: argparse.Namespace) -> int:
         headers=_gateway_headers(),
     )
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with local_urlopen(request, timeout=60) as response:
             data = json.loads(response.read().decode())
     except HTTPError as error:
         if error.code == 404 and args.service is not None:
@@ -1359,7 +1360,7 @@ def _unload(args: argparse.Namespace) -> int:
         else:
             print(i18n.t("err.gateway_unload", i18n.lang(), error=error), file=sys.stderr)
         return 1
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         print(i18n.t("err.gateway_unload", i18n.lang(), error=error), file=sys.stderr)
         return 1
     unloaded = data.get("unloaded", [])
@@ -1394,11 +1395,12 @@ def _jobs(args: argparse.Namespace) -> int:
     language = i18n.lang()
     if args.cancel:
         request = urllib.request.Request(
-            f"http://127.0.0.1:{args.port}/v1/jobs/{args.cancel}",
+            f"http://127.0.0.1:{args.port}/v1/jobs/{quote(args.cancel, safe='')}",
             method="DELETE",
+            headers=_gateway_headers(),
         )
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with local_urlopen(request, timeout=10) as response:
                 data = json.loads(response.read().decode())
         except HTTPError as error:
             if error.code == 404:
@@ -1411,7 +1413,7 @@ def _jobs(args: argparse.Namespace) -> int:
                 print(i18n.t("err.jobs_gateway", language, port=args.port),
                       file=sys.stderr)
             return 1
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             print(i18n.t("err.jobs_gateway", language, port=args.port),
                   file=sys.stderr)
             return 1
@@ -1421,7 +1423,7 @@ def _jobs(args: argparse.Namespace) -> int:
             _console().print(i18n.t("jobs.cancelled", language, job=args.cancel))
         return 0
     try:
-        with urllib.request.urlopen(
+        with local_urlopen(
             urllib.request.Request(
                 f"http://127.0.0.1:{args.port}/v1/jobs?limit={args.limit}",
                 headers=_gateway_headers(),
@@ -1437,7 +1439,7 @@ def _jobs(args: argparse.Namespace) -> int:
             print(i18n.t("err.jobs_gateway", language, port=args.port),
                   file=sys.stderr)
         return 1
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         print(i18n.t("err.jobs_gateway", language, port=args.port),
               file=sys.stderr)
         return 1
@@ -1525,7 +1527,7 @@ def _gateway_recorded_version(pid: int) -> str | None:
         state = json.loads(
             (nmesh_home() / "state.json").read_text(encoding="utf-8")
         )
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     gateway = state.get("gateway") if isinstance(state, dict) else None
     if not isinstance(gateway, dict) or gateway.get("pid") != pid:
@@ -1593,8 +1595,8 @@ def _wait_gateway(port: int, process: _GatewayProcess, timeout: float = 60.0) ->
         if process.poll() is not None:
             return False
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as response:
-                if response.status < 500:
+            with local_urlopen(f"http://127.0.0.1:{port}/health", timeout=1) as response:
+                if response.status is not None and response.status < 500:
                     return True
         except OSError:
             time.sleep(0.2)
@@ -1608,11 +1610,11 @@ def _reload(args: argparse.Namespace) -> int:
         headers=_gateway_headers(),
     )
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            if response.status >= 400:
+        with local_urlopen(request, timeout=60) as response:
+            if response.status is not None and response.status >= 400:
                 return 1
             data = json.loads(response.read().decode())
-    except (OSError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         print(i18n.t("err.gateway_reload", i18n.lang(), error=error), file=sys.stderr)
         return 1
     if args.json:
@@ -2004,7 +2006,7 @@ def _service_running(service: PlannedService, runtime: RuntimeStatus) -> bool:
     if health_url is None:
         return True
     try:
-        with urllib.request.urlopen(health_url, timeout=2):
+        with local_urlopen(health_url, timeout=2):
             return True
     except OSError:
         return False
@@ -2055,7 +2057,7 @@ def _bench(args: argparse.Namespace) -> int:
     )
     if service.roles == ["embed"]:
         try:
-            with httpx.Client(timeout=300.0) as client:
+            with local_client(timeout=300.0) as client:
                 embed_measurement = measure_embedding(
                     client,
                     base_url,
@@ -2113,7 +2115,7 @@ def _bench(args: argparse.Namespace) -> int:
         retrieval_record: RetrievalRecord | None = None
         if getattr(args, "retrieval", False):
             try:
-                with httpx.Client(timeout=300.0) as client:
+                with local_client(timeout=300.0) as client:
                     requests, seconds = measure_retrieval_estimate(
                         client, base_url, service.model_ref,
                         encode_tps=embed_record.encode_tps,
@@ -2185,7 +2187,7 @@ def _bench(args: argparse.Namespace) -> int:
                 )
                 if usable_rung is not None and degraded_rung is not None:
                     try:
-                        with httpx.Client(timeout=300.0) as client:
+                        with local_client(timeout=300.0) as client:
                             chunk_arm = measure_retrieval_chunk_arm(
                                 client,
                                 base_url,
@@ -3665,7 +3667,7 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                 request_timeout = 30.0 + max(
                     workload.max_tokens for workload in WORKLOADS
                 ) / 2.0
-                with httpx.Client(timeout=request_timeout) as client:
+                with local_client(timeout=request_timeout) as client:
                     return run_arm(
                         client, base_url, item.model_ref,
                         target=target,
@@ -4129,7 +4131,12 @@ def _run_prompt(args: argparse.Namespace) -> int:
         headers,
     )
     try:
-        with urllib.request.urlopen(request, timeout=300) as response:
+        # No socket bound: urllib applies the timeout to every read, and a
+        # non-streamed generation legally exceeds 300s on slow hosts while
+        # streaming can spend that long in prefill before the first byte.
+        # Loopback connect either succeeds or is refused instantly, and the
+        # supervisor's health layer is what detects a wedged engine.
+        with local_urlopen(request, timeout=None) as response:
             if not stream:
                 payload = json.loads(response.read().decode())
                 if args.json:
@@ -4165,12 +4172,12 @@ def _run_prompt(args: argparse.Namespace) -> int:
             upstream = body.get("error", {}) if isinstance(body, dict) else {}
             if isinstance(upstream, dict) and upstream.get("message"):
                 detail = str(upstream["message"])
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             detail = ""
         print(i18n.t("err.gateway_http", i18n.lang(), code=error.code,
                      detail=detail or str(error)), file=sys.stderr)
         return 1
-    except (OSError, json.JSONDecodeError, KeyError, IndexError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError) as error:
         output = i18n.t("err.gateway_unavailable", i18n.lang(), error=error)
     print(output, file=sys.stderr)
     print(i18n.t("err.gateway_unavailable.hint", i18n.lang()), file=sys.stderr)
@@ -4616,7 +4623,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if "--max-model-len" in argv:
                     argv[argv.index("--max-model-len") + 1] = str(context)
                 if "-c" in argv:
-                    argv[argv.index("-c") + 1] = str(context)
+                    # llama.cpp's -c is the shared KV pool total: the
+                    # planner emits context * slots when --parallel is
+                    # present, so the tuned context must be re-scaled.
+                    slots = 1
+                    if "--parallel" in argv:
+                        try:
+                            slots = max(
+                                1, int(argv[argv.index("--parallel") + 1])
+                            )
+                        except (IndexError, ValueError):
+                            slots = 1
+                    argv[argv.index("-c") + 1] = str(context * slots)
                 if "-ngl" in argv:
                     argv[argv.index("-ngl") + 1] = str(layers)
                 tuned = replace(
