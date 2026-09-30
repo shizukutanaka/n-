@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import ClassVar
 
+import httpx
 from fastapi.testclient import TestClient
 
 import nmesh.gateway as gateway_module
@@ -15,6 +17,7 @@ from nmesh import cli, telemetry
 from nmesh.catalog import ModelSpec
 from nmesh.gateway import create_app, route
 from nmesh.planner import Policy, build_plan
+from nmesh.runtime import RuntimeStatus
 from nmesh.runtime.logs import log_path
 
 from .test_planner import profile
@@ -402,6 +405,51 @@ def test_gateway_admin_requires_api_key(monkeypatch) -> None:
     assert response.status_code == 401
 
 
+def test_status_endpoint_requires_api_key_when_set(monkeypatch) -> None:
+    monkeypatch.delenv("NMESH_API_KEY", raising=False)
+    monkeypatch.setattr(
+        gateway_module, "runtime_status", lambda: RuntimeStatus(True, [])
+    )
+    plan = _completion_plan(1)
+    with TestClient(create_app(plan)) as client:
+        assert client.get("/status").status_code == 200
+    monkeypatch.setenv("NMESH_API_KEY", "test-secret")
+    with TestClient(create_app(plan)) as client:
+        assert client.get("/status").status_code == 401
+        assert client.get("/health").status_code == 200
+        authed = client.get(
+            "/status", headers={"Authorization": "Bearer test-secret"}
+        )
+    assert authed.status_code == 200
+
+
+def test_status_endpoint_does_not_block_event_loop(monkeypatch) -> None:
+    order: list[str] = []
+
+    def slow_status():
+        order.append("status:start")
+        time.sleep(0.15)
+        order.append("status:end")
+        return RuntimeStatus(True, [])
+
+    async def scenario() -> None:
+        plan = _completion_plan(1)
+        app = create_app(plan)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            async def marker() -> None:
+                await asyncio.sleep(0.03)
+                order.append("marker")
+
+            await asyncio.gather(client.get("/status"), marker())
+
+    monkeypatch.setattr(gateway_module, "runtime_status", slow_status)
+    asyncio.run(scenario())
+    assert order == ["status:start", "marker", "status:end"]
+
+
 def test_gateway_reaper_skips_in_flight(monkeypatch) -> None:
     monkeypatch.setattr(gateway_module, "KEEP_ALIVE", 5.0)
     clock = [100.0]
@@ -493,11 +541,40 @@ def test_run_returns_failure_when_gateway_is_unavailable(monkeypatch) -> None:
     def fail(*args, **kwargs):
         raise OSError("connection refused")
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(cli, "local_urlopen", fail)
     result = cli._run_prompt(
         SimpleNamespace(prompt="hello", role="chat", json=False, port=18000)
     )
     assert result == 1
+
+
+def test_run_prompt_reads_without_a_socket_timeout(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Response:
+        def read(self):
+            return json.dumps(
+                {"choices": [{"message": {"content": "ok"}}]}
+            ).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, *args, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        return Response()
+
+    monkeypatch.setattr(cli, "local_urlopen", fake_urlopen)
+    result = cli._run_prompt(
+        SimpleNamespace(prompt="hi", role="chat", json=False, port=18000)
+    )
+    assert result == 0
+    # urllib applies the timeout to every socket read — a flat bound makes a
+    # slow but healthy generation look like a dead gateway.
+    assert captured["timeout"] is None
 
 
 def test_run_sends_nmesh_api_key_when_set(monkeypatch) -> None:
@@ -520,7 +597,7 @@ def test_run_sends_nmesh_api_key_when_set(monkeypatch) -> None:
         return Response()
 
     monkeypatch.setenv("NMESH_API_KEY", "test-key-1")
-    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(cli, "local_urlopen", fake_urlopen)
     result = cli._run_prompt(SimpleNamespace(prompt="hi", role="chat", json=False))
     assert result == 0
     assert captured["authorization"] == "Bearer test-key-1"
@@ -544,7 +621,7 @@ def test_run_surfaces_upstream_error_body(monkeypatch, capsys) -> None:
             500, "Internal Server Error", {}, io.BytesIO(body),
         )
 
-    monkeypatch.setattr(cli.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(cli, "local_urlopen", fail)
     result = cli._run_prompt(SimpleNamespace(prompt="hi", role="embed", json=False))
     assert result == 1
     err = capsys.readouterr().err
@@ -552,8 +629,81 @@ def test_run_surfaces_upstream_error_body(monkeypatch, capsys) -> None:
     assert "logits computation" in err
 
 
+def test_run_surfaces_non_utf8_error_body(monkeypatch, capsys) -> None:
+    import io
+    import urllib.error
+
+    def fail(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            "http://127.0.0.1:18000/v1/chat/completions",
+            500, "Internal Server Error", {}, io.BytesIO(b"\xff\xfegarbage"),
+        )
+
+    monkeypatch.setattr(cli, "local_urlopen", fail)
+    result = cli._run_prompt(SimpleNamespace(prompt="hi", role="chat", json=False))
+    assert result == 1
+    assert "HTTP 500" in capsys.readouterr().err
+
+
+def test_run_surfaces_non_utf8_success_body(monkeypatch, capsys) -> None:
+    class Response:
+        def read(self):
+            return b"\xff\xfegarbage"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(cli, "local_urlopen", lambda *a, **k: Response())
+    result = cli._run_prompt(SimpleNamespace(prompt="hi", role="chat", json=False))
+    assert result == 1
+    assert "decode" in capsys.readouterr().err
+
+
 def test_serve_returns_nonzero_for_failed_gateway(monkeypatch) -> None:
     process = SimpleNamespace(pid=123, wait=lambda: 1)
     monkeypatch.setattr(cli, "_launch_gateway", lambda _port, detach: (process, None))
     monkeypatch.setattr(cli, "clear_gateway", lambda _pid: None)
     assert cli._runtime(SimpleNamespace(command="serve", port=18000)) == 1
+
+
+def test_unload_and_reload_calls_allow_drain_time(monkeypatch) -> None:
+    # In-flight requests keep the model busy during unload/reload; the
+    # gateway drains them, so a 10s client timeout reported "timed out"
+    # while the unload actually completed — a false failure.
+    timeouts: dict[str, float] = {}
+
+    class Response:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
+            self.status = 200
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, *args, **kwargs):
+        timeouts[request.full_url] = kwargs["timeout"]
+        payload = (
+            {"services": ["chat"], "created_at": "t"}
+            if request.full_url.endswith("/admin/reload")
+            else {"unloaded": ["chat"]}
+        )
+        return Response(payload)
+
+    monkeypatch.setattr(cli, "local_urlopen", fake_urlopen)
+    args = SimpleNamespace(service="chat", port=18000, json=False)
+    assert cli._unload(args) == 0
+    assert cli._reload(args) == 0
+    assert set(timeouts) == {
+        "http://127.0.0.1:18000/admin/unload/chat",
+        "http://127.0.0.1:18000/admin/reload",
+    }
+    assert all(timeout >= 60 for timeout in timeouts.values())
