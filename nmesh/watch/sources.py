@@ -91,16 +91,21 @@ def fetch_qiita(
         if token:
             headers["Authorization"] = f"Bearer {token}"
         items: list[SourceItem] = []
+        failed_tags: list[str] = []
         for tag in tags:
-            response = session.get(
-                "https://qiita.com/api/v2/items",
-                params={"per_page": limit, "query": f"tag:{tag}"},
-                headers=headers,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, list):
-                raise TypeError("Qiita response was not a list")
+            try:
+                response = session.get(
+                    "https://qiita.com/api/v2/items",
+                    params={"per_page": limit, "query": f"tag:{tag}"},
+                    headers=headers,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, list):
+                    raise TypeError("Qiita response was not a list")
+            except (httpx.HTTPError, ValueError, TypeError):
+                failed_tags.append(tag)
+                continue
             for raw in payload:
                 item = _mapping(raw)
                 if item is None:
@@ -115,8 +120,13 @@ def fetch_qiita(
                     _text(item.get("body")),
                     _text(item.get("created_at")),
                 ))
+        if tags and len(failed_tags) == len(tags):
+            return _failure("qiita", "every tag query failed")
         selected = _unique_items(items)
-        return SourceStatus("qiita", True, len(selected), True, False, ""), selected
+        detail = (
+            f"unreachable tags: {', '.join(failed_tags)}" if failed_tags else ""
+        )
+        return SourceStatus("qiita", True, len(selected), True, False, detail), selected
     except (httpx.HTTPError, ValueError, TypeError) as error:
         return _failure("qiita", error)
     finally:
@@ -140,18 +150,24 @@ def fetch_zenn(
         items: list[SourceItem] = []
         yields: list[str] = []
         for topic in topics:
-            response = session.get(
-                "https://zenn.dev/api/articles",
-                params={
-                    "topicname": topic,
-                    "order": "latest",
-                },
-            )
-            response.raise_for_status()
-            payload = _mapping(response.json())
-            raw_articles = payload.get("articles") if payload is not None else None
-            if not isinstance(raw_articles, list):
-                raise TypeError("Zenn response did not contain articles")
+            try:
+                response = session.get(
+                    "https://zenn.dev/api/articles",
+                    params={
+                        "topicname": topic,
+                        "order": "latest",
+                    },
+                )
+                response.raise_for_status()
+                payload = _mapping(response.json())
+                raw_articles = (
+                    payload.get("articles") if payload is not None else None
+                )
+                if not isinstance(raw_articles, list):
+                    raise TypeError("Zenn response did not contain articles")
+            except (httpx.HTTPError, ValueError, TypeError):
+                yields.append(f"{topic}=unreachable")
+                continue
             articles = raw_articles[:limit]
             yields.append(f"{topic}={len(articles)}")
             for raw in articles:
@@ -176,6 +192,10 @@ def fetch_zenn(
                     _strip_html(page.text),
                     _text(article.get("published_at") or article.get("publishedAt")),
                 ))
+        if yields and all(
+            yielded.endswith("=unreachable") for yielded in yields
+        ):
+            return _failure("zenn", "every topic query failed")
         selected = _unique_items(items)
         return SourceStatus(
             "zenn",
@@ -212,22 +232,29 @@ def fetch_github(
             headers["Authorization"] = f"Bearer {token}"
         items: list[SourceItem] = []
         yields: list[str] = []
+        ok_repos = 0
         for repo in repos:
-            response = session.get(
-                f"https://api.github.com/repos/{repo}/releases",
-                params={"per_page": min(max(limit, 1), 100)},
-                headers=headers,
-            )
-            if response.status_code == 403 and not token:
-                return _failure(
-                    "github",
-                    f"GitHub API 403 {response.headers.get('x-ratelimit-remaining', '')}; "
-                    "set GITHUB_TOKEN to authenticate",
+            try:
+                response = session.get(
+                    f"https://api.github.com/repos/{repo}/releases",
+                    params={"per_page": min(max(limit, 1), 100)},
+                    headers=headers,
                 )
-            response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, list):
-                raise TypeError("GitHub response was not a list")
+                if response.status_code == 403 and not token:
+                    return _failure(
+                        "github",
+                        f"GitHub API 403 "
+                        f"{response.headers.get('x-ratelimit-remaining', '')}; "
+                        "set GITHUB_TOKEN to authenticate",
+                    )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, list):
+                    raise TypeError("GitHub response was not a list")
+            except (httpx.HTTPError, ValueError, TypeError):
+                yields.append(f"{repo}=unreachable")
+                continue
+            ok_repos += 1
             fetched = 0
             for raw in payload:
                 release = _mapping(raw)
@@ -245,6 +272,8 @@ def fetch_github(
                 ))
                 fetched += 1
             yields.append(f"{repo}={fetched}")
+        if repos and ok_repos == 0:
+            return _failure("github", "every repository query failed")
         selected = _unique_items(items)
         return SourceStatus(
             "github",
