@@ -1057,6 +1057,11 @@ def _ensure_runnable_plan(args: argparse.Namespace) -> Plan | None:
     return plan
 
 
+def _metric_cell(metrics: dict[str, float], key: str, digits: int) -> str:
+    value = metrics.get(key)
+    return f"{value:.{digits}f}" if value is not None else "-"
+
+
 def _runtime(args: argparse.Namespace) -> int:
     exit_code = 0
     status_data_jobs: dict[str, dict[str, int]] | None = None
@@ -1309,10 +1314,10 @@ def _runtime(args: argparse.Namespace) -> int:
                 table.add_row(
                     service,
                     str(int(metrics["samples"])),
-                    f"{metrics.get('decode_tps_median', 0):.2f}",
-                    f"{metrics.get('ttft_s_median', 0):.3f}",
-                    f"{metrics.get('ttft_s_p95', 0):.3f}",
-                    f"{metrics.get('total_s_median', 0):.3f}",
+                    _metric_cell(metrics, "decode_tps_median", 2),
+                    _metric_cell(metrics, "ttft_s_median", 3),
+                    _metric_cell(metrics, "ttft_s_p95", 3),
+                    _metric_cell(metrics, "total_s_median", 3),
                 )
             _console().print(table)
     return 0 if exit_code == 0 else 1
@@ -2070,6 +2075,17 @@ def _reference_context(
     return binary, model, reference_id(engine_build, model, threads, 32), threads
 
 
+def _unbounded_client() -> httpx.Client:
+    """Client for engine measurements whose duration scales with input size.
+
+    A flat 300s bound kills a healthy probe on a slow host — embedding probes
+    of 3×context tokens take minutes on CPU — and reports it as an HTTP
+    failure. Connect stays bounded (loopback refuses instantly); a wedged
+    engine is the supervisor health layer's job, not the socket's.
+    """
+    return local_client(timeout=httpx.Timeout(None, connect=10.0))
+
+
 def _bench(args: argparse.Namespace) -> int:
     plan = load_plan()
     if plan is None or not plan.services:
@@ -2089,7 +2105,7 @@ def _bench(args: argparse.Namespace) -> int:
     )
     if service.roles == ["embed"]:
         try:
-            with local_client(timeout=300.0) as client:
+            with _unbounded_client() as client:
                 embed_measurement = measure_embedding(
                     client,
                     base_url,
@@ -2147,7 +2163,7 @@ def _bench(args: argparse.Namespace) -> int:
         retrieval_record: RetrievalRecord | None = None
         if getattr(args, "retrieval", False):
             try:
-                with local_client(timeout=300.0) as client:
+                with _unbounded_client() as client:
                     requests, seconds = measure_retrieval_estimate(
                         client, base_url, service.model_ref,
                         encode_tps=embed_record.encode_tps,
@@ -2219,7 +2235,7 @@ def _bench(args: argparse.Namespace) -> int:
                 )
                 if usable_rung is not None and degraded_rung is not None:
                     try:
-                        with local_client(timeout=300.0) as client:
+                        with _unbounded_client() as client:
                             chunk_arm = measure_retrieval_chunk_arm(
                                 client,
                                 base_url,
