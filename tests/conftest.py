@@ -5,6 +5,7 @@ import socket
 import pytest
 
 from nmesh import telemetry
+from nmesh.planner import core as planner_core
 from nmesh.telemetry import Telemetry
 
 
