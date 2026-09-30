@@ -185,3 +185,36 @@ def test_bench_harness_change_does_not_preserve_rejected_stable_evidence() -> No
     assert record.stable is False
     assert record.sessions == (5.0,)
     assert record.rejected == (5.0,)
+
+
+def test_bench_cache_rejects_non_finite_measurements(tmp_path) -> None:
+    from nmesh.bench import load_records
+
+    record = {
+        "tps": 12.0,
+        "decode_tps_min": 10.0,
+        "decode_tps_max": 14.0,
+        "runs": 3,
+        "passes": 2,
+        "stable": True,
+        "measured_at": "now",
+        "harness": "bench-v2",
+        "sessions": [12.0],
+    }
+    cache = tmp_path / "bench.json"
+    cache.write_text(
+        json.dumps(
+            {
+                "legacy_inf": float("inf"),
+                "legacy_negative": -3.0,
+                "legacy_ok": 9.5,
+                "record_nan": {**record, "tps": float("nan")},
+                "record_negative_session": {**record, "sessions": [-1.0]},
+                "record_infinite_ratio": {**record, "control_ratio": float("inf")},
+                "record_ok": record,
+            }
+        ),
+        encoding="utf-8",
+    )
+    records = load_records(cache)
+    assert set(records) == {"legacy_ok", "record_ok"}
