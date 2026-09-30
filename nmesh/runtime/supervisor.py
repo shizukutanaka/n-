@@ -6,6 +6,7 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -241,6 +242,7 @@ class Supervisor:
         self._loaded_plan_stamp: tuple[float, int] | None = None
         self._sleep_probe: dict[str, bool] | None = None
         self._boot_recovery = False
+        self._state_warned = False
         self.notes: dict[str, str] = {}
         self._lock = RLock()
         self._atexit_armed = False
@@ -418,12 +420,24 @@ class Supervisor:
             return cls._health_url_alive(entry.get("health_url"))
         return False
 
+    def _warn_unreadable_state(self) -> None:
+        if self._state_warned:
+            return
+        self._state_warned = True
+        print(i18n.t("warn.state_unreadable", i18n.lang()), file=sys.stderr)
+
     def _load_state(self) -> dict[str, object] | None:
         try:
             payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        except FileNotFoundError:
             return None
-        return payload if isinstance(payload, dict) else None
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            self._warn_unreadable_state()
+            return None
+        if not isinstance(payload, dict):
+            self._warn_unreadable_state()
+            return None
+        return payload
 
     def _write_state(self, payload: Mapping[str, object]) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)

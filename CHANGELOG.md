@@ -22,6 +22,7 @@
 - **vLLM スリープモードによるスワップ切替の高速化**: スワップグループの非 resident メンバーは切替のたびにプロセスを kill→モデル再ロードで復帰に数分かかっていましたが、vLLM ≥0.9 の sleep mode（vLLM docs features/sleep_mode:`--enable-sleep-mode` + `VLLM_SERVER_DEV_MODE=1`）を使い、切替時に `POST /sleep?level=1` で重みを CPU RAM へ退避（VRAM を開放・KV キャッシュは破棄）、次のリクエストで `POST /wake_up` により秒速復帰するようになりました。退避する重みは CPU RAM を消費するため、空きメモリがプランの `weight_bytes` を下回る場合はスリープを拒否して従来どおり kill にフォールバック（予算を静かに超過させません）。vLLM が古い・バージョン検出不可の場合は警告を出して従来の再起動パスを維持し、プランナが常駐サービスにはこの機能を発行しないため dev-mode エンドポイントの露出面は最小です。supervisor 再起動後は `/is_sleeping` でパーク状態を検出し、adopted/orphan エンジンも同じ wake 経路で復帰します。`nmesh status` はスリープ中のサービスを `sleeping` で表示します。LAUNCH_REVISION 5
 
 ### Fixed
+- **読み取れない state.json が警告なしに破棄されていた問題を修正**: 破損・手編集ミスの state.json は `_load_state` が無言で None を返すだけで、`nmesh status` は「サービスなし」と表示し、`up` は実際に動作中のエンジンを管理外の孤児として取りこぼしたまま再生成を試みていました（ポート衝突・VRAM 二重確保の原因）。ファイルが存在するのに読み取れない場合は `warn.state_unreadable` を stderr に一度だけ明示します（ファイル非存在時は従来どおり無言）
 - **計画ダウンロード量が実ディスク空き容量を超えても警告が出なかった問題を修正**: `allow_download_gb`（既定60GiB）との比較のみで、プローブで得た `free_disk_bytes` は参照されていませんでした。空き10GiBの機体に30GiBのダウンロード計画が予算内として受理され、途中でディスクフルに。空き容量超過時は `warn.download_free_disk` で明示します（プローブ失敗で空き量不明のときは警告しません）
 - **読み取れない plan.json が警告なしに破棄されていた問題を修正**: 手編集ミスや破損した plan.json は `load_plan` が None を返すだけで、up/serve は理由不明のまま全く別のプランを再構築し、doctor は「プランなし」と表示していました。ファイルが存在するのに読み取れない場合は `warn.plan_unreadable` で「無視して再構築する」ことを stderr に明示します（ファイル非存在時は従来どおり無言）
 - **`--roles` の打ち間違いが原因不明の失敗になっていた問題を修正**: `nmesh plan --roles chatt` のような未知ロールは、カバーできないロール名を示す警告なしに「実行可能なサービスがないプランです」のみで失敗していました。カバーできなかった明示ロールを列挙する警告を追加
