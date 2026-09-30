@@ -145,7 +145,15 @@ def _model_from_mapping(
 def _read_models(path: Path, problems: list[str] | None = None) -> list[ModelSpec]:
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except OSError:
+    except FileNotFoundError:
+        return []
+    except OSError as error:
+        if problems is not None:
+            problems.append(f"{path}: cannot read: {error}")
+        return []
+    except UnicodeDecodeError as error:
+        if problems is not None:
+            problems.append(f"{path}: cannot decode as UTF-8: {error}")
         return []
     except yaml.YAMLError as error:
         if problems is not None:

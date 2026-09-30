@@ -506,6 +506,32 @@ def test_catalog_reports_skipped_entries(tmp_path: Path) -> None:
     )
 
 
+def test_catalog_reports_unreadable_files(tmp_path: Path) -> None:
+    problems: list[str] = []
+    bad_utf8 = tmp_path / "bad.yaml"
+    bad_utf8.write_bytes(b"\xff\xfe- not utf8")
+    assert (
+        load_catalog(
+            bundled_path=tmp_path / "missing.yaml",
+            user_path=bad_utf8,
+            problems=problems,
+        )
+        == []
+    )
+    assert any("cannot decode as UTF-8" in problem for problem in problems)
+
+    problems.clear()
+    assert (
+        load_catalog(
+            bundled_path=tmp_path / "missing.yaml",
+            user_path=tmp_path,
+            problems=problems,
+        )
+        == []
+    )
+    assert any("cannot read" in problem for problem in problems)
+
+
 def test_unmeasured_models_require_explicit_selection() -> None:
     model = ModelSpec(
         "candidate", "test", 500_000_000, 24, 16, 2, 64, 1024,
