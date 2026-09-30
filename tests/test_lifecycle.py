@@ -1598,7 +1598,7 @@ def test_jobs_cli_cancel_sends_auth_header(monkeypatch, tmp_path: Path, capsys) 
         seen.append(request)
         return _Response()
 
-    monkeypatch.setattr("nmesh.cli.urllib.request.urlopen", _open)
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _open)
     assert cli.main(["jobs", "--cancel", "job-2"]) == 0
     assert seen[0].get_header("Authorization") == "Bearer secret-key"
 
