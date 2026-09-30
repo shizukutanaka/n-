@@ -244,6 +244,90 @@ def test_install_skips_release_with_no_assets(monkeypatch, tmp_path: Path) -> No
     assert warnings[0] == "b10830 published no assets"
 
 
+def _targz_payload(name: str = "llama-server") -> bytes:
+    archive = io.BytesIO()
+    info = tarfile.TarInfo(name)
+    info.size = 4
+    info.mode = 0o755
+    with tarfile.open(fileobj=archive, mode="w:gz") as source:
+        source.addfile(info, io.BytesIO(b"fake"))
+    return archive.getvalue()
+
+
+def _stub_version_probe(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: type(
+            "Result", (), {"stdout": "", "stderr": "version: x", "returncode": 0}
+        )(),
+    )
+    monkeypatch.setattr("nmesh.probe.caps.llamacpp_caps", lambda _: None)
+
+
+def test_install_skips_tag_missing_platform_asset(monkeypatch, tmp_path: Path) -> None:
+    """Some builds publish assets but not for every platform (e.g. a build
+    that shipped without Apple Silicon); install must take the newest tag
+    that can serve this machine, not fail on the newest tag."""
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    monkeypatch.setattr(engine, "build_tags", lambda fetch=None: ["b10830", "b10829"])
+    monkeypatch.setattr(
+        engine,
+        "published_assets",
+        lambda tag, fetch=None: (
+            ["llama-b10830-bin-win-cpu-x64.zip"]
+            if tag == "b10830"
+            else ["llama-b10829-bin-macos-arm64.tar.gz"]
+        ),
+    )
+    _stub_version_probe(monkeypatch)
+    payload = _targz_payload()
+    item, warnings = engine.install(
+        dest=tmp_path,
+        download=lambda _url, path: path.write_bytes(payload),
+        system="macos",
+        machine="arm64",
+        accelerator=None,
+    )
+    assert item.tag == "b10829"
+    assert warnings and "b10830" in warnings[0]
+
+
+def test_install_raises_when_no_tag_serves_platform(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    monkeypatch.setattr(engine, "build_tags", lambda fetch=None: ["b10830", "b10829"])
+    monkeypatch.setattr(
+        engine,
+        "published_assets",
+        lambda tag, fetch=None: [f"llama-{tag}-bin-win-cpu-x64.zip"],
+    )
+    with pytest.raises(ValueError, match="no CPU asset is published"):
+        engine.install(
+            dest=tmp_path,
+            download=lambda _url, path: path.write_bytes(_targz_payload()),
+            system="macos",
+            machine="arm64",
+            accelerator=None,
+        )
+
+
+def test_explicit_tag_does_not_iterate_older_tags(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        engine,
+        "published_assets",
+        lambda tag, fetch=None: [f"llama-{tag}-bin-win-cpu-x64.zip"],
+    )
+    with pytest.raises(ValueError, match="no CPU asset is published"):
+        engine.install(
+            "b10830",
+            dest=tmp_path,
+            download=lambda _url, path: path.write_bytes(_targz_payload()),
+            system="macos",
+            machine="arm64",
+            accelerator=None,
+        )
+
+
 def test_explicit_unpublished_variant_reports_assets() -> None:
     with pytest.raises(ValueError, match="published assets"):
         engine.select_asset(

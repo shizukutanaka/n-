@@ -467,17 +467,6 @@ def install(
     selected_tag = tag or (tags[0] if tags else None)
     if selected_tag is None:
         raise RuntimeError("no llama.cpp build tags were published")
-    assets = published_assets(selected_tag, fetch=fetch)
-    tag_warnings: list[str] = []
-    if tag is None:
-        # A release can reach the feed before its binaries finish
-        # uploading; install the newest tag that actually has assets.
-        for candidate in tags[1:]:
-            if assets:
-                break
-            tag_warnings.append(f"{selected_tag} published no assets")
-            selected_tag = candidate
-            assets = published_assets(candidate, fetch=fetch)
     if system is None:
         system = platform.system()
     if machine is None:
@@ -490,14 +479,40 @@ def install(
             accelerator = profile.gpus[0].vendor if profile.gpus else None
         except (OSError, RuntimeError, ValueError):
             accelerator = None
-    asset, selection_warning = select_asset(
-        selected_tag,
-        assets,
-        system=system,
-        machine=machine,
-        accelerator=accelerator,
-        variant=variant,
-    )
+    tag_warnings: list[str] = []
+    # A release can reach the feed before its binaries finish uploading, and
+    # builds sometimes ship without a given platform's asset at all; install
+    # the newest tag that can actually serve this machine.
+    candidates = [selected_tag] + (tags[1:] if tag is None else [])
+    asset: EngineAsset | None = None
+    selection_warning: str | None = None
+    select_error: ValueError | None = None
+    for candidate in candidates:
+        assets = published_assets(candidate, fetch=fetch)
+        if not assets:
+            tag_warnings.append(f"{candidate} published no assets")
+            continue
+        try:
+            asset, selection_warning = select_asset(
+                candidate,
+                assets,
+                system=system,
+                machine=machine,
+                accelerator=accelerator,
+                variant=variant,
+            )
+        except ValueError as error:
+            tag_warnings.append(f"{candidate}: {error}")
+            select_error = error
+            continue
+        selected_tag = candidate
+        break
+    if asset is None:
+        if select_error is not None:
+            raise select_error
+        raise ValueError(
+            f"no llama.cpp build publishes assets; tried tags: {', '.join(candidates)}"
+        )
     target = root / selected_tag
     target.mkdir(parents=True, exist_ok=True)
     archive = target / asset.asset
