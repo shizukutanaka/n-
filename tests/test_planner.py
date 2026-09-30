@@ -2910,6 +2910,33 @@ def test_lfm2_24b_a2b_catalog_moe_anatomy(catalog: list[ModelSpec]) -> None:
     )
 
 
+def test_llamacpp_install_hint_is_os_specific() -> None:
+    # The hint previously suggested winget/brew on every OS, including Linux
+    # where neither exists — wrong guidance for the actual machine.
+    models = [
+        ModelSpec(
+            "tiny", "tiny", 100_000_000, 8, 8, 2, 64, 512, 4096,
+            ["chat"], 50.0, "apache", {"hf_gguf": "tiny.gguf"},
+        ),
+    ]
+    for os_name, expected, absent in (
+        ("linux", "build from source", "winget"),
+        ("macos", "brew", "winget"),
+        ("windows", "winget", "brew"),
+    ):
+        result = build_plan(
+            profile(8, os_name=os_name, backends={
+                "ollama": None, "llamacpp": None, "vllm": None, "mlx": None,
+            }),
+            models,
+            Policy(roles=["chat"]),
+        )
+        hint = next(h for h in result.install_hints if "llama.cpp" in h)
+        assert expected in hint
+        assert absent not in hint
+        assert "{tools}" not in hint
+
+
 def test_estimate_memory_counts_recurrent_state_per_slot() -> None:
     hybrid = ModelSpec(
         "hybrid-rs", "nemotron-h", 30_000_000_000, 52, 32, 2, 128, 2688,
