@@ -13,6 +13,8 @@ from nmesh.bench.epoch import refutes
 from nmesh.paths import nmesh_home
 
 BenchCache = dict[str, float]
+# Retained for API compatibility; load_records/save_records resolve
+# nmesh_home() lazily so a NMESH_HOME set after import is honored.
 CACHE_PATH = nmesh_home() / "bench.json"
 BENCH_HARNESS_VERSION = "bench-v2"
 MIN_CONTROL_RATIO = 0.90
@@ -198,7 +200,7 @@ def _record(value: object) -> BenchRecord | None:
 
 
 def load_records(path: Path | None = None) -> dict[str, BenchRecord]:
-    target = path or CACHE_PATH
+    target = path or (nmesh_home() / "bench.json")
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError, ValueError):
@@ -214,7 +216,7 @@ def load_records(path: Path | None = None) -> dict[str, BenchRecord]:
 
 
 def save_records(records: dict[str, BenchRecord], path: Path | None = None) -> Path:
-    target = path or CACHE_PATH
+    target = path or (nmesh_home() / "bench.json")
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     temporary.write_text(

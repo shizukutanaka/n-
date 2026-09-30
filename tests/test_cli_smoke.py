@@ -81,3 +81,35 @@ def test_port_flag_rejects_out_of_range(
 def test_port_flag_accepts_valid_port(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["jobs", "--port", "18000"]) == 1
     assert "reachable" in capsys.readouterr().err
+
+
+def test_watch_rejects_unknown_source(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        cli.httpx,
+        "Client",
+        lambda *_args, **_kwargs: pytest.fail("unknown source must fail before any fetch"),
+    )
+    assert cli.main(["watch", "--sources", "zenn,bogus"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "bogus" in captured.err
+
+
+def test_console_renders_bracket_text_verbatim(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli._console().print("warn[zzz]here and [not-a-style]tag")
+    output = capsys.readouterr().out
+    assert "warn[zzz]here" in output
+    assert "[not-a-style]tag" in output
+
+
+def test_console_style_kwarg_does_not_leak_markup(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli._console().print("- path/to/x[0].log", style="yellow")
+    output = capsys.readouterr().out
+    assert "- path/to/x[0].log" in output
+    assert "[yellow]" not in output

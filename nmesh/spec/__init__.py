@@ -23,6 +23,7 @@ from .measure import (
     Workload,
     compare,
     control,
+    request_timeout,
     run_arm,
 )
 from .record import (
@@ -79,6 +80,7 @@ __all__ = [
     "engine_identity",
     "from_arms",
     "load_cache",
+    "request_timeout",
     "run_arm",
     "save",
     "save_all",

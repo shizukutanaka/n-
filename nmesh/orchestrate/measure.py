@@ -26,9 +26,11 @@ another model's output on the scoring path.
 
 from __future__ import annotations
 
+import ipaddress
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -134,6 +136,28 @@ def _passed(task: Task, text: str, unscorable: bool) -> bool:
     return False if unscorable else bool(task.check(text))
 
 
+def _loopback(url: str) -> bool:
+    try:
+        host = urlsplit(url).hostname or ""
+    except ValueError:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _endpoint_client(endpoint: Endpoint, timeout: float) -> httpx.Client:
+    """Client for one endpoint. Env proxies can never serve a loopback
+    address — the proxy lives on another host — but a remote worker endpoint
+    may need them, so ``trust_env`` follows the endpoint's own address."""
+    return httpx.Client(
+        timeout=timeout, trust_env=not _loopback(endpoint.base_url)
+    )
+
+
 def _comparison(rows: Sequence[TaskRow], candidate: str) -> Comparison:
     gained = sum(
         1 for row in rows if getattr(row, candidate) and not row.lead_passed
@@ -162,19 +186,22 @@ def measure(
     solo = Cost()
     ceiling_flags: list[bool] = []
     transport_failures = 0
-    with httpx.Client(timeout=timeout) as client:
+    with _endpoint_client(lead, timeout) as lead_client, _endpoint_client(
+        worker, timeout
+    ) as worker_client:
         for task in items:
             budget = task.max_tokens + max(0, reasoning_allowance)
             try:
-                lead_call = complete(client, lead, task.prompt, budget)
+                lead_call = complete(lead_client, lead, task.prompt, budget)
                 solo.add(lead_call)
                 outcome = delegate(
-                    client,
+                    lead_client,
                     task.prompt,
                     budget,
                     lead=lead,
                     worker=worker,
                     ledger=ledger,
+                    worker_client=worker_client,
                 )
             except (httpx.HTTPError, ValueError):
                 transport_failures += 1
