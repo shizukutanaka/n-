@@ -501,9 +501,9 @@ def test_hard_suite_and_graders() -> None:
     assert len(SUITES["hard"]) == 130
     assert len({task.id for task in SUITES["hard"]}) == 130
     assert not {task.id for task in HARD_TASKS} & {task.id for task in EXTENDED_TASKS}
-    assert suite_digest(SUITES["extended"]) == "v2:86e41db848586057"
-    assert suite_digest(HARD_SUITE_TASKS) == "v2:22237baff8c47e35"
-    assert suite_digest(EXTENDED_TASKS) == "v2:86e41db848586057"
+    assert suite_digest(SUITES["extended"]) == "v2:e7a8b762773acc5f"
+    assert suite_digest(HARD_SUITE_TASKS) == "v2:2a713ec7409e2ad5"
+    assert suite_digest(EXTENDED_TASKS) == "v2:e7a8b762773acc5f"
     assert all(
         task.grades in {"value", "form", "value+form"}
         for task in HARD_SUITE_TASKS
@@ -566,7 +566,7 @@ def test_hard_suite_and_graders() -> None:
     assert seven.check("七")
     assert seven.check("七日")
     assert not seven.check("7")
-    assert suite_digest(SUITES["hard"]) == "v2:22237baff8c47e35"
+    assert suite_digest(SUITES["hard"]) == "v2:2a713ec7409e2ad5"
 
 
 def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
@@ -682,6 +682,25 @@ def test_repaired_suite_value_graders_reject_measured_false_positives() -> None:
     assert kanji.value_check("十七です")
 
     assert not _bool_value(True)("true or false")
+
+
+def test_japanese_only_graders_reject_ascii_digits() -> None:
+    """Answers mixing digits violate the no-digits language constraint."""
+    seven = next(
+        task for task in HARD_TASKS if task.id == "multilingual.lang_lock.seven"
+    )
+    assert seven.check("七")
+    assert not seven.check("七 (7)")
+    translate = next(
+        task for task in TASKS if task.id == "multilingual.ja_translate"
+    )
+    assert translate.check("猫が眠る。")
+    assert not translate.check("猫が7匹眠る。")
+    answer = next(
+        task for task in TASKS if task.id == "multilingual.ja_answer"
+    )
+    assert answer.check("東京")
+    assert not answer.check("東京2024")
 
 
 def test_value_extraction_and_compliance_grading() -> None:
