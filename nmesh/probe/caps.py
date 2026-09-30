@@ -10,6 +10,8 @@ from pathlib import Path
 
 from nmesh.paths import nmesh_home
 
+# Retained for API compatibility; llamacpp_caps resolves nmesh_home() lazily so
+# a NMESH_HOME set after import is honored.
 CAPS_PATH = nmesh_home() / "caps.json"
 
 
@@ -105,7 +107,7 @@ def llamacpp_caps(
         key = _cache_key(resolved)
     except OSError:
         return None
-    target = cache_path or CAPS_PATH
+    target = cache_path or (nmesh_home() / "caps.json")
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
         cached = payload.get("entries", {}).get(key)
@@ -168,7 +170,7 @@ def llamacpp_caps(
         payload = json.loads(target.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             payload = {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         payload = {}
     entries = payload.setdefault("entries", {})
     if isinstance(entries, dict):
