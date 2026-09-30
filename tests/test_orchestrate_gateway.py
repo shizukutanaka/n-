@@ -5,6 +5,7 @@ from dataclasses import replace
 from fastapi.testclient import TestClient
 
 import nmesh.gateway as gateway_module
+from nmesh.eval import SUITES, suite_digest
 from nmesh.gateway import create_app
 from nmesh.orchestrate import (
     PROTOCOL_VERSION,
@@ -41,7 +42,7 @@ def _record(plan: object) -> DelegationRecord:
         lead=RoleIdentity(services[0].model_id, services[0].quant, services[0].backend),
         worker=RoleIdentity(services[1].model_id, services[1].quant, services[1].backend),
         suite="hard",
-        digest="digest",
+        digest=suite_digest(SUITES["hard"]),
         n_tasks=10,
         worker_passed=5,
         lead_passed=5,
@@ -136,6 +137,40 @@ def test_delegate_model_refuses_unconfirmed_evidence(monkeypatch) -> None:
     assert "nmesh-delegate" not in {item["id"] for item in models}
     assert response.status_code == 409
     assert "unconfirmed" in response.json()["error"]["message"]
+
+
+def test_delegate_model_refuses_stale_suite_evidence(monkeypatch) -> None:
+    plan = _delegation_plan()
+    stale = replace(_record(plan), digest="superseded")
+    monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": stale})
+    with TestClient(create_app(plan)) as client:
+        models = client.get("/v1/models").json()["data"]
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "nmesh-delegate",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert "nmesh-delegate" not in {item["id"] for item in models}
+    assert response.status_code == 409
+    assert "no_evidence" in response.json()["error"]["message"]
+
+
+def test_delegate_model_refuses_allowance_evidence(monkeypatch) -> None:
+    plan = _delegation_plan()
+    allowance = replace(_record(plan), reasoning_allowance=512)
+    monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": allowance})
+    with TestClient(create_app(plan)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "nmesh-delegate",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert response.status_code == 409
+    assert "no_evidence" in response.json()["error"]["message"]
 
 
 def test_delegate_model_refuses_unstable_evidence(monkeypatch) -> None:

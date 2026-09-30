@@ -8,6 +8,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
+
 from nmesh import i18n
 from nmesh.artifacts import artifact_key, load_cache, record
 from nmesh.paths import nmesh_home
@@ -234,20 +236,26 @@ def _recorded_artifact_bytes(
 
 def _local_gguf(
     target: Path, service: PlannedService
-) -> tuple[Path, str, int] | None:
+) -> tuple[tuple[Path, str, int] | None, str | None]:
     """Best on-disk GGUF for *service*, without touching the network.
 
     Planned names ({id}-{quant}.gguf) differ from upstream filenames, so
     a no-download launch still has to resolve the real file. Mirrors
     _resolve_gguf's rule: exact quant label first, else the nearest
     label at or below the planned bits-per-weight.
+
+    The second return value names an on-disk candidate rejected because
+    its bytes contradict the recorded artifact size — like the planned
+    path, a corrupt file is never handed to llama-server; here it just
+    cannot be re-downloaded, so the caller reports it instead.
     """
     first_label = service.quant.split("+", 1)[0]
     planned_bpw = NOMINAL_GGUF_BPW.get(first_label)
     if planned_bpw is None:
-        return None
+        return None, None
     model_token = service.model_id.casefold()
     candidates: list[tuple[str, Path, int]] = []
+    corrupt_note: str | None = None
     for path in sorted(target.parent.glob("*.gguf")):
         label = parse_label(path.name)
         if label is None or label in _REPACK_LABELS:
@@ -260,9 +268,20 @@ def _local_gguf(
         parts = _split_gguf_parts(path)
         if not all(part.exists() for part in parts):
             continue
-        candidates.append(
-            (label, path, sum(part.stat().st_size for part in parts))
-        )
+        size = sum(part.stat().st_size for part in parts)
+        expected = _recorded_artifact_bytes(service, label)
+        if expected is not None and expected > 0 and size != expected:
+            if corrupt_note is None:
+                corrupt_note = i18n.t(
+                    "warn.gguf_corrupt",
+                    i18n.lang(),
+                    service=service.name,
+                    filename=path.name,
+                    actual=size,
+                    expected=expected,
+                )
+            continue
+        candidates.append((label, path, size))
     exact = [item for item in candidates if item[0] == service.quant]
     eligible = exact if exact else [
         item
@@ -271,7 +290,7 @@ def _local_gguf(
         and bpw <= planned_bpw
     ]
     if not eligible:
-        return None
+        return None, corrupt_note
     if not exact:
         eligible.sort(key=lambda item: (
             -NOMINAL_GGUF_BPW[item[0].split("+", 1)[0]],
@@ -280,7 +299,7 @@ def _local_gguf(
             item[0],
         ))
     label, path, size = eligible[0]
-    return path, label, size
+    return (path, label, size), corrupt_note
 
 
 def _artifact_warning(
@@ -349,6 +368,29 @@ def _enable_fast_download() -> None:
         constants.HF_HUB_ENABLE_HF_TRANSFER = True  # type: ignore[attr-defined]
 
 
+def _transport_errors() -> tuple[type[Exception], ...]:
+    # huggingface_hub 1.x speaks httpx; 2.x ships its own httpx2 fork whose
+    # exception tree is unrelated to httpx's, so both must be caught.
+    errors: list[type[Exception]] = [httpx.HTTPError]
+    try:
+        import httpx2
+    except ImportError:
+        return tuple(errors)
+    errors.append(httpx2.HTTPError)
+    return tuple(errors)
+
+
+_TRANSPORT_ERRORS = _transport_errors()
+
+
+def _download_failed(repo_id: str, error: Exception) -> OSError:
+    # huggingface_hub re-raises raw httpx transport errors (ConnectError,
+    # TimeoutException, RemoteProtocolError — none of them OSError) once its
+    # own retry budget is exhausted. Normalize them so callers can rely on
+    # the (OSError, RuntimeError) failure contract for acquisition.
+    return OSError(f"Download from {repo_id} failed: {error}")
+
+
 def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
     """Resolve *service*'s artifact to a real path.
 
@@ -358,7 +400,14 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
     upstream filenames)."""
     if service.backend == "ollama":
         if not local_only:
-            subprocess.run(["ollama", "pull", service.model_ref], check=True)
+            try:
+                subprocess.run(
+                    ["ollama", "pull", service.model_ref], check=True
+                )
+            except subprocess.CalledProcessError as error:
+                raise RuntimeError(
+                    f"ollama pull failed for {service.model_ref}: {error}"
+                ) from error
         name = f"nmesh-{service.model_id}-c{service.context}"
         modelfile = nmesh_home() / "ollama" / f"{name}.Modelfile"
         modelfile.parent.mkdir(parents=True, exist_ok=True)
@@ -390,14 +439,17 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
         _enable_fast_download()
         from huggingface_hub import snapshot_download
 
-        return Acquired(
-            Path(snapshot_download(
-                repo_id=service.download_repo or service.model_ref,
+        snapshot_repo = service.download_repo or service.model_ref
+        try:
+            snapshot = Path(snapshot_download(
+                repo_id=snapshot_repo,
                 local_files_only=local_only,
-            )),
-            None,
-            False,
-        )
+            ))
+        except _TRANSPORT_ERRORS as error:
+            if isinstance(error, OSError):
+                raise
+            raise _download_failed(snapshot_repo, error) from error
+        return Acquired(snapshot, None, False)
     if service.backend == "llamacpp":
         target = Path(service.model_ref)
         parts = _split_gguf_parts(target)
@@ -406,7 +458,10 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
             artifact_bytes = sum(part.stat().st_size for part in parts)
             actual_label = parse_label(target.name)
             expected = _recorded_artifact_bytes(service, actual_label)
-            if expected is not None and artifact_bytes != expected:
+            # A recorded reference must be positive: a missing/zero record
+            # can never match real bytes and would only produce false
+            # corrupt verdicts that delete healthy caches on every up.
+            if expected is not None and expected > 0 and artifact_bytes != expected:
                 # Bytes differ from what a successful acquisition recorded —
                 # the cached artifact is corrupt/truncated; re-acquire it
                 # instead of handing llama-server a file it will crash on.
@@ -430,16 +485,23 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
                     artifact_bytes=artifact_bytes,
                 )
         if local_only:
-            local = _local_gguf(target, service)
+            local, local_corrupt_note = _local_gguf(target, service)
             if local is None:
+                note = corrupt_note or local_corrupt_note
+                detail = f"; on-disk file is corrupt: {note}" if note else ""
                 raise RuntimeError(
                     f"Model file for {service.model_id} ({service.quant}) is "
-                    "not downloaded and downloads are disabled"
+                    f"not downloaded and downloads are disabled{detail}"
                 )
             local_path, chosen, total_bytes = local
             warning = _artifact_warning(
                 service, chosen, local_path.name, total_bytes
             )
+            if local_corrupt_note is not None:
+                warning = (
+                    f"{local_corrupt_note} {warning}"
+                    if warning else local_corrupt_note
+                )
             return Acquired(
                 local_path, chosen, chosen != service.quant,
                 warning=warning, artifact_bytes=total_bytes,
@@ -447,27 +509,42 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
         repo_id = service.download_repo
         if repo_id is None:
             raise RuntimeError("No Hugging Face GGUF repository configured")
-        chosen, files, total_bytes = _resolve_gguf(repo_id, service.quant)
-        _enable_fast_download()
-        from huggingface_hub import hf_hub_download
+        try:
+            chosen, files, total_bytes = _resolve_gguf(repo_id, service.quant)
+            _enable_fast_download()
+            from huggingface_hub import hf_hub_download
 
-        paths = [
-            Path(hf_hub_download(
-                repo_id=repo_id,
-                filename=filename,
-                local_dir=str(target.parent),
-            ))
-            for filename in files
-        ]
-        warning = _artifact_warning(service, chosen, files[0], total_bytes)
+            paths = [
+                Path(hf_hub_download(
+                    repo_id=repo_id,
+                    filename=filename,
+                    local_dir=str(target.parent),
+                ))
+                for filename in files
+            ]
+        except _TRANSPORT_ERRORS as error:
+            if isinstance(error, OSError):
+                raise
+            raise _download_failed(repo_id, error) from error
+        try:
+            measured = sum(path.stat().st_size for path in paths)
+        except OSError:
+            measured = 0
+        # The record must hold what was actually written to disk: upstream
+        # metadata can omit sizes (total_bytes then undercounts to 0 or a
+        # partial sum), and a wrong record makes every later up reject the
+        # healthy cache as corrupt and re-download it.
+        artifact_bytes = measured or total_bytes
+        warning = _artifact_warning(service, chosen, files[0], artifact_bytes)
         if corrupt_note is not None:
             warning = f"{corrupt_note} {warning}" if warning else corrupt_note
-        try:
-            record(repo_id, chosen, total_bytes)
-        except OSError:
-            pass
+        if artifact_bytes > 0:
+            try:
+                record(repo_id, chosen, artifact_bytes)
+            except OSError:
+                pass
         return Acquired(
             paths[0], chosen, chosen != service.quant, warning=warning,
-            artifact_bytes=total_bytes,
+            artifact_bytes=artifact_bytes,
         )
     return Acquired(Path(service.model_ref), None, False)
