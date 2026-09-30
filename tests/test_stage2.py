@@ -492,6 +492,36 @@ def test_supervisor_heartbeat_skips_unloaded_swap_member(
     supervisor.down()
 
 
+def test_supervisor_heartbeat_drops_dead_sleeping_swap_member(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    plan = replace(plan, swap_group=["chat"])
+    calls: list[str] = []
+    supervisor = Supervisor(
+        lambda service: calls.append(service.name) or _AdmissionProcess(),
+        tmp_path / "sleeping-heartbeat.json",
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor.active_plan = plan
+    parked = _RecoverProcess()
+    supervisor.processes["chat"] = parked
+    supervisor.launched_argv["chat"] = ["stub"]
+    supervisor.sleeping.add("chat")
+    parked.exit_code = 137
+    supervisor.heartbeat()
+    assert calls == []
+    assert "chat" not in supervisor.processes
+    assert "chat" not in supervisor.sleeping
+    assert "chat" not in supervisor.failed
+    supervisor.down()
+
+
 def test_supervisor_idle_unload_does_not_restart_and_revives(
     tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
@@ -634,6 +664,144 @@ def test_supervisor_adopts_recorded_pid_and_unloads_it(
     assert supervisor.idle_services() == {"chat"}
     payload = json.loads(state_path.read_text(encoding="utf-8"))
     assert payload["services"] == []
+
+
+def test_supervisor_rejects_adopted_engine_with_drifted_argv(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    plan = replace(plan, services=[service])
+    state_path = tmp_path / "drifted.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "services": [{
+                "service": "chat",
+                "pid": os.getpid(),
+                "create_time": psutil.Process(os.getpid()).create_time(),
+                "port": 18010,
+                "argv": ["llama-server", "-m", "/old/model.gguf", "-c", "2048"],
+            }],
+        }),
+        encoding="utf-8",
+    )
+    launched: list[str] = []
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda item: launched.append(item.name) or _AdmissionProcess(),
+        state_path,
+        health_timeout=0.01,
+        terminator=terminated.append,
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+    monkeypatch.setattr(
+        supervisor_module, "engine_listener_pid", lambda _port: os.getpid()
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+
+    supervisor.ensure_running("chat", plan)
+
+    assert "chat" not in supervisor.adopted
+    assert terminated == [os.getpid()]
+    assert launched == ["chat"]
+
+
+def test_supervisor_adopts_engine_with_matching_argv(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _recovery_plan(catalog)
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url="http://127.0.0.1:1/health"),
+    )
+    plan = replace(plan, services=[service])
+    state_path = tmp_path / "matching.json"
+    state_path.write_text(
+        json.dumps({
+            "version": 2,
+            "services": [{
+                "service": "chat",
+                "pid": os.getpid(),
+                "create_time": psutil.Process(os.getpid()).create_time(),
+                "port": 18010,
+                "argv": list(service.launch.argv),
+            }],
+        }),
+        encoding="utf-8",
+    )
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("matching process should be adopted"),
+        state_path,
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+
+    supervisor.ensure_running("chat", plan)
+
+    assert supervisor.adopted["chat"]["pid"] == os.getpid()
+    assert supervisor.adopted["chat"]["argv"] == list(service.launch.argv)
+
+
+def test_supervisor_unload_kills_live_adopted_pid(tmp_path) -> None:
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("nothing to launch"),
+        tmp_path / "state.json",
+        terminator=terminated.append,
+    )
+    supervisor.adopted["chat"] = {
+        "pid": os.getpid(),
+        "create_time": psutil.Process(os.getpid()).create_time(),
+        "port": 18010,
+    }
+
+    assert supervisor.unload("chat") is True
+    assert terminated == [os.getpid()]
+
+
+def test_supervisor_unload_skips_kill_when_adopted_pid_recycled(tmp_path) -> None:
+    # A stale record naming a recycled pid must not kill the process that
+    # now holds it — create_time mismatch means "not our engine".
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("nothing to launch"),
+        tmp_path / "state.json",
+        terminator=terminated.append,
+    )
+    supervisor.adopted["chat"] = {
+        "pid": os.getpid(),
+        "create_time": psutil.Process(os.getpid()).create_time() + 1_000_000.0,
+        "port": 18010,
+    }
+
+    assert supervisor.unload("chat") is True
+    assert terminated == []
+    assert "chat" not in supervisor.adopted
+
+
+def test_supervisor_down_skips_kill_when_adopted_pid_recycled(tmp_path) -> None:
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("nothing to launch"),
+        tmp_path / "state.json",
+        terminator=terminated.append,
+    )
+    supervisor.adopted["chat"] = {
+        "pid": os.getpid(),
+        "create_time": psutil.Process(os.getpid()).create_time() + 1_000_000.0,
+        "port": 18010,
+    }
+
+    supervisor.down()
+    assert terminated == []
 
 
 def test_supervisor_heartbeat_relaunches_dead_adopted_service(
@@ -1064,6 +1232,85 @@ def test_supervisor_admission_can_be_skipped_or_fail_open(
     assert result.running
     assert supervisor.active_plan is not None
     assert any("admission skipped" in warning for warning in supervisor.active_plan.warnings)
+    supervisor.down()
+
+
+def test_supervisor_replan_failure_falls_back_open(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    """A non-OSError/RuntimeError from the mid-launch replan must not escape
+    up(): the run falls back to the original plan and records why."""
+    base = profile(32, (24,))
+    plan = build_plan(base, catalog, Policy(roles=["chat"]))
+    service = plan.services[0]
+    oversized = int(service.memory.weight_bytes * 1.5)
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(
+            None, None, False, artifact_bytes=oversized
+        ),
+    )
+    admit_calls = 0
+
+    def flaky_admit(
+        current, bench_cache=None, *, drop_unaffordable=False
+    ) -> object:
+        nonlocal admit_calls
+        admit_calls += 1
+        if admit_calls > 1:
+            raise ValueError("synthetic replan failure")
+        return current
+
+    supervisor = Supervisor(
+        lambda _service: _AdmissionProcess(),
+        tmp_path / "replan-fail.json",
+        health_timeout=0.01,
+        probe=lambda: base,
+        catalog=lambda: catalog,
+    )
+    monkeypatch.setattr(supervisor, "_admit", flaky_admit)
+    supervisor._wait_health = lambda _service, timeout=None: True
+    result = supervisor.up(plan, no_download=True)
+    assert result.running
+    assert any(
+        "Free-memory admission failed" in warning for warning in result.warnings
+    )
+    supervisor.down()
+
+
+def test_supervisor_fallback_reaches_gpu_layer_rung(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    """The documented quantization/context/GPU-layer ladder needs a fourth
+    attempt — otherwise the layer-reduction rung is unreachable."""
+    plan = build_plan(profile(64, (24,)), catalog, Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        launch=replace(plan.services[0].launch, health_url=None),
+    )
+    plan = replace(plan, services=[service])
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    argv_seen: list[list[str]] = []
+
+    def launcher(item) -> _AdmissionProcess:
+        argv_seen.append(list(item.launch.argv))
+        if len(argv_seen) < 4:
+            raise RuntimeError("synthetic startup failure")
+        return _AdmissionProcess()
+
+    supervisor = Supervisor(
+        launcher, tmp_path / "ladder.json", health_timeout=0.01
+    )
+    result = supervisor.up(plan, no_download=True, admit=False)
+    assert result.running
+    assert len(argv_seen) == 4
+    ngl_seen = [argv[argv.index("-ngl") + 1] for argv in argv_seen]
+    assert ngl_seen == ["48", "48", "48", "36"]
     supervisor.down()
 
 
