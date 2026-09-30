@@ -711,6 +711,20 @@ def test_reference_context_skips_when_free_ram_cannot_hold_artifact(
     assert context[2].endswith("|t4|n32")
 
 
+def test_bench_rejects_unknown_service(monkeypatch, capsys) -> None:
+    plan = _plan()
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(
+        cli,
+        "runtime_status",
+        lambda: pytest.fail("unknown service must fail before runtime access"),
+    )
+    assert cli.main(["bench", "--service", "typo"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "typo" in captured.err
+
+
 def test_autotune_restores_after_httpx_measure_failure(monkeypatch, capsys) -> None:
     """A tuned cell that kills the engine raises httpx errors, not OSError —
     without them in the catch the gateway/plan restore path is unreachable
@@ -748,6 +762,7 @@ def test_autotune_restores_after_httpx_measure_failure(monkeypatch, capsys) -> N
     assert events[-1] == "disarm"
     captured = capsys.readouterr()
     assert "connection refused" in captured.err
+
 
 
 def test_bench_rejects_nonpositive_tokens(capsys) -> None:

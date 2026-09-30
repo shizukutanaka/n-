@@ -57,6 +57,20 @@ def test_version_reports_package_and_evidence_versions(
     assert "probe_rules=" in output
 
 
+def test_watch_rejects_unknown_source(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        cli.httpx,
+        "Client",
+        lambda *_args, **_kwargs: pytest.fail("unknown source must fail before any fetch"),
+    )
+    assert cli.main(["watch", "--sources", "zenn,bogus"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "bogus" in captured.err
+
+
 def test_console_renders_bracket_text_verbatim(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

@@ -22,6 +22,8 @@
 - **vLLM スリープモードによるスワップ切替の高速化**: スワップグループの非 resident メンバーは切替のたびにプロセスを kill→モデル再ロードで復帰に数分かかっていましたが、vLLM ≥0.9 の sleep mode（vLLM docs features/sleep_mode:`--enable-sleep-mode` + `VLLM_SERVER_DEV_MODE=1`）を使い、切替時に `POST /sleep?level=1` で重みを CPU RAM へ退避（VRAM を開放・KV キャッシュは破棄）、次のリクエストで `POST /wake_up` により秒速復帰するようになりました。退避する重みは CPU RAM を消費するため、空きメモリがプランの `weight_bytes` を下回る場合はスリープを拒否して従来どおり kill にフォールバック（予算を静かに超過させません）。vLLM が古い・バージョン検出不可の場合は警告を出して従来の再起動パスを維持し、プランナが常駐サービスにはこの機能を発行しないため dev-mode エンドポイントの露出面は最小です。supervisor 再起動後は `/is_sleeping` でパーク状態を検出し、adopted/orphan エンジンも同じ wake 経路で復帰します。`nmesh status` はスリープ中のサービスを `sleeping` で表示します。LAUNCH_REVISION 5
 
 ### Fixed
+- **`nmesh bench --service` のタイポが別サービスを静かに計測していた問題を修正**: 未知名を指定すると `plan.services[0]` へフォールバックし、要求とは異なるサービスの計測結果が記録されていました。`eval` 等と同規約の `err.unknown_service` で拒否します
+- **`nmesh watch --sources` の未知ソース名を拒否するよう修正**: `--sources zen` のようなタイポが一切の警告なく空の成功レポート（sources: [], exit 0）を返していました
 - **`nmesh unload`（全サービス指定）が拒否されたサービスの理由を黙って捨てていた問題を修正**: ゲートウェイは各サービスの `{service, unloaded, reason}` を `results` で返していますが、CLI は成功リストのみを表示し、拒否されたサービス（idle/shared/external/not_owned/not_running）を一切報告しませんでした — 「全部アンロードした」と見えて実際には残っていました（単一サービス指定では理由を表示するのに一貫性なし）。拒否された各サービスと理由を stderr に表示します（終了コード・JSON 出力は不変）
 - **`nmesh-delegate` 委譲呼出が固定300秒で打ち切られていた問題を修正**: ゲートウェイ内の委譲パス（lead 下書き → worker 検証）は `httpx.Timeout(300.0)` 固定で、~0.9 tok/s 未満の低速ホストでは max_tokens 未満の正常な生成が輸送エラー化していました。各呼出は最大 max_tokens トークンの生成のため、リクエスト毎の上限を `30 + max_tokens` 秒（1 tok/s 床 + 30秒余裕）に比例化 — #537/#542-#546 で直した固定タイムアウト系の残存面
 - **`spec measure --n-max` が非正値を受理していた問題を修正**: `--n-max 0`/負値がそのまま `--spec-draft-n-max` としてドラフトアームの argv に流れ、計測途中の起動失敗または無意味な投機設定を証拠レコードへ記録し得ました。`--repeats` と同じくパース時に拒否します（`--repeats` は統計要件で別途 `>=3` を要求するため従来どおり）
