@@ -629,6 +629,21 @@ def test_run_surfaces_upstream_error_body(monkeypatch, capsys) -> None:
     assert "logits computation" in err
 
 
+def test_unbounded_client_keeps_reads_unbounded_and_connect_bounded() -> None:
+    # Embedding and retrieval probes send context-scale inputs — a flat 300s
+    # socket bound aborts a healthy measurement on a slow host and surfaces it
+    # as an HTTP error. Reads stay unbounded; connect stays bounded.
+    client = cli._unbounded_client()
+    try:
+        assert isinstance(client.timeout, httpx.Timeout)
+        assert client.timeout.read is None
+        assert client.timeout.write is None
+        assert client.timeout.pool is None
+        assert client.timeout.connect == 10.0
+    finally:
+        client.close()
+
+
 def test_run_surfaces_non_utf8_error_body(monkeypatch, capsys) -> None:
     import io
     import urllib.error
