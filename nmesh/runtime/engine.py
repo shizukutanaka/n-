@@ -252,11 +252,17 @@ def select_asset(
             )
         elif requested_variant == "auto":
             if accelerator == "nvidia":
-                chosen = _asset_name(tag, "ubuntu-vulkan-x64.tar.gz")
-                warning = (
-                    "no ubuntu-cuda asset is published; using the published "
-                    "ubuntu-vulkan-x64 asset for NVIDIA"
+                chosen = _asset_for(
+                    assets,
+                    rf"{re.escape(_asset_name(tag, 'ubuntu-cuda'))}"
+                    r"-\d+\.\d+-x64\.tar\.gz",
                 )
+                if chosen is None:
+                    chosen = _asset_name(tag, "ubuntu-vulkan-x64.tar.gz")
+                    warning = (
+                        "no ubuntu-cuda asset is published; using the published "
+                        "ubuntu-vulkan-x64 asset for NVIDIA"
+                    )
             elif accelerator == "amd":
                 chosen = _asset_for(
                     assets,
@@ -273,6 +279,14 @@ def select_asset(
                 assets,
                 rf"{re.escape(_asset_name(tag, 'ubuntu-rocm'))}-\d+\.\d+-x64\.tar\.gz",
             )
+        elif requested_variant == "cuda":
+            chosen = _asset_for(
+                assets,
+                rf"{re.escape(_asset_name(tag, 'ubuntu-cuda'))}-\d+\.\d+-x64\.tar\.gz",
+            )
+        elif requested_variant.startswith("cuda"):
+            suffix = requested_variant.removeprefix("cuda-")
+            chosen = _asset_name(tag, f"ubuntu-cuda-{suffix}-x64.tar.gz")
         elif requested_variant == "vulkan":
             chosen = _asset_name(tag, "ubuntu-vulkan-x64.tar.gz")
         elif requested_variant.startswith("rocm"):
@@ -282,6 +296,17 @@ def select_asset(
             chosen = _asset_name(tag, "ubuntu-sycl-fp16-x64.tar.gz")
         else:
             chosen = _asset_name(tag, f"ubuntu-{requested_variant}-x64.tar.gz")
+
+    if chosen is not None and chosen.startswith(
+        _asset_name(tag, "ubuntu-cuda")
+    ):
+        cuda_version = re.search(r"-cuda-(\d+\.\d+)-", chosen, re.IGNORECASE)
+        if cuda_version:
+            cudart = (
+                f"cudart-{_asset_name(tag, f'ubuntu-cuda-{cuda_version.group(1)}-x64.tar.gz')}"
+            )
+            if cudart in published:
+                extra = (cudart,)
 
     if chosen not in published:
         available = ", ".join(sorted(assets)) or "none"
@@ -572,7 +597,7 @@ def install(
         raise
 
 
-def installed() -> list[InstalledEngine]:
+def installed(problems: list[str] | None = None) -> list[InstalledEngine]:
     root = engines_dir()
     if not root.exists():
         return []
@@ -580,8 +605,9 @@ def installed() -> list[InstalledEngine]:
     for manifest in sorted(root.glob("*/manifest.json")):
         try:
             result.append(_read_manifest(manifest))
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-            continue
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+            if problems is not None:
+                problems.append(f"{manifest}: {error}")
     return result
 
 
