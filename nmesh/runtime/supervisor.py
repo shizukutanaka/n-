@@ -21,6 +21,7 @@ import psutil
 from nmesh import __version__, i18n
 from nmesh.artifacts import load_cache as load_artifact_cache
 from nmesh.catalog import ModelSpec, load_catalog
+from nmesh.net import local_urlopen
 from nmesh.paths import is_windows, nmesh_home
 from nmesh.planner import (
     BPW,
@@ -288,7 +289,7 @@ class Supervisor:
         if not isinstance(url, str) or not url:
             return False
         try:
-            with urllib.request.urlopen(url, timeout=2):
+            with local_urlopen(url, timeout=2):
                 return True
         except urllib.error.HTTPError as error:
             return error.code < 500
@@ -306,7 +307,7 @@ class Supervisor:
             request = urllib.request.Request(
                 f"http://127.0.0.1:{service.port}/{path}", method="POST"
             )
-            with urllib.request.urlopen(request, timeout=timeout):
+            with local_urlopen(request, timeout=timeout):
                 return True
         except (OSError, ValueError):
             return False
@@ -316,7 +317,7 @@ class Supervisor:
         """GET /is_sleeping on a sleep-capable engine; any failure means the
         engine is not parked (or not sleep-capable at all)."""
         try:
-            with urllib.request.urlopen(
+            with local_urlopen(
                 f"http://127.0.0.1:{service.port}/is_sleeping", timeout=2
             ) as response:
                 payload = json.loads(response.read().decode("utf-8"))
@@ -508,6 +509,19 @@ class Supervisor:
         process = self.processes.get(name)
         return process is not None and process.poll() is None
 
+    def _terminate_record(self, record: Mapping[str, object]) -> None:
+        """Kill the pid an adopted/orphan record names — but only while it
+        still is that process. A dead pid may have been recycled; every
+        other kill path proves liveness (listener port or _entry_alive)
+        before signalling."""
+        pid = record.get("pid")
+        if (
+            isinstance(pid, int)
+            and not isinstance(pid, bool)
+            and self._entry_alive(record)
+        ):
+            self._terminator(pid)
+
     def _adopt(self, service: PlannedService) -> bool:
         if service.name in self.processes or service.launch.health_url is None:
             return False
@@ -609,9 +623,7 @@ class Supervisor:
         for name, record in list(self.adopted.items()):
             if name in planned or name in self.external_shared:
                 continue
-            pid = record.get("pid")
-            if isinstance(pid, int) and not isinstance(pid, bool):
-                self._terminator(pid)
+            self._terminate_record(record)
             self.adopted.pop(name, None)
             self.idle.discard(name)
             dropped = True
@@ -897,8 +909,9 @@ class Supervisor:
         if service.launch.health_url is None:
             return True
         try:
-            with urllib.request.urlopen(service.launch.health_url, timeout=2) as response:
-                return 200 <= response.status < 500
+            with local_urlopen(service.launch.health_url, timeout=2) as response:
+                status = response.status
+                return status is not None and 200 <= status < 500
         except (OSError, ValueError):
             return False
 
@@ -1334,7 +1347,7 @@ class Supervisor:
             for name, record in self.adopted.items():
                 pid = record.get("pid")
                 if isinstance(pid, int) and not isinstance(pid, bool):
-                    self._terminator(pid)
+                    self._terminate_record(record)
                     report(name, record)
             for name, process in list(self.processes.items()):
                 report_fields: dict[str, object] = {"pid": process.pid}
@@ -1498,9 +1511,8 @@ class Supervisor:
                     self._persist(selected)
                     return self.status()
                 record = self.adopted.pop(service_name, None)
-                pid = record.get("pid") if isinstance(record, dict) else None
-                if isinstance(pid, int) and not isinstance(pid, bool):
-                    self._terminator(pid)
+                if isinstance(record, dict):
+                    self._terminate_record(record)
                 adopted = False
             if adopted:
                 pass
@@ -1597,7 +1609,7 @@ class Supervisor:
                 pid = adopted.get("pid")
                 if not isinstance(pid, int) or isinstance(pid, bool):
                     return False
-                self._terminator(pid)
+                self._terminate_record(adopted)
                 self.adopted.pop(service_name, None)
                 self.notes.pop(service_name, None)
             elif service_name not in self.processes:

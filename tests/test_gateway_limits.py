@@ -409,6 +409,58 @@ def test_jobs_show_queued_state_and_queue_timeout_failure(monkeypatch) -> None:
     finally:
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_queued_wait_failure_finishes_job(monkeypatch) -> None:
+    """A queue wait that dies (client disconnect cancels it, or an
+    unexpected error) must not leave the job "queued" forever — phantom
+    queued jobs inflate queue positions and are never evicted."""
+    upstream = _limit_upstream()
+    try:
+        plan = _llama_plan(1)
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        calls = 0
+        real_acquire = SlotLimiter.acquire
+
+        async def flaky_acquire(self, svc, timeout):
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise RuntimeError("simulated queue wait failure")
+            return await real_acquire(self, svc, timeout)
+
+        monkeypatch.setattr(SlotLimiter, "acquire", flaky_acquire)
+        with TestClient(
+            create_app(plan), raise_server_exceptions=False
+        ) as client:
+            _LimitHandler.block = True
+            first = threading.Thread(
+                target=lambda: client.post(
+                    "/v1/chat/completions", json={"messages": []}
+                )
+            )
+            first.start()
+            assert _LimitHandler.started.wait(timeout=2)
+            response = client.post(
+                "/v1/chat/completions", json={"messages": []}
+            )
+            assert response.status_code == 500
+            jobs = client.get("/v1/jobs").json()["jobs"]
+            assert jobs
+            assert not any(j["state"] == "queued" for j in jobs)
+            assert any(
+                j["state"] == "failed" and j["detail"] == "aborted"
+                for j in jobs
+            )
+            _LimitHandler.release.set()
+            first.join(timeout=5)
+            _LimitHandler.block = False
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
 def test_job_registry_transitions_and_capacity() -> None:
     from nmesh.gateway.jobs import JobRegistry
 

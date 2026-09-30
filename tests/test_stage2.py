@@ -636,6 +636,60 @@ def test_supervisor_adopts_recorded_pid_and_unloads_it(
     assert payload["services"] == []
 
 
+def test_supervisor_unload_kills_live_adopted_pid(tmp_path) -> None:
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("nothing to launch"),
+        tmp_path / "state.json",
+        terminator=terminated.append,
+    )
+    supervisor.adopted["chat"] = {
+        "pid": os.getpid(),
+        "create_time": psutil.Process(os.getpid()).create_time(),
+        "port": 18010,
+    }
+
+    assert supervisor.unload("chat") is True
+    assert terminated == [os.getpid()]
+
+
+def test_supervisor_unload_skips_kill_when_adopted_pid_recycled(tmp_path) -> None:
+    # A stale record naming a recycled pid must not kill the process that
+    # now holds it — create_time mismatch means "not our engine".
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("nothing to launch"),
+        tmp_path / "state.json",
+        terminator=terminated.append,
+    )
+    supervisor.adopted["chat"] = {
+        "pid": os.getpid(),
+        "create_time": psutil.Process(os.getpid()).create_time() + 1_000_000.0,
+        "port": 18010,
+    }
+
+    assert supervisor.unload("chat") is True
+    assert terminated == []
+    assert "chat" not in supervisor.adopted
+
+
+def test_supervisor_down_skips_kill_when_adopted_pid_recycled(tmp_path) -> None:
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        lambda _service: pytest.fail("nothing to launch"),
+        tmp_path / "state.json",
+        terminator=terminated.append,
+    )
+    supervisor.adopted["chat"] = {
+        "pid": os.getpid(),
+        "create_time": psutil.Process(os.getpid()).create_time() + 1_000_000.0,
+        "port": 18010,
+    }
+
+    supervisor.down()
+    assert terminated == []
+
+
 def test_supervisor_heartbeat_relaunches_dead_adopted_service(
     tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
