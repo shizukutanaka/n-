@@ -928,6 +928,21 @@ def test_ollama_daemon_env_no_warn_when_user_parallel_matches(
     )
 
 
+def test_plan_warns_about_resolution_env_leak(monkeypatch) -> None:
+    monkeypatch.setenv("DYLD_INSERT_LIBRARIES", "/tmp/inject.dylib")
+    result = build_plan(profile(8), [_ollama_only_model()], Policy(roles=["chat"]))
+    assert any("DYLD_INSERT_LIBRARIES" in warning for warning in result.warnings)
+
+
+def test_plan_no_resolution_env_warning_when_unset(monkeypatch) -> None:
+    for name in planner_core._RESOLUTION_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    result = build_plan(profile(8), [_ollama_only_model()], Policy(roles=["chat"]))
+    assert not any(
+        "resolve different code" in warning for warning in result.warnings
+    )
+
+
 def test_ollama_launch_env_emits_kv_cache_type_for_requested_quant() -> None:
     model = _ollama_only_model()
     launch = planner_core._launch(

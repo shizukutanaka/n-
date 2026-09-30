@@ -5,6 +5,7 @@ import socket
 import pytest
 
 from nmesh import telemetry
+from nmesh.planner import core as planner_core
 from nmesh.telemetry import Telemetry
 
 
@@ -12,6 +13,10 @@ from nmesh.telemetry import Telemetry
 def _telemetry_path(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("NMESH_HOME", str(tmp_path))
     monkeypatch.setattr(telemetry, "_default", Telemetry(tmp_path / "telemetry.json"))
+    # Ambient loader/linker env (e.g. LD_LIBRARY_PATH on CI runners) is
+    # unrelated to the code under test — drop it so plans are deterministic.
+    for name in planner_core._RESOLUTION_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)
