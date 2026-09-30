@@ -187,6 +187,18 @@ def test_bench_harness_change_does_not_preserve_rejected_stable_evidence() -> No
     assert record.rejected == (5.0,)
 
 
+def test_bench_timeout_scales_with_prompt_tokens() -> None:
+    """The read bound must stretch to slow-CPU prefill (~1s per prompt
+    token) while still killing a wedged stream — a fixed 300s cap cut off
+    legitimate multi-minute prompt processing before the first token."""
+    timeout = runner._bench_timeout(8192)
+    assert timeout.read == 8192.0
+    assert timeout.connect == 10.0
+    floored = runner._bench_timeout(30)
+    assert floored.read == 60.0
+    assert floored.connect == 10.0
+
+
 def test_bench_cache_rejects_non_finite_measurements(tmp_path) -> None:
     from nmesh.bench import load_records
 
