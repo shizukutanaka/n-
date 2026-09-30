@@ -1351,7 +1351,7 @@ def _unload(args: argparse.Namespace) -> int:
         headers=_gateway_headers(),
     )
     try:
-        with local_urlopen(request, timeout=10) as response:
+        with local_urlopen(request, timeout=60) as response:
             data = json.loads(response.read().decode())
     except HTTPError as error:
         if error.code == 404 and args.service is not None:
@@ -1610,7 +1610,7 @@ def _reload(args: argparse.Namespace) -> int:
         headers=_gateway_headers(),
     )
     try:
-        with local_urlopen(request, timeout=10) as response:
+        with local_urlopen(request, timeout=60) as response:
             if response.status is not None and response.status >= 400:
                 return 1
             data = json.loads(response.read().decode())

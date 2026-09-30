@@ -667,3 +667,43 @@ def test_serve_returns_nonzero_for_failed_gateway(monkeypatch) -> None:
     monkeypatch.setattr(cli, "_launch_gateway", lambda _port, detach: (process, None))
     monkeypatch.setattr(cli, "clear_gateway", lambda _pid: None)
     assert cli._runtime(SimpleNamespace(command="serve", port=18000)) == 1
+
+
+def test_unload_and_reload_calls_allow_drain_time(monkeypatch) -> None:
+    # In-flight requests keep the model busy during unload/reload; the
+    # gateway drains them, so a 10s client timeout reported "timed out"
+    # while the unload actually completed — a false failure.
+    timeouts: dict[str, float] = {}
+
+    class Response:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
+            self.status = 200
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, *args, **kwargs):
+        timeouts[request.full_url] = kwargs["timeout"]
+        payload = (
+            {"services": ["chat"], "created_at": "t"}
+            if request.full_url.endswith("/admin/reload")
+            else {"unloaded": ["chat"]}
+        )
+        return Response(payload)
+
+    monkeypatch.setattr(cli, "local_urlopen", fake_urlopen)
+    args = SimpleNamespace(service="chat", port=18000, json=False)
+    assert cli._unload(args) == 0
+    assert cli._reload(args) == 0
+    assert set(timeouts) == {
+        "http://127.0.0.1:18000/admin/unload/chat",
+        "http://127.0.0.1:18000/admin/reload",
+    }
+    assert all(timeout >= 60 for timeout in timeouts.values())
