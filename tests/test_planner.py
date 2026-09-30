@@ -2070,6 +2070,25 @@ def test_embedding_launch_flags_are_role_aware(catalog: list[ModelSpec]) -> None
     )
 
 
+def test_qwen3_embed_rerank_head_dim_matches_upstream(
+    catalog: list[ModelSpec],
+) -> None:
+    # Every qwen3-embedding/reranker config.json declares head_dim 128
+    # (qwen3 fixes head_dim instead of deriving hidden_size/n_heads).
+    # A smaller value under-budgets the KV cache — 2*kv_heads*head_dim
+    # per token — and lets the plan overrun VRAM silently.
+    for model_id in (
+        "qwen3-embedding-0.6b",
+        "qwen3-embedding-4b",
+        "qwen3-embedding-8b",
+        "qwen3-reranker-0.6b",
+        "qwen3-reranker-4b",
+        "qwen3-reranker-8b",
+    ):
+        model = next(item for item in catalog if item.id == model_id)
+        assert model.head_dim == 128, model_id
+
+
 def test_llama3_ollama_tags_exist_on_registry(
     catalog: list[ModelSpec],
 ) -> None:
