@@ -87,3 +87,59 @@ def test_invalidate_forces_next_acquire_to_ensure() -> None:
         gate.release()
 
     asyncio.run(scenario())
+
+
+def test_failed_ensure_drops_current_so_next_acquire_re_ensures() -> None:
+    """A swap whose ensure dies mid-way may have stopped the outgoing member;
+    the gate must not keep fast-pathing requests for that dead incumbent."""
+    async def scenario() -> None:
+        gate = SwapGate()
+        calls: list[str] = []
+        await gate.acquire("chat", lambda: calls.append("ensure:chat"))
+        gate.release()
+
+        def broken() -> None:
+            calls.append("ensure:code")
+            raise RuntimeError("spawn failed")
+
+        try:
+            await gate.acquire("code", broken)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("ensure unexpectedly succeeded")
+
+        # The incumbent "chat" is no longer trusted current: re-acquiring it
+        # must run its ensure again instead of proxying to a dead engine.
+        await gate.acquire("chat", lambda: calls.append("ensure:chat"))
+        gate.release()
+        assert calls == ["ensure:chat", "ensure:code", "ensure:chat"]
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_acquire_drops_current() -> None:
+    """wait_for cancellation while draining leaves the same stale-current
+    hazard — the incumbent may have been stopped before ensure raised, so a
+    cancelled swap also re-ensures on the next request."""
+    async def scenario() -> None:
+        gate = SwapGate()
+        calls: list[str] = []
+        await gate.acquire("chat", lambda: calls.append("ensure:chat"))
+
+        try:
+            await asyncio.wait_for(
+                gate.acquire("code", lambda: calls.append("ensure:code")),
+                timeout=0.05,
+            )
+        except asyncio.TimeoutError:
+            pass
+        else:
+            raise AssertionError("acquire unexpectedly completed")
+
+        gate.release()
+        await gate.acquire("chat", lambda: calls.append("ensure:chat"))
+        gate.release()
+        assert calls == ["ensure:chat", "ensure:chat"]
+
+    asyncio.run(scenario())
