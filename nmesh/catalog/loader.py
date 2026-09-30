@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +40,11 @@ class ModelSpec:
     n_moe_layers: int = 0
 
 
+# Model ids become filename components (models/{id}-{quant}.gguf,
+# ollama/nmesh-{id}-c{ctx}.Modelfile): anything else can escape NMESH_HOME.
+_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
 def _model_from_mapping(
     item: object, problems: list[str] | None = None
 ) -> ModelSpec | None:
@@ -46,7 +52,6 @@ def _model_from_mapping(
         if problems is not None:
             label = item.get("id") if isinstance(item, dict) else None
             problems.append(f"{label}: {reason}" if label else reason)
-
     if not isinstance(item, dict):
         reject("entry is not a mapping")
         return None
@@ -131,13 +136,24 @@ def _model_from_mapping(
     ):
         reject("non-positive or negative dimensions")
         return None
+    if _MODEL_ID.fullmatch(spec.id) is None:
+        reject("id contains filename-unsafe characters")
+        return None
     return spec
 
 
 def _read_models(path: Path, problems: list[str] | None = None) -> list[ModelSpec]:
     try:
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except OSError:
+    except FileNotFoundError:
+        return []
+    except OSError as error:
+        if problems is not None:
+            problems.append(f"{path}: cannot read: {error}")
+        return []
+    except UnicodeDecodeError as error:
+        if problems is not None:
+            problems.append(f"{path}: cannot decode as UTF-8: {error}")
         return []
     except yaml.YAMLError as error:
         if problems is not None:
