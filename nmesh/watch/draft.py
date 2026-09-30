@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -26,7 +27,9 @@ _REQUIRED = (
 
 def _yaml(value: object) -> str:
     if isinstance(value, str):
-        return f'"{value}"'
+        # JSON double-quoted strings are valid YAML flow scalars and carry
+        # the escaping hand-rolled quoting lacked.
+        return json.dumps(value, ensure_ascii=False)
     if isinstance(value, bool):
         return "true" if value else "false"
     if value is None:
