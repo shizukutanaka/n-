@@ -3651,6 +3651,26 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+    running = runtime_status()
+    domain = (
+        set(plan.swap_group) if service.name in plan.swap_group else {service.name}
+    )
+    busy = [
+        item.name
+        for item in plan.services
+        if item.name in domain and _service_running(item, running)
+    ]
+    if busy:
+        print(
+            i18n.t(
+                "err.spec_domain_busy",
+                language,
+                service=service.name,
+                services=", ".join(busy),
+            ),
+            file=sys.stderr,
+        )
+        return 1
     target = RoleIdentity(
         model_id=service.model_id,
         quant=service.quant,
