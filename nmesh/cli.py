@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 import socket
 import statistics
@@ -329,8 +330,10 @@ def _positive_float(value: str) -> float:
         parsed = float(value)
     except ValueError as error:
         raise argparse.ArgumentTypeError("must be a positive number") from error
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("must be greater than 0")
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError(
+            "must be a finite number greater than 0"
+        )
     return parsed
 
 
