@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.server
 import json
 import os
+import shlex
 import socket
 import sys
 import threading
@@ -1335,6 +1336,27 @@ def test_watch_unit_names_both_systemd_files(monkeypatch, tmp_path: Path) -> Non
     assert "[Service]" in text and "[Timer]" in text
     assert "OnUnitActiveSec=6h" in text
     assert command.endswith(str(timer))
+
+
+def test_install_command_quotes_unit_path_under_spaced_home(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(service_unit_module, "nmesh_home", lambda: tmp_path)
+    spaced_home = tmp_path / "home with space"
+    monkeypatch.setenv("HOME", str(spaced_home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    _, _, command = service_unit(19000, "posix")
+    unit = spaced_home / ".config" / "systemd" / "user" / "nmesh-gateway.service"
+    assert shlex.split(command)[-1] == str(unit)
+
+    _, _, command = watch_unit(6, "posix")
+    timer = spaced_home / ".config" / "systemd" / "user" / "nmesh-watch.timer"
+    assert shlex.split(command)[-1] == str(timer)
+
+    _, _, command = service_unit(19001, "darwin")
+    plist = spaced_home / "Library" / "LaunchAgents" / "com.nmesh.gateway.plist"
+    assert shlex.split(command)[-1] == str(plist)
 
 
 def test_autostart_install_writes_launcher_and_preserves_environment(
