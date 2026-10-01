@@ -649,6 +649,7 @@ def test_load_plan_rejects_unknown_enum_values(tmp_path, catalog: list[ModelSpec
         lambda payload: payload["services"][0].update({"n_cpu_moe": -1}),
         lambda payload: payload["services"][0].update({"tensor_split": [0, 1]}),
         lambda payload: payload["services"][0].update({"decode_tps": float("inf")}),
+        lambda payload: payload["services"][0].update({"spec": "draft", "spec_draft": ""}),
         lambda payload: payload["services"][0]["memory"].update({"parallel_slots": 0}),
         lambda payload: payload["services"][0]["memory"].update({"kv_cache_bytes": -1}),
         lambda payload: payload["services"][0]["memory"].update({"vram_budget": float("nan")}),
@@ -657,7 +658,8 @@ def test_load_plan_rejects_unknown_enum_values(tmp_path, catalog: list[ModelSpec
     ids=[
         "context-zero", "context-negative", "port-zero", "port-high",
         "gpu-index-negative", "n-gpu-layers-negative", "n-cpu-moe-negative",
-        "tensor-split-zero", "decode-tps-infinite", "memory-parallel-slots-zero",
+        "tensor-split-zero", "decode-tps-infinite", "spec-draft-empty",
+        "memory-parallel-slots-zero",
         "memory-kv-negative", "memory-vram-nan", "memory-n-gpu-layers-negative",
     ],
 )

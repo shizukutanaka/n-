@@ -3540,6 +3540,8 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
         service_kv_quant = str(sd.get("kv_quant", "f16"))
         if service_spec not in KINDS:
             raise ValueError("Invalid service spec")
+        if service_spec == "draft" and not str(sd.get("spec_draft", "")).strip():
+            raise ValueError("spec_draft is required for draft speculation")
         if service_kv_quant not in ("f16", "q8_0"):
             raise ValueError("Invalid service kv_quant")
         launch = LaunchSpec(
