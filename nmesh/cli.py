@@ -3128,6 +3128,8 @@ def _eval(args: argparse.Namespace) -> int:
             latent_total=context_probe_families["latent"]["of"],
             multi_passed=context_probe_families["multi"]["passed"],
             multi_total=context_probe_families["multi"]["of"],
+            update_passed=context_probe_families["update"]["passed"],
+            update_total=context_probe_families["update"]["of"],
         ))
         _console().print(i18n.t(
             "label.eval_context_control",

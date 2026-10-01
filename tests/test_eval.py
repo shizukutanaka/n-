@@ -2070,6 +2070,43 @@ def test_eval_cli_depth_runs_suite_and_context_probe_separately(
     assert "latent" in output["context_probe"]["uncontrolled_note"]
 
 
+def test_eval_cli_context_probe_console_lists_all_families(
+    monkeypatch, capsys,
+) -> None:
+    service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
+    result = EvalRun("prior-high", "f16", "llamacpp", 16, 16, 1.0, {}, [], 3.0)
+
+    def outcomes(statuses: dict[str, list[bool]]) -> list[TaskOutcome]:
+        return [
+            TaskOutcome(f"{category}.{index}", category, passed, "")
+            for category, values in statuses.items()
+            for index, passed in enumerate(values)
+        ]
+
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
+
+    def evaluate(tasks, base_url, model_ref, **kwargs):
+        if any(task.category.startswith("context.") for task in tasks):
+            return EvalRun(
+                "prior-high", "f16", "llamacpp", 24, 24, 1.0, {}, outcomes({
+                    "context.literal": [True] * 8,
+                    "context.latent": [True] * 8,
+                    "context.multi": [True] * 4,
+                    "context.update": [True] * 4,
+                }), 3.0, prompt_tokens_max=4096 if kwargs["depth"] else None,
+            )
+        return result
+
+    monkeypatch.setattr(cli, "eval_run", evaluate)
+    monkeypatch.setattr(cli, "save_eval", lambda value: None)
+    monkeypatch.setattr(cli, "save_context", lambda value: "context.json")
+    assert cli.main(["eval", "--depth", "4096"]) == 0
+    out = capsys.readouterr().out
+    assert "update" in out
+    assert "4/4" in out
+
+
 def test_eval_cli_extended_suite(monkeypatch, capsys) -> None:
     service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
     captured: list[Task] = []
