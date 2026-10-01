@@ -23,6 +23,7 @@
 
 ### Fixed
 - **`nmesh eval --service <埋め込みサービス>` が拒否されず全タスクが転送失敗していた問題を修正**: eval はチャット補完のみを送信するため、埋め込みサービスへ送ると全タスクが 404 で transport 失敗し「all evaluation tasks failed at transport level」まで待たされていました（応答を返すエンジンが混ざると部分記録が証拠として残る経路もあった）。`bench`（embed 計測経路への振り分け）と `autotune`（即時拒否）と同じく、埋め込みサービス指定時は `err.eval_embedding` で事前に拒否し生成可能なサービスを案内します
+- **カタログの `recurrent_state_bytes` 負値が検証を通過しメモリ見積もりを過小化していた問題を修正**: ハイブリッド（Mamba/GDN）モデルのリカレント状態は `kv_cache_bytes` と合計に直接加算されるため、ユーザ models.yaml の負値が受理されると実際より小さい見積もりでサービスが配置され得ました（#637 でフィールド追加時に dims 検証ブロックへの追加が漏れていた問題）
 - **プラン未作成時に `bench`/`eval`/`autotune` が無言で終了していた問題を修正**: `load_plan()` が None を返すと3コマンドは何も出力せず exit 1 でした（orchestrate/spec measure は `err.*` で案内済み）。`err.no_active_plan` を出力するよう統一し、メッセージに「先に nmesh plan を実行」の案内を追加
 - **解決系環境変数が spawn プロセスへ静かに漏れていた問題を修正**: `PYTHONPATH`/`PYTHONHOME`/`LD_LIBRARY_PATH`/`LD_PRELOAD`/`LD_AUDIT`/`DYLD_*` が設定されていると、起動されるエンジンはプローブが検証したものと異なるモジュール・ライブラリ解決を行い得ます（例: `PYTHONPATH` 下の古い `llama_cpp` がエンジンの挙動を変える）。計画時に `warn.resolution_env_leak` で一覧警告（#535 再送）
 - **KV キャッシュ量子化発行時に flash attention 必須の警告がなかった問題を修正**: `--cache-type-v q8_0` 等の V キャッシュ量子化は llama.cpp の flash attention（FA）が必須で、FA 非対応のモデル（SSM ハイブリッド等）では `V cache quantization requires flash_attn` でコンテキスト生成を abort しサービスが起動不能になります（llama.cpp 実装・Ollama issue #15043 でも panic 報告 — K 側は転置されないため FA 不要）。nmesh は `-fa` を発行せず両フラグを出していたため、このモデル依存の起動失敗リスクがプラン上不可視でした。発行時に `warn.kv_quant_v_fa` で制約と回避策（`--kv-quant f16`）を明示するよう変更（argv は不変 — FA は auto 既定で有効化される通常ケースでは問題なく、明示 `--flash-attn` は非対応アーキでも同じ abort のため効果なし）
