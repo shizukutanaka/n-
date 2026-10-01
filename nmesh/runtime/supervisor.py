@@ -1574,7 +1574,10 @@ class Supervisor:
                     record = self.adopted.get(name)
                     if record is None and self._adopt(item):
                         record = self.adopted.get(name)
-                    if record is None:
+                    if record is None or name in self.sleeping:
+                        # _adopt can also land the engine in sleeping
+                        # (parked by the prior supervisor) — already out
+                        # of the shared domain, nothing to evict.
                         continue
                     # An adopted (or still-orphaned) swap member is invisible
                     # to the processes loop above — evict it like a spawned

@@ -1615,6 +1615,58 @@ def test_swap_switch_evicts_orphan_member_via_adopt(
     supervisor.down()
 
 
+def test_swap_switch_keeps_parked_orphan_member(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    """When _adopt finds the orphan already parked (the prior supervisor
+    slept it), it lands in self.sleeping — evicting or re-parking it is
+    wrong: it already holds RAM, not the shared VRAM domain."""
+    base = _recovery_plan(catalog).services[0]
+    alpha = replace(base, name="alpha", backend="vllm",
+                    sleep_mode=True, resident=False)
+    beta = replace(base, name="beta", resident=False)
+    plan = replace(
+        _recovery_plan(catalog),
+        services=[alpha, beta],
+        swap_group=[alpha.name, beta.name],
+    )
+    supervisor = Supervisor(
+        lambda service: _RecoverProcess(),
+        tmp_path / "parked-orphan-swap.json",
+        health_timeout=0.01,
+        probe=lambda: profile(64, (24,)),
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    record = {"pid": 4242, "create_time": None, "port": 18010, "argv": None}
+
+    def fake_adopt(service):
+        if service.name == "alpha":
+            supervisor.adopted["alpha"] = dict(record)
+            supervisor.sleeping.add("alpha")
+            return True
+        return False
+
+    supervisor._adopt = fake_adopt
+    terminated: list[dict[str, object]] = []
+    supervisor._terminate_record = terminated.append
+    posts: list[str] = []
+    supervisor._sleep_post = (
+        lambda _service, path, timeout=120.0: posts.append(path) or True
+    )
+    supervisor.ensure_running("beta", plan)
+    assert terminated == []
+    assert posts == []
+    assert supervisor.sleeping == {"alpha"}
+    assert supervisor.adopted["alpha"] == record
+    assert "beta" in supervisor.processes
+    supervisor.down()
+
+
 def test_up_primes_sleeping_probes_in_parallel(
     tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
