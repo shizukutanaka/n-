@@ -2178,3 +2178,24 @@ def test_eval_cli_warns_when_artifact_changes(monkeypatch, capsys) -> None:
     assert output["artifact"] == "new-artifact"
     assert output["artifact_warning"].count("old-artifact") == 1
     assert output["artifact_warning"].count("new-artifact") == 1
+
+
+def test_eval_cli_refuses_embed_service(monkeypatch, capsys) -> None:
+    # eval sends chat completions only; an embedding service has no chat
+    # path, so every task would transport-fail after up to 104 doomed
+    # requests — bench/autotune already refuse this class of target.
+    service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
+    service = replace(service_plan.services[0], name="embed", roles=["embed"])
+    service_plan = replace(service_plan, services=[service])
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(
+        cli,
+        "eval_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("eval_run must not run for an embed service")
+        ),
+    )
+    assert cli.main(["eval", "--service", "embed"]) == 2
+    err = capsys.readouterr().err
+    assert "embed" in err
+    assert "--service chat" in err
