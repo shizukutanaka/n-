@@ -87,6 +87,20 @@ def test_port_flag_rejects_out_of_range(
         assert "between 1 and 65535" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("port", ["0", "-1", "65536", "99999"])
+def test_gateway_server_module_port_flag_bounds(
+    port: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from nmesh.gateway import server as gateway_server
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=gateway_server._port, default=18000)
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args(["--port", port])
+    assert error.value.code == 2
+    assert "between 1 and 65535" in capsys.readouterr().err
+
+
 def test_port_flag_accepts_valid_port(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["jobs", "--port", "18000"]) == 1
     assert "reachable" in capsys.readouterr().err
