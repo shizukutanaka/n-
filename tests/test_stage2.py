@@ -1531,6 +1531,90 @@ def test_swap_switch_falls_back_to_kill_when_ram_short(
     supervisor.down()
 
 
+def test_swap_switch_evicts_adopted_member(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    """A swap member tracked in `self.adopted` is invisible to the
+    processes-only eviction pass — a switch must still retire it, or two
+    non-residents end up holding the shared memory domain."""
+    base = _recovery_plan(catalog).services[0]
+    alpha = replace(base, name="alpha", resident=False)
+    beta = replace(base, name="beta", resident=False)
+    plan = replace(
+        _recovery_plan(catalog),
+        services=[alpha, beta],
+        swap_group=[alpha.name, beta.name],
+    )
+    supervisor = Supervisor(
+        lambda service: _RecoverProcess(),
+        tmp_path / "adopted-swap.json",
+        health_timeout=0.01,
+        probe=lambda: profile(64, (24,)),
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    record = {"pid": 4242, "create_time": None, "port": 18010, "argv": None}
+    supervisor.adopted["alpha"] = dict(record)
+    terminated: list[dict[str, object]] = []
+    supervisor._terminate_record = terminated.append
+    supervisor.ensure_running("beta", plan)
+    assert terminated == [record]
+    assert "alpha" not in supervisor.adopted
+    assert "beta" in supervisor.processes
+    supervisor.down()
+
+
+def test_swap_switch_evicts_orphan_member_via_adopt(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    """A swap member still running from a previous supervisor never enters
+    `self.adopted` on its own — the switch must adopt it first, then evict
+    it, or the orphan keeps the shared domain alongside the new member."""
+    base = _recovery_plan(catalog).services[0]
+    alpha = replace(base, name="alpha", resident=False)
+    beta = replace(base, name="beta", resident=False)
+    plan = replace(
+        _recovery_plan(catalog),
+        services=[alpha, beta],
+        swap_group=[alpha.name, beta.name],
+    )
+    supervisor = Supervisor(
+        lambda service: _RecoverProcess(),
+        tmp_path / "orphan-swap.json",
+        health_timeout=0.01,
+        probe=lambda: profile(64, (24,)),
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    adopted_calls: list[str] = []
+    record = {"pid": 4242, "create_time": None, "port": 18010, "argv": None}
+
+    def fake_adopt(service):
+        if service.name == "alpha":
+            adopted_calls.append("alpha")
+            supervisor.adopted["alpha"] = dict(record)
+            return True
+        return False
+
+    supervisor._adopt = fake_adopt
+    terminated: list[dict[str, object]] = []
+    supervisor._terminate_record = terminated.append
+    supervisor.ensure_running("beta", plan)
+    assert adopted_calls == ["alpha"]
+    assert terminated == [record]
+    assert "alpha" not in supervisor.adopted
+    assert "beta" in supervisor.processes
+    supervisor.down()
+
+
 def test_up_primes_sleeping_probes_in_parallel(
     tmp_path, catalog: list[ModelSpec], monkeypatch
 ) -> None:
