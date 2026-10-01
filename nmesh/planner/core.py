@@ -3523,6 +3523,18 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
         memory_values["n_gpu_layers"] = int(memory_values["n_gpu_layers"])
         memory_values["parallel_slots"] = int(memory_values.get("parallel_slots", 1))
         memory_values["n_cpu_moe"] = int(memory_values.get("n_cpu_moe", 0))
+        for byte_field in ("weight_bytes", "per_layer_bytes", "kv_bytes_per_tok",
+                           "kv_cache_bytes", "compute_overhead", "total_bytes",
+                           "vram_budget", "ram_budget", "disk_needed",
+                           "cpu_bytes", "gpu_bytes", "moe_expert_bytes_per_layer",
+                           "recurrent_state_bytes"):
+            byte_value = float(memory_values.get(byte_field, 0.0))
+            if not math.isfinite(byte_value) or byte_value < 0:
+                raise ValueError(f"Invalid memory {byte_field}")
+        if (memory_values["n_gpu_layers"] < 0 or memory_values["parallel_slots"] < 1
+                or memory_values["n_cpu_moe"] < 0
+                or int(memory_values.get("moe_layers", 0)) < 0):
+            raise ValueError("Invalid service memory")
         memory = MemoryEstimate(**memory_values)
         service_spec = str(sd.get("spec", "none"))
         service_kv_quant = str(sd.get("kv_quant", "f16"))
@@ -3534,25 +3546,44 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
             [str(x) for x in ld["argv"]], {str(k): str(v) for k, v in ld["env"].items()},
             str(ld["health_url"]) if ld["health_url"] else None, bool(ld.get("shared_daemon", False)),
         )
+        context = int(sd["context"])
+        port = int(sd["port"])
+        gpu_indices = [int(x) for x in sd["gpu_indices"]]
+        n_gpu_layers = int(sd["n_gpu_layers"]) if sd["n_gpu_layers"] is not None else None
+        split = tuple(int(x) for x in sd.get("tensor_split", []) or ())
+        decode_tps = float(sd["decode_tps"]) if sd["decode_tps"] is not None else None
+        n_cpu_moe = int(sd.get("n_cpu_moe", 0))
+        if context <= 0:
+            raise ValueError("Invalid service context")
+        if not 1 <= port <= 65535:
+            raise ValueError("Invalid service port")
+        if any(index < 0 for index in gpu_indices):
+            raise ValueError("Invalid service gpu index")
+        if n_gpu_layers is not None and n_gpu_layers < 0:
+            raise ValueError("Invalid service n_gpu_layers")
+        if n_cpu_moe < 0:
+            raise ValueError("Invalid service n_cpu_moe")
+        if any(ratio <= 0 for ratio in split):
+            raise ValueError("Invalid service tensor_split")
+        if decode_tps is not None and not math.isfinite(decode_tps):
+            raise ValueError("Invalid service decode_tps")
         services.append(PlannedService(
             str(sd["name"]), [str(x) for x in sd["roles"]], str(sd["model_id"]),
             str(sd.get("model_ref", sd["model_id"])),
             str(sd["download_repo"]) if sd.get("download_repo") is not None else None,
             str(sd["quant"]), str(sd["backend"]),
-            int(sd["context"]), int(sd["port"]), [int(x) for x in sd["gpu_indices"]],
-            int(sd["n_gpu_layers"]) if sd["n_gpu_layers"] is not None else None, bool(sd["resident"]),
+            context, port, gpu_indices,
+            n_gpu_layers, bool(sd["resident"]),
             memory,
-            float(sd["decode_tps"]) if sd["decode_tps"] is not None else None,
+            decode_tps,
             bool(sd["estimated"]),
             launch,
             tuple(str(x) for x in sd.get("languages", ["en"])),
             kv_quant=service_kv_quant,
             spec=service_spec,
             spec_draft=str(sd.get("spec_draft", "")),
-            n_cpu_moe=int(sd.get("n_cpu_moe", 0)),
-            tensor_split=tuple(
-                int(x) for x in sd.get("tensor_split", []) or ()
-            ),
+            n_cpu_moe=n_cpu_moe,
+            tensor_split=split,
             sleep_mode=bool(sd.get("sleep_mode", False)),
         ))
     rd = data["routing"]
