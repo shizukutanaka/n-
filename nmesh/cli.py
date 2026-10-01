@@ -161,6 +161,7 @@ from nmesh.runtime import (
     RuntimeStatus,
     clear_gateway,
     disarm_atexit,
+    ensure_running,
     gateway_health,
     gateway_listener_pid,
     record_gateway,
@@ -2052,6 +2053,25 @@ def _service_running(service: PlannedService, runtime: RuntimeStatus) -> bool:
         return False
 
 
+def _ensure_service_running(service: PlannedService, plan: Plan) -> bool:
+    """Bring a planned service up lazily, or report whether it is up.
+
+    `nmesh up` deliberately leaves swap-group members unlaunched (one
+    member holds the shared memory domain at a time), so telling the
+    user to "run nmesh up first" can never bring a lazy member up —
+    ensure_running is the real bring-up path and evicts the currently
+    active member before spawning this one. A resident service that
+    died is restarted the same way `up` would do it.
+    """
+    if _service_running(service, runtime_status()):
+        return True
+    try:
+        ensure_running(service.name, plan)
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return _service_running(service, runtime_status())
+
+
 def _reference_context(
     service: PlannedService,
 ) -> tuple[Path, Path, str, int] | None:
@@ -2104,8 +2124,7 @@ def _bench(args: argparse.Namespace) -> int:
         print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
               file=sys.stderr)
         return 1
-    running = runtime_status()
-    if not _service_running(service, running):
+    if not _ensure_service_running(service, plan):
         print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
         return 1
     base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
@@ -2730,7 +2749,7 @@ def _eval(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    if not _service_running(service, runtime_status()):
+    if not _ensure_service_running(service, plan):
         print(i18n.t("err.eval_up", i18n.lang()), file=sys.stderr)
         return 1
     requested = (
@@ -4642,10 +4661,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         context_values = sorted({max(service.context // 2, 128), service.context})
         layer_values = sorted({service.n_gpu_layers or 0, max((service.n_gpu_layers or 0) // 2, 0)})
-        running = runtime_status()
-        if not _service_running(service, running):
+        if not _ensure_service_running(service, saved_plan):
             print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
             return 1
+        running = runtime_status()
         gateway_port = next(
             (
                 item.get("port") for item in running.services
@@ -4727,6 +4746,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     # service from the policy and discard the tuned
                     # context/layers — the grid must launch them verbatim.
                     runtime_up(tuned_plan, no_download=True, admit=False)
+                    if service.name in tuned_plan.swap_group:
+                        # up() leaves swap members lazy — the tuned
+                        # member must actually run for measure().
+                        ensure_running(service.name, tuned_plan)
                     tuned_result = measure(tuned, base_url)
                 except (OSError, RuntimeError, httpx.HTTPError) as error:
                     print(i18n.t("err.autotune_measure", i18n.lang(), error=error),
@@ -4758,6 +4781,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         save_plan(best_plan)
         try:
             runtime_up(best_plan, no_download=True, admit=False)
+            if service.name in best_plan.swap_group:
+                ensure_running(service.name, best_plan)
         except (OSError, RuntimeError) as error:
             save_plan(saved_plan)
             runtime_down()
