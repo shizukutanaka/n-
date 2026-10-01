@@ -181,7 +181,11 @@ from nmesh.runtime.service_unit import (
     unit_install_path,
     watch_unit,
 )
-from nmesh.runtime.supervisor import Supervisor
+from nmesh.runtime.supervisor import (
+    Supervisor,
+    _pid_serves_model,
+    engine_listener_pid,
+)
 from nmesh.spec import (
     KIND_DRAFT,
     KIND_NGRAM,
@@ -2052,6 +2056,18 @@ def _service_running(service: PlannedService, runtime: RuntimeStatus) -> bool:
         return False
 
 
+def _domain_member_occupied(
+    service: PlannedService, runtime: RuntimeStatus
+) -> bool:
+    """True when a memory-domain member is holding its share — recorded
+    (running/adopted) or an nmesh-managed orphan engine still bound to the
+    member's port serving its model after state.json was lost."""
+    if _service_running(service, runtime):
+        return True
+    pid = engine_listener_pid(service.port)
+    return pid is not None and _pid_serves_model(pid, service.model_ref)
+
+
 def _reference_context(
     service: PlannedService,
 ) -> tuple[Path, Path, str, int] | None:
@@ -3658,7 +3674,7 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
     busy = [
         item.name
         for item in plan.services
-        if item.name in domain and _service_running(item, running)
+        if item.name in domain and _domain_member_occupied(item, running)
     ]
     if busy:
         print(

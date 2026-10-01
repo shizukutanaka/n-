@@ -1019,3 +1019,73 @@ def test_spec_measure_runs_when_only_other_domain_busy(
     ]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["decision"] == "allow"
+
+
+def test_spec_measure_refuses_when_orphan_engine_holds_domain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # state.json can be lost while an nmesh-managed engine keeps running —
+    # runtime.services has no record for it, but its weights still hold the
+    # domain, so a second copy would double-occupy just the same.
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    plan = _planned_spec(tmp_path, monkeypatch, decision=None)
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    target = plan.services[0]
+    monkeypatch.setattr(cli, "_service_running", lambda _s, _r: False)
+    monkeypatch.setattr(cli, "engine_listener_pid", lambda _port: 4242)
+    monkeypatch.setattr(cli, "_pid_serves_model", lambda _pid, _ref: True)
+
+    assert cli.main(["spec", "measure", "--kind", "ngram", "--no-reference"]) == 1
+    err = capsys.readouterr().err
+    assert target.name in err
+    assert "nmesh down" in err
+
+
+def test_spec_measure_ignores_orphan_pid_serving_other_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A listener on the member's port serving a different model does not hold
+    # this domain — refusing would block legitimate measurements.
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    plan = _planned_spec(tmp_path, monkeypatch, decision=None)
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "_service_running", lambda _s, _r: False)
+    monkeypatch.setattr(cli, "engine_listener_pid", lambda _port: 4242)
+    monkeypatch.setattr(cli, "_pid_serves_model", lambda _pid, _ref: False)
+
+    class FakeSupervisor:
+        def __init__(
+            self, *, state_path: Path, plan_path: Path | None = None
+        ) -> None:
+            self.state_path = state_path
+            self.plan_path = plan_path
+
+        def up(self, *_args, **_kwargs) -> None:
+            return None
+
+        def down(self) -> None:
+            return None
+
+    arms = iter(
+        (
+            _arm(rate=10.0),
+            _arm(spec=SpecConfig(kind=KIND_NGRAM, n_max=3), rate=12.0),
+            _arm(rate=10.0),
+        )
+    )
+    monkeypatch.setattr(cli, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(cli, "_reference_context", lambda _service: None)
+    monkeypatch.setattr(cli, "run_arm", lambda *_args, **_kwargs: next(arms))
+    monkeypatch.setattr(cli, "engine_identity", lambda _profile: "engine")
+    monkeypatch.setattr(cli.engine_runtime, "active", lambda: None)
+    monkeypatch.setattr(cli, "service_fingerprint", lambda *_args: "artifact")
+
+    assert cli.main([
+        "spec", "measure", "--kind", "ngram", "--no-reference", "--json",
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["decision"] == "allow"
