@@ -3528,8 +3528,11 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
                            "vram_budget", "ram_budget", "disk_needed",
                            "cpu_bytes", "gpu_bytes", "moe_expert_bytes_per_layer",
                            "recurrent_state_bytes"):
-            byte_value = float(memory_values.get(byte_field, 0.0))
-            if not math.isfinite(byte_value) or byte_value < 0:
+            byte_raw = memory_values.get(byte_field, 0.0)
+            if (isinstance(byte_raw, bool)
+                    or not isinstance(byte_raw, (int, float))
+                    or not math.isfinite(float(byte_raw))
+                    or float(byte_raw) < 0):
                 raise ValueError(f"Invalid memory {byte_field}")
         if (memory_values["n_gpu_layers"] < 0 or memory_values["parallel_slots"] < 1
                 or memory_values["n_cpu_moe"] < 0
@@ -3650,7 +3653,8 @@ def load_plan(path: Path | None = None) -> Plan | None:
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
         return _plan_from_dict(payload) if isinstance(payload, dict) else None
-    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError,
+            OverflowError):
         return None
 
 

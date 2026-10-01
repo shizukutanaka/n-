@@ -654,6 +654,10 @@ def test_load_plan_rejects_unknown_enum_values(tmp_path, catalog: list[ModelSpec
         lambda payload: payload["services"][0]["memory"].update({"kv_cache_bytes": -1}),
         lambda payload: payload["services"][0]["memory"].update({"vram_budget": float("nan")}),
         lambda payload: payload["services"][0]["memory"].update({"n_gpu_layers": -1}),
+        lambda payload: payload["services"][0]["memory"].update({"gpu_bytes": "4096"}),
+        lambda payload: payload["services"][0]["memory"].update({"gpu_bytes": True}),
+        lambda payload: payload["services"][0]["memory"].update({"gpu_bytes": 10**400}),
+        lambda payload: payload["services"][0].update({"decode_tps": 10**400}),
     ],
     ids=[
         "context-zero", "context-negative", "port-zero", "port-high",
@@ -661,6 +665,8 @@ def test_load_plan_rejects_unknown_enum_values(tmp_path, catalog: list[ModelSpec
         "tensor-split-zero", "decode-tps-infinite", "spec-draft-empty",
         "memory-parallel-slots-zero",
         "memory-kv-negative", "memory-vram-nan", "memory-n-gpu-layers-negative",
+        "memory-gpu-string", "memory-gpu-bool", "memory-gpu-overflow",
+        "decode-tps-overflow",
     ],
 )
 def test_load_plan_rejects_corrupt_numeric_fields(
