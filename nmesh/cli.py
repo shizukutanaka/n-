@@ -2724,6 +2724,12 @@ def _eval(args: argparse.Namespace) -> int:
         print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
               file=sys.stderr)
         return 1
+    if service.roles == ["embed"]:
+        print(
+            i18n.t("err.eval_embedding", i18n.lang(), service=service.name),
+            file=sys.stderr,
+        )
+        return 2
     if not _service_running(service, runtime_status()):
         print(i18n.t("err.eval_up", i18n.lang()), file=sys.stderr)
         return 1
