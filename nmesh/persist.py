@@ -28,7 +28,7 @@ def read_json_file(target: Path) -> object | None:
         return None
     try:
         return json.loads(text)
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         _warn(target)
         return None
 
