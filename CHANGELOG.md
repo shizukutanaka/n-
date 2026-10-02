@@ -23,6 +23,7 @@
 
 ### Fixed
 - **深くネストした JSON の状態ファイルが `RecursionError` で `read_json_file` の捕捉を抜けてクラッシュしていた問題を修正**: パース段の捕捉は `(JSONDecodeError, TypeError, ValueError)` のみで、`json.loads` がインタプリタの再帰上限を超えるネスト（手編集や別ツール由来の異常ファイル）に対して送出する `RecursionError` は RuntimeError 系のため警告経路を迂回してトレースバックになっていました。「読めないファイルは警告を一度出す」契約に合わせ、パース段の捕捉に `RecursionError` を追加して warn → `None` を返すよう揃えます
+- **`eval`/`bench`/`autotune` がリランク専用サービスを拒否せず全タスク・全計測が転送失敗になっていた問題を修正**: デコード経路を持たない役割（embed・rerank）のみのサービスを `_decode_capable` 判定で事前に拒否するよう統一。従来は `roles == ["embed"]` だけを検査していたため、`--reranking` で起動する専用リランクサービス（`roles == ["rerank"]`）へ eval はチャット補完・bench/autotune はデコード計測を送り全滅していました（#677 の埋め込み拒否の残存経路、Devin Review 指摘対応）
 - **`nmesh eval --service <埋め込みサービス>` が拒否されず全タスクが転送失敗していた問題を修正**: eval はチャット補完のみを送信するため、埋め込みサービスへ送ると全タスクが 404 で transport 失敗し「all evaluation tasks failed at transport level」まで待たされていました（応答を返すエンジンが混ざると部分記録が証拠として残る経路もあった）。`bench`（embed 計測経路への振り分け）と `autotune`（即時拒否）と同じく、埋め込みサービス指定時は `err.eval_embedding` で事前に拒否し生成可能なサービスを案内します
 - **プラン未作成時に `bench`/`eval`/`autotune` が無言で終了していた問題を修正**: `load_plan()` が None を返すと3コマンドは何も出力せず exit 1 でした（orchestrate/spec measure は `err.*` で案内済み）。`err.no_active_plan` を出力するよう統一し、メッセージに「先に nmesh plan を実行」の案内を追加
 - **解決系環境変数が spawn プロセスへ静かに漏れていた問題を修正**: `PYTHONPATH`/`PYTHONHOME`/`LD_LIBRARY_PATH`/`LD_PRELOAD`/`LD_AUDIT`/`DYLD_*` が設定されていると、起動されるエンジンはプローブが検証したものと異なるモジュール・ライブラリ解決を行い得ます（例: `PYTHONPATH` 下の古い `llama_cpp` がエンジンの挙動を変える）。計画時に `warn.resolution_env_leak` で一覧警告（#535 再送）
