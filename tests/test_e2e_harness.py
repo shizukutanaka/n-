@@ -142,3 +142,62 @@ def test_http_uses_proxy_bypassing_local_urlopen(
     )
     assert harness._http("probe", "http://127.0.0.1:1/v1/models") == b"ok"
     assert len(called) == 1
+
+
+def test_http_sends_api_key_when_env_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With NMESH_API_KEY exported the spawned gateway challenges every
+    /v1/, /metrics and /status request — the harness must present the same
+    credential or its own probes all 401."""
+    harness = _harness()
+    captured: list[object] = []
+
+    class FakeResponse:
+        status = 200
+
+        def read(self) -> bytes:
+            return b"ok"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+    monkeypatch.setenv("NMESH_API_KEY", "secret-key")
+    monkeypatch.setattr(
+        harness,
+        "local_urlopen",
+        lambda request, *, timeout: captured.append(request) or FakeResponse(),
+    )
+    assert harness._http("probe", "http://127.0.0.1:1/v1/models") == b"ok"
+    assert captured[0].get_header("Authorization") == "Bearer secret-key"
+
+
+def test_http_omits_api_key_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _harness()
+    captured: list[object] = []
+
+    class FakeResponse:
+        status = 200
+
+        def read(self) -> bytes:
+            return b"ok"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+    monkeypatch.delenv("NMESH_API_KEY", raising=False)
+    monkeypatch.setattr(
+        harness,
+        "local_urlopen",
+        lambda request, *, timeout: captured.append(request) or FakeResponse(),
+    )
+    assert harness._http("probe", "http://127.0.0.1:1/v1/models") == b"ok"
+    assert captured[0].get_header("Authorization") is None
