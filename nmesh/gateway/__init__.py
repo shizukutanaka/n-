@@ -1114,6 +1114,24 @@ async def _slot_progress(
     return out
 
 
+_LOOPBACK_ORIGIN = re.compile(
+    r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$", re.IGNORECASE
+)
+
+
+def _origin_allowed(origin: str) -> bool:
+    """Browsers may drive the local gateway only from loopback-hosted
+    frontends; any other Origin is a cross-site request the page's author
+    chose to send — deny it (CSRF/drive-by) unless the operator opted in
+    via NMESH_GATEWAY_ORIGINS (comma list, or "*" to restore wildcard)."""
+    if _LOOPBACK_ORIGIN.match(origin):
+        return True
+    extra = os.environ.get("NMESH_GATEWAY_ORIGINS", "")
+    if extra.strip() == "*":
+        return True
+    return origin in {item.strip() for item in extra.split(",") if item.strip()}
+
+
 def create_app(
     plan: Plan | None = None,
     watchdog: bool = False,
@@ -1221,6 +1239,22 @@ def create_app(
     ) -> Response:
         path = request.url.path
         origin = request.headers.get("origin")
+        # A non-loopback Origin means some other website's script issued the
+        # request; the gateway binds 127.0.0.1 but without NMESH_API_KEY any
+        # page could still drive it and read the replies, so refuse it
+        # outright (CORS headers alone would not stop simple requests).
+        if origin and not _origin_allowed(origin):
+            return Response(
+                content=json.dumps({
+                    "error": {
+                        "message": "Origin not allowed; set NMESH_GATEWAY_ORIGINS to opt in",
+                        "type": "invalid_request_error",
+                        "code": 403,
+                    }
+                }),
+                status_code=403,
+                media_type="application/json",
+            )
         # Browser frontends (Open WebUI-style) preflight with OPTIONS before
         # sending Authorization; answer CORS before the key check, which would
         # otherwise reject every preflight. The gateway binds 127.0.0.1 and the

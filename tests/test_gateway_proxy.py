@@ -1239,3 +1239,55 @@ def test_swap_gated_request_waits_beyond_flat_300s(monkeypatch) -> None:
     # The list also records the slot acquire's sub-second polls; the swap wait
     # is the one that must exceed the old flat 300s bound.
     assert any(value > 300.0 for value in seen)
+
+
+def _cors_plan() -> Plan:
+    model = ModelSpec("cors-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    return build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+
+
+def test_gateway_denies_non_loopback_origin() -> None:
+    """A foreign website's script must not drive the local gateway: with no
+    API key configured CORS reflection alone gave every page full access."""
+    client = TestClient(create_app(_cors_plan()))
+    response = client.get(
+        "/v1/models", headers={"Origin": "https://evil.example"}
+    )
+    assert response.status_code == 403
+    assert "Origin not allowed" in response.text
+    assert "Access-Control-Allow-Origin" not in response.headers
+
+
+def test_gateway_denies_foreign_origin_preflight() -> None:
+    client = TestClient(create_app(_cors_plan()))
+    response = client.options(
+        "/v1/chat/completions", headers={"Origin": "https://evil.example"}
+    )
+    assert response.status_code == 403
+
+
+def test_gateway_allows_loopback_origin() -> None:
+    client = TestClient(create_app(_cors_plan()))
+    origin = "http://localhost:3000"
+    preflight = client.options(
+        "/v1/chat/completions", headers={"Origin": origin}
+    )
+    assert preflight.status_code == 204
+    assert preflight.headers["Access-Control-Allow-Origin"] == origin
+    response = client.get("/v1/models", headers={"Origin": origin})
+    assert response.status_code == 200
+    assert response.headers["Access-Control-Allow-Origin"] == origin
+
+
+def test_gateway_origins_env_opt_in(monkeypatch) -> None:
+    client = TestClient(create_app(_cors_plan()))
+    origin = "https://ui.example"
+    monkeypatch.setenv("NMESH_GATEWAY_ORIGINS", origin)
+    response = client.get("/v1/models", headers={"Origin": origin})
+    assert response.status_code == 200
+    assert response.headers["Access-Control-Allow-Origin"] == origin
+
+    monkeypatch.setenv("NMESH_GATEWAY_ORIGINS", "https://other.example")
+    response = client.get("/v1/models", headers={"Origin": origin})
+    assert response.status_code == 403
