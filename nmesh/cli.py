@@ -162,6 +162,7 @@ from nmesh.runtime import (
     RuntimeStatus,
     clear_gateway,
     disarm_atexit,
+    ensure_running,
     gateway_health,
     gateway_listener_pid,
     record_gateway,
@@ -2063,6 +2064,25 @@ def _service_running(service: PlannedService, runtime: RuntimeStatus) -> bool:
         return False
 
 
+def _ensure_service_running(service: PlannedService, plan: Plan) -> bool:
+    """Bring a planned service up lazily, or report whether it is up.
+
+    `nmesh up` deliberately leaves swap-group members unlaunched (one
+    member holds the shared memory domain at a time), so telling the
+    user to "run nmesh up first" can never bring a lazy member up —
+    ensure_running is the real bring-up path and evicts the currently
+    active member before spawning this one. A resident service that
+    died is restarted the same way `up` would do it.
+    """
+    if _service_running(service, runtime_status()):
+        return True
+    try:
+        ensure_running(service.name, plan)
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return _service_running(service, runtime_status())
+
+
 def _domain_member_occupied(
     service: PlannedService, runtime: RuntimeStatus
 ) -> bool:
@@ -3330,11 +3350,11 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
     worker_url = args.worker_url or (
         _orchestration_url(worker) if worker is not None else ""
     )
-    if not args.lead_url and not _service_running(lead, runtime_status()):
+    if not args.lead_url and not _ensure_service_running(lead, plan):
         print(i18n.t("err.orchestrate_up", i18n.lang()), file=sys.stderr)
         return 1
-    if not args.worker_url and worker is not None and not _service_running(
-        worker, runtime_status()
+    if not args.worker_url and worker is not None and not _ensure_service_running(
+        worker, plan
     ):
         print(i18n.t("err.orchestrate_up", language), file=sys.stderr)
         return 1
