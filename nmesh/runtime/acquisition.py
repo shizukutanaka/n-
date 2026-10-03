@@ -87,6 +87,15 @@ _SPLIT_RE = re.compile(
     r"^(?P<prefix>.+?)[-_.](?P<part>\d{5})-of-(?P<total>\d{5})\.gguf$",
     re.IGNORECASE,
 )
+# Auxiliary weights published next to the main model — speculative-decoding
+# draft heads (e.g. eagle3-*-BF16.gguf in the gpt-oss repos), vision
+# projection tensors (mmproj-*.gguf in multimodal repos), and LoRA adapter
+# weights (llama.cpp --lora). They quant-match the plan but are not
+# servable models — resolving one would download and serve the wrong file.
+_COMPANION_RE = re.compile(
+    r"(?<![a-z0-9])(?:eagle\d*|medusa|draft|mmproj|lora)(?![a-z0-9])",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -181,7 +190,11 @@ def _resolve_gguf(repo_id: str, quant: str) -> tuple[str, list[str], int]:
     seen: set[tuple[str, ...]] = set()
     for filename in files:
         label = parse_label(filename)
-        if label is None or label in _REPACK_LABELS:
+        if (
+            label is None
+            or label in _REPACK_LABELS
+            or _COMPANION_RE.search(Path(filename).stem)
+        ):
             continue
         selected = _split_files(files, filename)
         if selected is None or tuple(selected) in seen:
@@ -258,7 +271,11 @@ def _local_gguf(
     corrupt_note: str | None = None
     for path in sorted(target.parent.glob("*.gguf")):
         label = parse_label(path.name)
-        if label is None or label in _REPACK_LABELS:
+        if (
+            label is None
+            or label in _REPACK_LABELS
+            or _COMPANION_RE.search(path.stem)
+        ):
             continue
         match = _SPLIT_RE.match(path.name)
         if match is not None and int(match.group("part")) != 1:

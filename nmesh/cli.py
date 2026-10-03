@@ -1172,8 +1172,12 @@ def _runtime(args: argparse.Namespace) -> int:
         result = runtime_down(foreign=True, gateway_port=args.port)
     else:
         result = runtime_status()
+        # The supervisor's gateway record has no argv; a plan service is always
+        # emitted with one, so a service literally named "gateway" cannot win
+        # this lookup and steer the health probe to its own port.
         gateway = next(
-            (item for item in result.services if item.get("service") == "gateway"),
+            (item for item in result.services
+             if item.get("service") == "gateway" and "argv" not in item),
             None,
         )
         recorded_port = gateway.get("port") if gateway else None
