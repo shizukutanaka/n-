@@ -23,6 +23,14 @@
 
 ### Fixed
 - **`nmesh status` が "gateway" という名前のプランサービスを実 gateway と取り違えて誤ポートへヘルスプローブしていた問題を修正**: サービス名は自由形式ロール由来（`--roles gateway` + 対応モデルで実際に作れる）ですが、status の gateway 検索が `service == "gateway"` の先頭一致だけを見ており、プランサービスが先にヒットするとそのポートへ `/health` を打って誤った稼働表示・note を付けていました。プランサービスは常に `argv` を持ち supervisor の gateway レコードは持たないため、argv 非保持のエントリのみを gateway と判定するよう修正
+- **`GET /v1/jobs` の負の `limit` が意図しないスライスになっていた問題を修正**: `limit=-1` が末尾1件を除く全件を返す等、負数指定で Python の負スライスになり「N件まで」の約束が破れていました。`Query(ge=0)` で負数を 422 として拒否（`limit=0` の空リストは正当のまま）
+- **GGUF 解決が投機デコード用のドラフト補助重みを主モデルとして取得していた問題を修正**: `ggml-org/gpt-oss-*-GGUF` 等のリポジトリでは EAGLE-3 ドラフトヘッド（`eagle3-*-BF16/Q8_0.gguf`、数 GB の補助重み）が主モデルと同じリポジトリに公開されており、f16/q8_0 プランに対してラベルが一致するため `_resolve_gguf` が gpt-oss-20b/120b の代わりにドラフトヘッドをダウンロードしてサービスしていました（quant 一致・bpw 適格のため `warn.gguf_size_mismatch` は出るが誤モデルは起動される）。同クラスとして、マルチモーダルリポジトリの `mmproj-*` 視覚投影テンソルも主モデルとして誤解決され得ます。同クラスとして LoRA アダプタ重み（`--lora` 別指定、単体ではベースモデルとしてサービス不能）も誤解決され得ます。投機デコード・視覚投影・アダプタの補助重み（eagle/medusa/draft/mmproj/lora）を候補から除外し、正しい主モデルの量子化に解決・または正直に失敗するよう変更
+- **`scripts/e2e.py` が `warn.*` 出力で `--json` ステップを誤失敗させていた問題を修正**: `_command` が stderr を stdout と同じログファイルへ `STDOUT` 合流させていたため、`PYTHONPATH` 等の環境変数由来の warn（`warn.resolution_env_leak` 等）が `plan --json` 等の出力に混入し、`_json_step` の `json.loads` がコマンド成功にもかかわらず JSONDecodeError で失敗していました。stdout/stderr を別ファイルに分離し、警告は表示用出力には残しつつ JSON 解析は stdout のみを対象とするよう変更
+- **`HF_HUB_CACHE` だけを設定した環境で `nmesh models scan` が HF キャッシュを見落としていた問題を修正**: huggingface_hub は `HF_HUB_CACHE`（現行）→ `HUGGINGFACE_HUB_CACHE`（旧名）→ `HF_HOME/hub` → 既定の順で解決しますが、インベントリは `HF_HUB_CACHE` を参照せず中位・既定パスへフォールスルーしていました。現行変数のみ設定しているユーザの実キャッシュが一覧・重複検出・バリアント検出から丸ごと抜け落ちるため、同じ優先順位で先頭に解決します
+>>>>>>> origin/main
+>>>>>>> origin/main
+>>>>>>> origin/main
+>>>>>>> origin/main
 - **深くネストした JSON の状態ファイルが `RecursionError` で `read_json_file` の捕捉を抜けてクラッシュしていた問題を修正**: パース段の捕捉は `(JSONDecodeError, TypeError, ValueError)` のみで、`json.loads` がインタプリタの再帰上限を超えるネスト（手編集や別ツール由来の異常ファイル）に対して送出する `RecursionError` は RuntimeError 系のため警告経路を迂回してトレースバックになっていました。「読めないファイルは警告を一度出す」契約に合わせ、パース段の捕捉に `RecursionError` を追加して warn → `None` を返すよう揃えます
 - **`nmesh eval --service <埋め込みサービス>` が拒否されず全タスクが転送失敗していた問題を修正**: eval はチャット補完のみを送信するため、埋め込みサービスへ送ると全タスクが 404 で transport 失敗し「all evaluation tasks failed at transport level」まで待たされていました（応答を返すエンジンが混ざると部分記録が証拠として残る経路もあった）。`bench`（embed 計測経路への振り分け）と `autotune`（即時拒否）と同じく、埋め込みサービス指定時は `err.eval_embedding` で事前に拒否し生成可能なサービスを案内します
 - **プラン未作成時に `bench`/`eval`/`autotune` が無言で終了していた問題を修正**: `load_plan()` が None を返すと3コマンドは何も出力せず exit 1 でした（orchestrate/spec measure は `err.*` で案内済み）。`err.no_active_plan` を出力するよう統一し、メッセージに「先に nmesh plan を実行」の案内を追加
