@@ -47,7 +47,7 @@ def load_state(path: Path | None = None) -> WatchState:
             _bounded(dict(items)),
             _bounded(dict(findings)),
         )
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    except (OSError, json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return _empty()
 
 

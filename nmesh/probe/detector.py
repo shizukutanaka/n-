@@ -130,7 +130,7 @@ def _find_vram(value: object) -> tuple[int, int, int | None]:
 def parse_rocm_smi(text: str) -> list[GPUInfo]:
     try:
         payload: object = json.loads(text)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return []
     if not isinstance(payload, dict):
         return []

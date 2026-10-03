@@ -152,7 +152,7 @@ def run(
                 finish = first.get("finish_reason") if isinstance(first, dict) else None
                 unscorable = finish == "length" and not text.strip()
                 passed = False if unscorable else bool(task.check(text))
-            except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as error:
+            except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError, RecursionError) as error:
                 transport_errors += 1
                 transport = True
                 text = _error(error)

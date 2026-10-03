@@ -120,7 +120,7 @@ def llamacpp_caps(
                 if isinstance(cached.get("gpu_devices"), list)
                 else None if cached.get("gpu_devices") is None else (),
             )
-    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError, RecursionError):
         pass
     try:
         result = subprocess.run(
@@ -170,7 +170,7 @@ def llamacpp_caps(
         payload = json.loads(target.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             payload = {}
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         payload = {}
     entries = payload.setdefault("entries", {})
     if isinstance(entries, dict):

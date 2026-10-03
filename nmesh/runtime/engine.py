@@ -620,7 +620,7 @@ def installed(problems: list[str] | None = None) -> list[InstalledEngine]:
     for manifest in sorted(root.glob("*/manifest.json")):
         try:
             result.append(_read_manifest(manifest))
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as error:
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, RecursionError) as error:
             if problems is not None:
                 problems.append(f"{manifest}: {error}")
     return result
@@ -640,7 +640,7 @@ def active() -> InstalledEngine | None:
         if not candidate.exists():
             return None
         return _read_manifest(candidate)
-    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, RecursionError):
         return None
 
 

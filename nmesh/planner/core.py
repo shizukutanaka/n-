@@ -3617,7 +3617,7 @@ def load_plan(path: Path | None = None) -> Plan | None:
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
         return _plan_from_dict(payload) if isinstance(payload, dict) else None
-    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError, RecursionError):
         return None
 
 

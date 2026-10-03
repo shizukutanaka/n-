@@ -188,7 +188,7 @@ def load_eval_cache(path: Path | None = None) -> dict[str, EvalRecord]:
             for key, value in results.items()
             if (record := _record(value)) is not None
         }
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    except (OSError, json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return {}
 
 

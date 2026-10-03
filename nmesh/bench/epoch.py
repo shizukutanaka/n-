@@ -147,7 +147,7 @@ def measure_reference(
     try:
         rows = json.loads(result.stdout)
         value = float(rows[0]["avg_ts"])
-    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError, RecursionError) as error:
         raise RuntimeError("reference workload returned invalid JSON") from error
     if not math.isfinite(value) or value <= 0:
         raise RuntimeError("reference workload returned invalid throughput")

@@ -158,7 +158,7 @@ def _coerce_sums(value: object) -> Sums:
 def _read() -> dict[str, Sums]:
     try:
         payload = json.loads(_path().read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return {}
     if not isinstance(payload, dict) or not isinstance(payload.get("models"), dict):
         return {}

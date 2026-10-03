@@ -126,7 +126,7 @@ def _measure_once(
                 continue
             try:
                 chunk = json.loads(line[5:].strip())
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, RecursionError):
                 chunk = {}
             candidate_usage = chunk.get("usage") if isinstance(chunk, dict) else None
             candidate_timings = chunk.get("timings") if isinstance(chunk, dict) else None

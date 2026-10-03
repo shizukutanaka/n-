@@ -1484,7 +1484,7 @@ def create_app(
                         return line
                     try:
                         payload = json.loads(content[6:])
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, RecursionError):
                         payload = None
                     if not isinstance(payload, dict):
                         now = time.perf_counter()
@@ -1768,7 +1768,7 @@ def create_app(
                     return Response(content=content, status_code=response.status_code,
                                     media_type=response.headers.get("content-type"))
                 data = json.loads(content)
-        except (httpx.HTTPError, json.JSONDecodeError) as error:
+        except (httpx.HTTPError, json.JSONDecodeError, RecursionError) as error:
             if job is not None:
                 jobs.finish(job, ok=False, detail=str(error))
             raise HTTPException(status_code=502, detail=str(error)) from error

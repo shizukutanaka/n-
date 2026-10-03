@@ -237,7 +237,7 @@ def load_cache(path: Path | None = None) -> dict[str, SpecRecord]:
     target = cache_path(path)
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+    except (OSError, json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return {}
     results = payload.get("results") if isinstance(payload, Mapping) else None
     if not isinstance(results, Mapping):

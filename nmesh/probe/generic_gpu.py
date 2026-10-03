@@ -58,7 +58,7 @@ def parse_windows_adapters(
     if isinstance(payload, str):
         try:
             value = json.loads(payload)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             return []
     else:
         value = payload

@@ -158,7 +158,7 @@ def ollama_tags(models_root: Path) -> dict[str, tuple[str, ...]]:
             continue
         try:
             payload = json.loads(manifest.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
+        except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
             continue
         layers = payload.get("layers") if isinstance(payload, dict) else None
         if not isinstance(layers, list):

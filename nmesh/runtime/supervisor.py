@@ -431,7 +431,7 @@ class Supervisor:
             payload = json.loads(self.state_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return None
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
             self._warn_unreadable_state()
             return None
         if not isinstance(payload, dict):

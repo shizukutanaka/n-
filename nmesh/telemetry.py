@@ -161,7 +161,7 @@ class Telemetry:
             values = payload.get("samples", []) if isinstance(payload, dict) else []
             samples = (_parse_sample(item) for item in values)
             return [item for item in samples if item is not None]
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, RecursionError):
             return []
 
     def record(self, sample: Sample) -> None:
