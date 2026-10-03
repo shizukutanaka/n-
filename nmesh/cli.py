@@ -1175,8 +1175,12 @@ def _runtime(args: argparse.Namespace) -> int:
         result = runtime_down(foreign=True, gateway_port=args.port)
     else:
         result = runtime_status()
+        # The supervisor's gateway record has no argv; a plan service is always
+        # emitted with one, so a service literally named "gateway" cannot win
+        # this lookup and steer the health probe to its own port.
         gateway = next(
-            (item for item in result.services if item.get("service") == "gateway"),
+            (item for item in result.services
+             if item.get("service") == "gateway" and "argv" not in item),
             None,
         )
         recorded_port = gateway.get("port") if gateway else None
@@ -2097,6 +2101,19 @@ def _unbounded_client() -> httpx.Client:
     return local_client(timeout=httpx.Timeout(None, connect=10.0))
 
 
+_NONDECODE_ROLES = frozenset({"embed", "rerank"})
+
+
+def _decode_capable(service: PlannedService) -> bool:
+    """True when the service can answer chat/completions (decode) requests.
+
+    Planner groups embed and rerank into dedicated single-role services
+    (llama.cpp serves one pooling mode per instance), so a service whose
+    roles are all non-decoding has no chat path at all.
+    """
+    return any(role not in _NONDECODE_ROLES for role in service.roles)
+
+
 def _bench(args: argparse.Namespace) -> int:
     plan = load_plan()
     if plan is None or not plan.services:
@@ -2399,6 +2416,12 @@ def _bench(args: argparse.Namespace) -> int:
                         )
                     )
         return 0
+    if not _decode_capable(service):
+        print(
+            i18n.t("err.bench_embedding", i18n.lang(), service=service.name),
+            file=sys.stderr,
+        )
+        return 2
     context = None if args.no_reference else _reference_context(service)
     history = load_history()
     reference_baseline = (
@@ -2727,7 +2750,7 @@ def _eval(args: argparse.Namespace) -> int:
         print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
               file=sys.stderr)
         return 1
-    if service.roles == ["embed"]:
+    if not _decode_capable(service):
         print(
             i18n.t("err.eval_embedding", i18n.lang(), service=service.name),
             file=sys.stderr,
@@ -4633,7 +4656,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(i18n.t("err.no_active_plan", i18n.lang()), file=sys.stderr)
             return 1
         service = saved_plan.services[0]
-        if service.roles == ["embed"]:
+        if not _decode_capable(service):
             print(
                 i18n.t(
                     "err.bench_embedding",
