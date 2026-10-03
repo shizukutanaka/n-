@@ -246,7 +246,7 @@ def _build() -> tuple[Task, ...]:
             'Return only JSON of the form {"even": <true or false>} stating whether '
             f"{number} is even. No other text.",
             32, _json_value("even", even),
-            rule="bool:v2",
+            rule="bool:v3",
             value_check=_bool_value(even),
         ))
     for index, (sentence, address, target) in enumerate(_EMAILS):

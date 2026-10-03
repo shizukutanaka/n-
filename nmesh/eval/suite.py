@@ -138,7 +138,7 @@ def _contains_cased(expected: str) -> Callable[[str], bool]:
 
 def _bool_value(expected: bool) -> Callable[[str], bool]:
     def check(text: str) -> bool:
-        found = set(re.findall(r"true|false", text.lower()))
+        found = set(re.findall(r"\btrue\b|\bfalse\b", text.lower()))
         return found == {"true" if expected else "false"}
     return check
 
@@ -242,7 +242,7 @@ TASKS: tuple[Task, ...] = (
         "12 is even. No other text.",
         32,
         lambda text: (_json_object(text) or {}).get("even") is True,
-        rule="bool:v2",
+        rule="bool:v3",
         value_check=_bool_value(True),
     ),
     Task(

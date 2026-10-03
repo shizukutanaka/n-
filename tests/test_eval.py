@@ -501,9 +501,9 @@ def test_hard_suite_and_graders() -> None:
     assert len(SUITES["hard"]) == 130
     assert len({task.id for task in SUITES["hard"]}) == 130
     assert not {task.id for task in HARD_TASKS} & {task.id for task in EXTENDED_TASKS}
-    assert suite_digest(SUITES["extended"]) == "v2:e7a8b762773acc5f"
-    assert suite_digest(HARD_SUITE_TASKS) == "v2:2a713ec7409e2ad5"
-    assert suite_digest(EXTENDED_TASKS) == "v2:e7a8b762773acc5f"
+    assert suite_digest(SUITES["extended"]) == "v2:08084f5e52ad6ffe"
+    assert suite_digest(HARD_SUITE_TASKS) == "v2:5b3740f76c7d5881"
+    assert suite_digest(EXTENDED_TASKS) == "v2:08084f5e52ad6ffe"
     assert all(
         task.grades in {"value", "form", "value+form"}
         for task in HARD_SUITE_TASKS
@@ -566,7 +566,7 @@ def test_hard_suite_and_graders() -> None:
     assert seven.check("七")
     assert seven.check("七日")
     assert not seven.check("7")
-    assert suite_digest(SUITES["hard"]) == "v2:2a713ec7409e2ad5"
+    assert suite_digest(SUITES["hard"]) == "v2:5b3740f76c7d5881"
 
 
 def test_generated_tasks_accept_canonical_and_reject_wrong_answers() -> None:
@@ -682,6 +682,18 @@ def test_repaired_suite_value_graders_reject_measured_false_positives() -> None:
     assert kanji.value_check("十七です")
 
     assert not _bool_value(True)("true or false")
+
+
+def test_bool_value_grader_uses_word_boundaries() -> None:
+    """Substring true/false inside other words must not score a value."""
+    assert _bool_value(True)("true")
+    assert _bool_value(False)("false")
+    assert not _bool_value(True)("untrue")
+    assert not _bool_value(False)("mistruths")
+    assert not _bool_value(True)('{"even": "untrue"}')
+    assert not _bool_value(False)('{"even": "falsely"}')
+    assert not _bool_value(True)('{"even": "falsehood"}')
+    assert _bool_value(True)('{"even": true}')
 
 
 def test_japanese_only_graders_reject_ascii_digits() -> None:
