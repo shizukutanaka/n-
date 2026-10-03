@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from nmesh.net import local_urlopen
 from nmesh.paths import nmesh_home
 from nmesh.runtime import engine
 from nmesh.runtime.acquisition import parse_label
@@ -177,13 +178,16 @@ def _http(
     stream: bool = False,
 ) -> bytes:
     data = json.dumps(payload).encode() if payload is not None else None
-    request = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"} if data is not None else {},
-    )
+    headers = {"Content-Type": "application/json"} if data is not None else {}
+    # The spawned gateway inherits NMESH_API_KEY from this env and challenges
+    # every /v1/, /metrics and /status request — present the same credential
+    # or every harness probe 401s on machines that have the key exported.
+    api_key = os.environ.get("NMESH_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(url, data=data, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=300) as response:
+        with local_urlopen(request, timeout=300) as response:
             body = response.read()
             print(f"\n== {step} ==\nSTATUS={response.status}\n{body.decode(errors='replace')}", end="")
             if response.status != 200:
