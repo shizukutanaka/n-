@@ -450,7 +450,7 @@ def test_catalog_rejects_non_positive_dimensions() -> None:
     for field in (
         "vocab_size", "kv_layers", "sliding_window",
         "sliding_window_pattern", "active_params",
-        "moe_expert_params", "n_moe_layers",
+        "moe_expert_params", "n_moe_layers", "recurrent_state_bytes",
     ):
         assert _model_from_mapping({**base, field: -1}) is None
         assert _model_from_mapping({**base, field: 0}) is not None

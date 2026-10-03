@@ -851,3 +851,85 @@ def test_measure_allows_external_worker_without_plan_service(
     worker_ep = captured["worker"]
     assert worker_ep.base_url == "http://127.0.0.1:9999"
     assert captured["worker_identity"].backend == "external"
+
+
+def _lazy_plan() -> SimpleNamespace:
+    lead = SimpleNamespace(
+        name="lead", model_id="lead", quant="q4", backend="llamacpp",
+        model_ref="lead.gguf", roles=("chat",), port=1,
+    )
+    worker = SimpleNamespace(
+        name="worker", model_id="worker", quant="q4", backend="llamacpp",
+        model_ref="worker.gguf", roles=("worker",), port=2,
+    )
+    return SimpleNamespace(
+        services=[lead, worker],
+        routing=SimpleNamespace(
+            role_to_service={"chat": "lead", "worker": "worker"},
+        ),
+        profile=SimpleNamespace(),
+    )
+
+
+def test_orchestrate_measure_ensures_lazy_member_instead_of_dead_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Swap arbitration can leave a member unlaunched even after `nmesh up`,
+    so "run nmesh up first" is a dead end — orchestrate measure must try
+    ensure_running, the same lazy bring-up the gateway swap path uses."""
+    plan = _lazy_plan()
+    running: set[str] = {"worker"}
+    ensured: list[str] = []
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(
+        cli,
+        "_service_running",
+        lambda service, _status: service.name in running,
+    )
+
+    def fake_ensure(name: str, selected: object) -> object:
+        assert selected is plan
+        ensured.append(name)
+        running.add(name)
+        return object()
+
+    monkeypatch.setattr(cli, "ensure_running", fake_ensure)
+    monkeypatch.setattr(
+        cli,
+        "_orchestration_identity",
+        lambda item: RoleIdentity(item.model_id, item.quant, item.backend),
+    )
+    monkeypatch.setattr(
+        cli, "orchestrate_measure", lambda *args, **kwargs: _record_run()
+    )
+    monkeypatch.setattr(cli, "save_delegation", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "load_delegation_cache", dict)
+    assert cli.main(
+        ["orchestrate", "measure", "--no-reference", "--repeats", "1"]
+    ) == 0
+    assert ensured == ["lead"]
+
+
+def test_orchestrate_measure_reports_up_when_ensure_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plan = _lazy_plan()
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: False)
+
+    def fail_ensure(_name: str, _selected: object) -> object:
+        raise RuntimeError("spawn failed")
+
+    monkeypatch.setattr(cli, "ensure_running", fail_ensure)
+    monkeypatch.setattr(
+        cli,
+        "orchestrate_measure",
+        lambda *args, **kwargs: pytest.fail("measured while down"),
+    )
+    assert cli.main(
+        ["orchestrate", "measure", "--no-reference", "--repeats", "1"]
+    ) == 1
+    assert "nmesh up" in capsys.readouterr().err

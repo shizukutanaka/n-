@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 import os
 import socket
 import statistics
@@ -161,6 +162,7 @@ from nmesh.runtime import (
     RuntimeStatus,
     clear_gateway,
     disarm_atexit,
+    ensure_running,
     gateway_health,
     gateway_listener_pid,
     record_gateway,
@@ -181,7 +183,11 @@ from nmesh.runtime.service_unit import (
     unit_install_path,
     watch_unit,
 )
-from nmesh.runtime.supervisor import Supervisor
+from nmesh.runtime.supervisor import (
+    Supervisor,
+    _pid_serves_model,
+    engine_listener_pid,
+)
 from nmesh.spec import (
     KIND_DRAFT,
     KIND_NGRAM,
@@ -329,8 +335,10 @@ def _positive_float(value: str) -> float:
         parsed = float(value)
     except ValueError as error:
         raise argparse.ArgumentTypeError("must be a positive number") from error
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("must be greater than 0")
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError(
+            "must be a finite number greater than 0"
+        )
     return parsed
 
 
@@ -1172,8 +1180,12 @@ def _runtime(args: argparse.Namespace) -> int:
         result = runtime_down(foreign=True, gateway_port=args.port)
     else:
         result = runtime_status()
+        # The supervisor's gateway record has no argv; a plan service is always
+        # emitted with one, so a service literally named "gateway" cannot win
+        # this lookup and steer the health probe to its own port.
         gateway = next(
-            (item for item in result.services if item.get("service") == "gateway"),
+            (item for item in result.services
+             if item.get("service") == "gateway" and "argv" not in item),
             None,
         )
         recorded_port = gateway.get("port") if gateway else None
@@ -2052,6 +2064,37 @@ def _service_running(service: PlannedService, runtime: RuntimeStatus) -> bool:
         return False
 
 
+def _ensure_service_running(service: PlannedService, plan: Plan) -> bool:
+    """Bring a planned service up lazily, or report whether it is up.
+
+    `nmesh up` deliberately leaves swap-group members unlaunched (one
+    member holds the shared memory domain at a time), so telling the
+    user to "run nmesh up first" can never bring a lazy member up —
+    ensure_running is the real bring-up path and evicts the currently
+    active member before spawning this one. A resident service that
+    died is restarted the same way `up` would do it.
+    """
+    if _service_running(service, runtime_status()):
+        return True
+    try:
+        ensure_running(service.name, plan)
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return _service_running(service, runtime_status())
+
+
+def _domain_member_occupied(
+    service: PlannedService, runtime: RuntimeStatus
+) -> bool:
+    """True when a memory-domain member is holding its share — recorded
+    (running/adopted) or an nmesh-managed orphan engine still bound to the
+    member's port serving its model after state.json was lost."""
+    if _service_running(service, runtime):
+        return True
+    pid = engine_listener_pid(service.port)
+    return pid is not None and _pid_serves_model(pid, service.model_ref)
+
+
 def _reference_context(
     service: PlannedService,
 ) -> tuple[Path, Path, str, int] | None:
@@ -2092,6 +2135,19 @@ def _unbounded_client() -> httpx.Client:
     engine is the supervisor health layer's job, not the socket's.
     """
     return local_client(timeout=httpx.Timeout(None, connect=10.0))
+
+
+_NONDECODE_ROLES = frozenset({"embed", "rerank"})
+
+
+def _decode_capable(service: PlannedService) -> bool:
+    """True when the service can answer chat/completions (decode) requests.
+
+    Planner groups embed and rerank into dedicated single-role services
+    (llama.cpp serves one pooling mode per instance), so a service whose
+    roles are all non-decoding has no chat path at all.
+    """
+    return any(role not in _NONDECODE_ROLES for role in service.roles)
 
 
 def _bench(args: argparse.Namespace) -> int:
@@ -2396,6 +2452,12 @@ def _bench(args: argparse.Namespace) -> int:
                         )
                     )
         return 0
+    if not _decode_capable(service):
+        print(
+            i18n.t("err.bench_embedding", i18n.lang(), service=service.name),
+            file=sys.stderr,
+        )
+        return 2
     context = None if args.no_reference else _reference_context(service)
     history = load_history()
     reference_baseline = (
@@ -2724,7 +2786,7 @@ def _eval(args: argparse.Namespace) -> int:
         print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
               file=sys.stderr)
         return 1
-    if service.roles == ["embed"]:
+    if not _decode_capable(service):
         print(
             i18n.t("err.eval_embedding", i18n.lang(), service=service.name),
             file=sys.stderr,
@@ -3128,6 +3190,8 @@ def _eval(args: argparse.Namespace) -> int:
             latent_total=context_probe_families["latent"]["of"],
             multi_passed=context_probe_families["multi"]["passed"],
             multi_total=context_probe_families["multi"]["of"],
+            update_passed=context_probe_families["update"]["passed"],
+            update_total=context_probe_families["update"]["of"],
         ))
         _console().print(i18n.t(
             "label.eval_context_control",
@@ -3286,11 +3350,11 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
     worker_url = args.worker_url or (
         _orchestration_url(worker) if worker is not None else ""
     )
-    if not args.lead_url and not _service_running(lead, runtime_status()):
+    if not args.lead_url and not _ensure_service_running(lead, plan):
         print(i18n.t("err.orchestrate_up", i18n.lang()), file=sys.stderr)
         return 1
-    if not args.worker_url and worker is not None and not _service_running(
-        worker, runtime_status()
+    if not args.worker_url and worker is not None and not _ensure_service_running(
+        worker, plan
     ):
         print(i18n.t("err.orchestrate_up", language), file=sys.stderr)
         return 1
@@ -3651,6 +3715,26 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+    running = runtime_status()
+    domain = (
+        set(plan.swap_group) if service.name in plan.swap_group else {service.name}
+    )
+    busy = [
+        item.name
+        for item in plan.services
+        if item.name in domain and _domain_member_occupied(item, running)
+    ]
+    if busy:
+        print(
+            i18n.t(
+                "err.spec_domain_busy",
+                language,
+                service=service.name,
+                services=", ".join(busy),
+            ),
+            file=sys.stderr,
+        )
+        return 1
     target = RoleIdentity(
         model_id=service.model_id,
         quant=service.quant,
@@ -4630,7 +4714,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(i18n.t("err.no_active_plan", i18n.lang()), file=sys.stderr)
             return 1
         service = saved_plan.services[0]
-        if service.roles == ["embed"]:
+        if not _decode_capable(service):
             print(
                 i18n.t(
                     "err.bench_embedding",

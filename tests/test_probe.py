@@ -48,6 +48,17 @@ def test_rocm_smi_explicit_free_zero_is_kept() -> None:
     assert gpus[0].free_vram_bytes == 0
 
 
+def test_rocm_smi_free_above_total_is_clamped() -> None:
+    """The free/avail sweep can capture GTT (system-RAM) counters that dwarf VRAM."""
+    total = 8589934592
+    text = (
+        f'{{"GPU[0]": {{"VRAM Total Memory (B)": {total}, '
+        f'"VRAM Free Memory (B)": {total + 1024}}}}}'
+    )
+    gpus = parse_rocm_smi(text)
+    assert gpus[0].free_vram_bytes == total
+
+
 def test_rocm_smi_multi_gpu_indices() -> None:
     text = (
         '{"GPU[0]": {"VRAM Total Memory (B)": 8589934592}, '
