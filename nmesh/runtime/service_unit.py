@@ -101,7 +101,14 @@ def service_unit(
 </plist>
 """
         install = unit_install_path(f"{label}.plist", current)
-        return "com.nmesh.gateway.plist", text, f"launchctl load {install}"
+        # The command is displayed for copy-paste, so the unit path must be
+        # shell-quoted — an unquoted path under a spaced $HOME splits into
+        # several arguments and launchctl cannot find the file.
+        return (
+            "com.nmesh.gateway.plist",
+            text,
+            f"launchctl load {shlex.quote(str(install))}",
+        )
     text = f"""[Unit]
 Description=nmesh gateway
 After=network.target
@@ -114,7 +121,11 @@ Restart=on-failure
 WantedBy=default.target
 """
     install = unit_install_path("nmesh-gateway.service", current)
-    return "nmesh-gateway.service", text, f"systemctl --user enable --now {install}"
+    return (
+        "nmesh-gateway.service",
+        text,
+        f"systemctl --user enable --now {shlex.quote(str(install))}",
+    )
 
 
 def watch_unit(
@@ -178,5 +189,5 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 """
-    command = f"systemctl --user enable --now {timer}"
+    command = f"systemctl --user enable --now {shlex.quote(str(timer))}"
     return "nmesh-watch.service + nmesh-watch.timer", text, command

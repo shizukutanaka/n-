@@ -147,7 +147,12 @@ def parse_rocm_smi(text: str) -> list[GPUInfo]:
                 name=f"AMD GPU {index}",
                 vendor="amd",
                 total_vram_bytes=total,
-                free_vram_bytes=free if free is not None else max(total - used, 0),
+                # The free/avail sweep can capture non-VRAM counters (the GTT
+                # aperture is system RAM and dwarfs VRAM); a free figure above
+                # total is upstream noise, not budget.
+                free_vram_bytes=(
+                    min(free, total) if free is not None else max(total - used, 0)
+                ),
                 compute_capability=None,
                 driving_display=False,
                 vram_source="smi",
