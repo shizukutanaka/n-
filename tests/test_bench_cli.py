@@ -140,7 +140,43 @@ def test_autotune_rejects_embedding_service_before_runtime(monkeypatch, capsys) 
     assert cli.main(["autotune"]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "embedding service" in captured.err
+    assert "no decode path" in captured.err
+
+
+def test_autotune_rejects_rerank_service_before_runtime(monkeypatch, capsys) -> None:
+    plan = _plan()
+    service = replace(plan.services[0], name="rerank", roles=["rerank"])
+    monkeypatch.setattr(cli, "load_plan", lambda: replace(plan, services=[service]))
+    monkeypatch.setattr(
+        cli, "runtime_status",
+        lambda: pytest.fail("autotune must reject rerank before runtime access"),
+    )
+    monkeypatch.setattr(
+        cli.httpx,
+        "Client",
+        lambda *_args, **_kwargs: pytest.fail("autotune must not create an HTTP client"),
+    )
+
+    assert cli.main(["autotune"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no decode path" in captured.err
+
+
+def test_bench_rejects_rerank_service_before_engine(monkeypatch, capsys) -> None:
+    plan = _plan()
+    service = replace(plan.services[0], name="rerank", roles=["rerank"])
+    monkeypatch.setattr(cli, "load_plan", lambda: replace(plan, services=[service]))
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: True)
+    monkeypatch.setattr(
+        cli.httpx,
+        "Client",
+        lambda *_args, **_kwargs: pytest.fail("bench must not reach the engine for rerank"),
+    )
+
+    assert cli.main(["bench", "--service", "rerank"]) == 2
+    assert "no decode path" in capsys.readouterr().err
 
 
 def test_autotune_pauses_detached_gateway_watchdog(monkeypatch, capsys) -> None:

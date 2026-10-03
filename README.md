@@ -89,8 +89,13 @@ Set `NMESH_QUEUE_TIMEOUT` to control how long chat requests wait for a backend
 concurrency slot before receiving a retryable 503 response.
 
 Browser frontends are supported: the gateway answers CORS preflights on
-`/v1/*` with the requesting `Origin` reflected, and attaches
-`Access-Control-Allow-Origin` to real responses. `OPTIONS` requests skip the
+`/v1/*` from loopback-hosted pages (`localhost`, `127.0.0.1`, `[::1]`) with
+the requesting `Origin` reflected, and attaches
+`Access-Control-Allow-Origin` to real responses. Any other `Origin` is
+rejected with 403 — without `NMESH_API_KEY` a foreign web page could
+otherwise drive the local gateway and read its replies. Opt extra origins
+in with `NMESH_GATEWAY_ORIGINS` (comma-separated list, `*` restores the old
+reflect-everything behaviour). `OPTIONS` requests skip the
 `NMESH_API_KEY` check (preflights carry no credentials); real requests still
 require the key when set. The gateway only binds `127.0.0.1`.
 

@@ -125,30 +125,42 @@ def _model_source(model_id: str | None = None, quant: str | None = None) -> Path
 
 def _command(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
     # Detached backend processes inherit the child's output handles, so a pipe
-    # would stay open until they exit; a per-step file returns immediately.
-    log = Path(env["NMESH_HOME"]) / f"cli-step-{next(_STEP_LOGS)}.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open("w", encoding="utf-8", errors="replace") as sink:
+    # would stay open until they exit; per-stream files return immediately.
+    # stderr is captured separately: warn.* notes must not contaminate the
+    # stdout JSON that --json steps parse.
+    seq = next(_STEP_LOGS)
+    out_log = Path(env["NMESH_HOME"]) / f"cli-step-{seq}.log"
+    err_log = Path(env["NMESH_HOME"]) / f"cli-step-{seq}.err"
+    out_log.parent.mkdir(parents=True, exist_ok=True)
+    with (
+        out_log.open("w", encoding="utf-8", errors="replace") as out_sink,
+        err_log.open("w", encoding="utf-8", errors="replace") as err_sink,
+    ):
         completed = subprocess.run(
             [sys.executable, "-m", "nmesh.cli", *args],
             cwd=Path(__file__).resolve().parents[1],
             env=env,
             text=True,
-            stdout=sink,
-            stderr=subprocess.STDOUT,
+            stdout=out_sink,
+            stderr=err_sink,
             check=False,
         )
-    output = log.read_text(encoding="utf-8", errors="replace")
-    return subprocess.CompletedProcess(completed.args, completed.returncode, output, "")
+    output = out_log.read_text(encoding="utf-8", errors="replace")
+    errors = err_log.read_text(encoding="utf-8", errors="replace")
+    return subprocess.CompletedProcess(
+        completed.args, completed.returncode, output, errors
+    )
 
 
 def _run_step(env: dict[str, str], step: str, *args: str) -> str:
     result = _command(env, *args)
-    output = result.stdout
-    print(f"\n== {step} ==\n{output}", end="")
+    shown = result.stdout + (
+        f"--- stderr ---\n{result.stderr}" if result.stderr else ""
+    )
+    print(f"\n== {step} ==\n{shown}", end="")
     if result.returncode != 0:
-        _fail(step, f"process exit status {result.returncode}\n{output}")
-    return output
+        _fail(step, f"process exit status {result.returncode}\n{shown}")
+    return result.stdout
 
 
 def _json_step(env: dict[str, str], step: str, *args: str) -> object:
