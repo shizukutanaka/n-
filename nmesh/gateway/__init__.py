@@ -100,20 +100,21 @@ _STREAM_USAGE_BACKENDS = {"llamacpp", "vllm", "ollama"}
 
 if TYPE_CHECKING:
     import httpx
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Query
     from fastapi import FastAPI as FastAPIApp
     from fastapi.responses import Response, StreamingResponse
     from starlette.requests import Request
 else:
     try:
         import httpx
-        from fastapi import FastAPI, HTTPException
+        from fastapi import FastAPI, HTTPException, Query
         from fastapi.responses import Response, StreamingResponse
         from starlette.requests import Request
     except ImportError:
         FastAPI = None
         httpx = None
         HTTPException = RuntimeError
+        Query = None
         Response = None
         StreamingResponse = None
         Request = object
@@ -2244,7 +2245,7 @@ def create_app(
         )
 
     @app.get("/v1/jobs")
-    async def list_jobs(limit: int = 50) -> dict[str, object]:
+    async def list_jobs(limit: int = Query(50, ge=0)) -> dict[str, object]:
         entries = jobs.list(limit)
         progress = await _slot_progress(plan_state.snapshot()[0].services, entries)
         return {
