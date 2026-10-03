@@ -2095,7 +2095,6 @@ def _domain_member_occupied(
     return pid is not None and _pid_serves_model(pid, service.model_ref)
 
 
->>>>>>> origin/main
 def _reference_context(
     service: PlannedService,
 ) -> tuple[Path, Path, str, int] | None:
