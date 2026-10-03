@@ -36,6 +36,7 @@
 - **gateway: 非ループバック Origin のブラウザリクエストを 403 で拒否**: CORS は `/v1/*` のプリフライトとレスポンス両方でリクエスト元の Origin を無条件に反映しており、`NMESH_API_KEY` 未設定の既定構成では任意のウェブページがローカルゲートウェイを駆動して応答を読めていました（シンプルリクエストは CORS ヘッダだけでは止まらない drive-by 経路 — Ollama の `OLLAMA_ORIGINS` が解決したのと同クラスの問題）。ループバック由来の Origin（`localhost`・`127.0.0.1`・`[::1]`）のみ許可し、それ以外はプリフライト・実リクエストとも 403 で拒否。`NMESH_GATEWAY_ORIGINS`（カンマ区切り、`*` で従来挙動）で追加入力可能
 >>>>>>> origin/main
 - **`nmesh eval --service <埋め込みサービス>` が拒否されず全タスクが転送失敗していた問題を修正**: eval はチャット補完のみを送信するため、埋め込みサービスへ送ると全タスクが 404 で transport 失敗し「all evaluation tasks failed at transport level」まで待たされていました（応答を返すエンジンが混ざると部分記録が証拠として残る経路もあった）。`bench`（embed 計測経路への振り分け）と `autotune`（即時拒否）と同じく、埋め込みサービス指定時は `err.eval_embedding` で事前に拒否し生成可能なサービスを案内します
+- **`autostart` が表示する install コマンドのユニットパスがシェル未クオートで、スペースを含む `$HOME`/`XDG_CONFIG_HOME` 環境でコピペ実行が失敗していた問題を修正**: `launchctl load`（macOS）と `systemctl --user enable --now`（Linux）の引数パスを `shlex.quote` で引用し、空白を含むパスが複数引数に分割されないようにします（`--install` は直接ファイルを書き込むため影響なし。Windows schtasks は既に `list2cmdline` でクオート済み、watch の launchctl は `~/` チルダ展開に依存するため対象外 — チルダ展開結果は再分割されないためスペース入りホームでも安全）
 - **`python -m nmesh.gateway.server --port` が範囲外ポートを受理していた問題を修正**: cli の全 `--port` は `_port_int`（1〜65535）で検証済みですが、モジュール直接実行の argparse は bare `type=int` のまま残っており、`--port 0` でエフェメラルバインド（期待ポートで到達不能）・`--port 70000` でトレースバックになっていました。cli と同じ境界検証を適用し、exit 2 の案内付き拒否に統一
 - **VRAM/RAM の free 値が total を超えるプロファイルが受理され予算を水増ししていた問題を修正**: rocm-smi の free/avail 集計はサブツリーの非 VRAM カウンタ（GTT はシステム RAM で VRAM を大きく上回る）も拾い得て `free_vram_bytes > total_vram_bytes` を生成し得ました — 検出側では total でクランプし、`profile_from_dict` でも GPU の `free_vram_bytes > total_vram_bytes` と `available_ram_bytes > total_ram_bytes` を読込時に拒否します（`nmesh plan --profile`/plan.json の手編集・破損値がカード・RAM 予算を過大に見せ N2 違反となっていた問題）
 - **カタログの `recurrent_state_bytes` 負値が検証を通過しメモリ見積もりを過小化していた問題を修正**: ハイブリッド（Mamba/GDN）モデルのリカレント状態は `kv_cache_bytes` と合計に直接加算されるため、ユーザ models.yaml の負値が受理されると実際より小さい見積もりでサービスが配置され得ました（#637 でフィールド追加時に dims 検証ブロックへの追加が漏れていた問題）
@@ -44,6 +45,7 @@
 - **eval の文脈プローブ内訳に `update` ファミリーが表示されなかった問題を修正**: コンソール出力は literal/latent/multi の3ファミリーだけを内訳表示していましたが、プローブは update（途中更新追跡）も計測・集計に含めており、合計値と内訳の足し算が一致しませんでした。JSON 出力・ContextRecord・深度損失警告には既に含まれていました。`label.eval_context_probe` に update の passed/total を追加（en+ja）
 - **`eval --timeout` が非有限値（nan/inf）を受理していた問題を修正**: `float("nan")` は `<= 0` 比較が False になるため NaN が検証を素通りし、httpx がそのまま受け入れて全タスクが転送失敗化していました（inf は要求したタイムアウトを実質無効化）。`_positive_float` で有限・正値のみを受理（#507/#552/#599 と同クラスの非有限値拒否）
 - **e2e ハーネスの loopback 呼出が環境の影響で失敗していた問題を修正**: `scripts/e2e.py` の `_http` は素の `urllib.request.urlopen` を使っており、`HTTP_PROXY`/`HTTPS_PROXY` 設定環境では `http://127.0.0.1:port/...` への全プローブがプロキシへ誤ルートされ、正常なサービスでも「request error」で失敗していました（本番コードは #520/#565 で `local_urlopen` に修正済み）。さらに `NMESH_API_KEY` を設定した環境では spawn したゲートウェイが `/v1/`・`/metrics`・`/status` の全リクエストを認証要求するため、ハーネス自身のプローブが全て 401 で失敗していました。`local_urlopen` への切り替えと `Authorization: Bearer` ヘッダの付与で対応
+>>>>>>> origin/main
 >>>>>>> origin/main
 >>>>>>> origin/main
 >>>>>>> origin/main
