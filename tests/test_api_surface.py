@@ -755,3 +755,12 @@ def test_unload_and_reload_calls_allow_drain_time(monkeypatch) -> None:
         "http://127.0.0.1:18000/admin/reload",
     }
     assert all(timeout >= 60 for timeout in timeouts.values())
+
+
+def test_jobs_list_rejects_negative_limit() -> None:
+    plan = _completion_plan(1)
+    with TestClient(create_app(plan)) as client:
+        assert client.get("/v1/jobs?limit=-1").status_code == 422
+        ok = client.get("/v1/jobs?limit=0")
+        assert ok.status_code == 200
+        assert ok.json()["jobs"] == []
