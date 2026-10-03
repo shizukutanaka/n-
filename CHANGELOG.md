@@ -23,6 +23,8 @@
 
 ### Fixed
 - **`scripts/e2e.py` が `warn.*` 出力で `--json` ステップを誤失敗させていた問題を修正**: `_command` が stderr を stdout と同じログファイルへ `STDOUT` 合流させていたため、`PYTHONPATH` 等の環境変数由来の warn（`warn.resolution_env_leak` 等）が `plan --json` 等の出力に混入し、`_json_step` の `json.loads` がコマンド成功にもかかわらず JSONDecodeError で失敗していました。stdout/stderr を別ファイルに分離し、警告は表示用出力には残しつつ JSON 解析は stdout のみを対象とするよう変更
+- **`HF_HUB_CACHE` だけを設定した環境で `nmesh models scan` が HF キャッシュを見落としていた問題を修正**: huggingface_hub は `HF_HUB_CACHE`（現行）→ `HUGGINGFACE_HUB_CACHE`（旧名）→ `HF_HOME/hub` → 既定の順で解決しますが、インベントリは `HF_HUB_CACHE` を参照せず中位・既定パスへフォールスルーしていました。現行変数のみ設定しているユーザの実キャッシュが一覧・重複検出・バリアント検出から丸ごと抜け落ちるため、同じ優先順位で先頭に解決します
+>>>>>>> origin/main
 - **深くネストした JSON の状態ファイルが `RecursionError` で `read_json_file` の捕捉を抜けてクラッシュしていた問題を修正**: パース段の捕捉は `(JSONDecodeError, TypeError, ValueError)` のみで、`json.loads` がインタプリタの再帰上限を超えるネスト（手編集や別ツール由来の異常ファイル）に対して送出する `RecursionError` は RuntimeError 系のため警告経路を迂回してトレースバックになっていました。「読めないファイルは警告を一度出す」契約に合わせ、パース段の捕捉に `RecursionError` を追加して warn → `None` を返すよう揃えます
 - **`nmesh eval --service <埋め込みサービス>` が拒否されず全タスクが転送失敗していた問題を修正**: eval はチャット補完のみを送信するため、埋め込みサービスへ送ると全タスクが 404 で transport 失敗し「all evaluation tasks failed at transport level」まで待たされていました（応答を返すエンジンが混ざると部分記録が証拠として残る経路もあった）。`bench`（embed 計測経路への振り分け）と `autotune`（即時拒否）と同じく、埋め込みサービス指定時は `err.eval_embedding` で事前に拒否し生成可能なサービスを案内します
 - **プラン未作成時に `bench`/`eval`/`autotune` が無言で終了していた問題を修正**: `load_plan()` が None を返すと3コマンドは何も出力せず exit 1 でした（orchestrate/spec measure は `err.*` で案内済み）。`err.no_active_plan` を出力するよう統一し、メッセージに「先に nmesh plan を実行」の案内を追加
