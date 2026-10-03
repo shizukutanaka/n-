@@ -1478,7 +1478,12 @@ def test_swap_switch_parks_sleep_capable_member(
         lambda _service, path, timeout=120.0: posts.append(path) or True
     )
     supervisor.up(plan, no_download=True, admit=False)
-    assert launches == ["alpha", "beta"]
+    # Swap members launch lazily — booting the whole group would
+    # double-book the shared memory domain the plan admitted under a
+    # single-member budget.
+    assert launches == []
+    supervisor.ensure_running("alpha")
+    assert launches == ["alpha"]
     supervisor.ensure_running("beta")
     # Switching to beta parks alpha instead of killing it — weights move
     # to CPU RAM and VRAM frees, per vLLM level-1 sleep semantics.
@@ -1524,6 +1529,7 @@ def test_swap_switch_falls_back_to_kill_when_ram_short(
     )
     supervisor.up(plan, no_download=True, admit=False)
     assert free_budgets(supervisor.probe())[1] < alpha.memory.weight_bytes
+    supervisor.ensure_running("alpha")
     supervisor.ensure_running("beta")
     assert posts == []
     assert supervisor.sleeping == set()
@@ -1664,6 +1670,33 @@ def test_swap_switch_keeps_parked_orphan_member(
     assert supervisor.sleeping == {"alpha"}
     assert supervisor.adopted["alpha"] == record
     assert "beta" in supervisor.processes
+    supervisor.down()
+
+
+def test_up_leaves_swap_members_lazy(
+    tmp_path, catalog: list[ModelSpec], monkeypatch
+) -> None:
+    plan = _sleep_swap_plan(catalog)
+    launches: list[str] = []
+    supervisor = Supervisor(
+        lambda service: launches.append(service.name) or _RecoverProcess(),
+        tmp_path / "lazy-swap.json",
+        health_timeout=0.01,
+    )
+    monkeypatch.setattr(
+        supervisor_module,
+        "acquire",
+        lambda _service, local_only=False: Acquired(None, None, False),
+    )
+    supervisor._wait_health = lambda _service, timeout=None: True
+    supervisor.up(plan, no_download=True, admit=False)
+    # up() commits nothing into the shared domain — the whole group was
+    # admitted under a single-member budget.
+    assert launches == []
+    assert supervisor.processes == {}
+    supervisor.ensure_running("alpha")
+    assert launches == ["alpha"]
+    assert set(supervisor.processes) == {"alpha"}
     supervisor.down()
 
 

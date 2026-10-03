@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from nmesh import persist
@@ -39,3 +40,15 @@ def test_unreadable_directory_path_warns(tmp_path: Path, capsys) -> None:
     persist._warned.clear()
     assert persist.read_json_file(tmp_path) is None
     assert capsys.readouterr().err != ""
+
+
+def test_deeply_nested_file_warns_instead_of_recursing(tmp_path: Path, capsys) -> None:
+    # json.loads raises RecursionError (a RuntimeError, not ValueError) on
+    # nesting past the interpreter limit — it used to escape the catch and
+    # crash the caller with a traceback instead of warning once.
+    persist._warned.clear()
+    bad = tmp_path / "deep.json"
+    depth = sys.getrecursionlimit() * 100
+    bad.write_text("[" * depth + "]" * depth, encoding="utf-8")
+    assert persist.read_json_file(bad) is None
+    assert "deep.json" in capsys.readouterr().err

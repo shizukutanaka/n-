@@ -81,6 +81,24 @@ def test_profile_rejects_duplicate_gpu_index() -> None:
         raise AssertionError("duplicate gpu index was accepted")
 
 
+def test_profile_rejects_free_vram_above_total() -> None:
+    data = json.loads(
+        (PROFILE_DIR / "t3-rtx4090-24gb.json").read_text(encoding="utf-8")
+    )
+    data["gpus"][0]["free_vram_bytes"] = data["gpus"][0]["total_vram_bytes"] + 1
+    with pytest.raises(ValueError, match="exceeds"):
+        profile_from_dict(data)
+
+
+def test_profile_rejects_available_ram_above_total() -> None:
+    data = json.loads(
+        (PROFILE_DIR / "t3-rtx4090-24gb.json").read_text(encoding="utf-8")
+    )
+    data["available_ram_bytes"] = data["total_ram_bytes"] + 1
+    with pytest.raises(ValueError, match="exceeds"):
+        profile_from_dict(data)
+
+
 def test_asymmetric_profile_places_largest_service_on_large_card() -> None:
     profile = _profile(PROFILE_DIR / "t5-dual-asymmetric.json")
     plan = build_plan(profile, load_catalog(), Policy(roles=["chat", "code", "embed"]))
