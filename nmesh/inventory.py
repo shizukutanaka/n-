@@ -128,6 +128,8 @@ def default_stores() -> dict[str, Path]:
             break
 
     hf_candidates = []
+    if (value := os.environ.get("HF_HUB_CACHE")):
+        hf_candidates.append(Path(value).expanduser())
     if (value := os.environ.get("HUGGINGFACE_HUB_CACHE")):
         hf_candidates.append(Path(value).expanduser())
     if (value := os.environ.get("HF_HOME")):

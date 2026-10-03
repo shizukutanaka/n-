@@ -2236,3 +2236,23 @@ def test_eval_cli_refuses_embed_service(monkeypatch, capsys) -> None:
     err = capsys.readouterr().err
     assert "embed" in err
     assert "--service chat" in err
+
+
+def test_eval_cli_refuses_rerank_service(monkeypatch, capsys) -> None:
+    # A rerank-only service has no chat path either — eval would send chat
+    # completions and every task would transport-fail, same class as embed.
+    service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
+    service = replace(service_plan.services[0], name="rerank", roles=["rerank"])
+    service_plan = replace(service_plan, services=[service])
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(
+        cli,
+        "eval_run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("eval_run must not run for a rerank service")
+        ),
+    )
+    assert cli.main(["eval", "--service", "rerank"]) == 2
+    err = capsys.readouterr().err
+    assert "rerank" in err
+    assert "no chat path" in err
