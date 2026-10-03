@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from nmesh.net import local_urlopen
 from nmesh.paths import nmesh_home
 from nmesh.runtime import engine
 from nmesh.runtime.acquisition import parse_label
@@ -124,30 +125,42 @@ def _model_source(model_id: str | None = None, quant: str | None = None) -> Path
 
 def _command(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
     # Detached backend processes inherit the child's output handles, so a pipe
-    # would stay open until they exit; a per-step file returns immediately.
-    log = Path(env["NMESH_HOME"]) / f"cli-step-{next(_STEP_LOGS)}.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open("w", encoding="utf-8", errors="replace") as sink:
+    # would stay open until they exit; per-stream files return immediately.
+    # stderr is captured separately: warn.* notes must not contaminate the
+    # stdout JSON that --json steps parse.
+    seq = next(_STEP_LOGS)
+    out_log = Path(env["NMESH_HOME"]) / f"cli-step-{seq}.log"
+    err_log = Path(env["NMESH_HOME"]) / f"cli-step-{seq}.err"
+    out_log.parent.mkdir(parents=True, exist_ok=True)
+    with (
+        out_log.open("w", encoding="utf-8", errors="replace") as out_sink,
+        err_log.open("w", encoding="utf-8", errors="replace") as err_sink,
+    ):
         completed = subprocess.run(
             [sys.executable, "-m", "nmesh.cli", *args],
             cwd=Path(__file__).resolve().parents[1],
             env=env,
             text=True,
-            stdout=sink,
-            stderr=subprocess.STDOUT,
+            stdout=out_sink,
+            stderr=err_sink,
             check=False,
         )
-    output = log.read_text(encoding="utf-8", errors="replace")
-    return subprocess.CompletedProcess(completed.args, completed.returncode, output, "")
+    output = out_log.read_text(encoding="utf-8", errors="replace")
+    errors = err_log.read_text(encoding="utf-8", errors="replace")
+    return subprocess.CompletedProcess(
+        completed.args, completed.returncode, output, errors
+    )
 
 
 def _run_step(env: dict[str, str], step: str, *args: str) -> str:
     result = _command(env, *args)
-    output = result.stdout
-    print(f"\n== {step} ==\n{output}", end="")
+    shown = result.stdout + (
+        f"--- stderr ---\n{result.stderr}" if result.stderr else ""
+    )
+    print(f"\n== {step} ==\n{shown}", end="")
     if result.returncode != 0:
-        _fail(step, f"process exit status {result.returncode}\n{output}")
-    return output
+        _fail(step, f"process exit status {result.returncode}\n{shown}")
+    return result.stdout
 
 
 def _json_step(env: dict[str, str], step: str, *args: str) -> object:
@@ -165,13 +178,16 @@ def _http(
     stream: bool = False,
 ) -> bytes:
     data = json.dumps(payload).encode() if payload is not None else None
-    request = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"} if data is not None else {},
-    )
+    headers = {"Content-Type": "application/json"} if data is not None else {}
+    # The spawned gateway inherits NMESH_API_KEY from this env and challenges
+    # every /v1/, /metrics and /status request — present the same credential
+    # or every harness probe 401s on machines that have the key exported.
+    api_key = os.environ.get("NMESH_API_KEY")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(url, data=data, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=300) as response:
+        with local_urlopen(request, timeout=300) as response:
             body = response.read()
             print(f"\n== {step} ==\nSTATUS={response.status}\n{body.decode(errors='replace')}", end="")
             if response.status != 200:
