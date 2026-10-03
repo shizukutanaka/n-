@@ -3,6 +3,7 @@ from __future__ import annotations
 import http.server
 import json
 import os
+import shlex
 import socket
 import sys
 import threading
@@ -1085,6 +1086,54 @@ def test_status_surfaces_gateway_pid_and_port(tmp_path: Path) -> None:
     assert gateway["running"] is True
 
 
+def test_status_probes_gateway_port_not_same_named_service(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A plan service may literally be named "gateway" (freeform roles).
+    The CLI must not pick it for the health probe — plan services always
+    carry argv while the supervisor's gateway record does not."""
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    (tmp_path / "state.json").write_text(
+        json.dumps({
+            "version": 2,
+            "owner_pid": os.getpid(),
+            "services": [{
+                "service": "gateway", "backend": "llamacpp",
+                "model_ref": "m", "port": 18010, "context": 4096,
+                "parallel_slots": 1, "n_gpu_layers": 0,
+                "argv": ["llama-server", "--port", "18010"],
+                "pid": os.getpid(), "owner_pid": os.getpid(),
+            }],
+            "gateway": {"pid": os.getpid(), "port": 18000,
+                        "create_time": 1.0, "owner_pid": os.getpid()},
+        }),
+        encoding="utf-8",
+    )
+    probed: list[str] = []
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return b"{}"
+
+    def _open(request, timeout=0):
+        probed.append(getattr(request, "full_url", str(request)))
+        return _Response()
+
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _open)
+    monkeypatch.setattr("nmesh.cli.gateway_health", lambda _port: True)
+    assert cli.main(["status", "--json"]) == 0
+    assert "http://127.0.0.1:18000/health" in probed
+    assert "http://127.0.0.1:18010/health" not in probed
+
+
 def test_status_keeps_dead_gateway_view_after_pruning(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     state_path.write_text(
@@ -1335,6 +1384,27 @@ def test_watch_unit_names_both_systemd_files(monkeypatch, tmp_path: Path) -> Non
     assert "[Service]" in text and "[Timer]" in text
     assert "OnUnitActiveSec=6h" in text
     assert command.endswith(str(timer))
+
+
+def test_install_command_quotes_unit_path_under_spaced_home(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(service_unit_module, "nmesh_home", lambda: tmp_path)
+    spaced_home = tmp_path / "home with space"
+    monkeypatch.setenv("HOME", str(spaced_home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+    _, _, command = service_unit(19000, "posix")
+    unit = spaced_home / ".config" / "systemd" / "user" / "nmesh-gateway.service"
+    assert shlex.split(command)[-1] == str(unit)
+
+    _, _, command = watch_unit(6, "posix")
+    timer = spaced_home / ".config" / "systemd" / "user" / "nmesh-watch.timer"
+    assert shlex.split(command)[-1] == str(timer)
+
+    _, _, command = service_unit(19001, "darwin")
+    plist = spaced_home / "Library" / "LaunchAgents" / "com.nmesh.gateway.plist"
+    assert shlex.split(command)[-1] == str(plist)
 
 
 def test_autostart_install_writes_launcher_and_preserves_environment(

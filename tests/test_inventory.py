@@ -195,6 +195,24 @@ def test_invalid_files_and_missing_roots_are_skipped(tmp_path: Path) -> None:
     assert artifacts == []
 
 
+def test_hf_hub_cache_env_takes_precedence(tmp_path: Path, monkeypatch) -> None:
+    # huggingface_hub resolves HF_HUB_CACHE first, then the legacy
+    # HUGGINGFACE_HUB_CACHE, then HF_HOME/hub — the inventory store must
+    # point at the same directory downloads would populate.
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path / "home"))
+    hub = tmp_path / "hf-cache"
+    legacy = tmp_path / "legacy-cache"
+    for directory in (hub, legacy):
+        directory.mkdir()
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(legacy))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hfhome"))
+    assert inventory.default_stores()["hf"] == hub
+
+    monkeypatch.delenv("HF_HUB_CACHE")
+    assert inventory.default_stores()["hf"] == legacy
+
+
 def test_cli_scan_and_local_report_header_metadata(
     tmp_path: Path, monkeypatch, capsys,
 ) -> None:

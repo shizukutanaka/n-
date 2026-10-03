@@ -171,12 +171,23 @@ def profile_from_dict(data: Mapping[str, object]) -> HardwareProfile:
             raise ValueError(
                 f"profile field 'gpus[{index}].index' duplicates {gpu_index}"
             )
+        total_vram = _nonnegative_int(
+            _field(raw, "total_vram_bytes"), f"gpus[{index}].total_vram_bytes"
+        )
+        free_vram = _nonnegative_int(
+            _field(raw, "free_vram_bytes"), f"gpus[{index}].free_vram_bytes"
+        )
+        if free_vram > total_vram:
+            raise ValueError(
+                f"profile field 'gpus[{index}].free_vram_bytes' exceeds "
+                "'total_vram_bytes'"
+            )
         gpus.append(GPUInfo(
             gpu_index,
             gpu_name,
             vendor,
-            _nonnegative_int(_field(raw, "total_vram_bytes"), f"gpus[{index}].total_vram_bytes"),
-            _nonnegative_int(_field(raw, "free_vram_bytes"), f"gpus[{index}].free_vram_bytes"),
+            total_vram,
+            free_vram,
             capability,
             driving_display,
             vram_source,
@@ -210,12 +221,19 @@ def profile_from_dict(data: Mapping[str, object]) -> HardwareProfile:
         raise TypeError("profile field 'tier' must be a string") from error
     except ValueError as error:
         raise ValueError("profile field 'tier' is invalid") from error
+    total_ram = _nonnegative_int(_field(data, "total_ram_bytes"), "total_ram_bytes")
+    available_ram = _nonnegative_int(
+        _field(data, "available_ram_bytes"), "available_ram_bytes"
+    )
+    if available_ram > total_ram:
+        raise ValueError(
+            "profile field 'available_ram_bytes' exceeds 'total_ram_bytes'"
+        )
     return HardwareProfile(
         os_name, str(_field(data, "cpu_name")),
         _nonnegative_int(_field(data, "physical_cores"), "physical_cores"),
         _nonnegative_int(_field(data, "logical_cores"), "logical_cores"),
-        _nonnegative_int(_field(data, "total_ram_bytes"), "total_ram_bytes"),
-        _nonnegative_int(_field(data, "available_ram_bytes"), "available_ram_bytes"),
+        total_ram, available_ram,
         _nonnegative_int(_field(data, "free_disk_bytes"), "free_disk_bytes"),
         _boolean_field(data, "unified_memory"), gpus,
         _string_map(available, "available_backends", nullable=True),

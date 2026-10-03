@@ -1244,6 +1244,14 @@ class Supervisor:
                             if service.launch.shared_daemon:
                                 self.shared_services.add(service.name)
                             continue
+                        if service.name in current.swap_group:
+                            # Swap members launch lazily — a request for
+                            # one goes through ensure_running, which
+                            # spawns it and evicts the rest. Starting the
+                            # whole group here would double-book the
+                            # shared memory domain the plan admitted
+                            # under a single-member budget.
+                            continue
                         if dead:
                             if not self._restart_budget(service.name):
                                 self.failed[service.name] = i18n.t(
@@ -1560,6 +1568,33 @@ class Supervisor:
                             self.sleeping.add(name)
                         else:
                             self._stop_process(name)
+                for item in selected.services:
+                    name = item.name
+                    if (
+                        name == service_name
+                        or name not in selected.swap_group
+                        or name in self.sleeping
+                        or name in self.external_shared
+                        or name in self.processes
+                        or item.backend == "ollama"
+                    ):
+                        continue
+                    record = self.adopted.get(name)
+                    if record is None and self._adopt(item):
+                        record = self.adopted.get(name)
+                    if record is None or name in self.sleeping:
+                        # _adopt can also land the engine in sleeping
+                        # (parked by the prior supervisor) — already out
+                        # of the shared domain, nothing to evict.
+                        continue
+                    # An adopted (or still-orphaned) swap member is invisible
+                    # to the processes loop above — evict it like a spawned
+                    # member so two non-residents never share the domain.
+                    if getattr(item, "sleep_mode", False) and self._park(item):
+                        self.sleeping.add(name)
+                    else:
+                        self._terminate_record(record)
+                        self.adopted.pop(name, None)
                 for item in selected.services:
                     if (
                         item.backend == "ollama"

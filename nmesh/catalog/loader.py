@@ -138,6 +138,7 @@ def _model_from_mapping(
         or spec.active_params < 0
         or spec.moe_expert_params < 0
         or spec.n_moe_layers < 0
+        or spec.recurrent_state_bytes < 0
     ):
         reject("non-positive or negative dimensions")
         return None
