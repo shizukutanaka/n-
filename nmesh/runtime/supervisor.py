@@ -1244,6 +1244,14 @@ class Supervisor:
                             if service.launch.shared_daemon:
                                 self.shared_services.add(service.name)
                             continue
+                        if service.name in current.swap_group:
+                            # Swap members launch lazily — a request for
+                            # one goes through ensure_running, which
+                            # spawns it and evicts the rest. Starting the
+                            # whole group here would double-book the
+                            # shared memory domain the plan admitted
+                            # under a single-member budget.
+                            continue
                         if dead:
                             if not self._restart_budget(service.name):
                                 self.failed[service.name] = i18n.t(
