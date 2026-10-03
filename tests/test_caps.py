@@ -47,5 +47,29 @@ def test_caps_cache_hits_and_invalidates_on_size_and_mtime(tmp_path, monkeypatch
     assert cache.exists()
 
 
+def test_caps_cache_with_non_object_shape_falls_back_to_probe(
+    tmp_path, monkeypatch
+) -> None:
+    # A hand-edited or partially-written caps.json whose top level or
+    # "entries" value is not an object used to raise AttributeError through
+    # the probe — detect_hardware() would crash doctor/plan entirely.
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"one")
+    cache = tmp_path / "caps.json"
+    calls: list[list[str]] = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "--parallel N\n", "")
+
+    monkeypatch.setattr("nmesh.probe.caps.subprocess.run", run)
+    for corrupt in ("[]", '{"entries": []}', '"text"', "5"):
+        cache.write_text(corrupt, encoding="utf-8")
+        caps = llamacpp_caps(str(binary), cache)
+        assert caps is not None
+        assert "--parallel" in caps.flags
+    assert calls
+
+
 def test_caps_missing_binary_is_unknown(tmp_path) -> None:
     assert llamacpp_caps(str(tmp_path / "missing"), tmp_path / "caps.json") is None

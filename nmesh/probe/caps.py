@@ -110,7 +110,8 @@ def llamacpp_caps(
     target = cache_path or (nmesh_home() / "caps.json")
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
-        cached = payload.get("entries", {}).get(key)
+        entries = payload.get("entries") if isinstance(payload, dict) else None
+        cached = entries.get(key) if isinstance(entries, dict) else None
         if isinstance(cached, dict):
             return BackendCaps(
                 str(cached["binary"]),
