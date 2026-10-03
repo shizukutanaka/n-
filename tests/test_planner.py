@@ -637,6 +637,48 @@ def test_load_plan_rejects_unknown_enum_values(tmp_path, catalog: list[ModelSpec
     assert load_plan(path) is None
 
 
+@pytest.mark.parametrize(
+    "patch",
+    [
+        lambda payload: payload["services"][0].update({"context": 0}),
+        lambda payload: payload["services"][0].update({"context": -4096}),
+        lambda payload: payload["services"][0].update({"port": 0}),
+        lambda payload: payload["services"][0].update({"port": 70000}),
+        lambda payload: payload["services"][0].update({"gpu_indices": [-1]}),
+        lambda payload: payload["services"][0].update({"n_gpu_layers": -1}),
+        lambda payload: payload["services"][0].update({"n_cpu_moe": -1}),
+        lambda payload: payload["services"][0].update({"tensor_split": [0, 1]}),
+        lambda payload: payload["services"][0].update({"decode_tps": float("inf")}),
+        lambda payload: payload["services"][0].update({"spec": "draft", "spec_draft": ""}),
+        lambda payload: payload["services"][0]["memory"].update({"parallel_slots": 0}),
+        lambda payload: payload["services"][0]["memory"].update({"kv_cache_bytes": -1}),
+        lambda payload: payload["services"][0]["memory"].update({"vram_budget": float("nan")}),
+        lambda payload: payload["services"][0]["memory"].update({"n_gpu_layers": -1}),
+        lambda payload: payload["services"][0]["memory"].update({"gpu_bytes": "4096"}),
+        lambda payload: payload["services"][0]["memory"].update({"gpu_bytes": True}),
+        lambda payload: payload["services"][0]["memory"].update({"gpu_bytes": 10**400}),
+        lambda payload: payload["services"][0].update({"decode_tps": 10**400}),
+    ],
+    ids=[
+        "context-zero", "context-negative", "port-zero", "port-high",
+        "gpu-index-negative", "n-gpu-layers-negative", "n-cpu-moe-negative",
+        "tensor-split-zero", "decode-tps-infinite", "spec-draft-empty",
+        "memory-parallel-slots-zero",
+        "memory-kv-negative", "memory-vram-nan", "memory-n-gpu-layers-negative",
+        "memory-gpu-string", "memory-gpu-bool", "memory-gpu-overflow",
+        "decode-tps-overflow",
+    ],
+)
+def test_load_plan_rejects_corrupt_numeric_fields(
+    tmp_path, catalog: list[ModelSpec], patch
+) -> None:
+    path = _saved_plan(tmp_path, catalog)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    patch(payload)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load_plan(path) is None
+
+
 def test_explicit_models_restrict_roles_and_warn_for_unknown() -> None:
     selected = ModelSpec(
         "selected", "test", 500_000_000, 24, 16, 2, 64, 1024,
