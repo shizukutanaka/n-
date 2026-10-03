@@ -89,6 +89,12 @@ def test_corrupt_json_is_empty(tmp_path) -> None:
     assert Telemetry(path).samples() == []
 
 
+def test_undecodable_json_is_empty(tmp_path) -> None:
+    path = tmp_path / "telemetry.json"
+    path.write_bytes(b"\xff\xfe\x00\x01")
+    assert Telemetry(path).samples() == []
+
+
 def test_nonfinite_samples_are_skipped_on_read(tmp_path) -> None:
     # json.loads accepts the Infinity/NaN literals json.dumps writes, so a
     # corrupted or hand-edited file can carry them; without validation they
