@@ -2083,25 +2083,6 @@ def _ensure_service_running(service: PlannedService, plan: Plan) -> bool:
     return _service_running(service, runtime_status())
 
 
-def _ensure_service_running(service: PlannedService, plan: Plan) -> bool:
-    """Bring a planned service up lazily, or report whether it is up.
-
-    `nmesh up` deliberately leaves swap-group members unlaunched (one
-    member holds the shared memory domain at a time), so telling the
-    user to "run nmesh up first" can never bring a lazy member up —
-    ensure_running is the real bring-up path and evicts the currently
-    active member before spawning this one. A resident service that
-    died is restarted the same way `up` would do it.
-    """
-    if _service_running(service, runtime_status()):
-        return True
-    try:
-        ensure_running(service.name, plan)
-    except Exception:  # noqa: BLE001, S110
-        pass
-    return _service_running(service, runtime_status())
-
-
 def _domain_member_occupied(
     service: PlannedService, runtime: RuntimeStatus
 ) -> bool:
