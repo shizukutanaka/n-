@@ -261,6 +261,56 @@ def test_resolve_accepts_mxfp4_under_q4_k_m_plan(monkeypatch) -> None:
     )
 
 
+def test_resolve_skips_draft_companion_weights(monkeypatch) -> None:
+    # ggml-org/gpt-oss-*-GGUF ships EAGLE-3 draft heads beside the model;
+    # they quant-match f16/q8_0 plans but are not servable main models.
+    monkeypatch.setattr(
+        acquisition,
+        "_gguf_files",
+        lambda _repo: {
+            "eagle3-gpt-oss-20b-BF16.gguf": 20,
+            "eagle3-gpt-oss-20b-Q8_0.gguf": 15,
+            "gpt-oss-20b-MXFP4.gguf": 10,
+        },
+    )
+    for quant in ("f16", "q8_0"):
+        assert acquisition._resolve_gguf("repo", quant) == (
+            "mxfp4",
+            ["gpt-oss-20b-MXFP4.gguf"],
+            10,
+        )
+
+
+def test_resolve_fails_when_only_draft_companions_fit(monkeypatch) -> None:
+    monkeypatch.setattr(
+        acquisition,
+        "_gguf_files",
+        lambda _repo: {"eagle3-model-Q8_0.gguf": 10},
+    )
+    with pytest.raises(RuntimeError, match="published labels: q8_0"):
+        acquisition._resolve_gguf("repo", "q8_0")
+
+
+def test_local_gguf_skips_draft_companion_weights(tmp_path) -> None:
+    # A cached eagle3-* draft head (downloaded by the unpatched resolver, or
+    # hand-placed) must not be adopted for a same-model plan.
+    (tmp_path / "eagle3-model-Q8_0.gguf").write_bytes(b"x" * 15)
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 10)
+    service = SimpleNamespace(
+        model_id="model",
+        quant="q8_0",
+        name="chat",
+        download_repo="repo",
+        memory=SimpleNamespace(weight_bytes=100),
+    )
+    resolved, corrupt = acquisition._local_gguf(
+        tmp_path / "model-Q8_0.gguf", service
+    )
+    assert corrupt is None
+    assert resolved is not None
+    assert resolved[0].name == "model-Q4_K_M.gguf"
+
+
 def test_resolve_reports_published_quants_when_none_fit(monkeypatch) -> None:
     monkeypatch.setattr(
         acquisition, "_gguf_files", lambda _repo: {"model-fp16.gguf": 10}
