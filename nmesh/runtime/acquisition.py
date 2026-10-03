@@ -87,12 +87,13 @@ _SPLIT_RE = re.compile(
     r"^(?P<prefix>.+?)[-_.](?P<part>\d{5})-of-(?P<total>\d{5})\.gguf$",
     re.IGNORECASE,
 )
-# Speculative-decoding companion weights published next to the main model
-# (e.g. eagle3-*-BF16.gguf in the gpt-oss repos). They quant-match the plan
-# but are auxiliary draft heads, not servable models — resolving one would
-# download and serve the wrong model.
+# Auxiliary weights published next to the main model — speculative-decoding
+# draft heads (e.g. eagle3-*-BF16.gguf in the gpt-oss repos) and vision
+# projection tensors (mmproj-*.gguf in multimodal repos). They quant-match
+# the plan but are not servable models — resolving one would download and
+# serve the wrong file.
 _COMPANION_RE = re.compile(
-    r"(?<![a-z0-9])(?:eagle\d*|medusa|draft)(?![a-z0-9])",
+    r"(?<![a-z0-9])(?:eagle\d*|medusa|draft|mmproj)(?![a-z0-9])",
     re.IGNORECASE,
 )
 
