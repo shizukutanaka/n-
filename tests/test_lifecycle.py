@@ -1086,6 +1086,54 @@ def test_status_surfaces_gateway_pid_and_port(tmp_path: Path) -> None:
     assert gateway["running"] is True
 
 
+def test_status_probes_gateway_port_not_same_named_service(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A plan service may literally be named "gateway" (freeform roles).
+    The CLI must not pick it for the health probe — plan services always
+    carry argv while the supervisor's gateway record does not."""
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    (tmp_path / "state.json").write_text(
+        json.dumps({
+            "version": 2,
+            "owner_pid": os.getpid(),
+            "services": [{
+                "service": "gateway", "backend": "llamacpp",
+                "model_ref": "m", "port": 18010, "context": 4096,
+                "parallel_slots": 1, "n_gpu_layers": 0,
+                "argv": ["llama-server", "--port", "18010"],
+                "pid": os.getpid(), "owner_pid": os.getpid(),
+            }],
+            "gateway": {"pid": os.getpid(), "port": 18000,
+                        "create_time": 1.0, "owner_pid": os.getpid()},
+        }),
+        encoding="utf-8",
+    )
+    probed: list[str] = []
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return b"{}"
+
+    def _open(request, timeout=0):
+        probed.append(getattr(request, "full_url", str(request)))
+        return _Response()
+
+    monkeypatch.setattr("nmesh.cli.local_urlopen", _open)
+    monkeypatch.setattr("nmesh.cli.gateway_health", lambda _port: True)
+    assert cli.main(["status", "--json"]) == 0
+    assert "http://127.0.0.1:18000/health" in probed
+    assert "http://127.0.0.1:18010/health" not in probed
+
+
 def test_status_keeps_dead_gateway_view_after_pruning(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     state_path.write_text(
