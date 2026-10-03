@@ -92,6 +92,16 @@ def test_port_flag_accepts_valid_port(capsys: pytest.CaptureFixture[str]) -> Non
     assert "reachable" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "0", "-1"])
+def test_eval_timeout_rejects_non_positive_or_non_finite(
+    value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.main(["eval", "--timeout", value])
+    assert error.value.code == 2
+    assert "timeout" in capsys.readouterr().err
+
+
 def test_watch_rejects_unknown_source(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
