@@ -88,12 +88,12 @@ _SPLIT_RE = re.compile(
     re.IGNORECASE,
 )
 # Auxiliary weights published next to the main model — speculative-decoding
-# draft heads (e.g. eagle3-*-BF16.gguf in the gpt-oss repos) and vision
-# projection tensors (mmproj-*.gguf in multimodal repos). They quant-match
-# the plan but are not servable models — resolving one would download and
-# serve the wrong file.
+# draft heads (e.g. eagle3-*-BF16.gguf in the gpt-oss repos), vision
+# projection tensors (mmproj-*.gguf in multimodal repos), and LoRA adapter
+# weights (llama.cpp --lora). They quant-match the plan but are not
+# servable models — resolving one would download and serve the wrong file.
 _COMPANION_RE = re.compile(
-    r"(?<![a-z0-9])(?:eagle\d*|medusa|draft|mmproj)(?![a-z0-9])",
+    r"(?<![a-z0-9])(?:eagle\d*|medusa|draft|mmproj|lora)(?![a-z0-9])",
     re.IGNORECASE,
 )
 

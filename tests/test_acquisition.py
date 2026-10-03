@@ -271,6 +271,7 @@ def test_resolve_skips_draft_companion_weights(monkeypatch) -> None:
             "eagle3-gpt-oss-20b-BF16.gguf": 20,
             "eagle3-gpt-oss-20b-Q8_0.gguf": 15,
             "mmproj-gpt-oss-20b-F16.gguf": 25,
+            "gpt-oss-20b-LORA-Q8_0.gguf": 30,
             "gpt-oss-20b-MXFP4.gguf": 10,
         },
     )
