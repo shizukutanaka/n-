@@ -816,3 +816,102 @@ def test_bench_rejects_nonpositive_tokens(capsys) -> None:
             cli.main(["bench", "--tokens", bad])
         assert raised.value.code == 2
         assert "at least 1" in capsys.readouterr().err
+
+
+def test_bench_ensures_lazy_member_instead_of_dead_end(monkeypatch) -> None:
+    """`nmesh up` leaves swap members unlaunched by design, so "run nmesh
+    up first" is a dead end for them — bench must try ensure_running,
+    which evicts the active member and spawns this one."""
+    plan = _plan()
+    service = plan.services[0]
+    plan = replace(plan, swap_group=[service.name])
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    running = False
+
+    def fake_running(*_args):
+        return running
+
+    def fake_ensure(name, selected):
+        nonlocal running
+        assert name == service.name
+        assert selected is plan
+        running = True
+        return object()
+
+    monkeypatch.setattr(cli, "_service_running", fake_running)
+    monkeypatch.setattr(cli, "ensure_running", fake_ensure)
+    monkeypatch.setattr(cli, "load_records", dict)
+    monkeypatch.setattr(cli, "save_records", lambda _records: None)
+    measurement = BenchResult(
+        400.0, 20.0, 0.5, False, 330, "timings", 0, 19.0, 21.0, 3, 128,
+    )
+    monkeypatch.setattr(
+        cli,
+        "measure_controlled",
+        lambda *_args, **_kwargs: _controlled(measurement),
+    )
+
+    assert cli.main(["bench", "--runs", "3", "--no-reference"]) == 0
+    assert running
+
+
+def test_bench_reports_when_ensure_fails(monkeypatch, capsys) -> None:
+    plan = _plan()
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", lambda: object())
+    monkeypatch.setattr(cli, "_service_running", lambda *_args: False)
+    monkeypatch.setattr(
+        cli,
+        "ensure_running",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("spawn failed")
+        ),
+    )
+
+    assert cli.main(["bench"]) == 1
+    assert "nmesh up" in capsys.readouterr().err
+
+
+def test_autotune_ensures_lazy_tuned_member(monkeypatch) -> None:
+    """autotune relaunches the service through runtime_up(tuned_plan) per
+    grid cell; up() keeps swap members lazy, so a tuned member in
+    swap_group would never spawn and every measure would fail — the grid
+    must bring it up via ensure_running."""
+    plan = _plan()
+    service = plan.services[0]
+    partner = replace(service, name="partner")
+    plan = replace(
+        plan,
+        services=[service, partner],
+        swap_group=[service.name, partner.name],
+    )
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "save_plan", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        cli,
+        "runtime_status",
+        lambda: SimpleNamespace(
+            services=[{"service": service.name, "running": True}]
+        ),
+    )
+    monkeypatch.setattr(cli, "_service_running", lambda *_a: True)
+    monkeypatch.setattr(cli, "runtime_down", lambda: SimpleNamespace())
+    monkeypatch.setattr(cli, "disarm_atexit", lambda: None)
+    monkeypatch.setattr(cli, "runtime_up", lambda *_a, **_k: SimpleNamespace())
+    ensured: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        cli,
+        "ensure_running",
+        lambda name, selected: ensured.append((name, selected))
+        or SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        cli, "measure", lambda *_a, **_k: SimpleNamespace(decode_tps=1.0)
+    )
+
+    assert cli.main(["autotune"]) == 0
+    # Every grid cell and the winning relaunch bring the tuned member up.
+    assert ensured
+    assert all(name == service.name for name, _ in ensured)
+    assert all(service.name in p.swap_group for _, p in ensured)
