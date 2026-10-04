@@ -540,30 +540,41 @@ def install(
             executables,
             key=lambda candidate: (len(candidate.relative_to(target).parts), str(candidate)),
         ).resolve()
-        result = subprocess.run(
-            [str(exe), "--version"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
-        version_text = (result.stdout or "") + "\n" + (result.stderr or "")
+        try:
+            result = subprocess.run(
+                [str(exe), "--version"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            version_text = (result.stdout or "") + "\n" + (result.stderr or "")
+            returncode: int | None = result.returncode
+        except subprocess.SubprocessError:
+            version_text = ""
+            returncode = None
         version_lines = [line.strip() for line in version_text.splitlines() if line.strip()]
         version_line = next(
             (line for line in version_lines if "version" in line.lower()),
             version_lines[0] if version_lines else None,
         )
-        if result.returncode != 0:
-            warning = (
-                f"llama.cpp binary failed to launch (--version exited "
-                f"{result.returncode}); the installed engine cannot run"
-            )
-            if system.lower() == "windows":
-                warning += (
-                    " — on Windows this is usually a missing or outdated Microsoft "
-                    "Visual C++ Redistributable; install the latest "
-                    "vc_redist.x64.exe and run nmesh engine install again"
+        if returncode != 0:
+            if returncode is None:
+                warning = (
+                    "llama.cpp binary did not respond to --version within 30s; "
+                    "the installed engine cannot run"
                 )
+            else:
+                warning = (
+                    f"llama.cpp binary failed to launch (--version exited "
+                    f"{returncode}); the installed engine cannot run"
+                )
+                if system.lower() == "windows":
+                    warning += (
+                        " — on Windows this is usually a missing or outdated Microsoft "
+                        "Visual C++ Redistributable; install the latest "
+                        "vc_redist.x64.exe and run nmesh engine install again"
+                    )
             warnings.append(warning)
         from nmesh.probe.caps import llamacpp_caps
 
