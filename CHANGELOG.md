@@ -23,6 +23,8 @@
 
 ### Fixed
 - **JSON/YAML の非有限数値を `int()` 変換する経路で `OverflowError` のトレースバックになっていた問題を修正**: `json.loads` は `Infinity`/`NaN`/`1e999` を受理し、`yaml.safe_load` は `.inf` を受理するため、ユーザ管理ファイルや API リクエストの非有限値が `int()` で `except (TypeError, ValueError)` のガードを抜けていました。ユーザ `models.yaml` の `params: .inf` で全カタログコマンド、`tokens.json` の `n` で全トークン見積もり、`state.json` の `pid` で全 supervisor 掃引、`bench` キャッシュの `runs`/`passes` で記録読み取り、`nmesh-delegate` リクエストの `max_tokens: 1e999` でリクエスト経路がそれぞれクラッシュしていました。各経路で `OverflowError` も捕捉するよう修正（#695 の継続スイープ）
+||||||| 2d9d2236
+- **`engine install` が `--version` に応答しないバイナリで生トレースバックになっていた問題を修正**: インストール検証の `llama-server --version` プローブは 30 秒タイムアウトを持ちますが、`subprocess.TimeoutExpired` は `SubprocessError` 系で、engine のクリーンアップ再送出と cli の捕捉タプル `(OSError, RuntimeError, ValueError, TarError, BadZipFile)` の両方を抜けて未捕捉例外になっていました（NFS ストール・破損バイナリ・ハングする起動フック等）。非0終了と同じ非致命経路に揃え、警告を付してインストールを継続するよう修正
 - **自動マージで `>>>>>>> origin/main` マーカーと `.venv` シンボリックリンクが main に混入していた問題を修正**: コンフリクト解決の残骸が CHANGELOG.md へコミットされ、`.venv*/`（ディレクトリのみ一致）はシンボリックリンクを捕捉しないためリポジトリへ混入していました。マーカー行を除去し `.venv` を削除、`.gitignore` に `.venv`（ファイル/リンクも一致）を追加
 - **`nmesh status` が "gateway" という名前のプランサービスを実 gateway と取り違えて誤ポートへヘルスプローブしていた問題を修正**: サービス名は自由形式ロール由来（`--roles gateway` + 対応モデルで実際に作れる）ですが、status の gateway 検索が `service == "gateway"` の先頭一致だけを見ており、プランサービスが先にヒットするとそのポートへ `/health` を打って誤った稼働表示・note を付けていました。プランサービスは常に `argv` を持ち supervisor の gateway レコードは持たないため、argv 非保持のエントリのみを gateway と判定するよう修正
 - **`GET /v1/jobs` の負の `limit` が意図しないスライスになっていた問題を修正**: `limit=-1` が末尾1件を除く全件を返す等、負数指定で Python の負スライスになり「N件まで」の約束が破れていました。`Query(ge=0)` で負数を 422 として拒否（`limit=0` の空リストは正当のまま）
