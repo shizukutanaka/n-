@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import tarfile
 import urllib.error
 import zipfile
@@ -472,6 +473,34 @@ def test_install_launch_warning_has_no_vcredist_hint_off_windows(
     )
     launch_warning = next(w for w in warnings if "failed to launch" in w)
     assert "Visual C++" not in launch_warning
+
+
+def test_install_warns_when_version_probe_hangs(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A binary that never answers --version must warn, not crash: the 30s
+    probe timeout raises TimeoutExpired (a SubprocessError) which previously
+    escaped every catch list as a raw traceback."""
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as source:
+        source.writestr("llama-server.exe", "fake")
+
+    def hang(*args: object, **kwargs: object) -> object:
+        raise subprocess.TimeoutExpired(["--version"], 30)
+
+    monkeypatch.setattr("subprocess.run", hang)
+    monkeypatch.setattr("nmesh.probe.caps.llamacpp_caps", lambda _: None)
+    _, warnings = engine.install(
+        "b10830",
+        dest=tmp_path,
+        fetch=lambda _: ASSETS,
+        download=lambda _url, path: path.write_bytes(archive.getvalue()),
+        system="windows",
+        machine="AMD64",
+        accelerator=None,
+    )
+    assert any("did not respond" in warning for warning in warnings)
 
 
 def test_tar_member_path_traversal_is_rejected(tmp_path: Path) -> None:
