@@ -23,6 +23,8 @@
 
 ### Fixed
 - **非有限値（`inf`/`Infinity`/`1e999`）の `int()` 変換が `OverflowError` のトレースバックになっていた問題を修正**: `int(float("inf"))` は `ValueError` ではなく `OverflowError` を送出するため、`except (TypeError, ValueError)` のガードを抜けていました。`max_tokens: 1e999` のリクエストで `_reserved_tokens` が 500 エラー、`plan.json` の `created_at: Infinity` で `_created_timestamp`、nvidia-smi/rocm-smi 出力の `inf`/`Infinity` でハードウェア検出全体、モデルの `"age":"inf"` 回答で eval グレーダーがそれぞれクラッシュしていました。各経路で `OverflowError` も捕捉（または非有限値を拒否）するよう修正
+||||||| 2d9d2236
+- **`engine install` が `--version` に応答しないバイナリで生トレースバックになっていた問題を修正**: インストール検証の `llama-server --version` プローブは 30 秒タイムアウトを持ちますが、`subprocess.TimeoutExpired` は `SubprocessError` 系で、engine のクリーンアップ再送出と cli の捕捉タプル `(OSError, RuntimeError, ValueError, TarError, BadZipFile)` の両方を抜けて未捕捉例外になっていました（NFS ストール・破損バイナリ・ハングする起動フック等）。非0終了と同じ非致命経路に揃え、警告を付してインストールを継続するよう修正
 - **自動マージで `>>>>>>> origin/main` マーカーと `.venv` シンボリックリンクが main に混入していた問題を修正**: コンフリクト解決の残骸が CHANGELOG.md へコミットされ、`.venv*/`（ディレクトリのみ一致）はシンボリックリンクを捕捉しないためリポジトリへ混入していました。マーカー行を除去し `.venv` を削除、`.gitignore` に `.venv`（ファイル/リンクも一致）を追加
 - **`nmesh status` が "gateway" という名前のプランサービスを実 gateway と取り違えて誤ポートへヘルスプローブしていた問題を修正**: サービス名は自由形式ロール由来（`--roles gateway` + 対応モデルで実際に作れる）ですが、status の gateway 検索が `service == "gateway"` の先頭一致だけを見ており、プランサービスが先にヒットするとそのポートへ `/health` を打って誤った稼働表示・note を付けていました。プランサービスは常に `argv` を持ち supervisor の gateway レコードは持たないため、argv 非保持のエントリのみを gateway と判定するよう修正
 - **`GET /v1/jobs` の負の `limit` が意図しないスライスになっていた問題を修正**: `limit=-1` が末尾1件を除く全件を返す等、負数指定で Python の負スライスになり「N件まで」の約束が破れていました。`Query(ge=0)` で負数を 422 として拒否（`limit=0` の空リストは正当のまま）
