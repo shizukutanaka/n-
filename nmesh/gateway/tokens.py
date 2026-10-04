@@ -151,7 +151,7 @@ def _coerce_sums(value: object) -> Sums:
             s_o=float(value.get("s_o", 0.0)),
             s_t=float(value.get("s_t", 0.0)),
         )
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return Sums()
 
 

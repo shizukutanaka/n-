@@ -213,3 +213,17 @@ def test_load_profile_rejects_non_utf8_file(tmp_path) -> None:
     bad.write_bytes(b"\xff\xfegarbage")
     with pytest.raises(ValueError):
         cli._load_profile(bad)
+
+
+def test_catalog_item_rejects_non_finite_numeric_fields() -> None:
+    from nmesh.catalog.loader import _model_from_mapping
+
+    item = {
+        "id": "bad-model", "family": "f", "params": float("inf"),
+        "n_layers": 1, "n_heads": 1, "n_kv_heads": 1, "head_dim": 1,
+        "hidden_size": 1, "max_context": 1, "roles": ["chat"],
+        "quality": 1.0, "license": "MIT", "sources": {"hf": "x/y"},
+    }
+    problems: list[str] = []
+    assert _model_from_mapping(item, problems) is None
+    assert problems and "bad-model" in problems[0]

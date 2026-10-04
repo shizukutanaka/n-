@@ -1974,7 +1974,7 @@ def create_app(
                 if isinstance(requested_limit, (int, float, str))
                 else 256
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             max_tokens = 256
         prompt = _content(request)
         ledger = Ledger()

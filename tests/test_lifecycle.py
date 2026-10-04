@@ -2134,3 +2134,7 @@ def test_log_max_bytes_invalid_falls_back(
     handle = open_log("chat")
     handle.close()
     assert (tmp_path / "logs" / "chat.log.1").exists()
+
+
+def test_entry_alive_rejects_non_finite_pid() -> None:
+    assert Supervisor._entry_alive({"pid": float("inf")}) is False

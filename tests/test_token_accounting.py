@@ -314,3 +314,15 @@ def test_prompt_calibration_uses_text_key_for_prompt_requests(monkeypatch) -> No
         {"prompt_tokens": 5},
     ))
     assert calls == [(calibration_key(service.model_id, False), "hello", 5)]
+
+
+def test_load_sums_ignores_non_finite_sample_count(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    (tmp_path / "tokens.json").write_text(json.dumps({
+        "models": {"m": {
+            "n": 1e999,
+            "s_cc": 0.0, "s_co": 0.0, "s_oo": 0.0,
+            "s_ct": 0.0, "s_ot": 0.0, "s_c": 0.0, "s_o": 0.0, "s_t": 0.0,
+        }},
+    }))
+    assert load_sums("m") == Sums()
