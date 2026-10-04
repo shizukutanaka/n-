@@ -283,9 +283,10 @@ def _local_gguf(
         if model_token and model_token not in path.name.casefold().replace("_", "-"):
             continue
         parts = _split_gguf_parts(path)
-        if not all(part.exists() for part in parts):
+        try:
+            size = sum(part.stat().st_size for part in parts)
+        except OSError:
             continue
-        size = sum(part.stat().st_size for part in parts)
         expected = _recorded_artifact_bytes(service, label)
         if expected is not None and expected > 0 and size != expected:
             if corrupt_note is None:
@@ -471,8 +472,11 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
         target = Path(service.model_ref)
         parts = _split_gguf_parts(target)
         corrupt_note: str | None = None
-        if all(part.exists() for part in parts):
+        try:
             artifact_bytes = sum(part.stat().st_size for part in parts)
+        except OSError:
+            artifact_bytes = -1
+        if artifact_bytes >= 0:
             actual_label = parse_label(target.name)
             expected = _recorded_artifact_bytes(service, actual_label)
             # A recorded reference must be positive: a missing/zero record

@@ -35,8 +35,11 @@ def log_path(name: str) -> Path:
 
 
 def rotate(path: Path) -> None:
-    if path.exists() and path.stat().st_size >= _max_bytes():
-        os.replace(path, Path(f"{path}.1"))
+    try:
+        if path.stat().st_size >= _max_bytes():
+            os.replace(path, Path(f"{path}.1"))
+    except OSError:
+        pass
 
 
 def open_log(name: str) -> BinaryIO:
