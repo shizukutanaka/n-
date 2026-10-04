@@ -49,3 +49,16 @@ def test_caps_cache_hits_and_invalidates_on_size_and_mtime(tmp_path, monkeypatch
 
 def test_caps_missing_binary_is_unknown(tmp_path) -> None:
     assert llamacpp_caps(str(tmp_path / "missing"), tmp_path / "caps.json") is None
+
+
+def test_caps_probe_tolerates_undecodable_output(tmp_path, monkeypatch) -> None:
+    import subprocess
+
+    binary = tmp_path / "llama-server"
+    binary.write_text("", encoding="utf-8")
+
+    def run(*args, **kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert llamacpp_caps(str(binary), tmp_path / "caps.json") is None

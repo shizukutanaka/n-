@@ -188,3 +188,13 @@ def test_backend_version_line_prefers_line_containing_version() -> None:
         "Warning: client version is 0.33.2\n",
         None,
     ) == "Warning: client version is 0.33.2"
+
+
+def test_run_returns_none_on_undecodable_output(monkeypatch) -> None:
+    import subprocess
+
+    def run(*args, **kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert detector._run(["nvidia-smi", "--query-gpu=name"]) == (None, None)

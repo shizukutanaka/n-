@@ -130,7 +130,7 @@ def llamacpp_caps(
             timeout=10,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None
     flags, help_version = parse_help(
         (result.stdout or "") + "\n" + (result.stderr or "")
@@ -150,7 +150,7 @@ def llamacpp_caps(
         version_text = (version_result.stdout or version_result.stderr or "").strip()
         if version_text:
             version = version_text.splitlines()[0]
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         pass
     try:
         devices_result = subprocess.run(
@@ -163,7 +163,7 @@ def llamacpp_caps(
         devices_text = (devices_result.stdout or "") + "\n" + (devices_result.stderr or "")
         if devices_result.returncode == 0:
             gpu_devices = parse_devices(devices_text)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         gpu_devices = None
     caps = BackendCaps(str(resolved), version, flags, gpu_devices)
     try:
