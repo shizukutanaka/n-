@@ -317,6 +317,11 @@ def fetch_arxiv(
         )
         response = session.get(f"https://export.arxiv.org/api/query?{params}")
         response.raise_for_status()
+        # ElementTree/expat expands internal entities, so reject a feed
+        # carrying a DOCTYPE (the only place entities can be declared) before
+        # parsing rather than letting a hostile payload exhaust memory.
+        if "<!DOCTYPE" in response.text:
+            raise ValueError("feed declares a DOCTYPE; entities are unsupported")
         root = ET.fromstring(response.text)
         items: list[SourceItem] = []
         for entry in root.findall("atom:entry", _ARXIV_NS):
