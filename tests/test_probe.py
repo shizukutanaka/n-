@@ -188,3 +188,18 @@ def test_backend_version_line_prefers_line_containing_version() -> None:
         "Warning: client version is 0.33.2\n",
         None,
     ) == "Warning: client version is 0.33.2"
+
+
+def test_nvidia_smi_parser_skips_non_finite_fields() -> None:
+    text = "0, GPU A, inf, 10000, 8.6\n1, GPU B, 8192, 4096, 8.0"
+    gpus = parse_nvidia_smi(text)
+    assert [gpu.index for gpu in gpus] == [1]
+
+
+def test_rocm_smi_parser_skips_non_finite_values() -> None:
+    # Python's json.loads accepts the non-standard Infinity literal.
+    text = (
+        '{"GPU[0]": {"VRAM Total Memory (B)": Infinity, '
+        '"VRAM Free Memory (B)": 1}}'
+    )
+    assert parse_rocm_smi(text) == []

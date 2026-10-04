@@ -2256,3 +2256,12 @@ def test_eval_cli_refuses_rerank_service(monkeypatch, capsys) -> None:
     err = capsys.readouterr().err
     assert "rerank" in err
     assert "no chat path" in err
+
+
+def test_json_person_grader_rejects_non_finite_age() -> None:
+    from nmesh.eval.generated import _json_person
+
+    grader = _json_person("alice", "30")
+    assert grader('{"name": "alice", "age": "inf"}') is False
+    assert grader('{"name": "alice", "age": 1e999}') is False
+    assert grader('{"name": "alice", "age": "30"}') is True

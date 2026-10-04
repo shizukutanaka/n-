@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import re
@@ -62,7 +63,7 @@ def parse_nvidia_smi(text: str) -> list[GPUInfo]:
             index = int(fields[0])
             total = int(float(fields[2]) * 1024**2)
             free = int(float(fields[3]) * 1024**2)
-        except ValueError:
+        except (ValueError, OverflowError):
             continue
         gpus.append(
             GPUInfo(
@@ -81,12 +82,12 @@ def parse_nvidia_smi(text: str) -> list[GPUInfo]:
 
 def _number(value: object) -> int:
     if isinstance(value, (int, float)):
-        return int(value)
+        return int(value) if math.isfinite(value) else 0
     if isinstance(value, str):
         cleaned = value.replace(",", "").strip()
         try:
             return int(float(cleaned))
-        except ValueError:
+        except (ValueError, OverflowError):
             return 0
     return 0
 
