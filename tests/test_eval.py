@@ -2256,3 +2256,9 @@ def test_eval_cli_refuses_rerank_service(monkeypatch, capsys) -> None:
     err = capsys.readouterr().err
     assert "rerank" in err
     assert "no chat path" in err
+
+
+def test_json_object_grader_rejects_deeply_nested_output() -> None:
+    task = next(task for task in TASKS if task.id == "format.json_city")
+    nested = "[" * 30000 + "]" * 30000
+    assert not task.check('{"city": ' + nested + "}")
