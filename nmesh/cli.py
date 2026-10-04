@@ -1860,6 +1860,13 @@ def _models(args: argparse.Namespace) -> int:
             if not candidate.is_absolute():
                 candidate = model_root / candidate
             candidate = candidate.resolve()
+            managed_root = model_root.resolve()
+            if candidate != managed_root and managed_root not in candidate.parents:
+                print(
+                    i18n.t("err.models_rm_outside", i18n.lang(), name=args.name),
+                    file=sys.stderr,
+                )
+                return 1
             if not candidate.is_file() or candidate.suffix.lower() != ".gguf":
                 print(
                     i18n.t("err.models_not_found", i18n.lang(), name=args.name),

@@ -601,6 +601,44 @@ def test_models_rm_refuses_a_planned_file(monkeypatch, tmp_path: Path, capsys) -
     assert "--force" in capsys.readouterr().err
 
 
+def test_models_rm_refuses_paths_outside_model_root(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    (tmp_path / "models").mkdir()
+    victim = tmp_path / "victim.gguf"
+    victim.write_bytes(b"weights")
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    for name in ("../victim.gguf", str(victim)):
+        args = type(
+            "Args",
+            (),
+            {"models_command": "rm", "name": name, "force": False, "json": False},
+        )()
+        assert cli._models(args) == 1
+        assert victim.exists()
+    assert "outside" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs Windows privileges")
+def test_models_rm_does_not_follow_symlink_outside_model_root(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    (tmp_path / "models").mkdir()
+    victim = tmp_path / "victim.gguf"
+    victim.write_bytes(b"weights")
+    link = tmp_path / "models" / "alias.gguf"
+    link.symlink_to(victim)
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    args = type(
+        "Args",
+        (),
+        {"models_command": "rm", "name": link.name, "force": False, "json": False},
+    )()
+    assert cli._models(args) == 1
+    assert victim.exists()
+    assert link.is_symlink()
+
+
 def test_models_local_lists_downloaded_weights(monkeypatch, tmp_path: Path, capsys) -> None:
     model = tmp_path / "models" / "qwen-q4_k_m.gguf"
     model.parent.mkdir()
