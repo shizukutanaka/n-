@@ -103,7 +103,7 @@ def fetch_qiita(
                 payload = response.json()
                 if not isinstance(payload, list):
                     raise TypeError("Qiita response was not a list")
-            except (httpx.HTTPError, ValueError, TypeError):
+            except (httpx.HTTPError, ValueError, TypeError, RecursionError):
                 failed_tags.append(tag)
                 continue
             for raw in payload:
@@ -127,7 +127,7 @@ def fetch_qiita(
             f"unreachable tags: {', '.join(failed_tags)}" if failed_tags else ""
         )
         return SourceStatus("qiita", True, len(selected), True, False, detail), selected
-    except (httpx.HTTPError, ValueError, TypeError) as error:
+    except (httpx.HTTPError, ValueError, TypeError, RecursionError) as error:
         return _failure("qiita", error)
     finally:
         if own_client:
@@ -165,7 +165,7 @@ def fetch_zenn(
                 )
                 if not isinstance(raw_articles, list):
                     raise TypeError("Zenn response did not contain articles")
-            except (httpx.HTTPError, ValueError, TypeError):
+            except (httpx.HTTPError, ValueError, TypeError, RecursionError):
                 yields.append(f"{topic}=unreachable")
                 continue
             articles = raw_articles[:limit]
@@ -205,7 +205,7 @@ def fetch_zenn(
             False,
             "; ".join(yields),
         ), selected
-    except (httpx.HTTPError, ValueError, TypeError) as error:
+    except (httpx.HTTPError, ValueError, TypeError, RecursionError) as error:
         return _failure("zenn", error)
     finally:
         if own_client:
@@ -251,7 +251,7 @@ def fetch_github(
                 payload = response.json()
                 if not isinstance(payload, list):
                     raise TypeError("GitHub response was not a list")
-            except (httpx.HTTPError, ValueError, TypeError):
+            except (httpx.HTTPError, ValueError, TypeError, RecursionError):
                 yields.append(f"{repo}=unreachable")
                 continue
             ok_repos += 1
@@ -283,7 +283,7 @@ def fetch_github(
             False,
             "; ".join(yields),
         ), selected
-    except (httpx.HTTPError, ValueError, TypeError) as error:
+    except (httpx.HTTPError, ValueError, TypeError, RecursionError) as error:
         return _failure("github", error)
     finally:
         if own_client:
@@ -317,6 +317,11 @@ def fetch_arxiv(
         )
         response = session.get(f"https://export.arxiv.org/api/query?{params}")
         response.raise_for_status()
+        # ElementTree/expat expands internal entities, so reject a feed
+        # carrying a DOCTYPE (the only place entities can be declared) before
+        # parsing rather than letting a hostile payload exhaust memory.
+        if "<!DOCTYPE" in response.text:
+            raise ValueError("feed declares a DOCTYPE; entities are unsupported")
         root = ET.fromstring(response.text)
         items: list[SourceItem] = []
         for entry in root.findall("atom:entry", _ARXIV_NS):
@@ -427,7 +432,7 @@ def fetch_hf(
             False,
             f"{len(selected)} models; {cards} cards",
         ), selected
-    except (httpx.HTTPError, ValueError, TypeError) as error:
+    except (httpx.HTTPError, ValueError, TypeError, RecursionError) as error:
         return _failure("hf", error)
     finally:
         if own_client:
@@ -476,7 +481,7 @@ def fetch_x(
             ))
         selected = tuple(items)
         return SourceStatus("x", True, len(selected), True, False, ""), selected
-    except (httpx.HTTPError, ValueError, TypeError) as error:
+    except (httpx.HTTPError, ValueError, TypeError, RecursionError) as error:
         return _failure("x", error)
     finally:
         if own_client:

@@ -120,7 +120,7 @@ def _model_from_mapping(
             n_moe_layers=int(item.get("n_moe_layers", 0)),
             recurrent_state_bytes=int(item.get("recurrent_state_bytes", 0)),
         )
-    except (TypeError, ValueError) as error:
+    except (TypeError, ValueError, OverflowError) as error:
         reject(str(error))
         return None
     if (

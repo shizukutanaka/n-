@@ -22,7 +22,13 @@ from nmesh.watch.sources import (
     fetch_zenn,
 )
 from nmesh.watch.state import WatchState, load_state, save_state
-from nmesh.watch.verify import Finding, _known_quant, _weight_sets, verify
+from nmesh.watch.verify import (
+    Finding,
+    _known_quant,
+    _tree_weight_sets,
+    _weight_sets,
+    verify,
+)
 
 
 def _client(handler: object) -> httpx.Client:
@@ -736,3 +742,40 @@ def test_watch_state_tmp_name_is_pid_namespaced(
     save_state(WatchState("now", {}, {}), tmp_path / "watch.json")
     assert [path.name for path in written] == [".watch.json.4321.tmp"]
     assert (tmp_path / "watch.json").exists()
+
+
+def test_arxiv_doctype_feed_reports_unreachable() -> None:
+    feed = """<?xml version="1.0"?>
+    <!DOCTYPE feed [<!ENTITY a "x">]>
+    <feed xmlns="http://www.w3.org/2005/Atom"><entry><id>u</id></entry></feed>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=feed)
+    status, items = fetch_arxiv("all:x", 1, _client(handler))
+    assert not status.reachable and items == ()
+    assert "DOCTYPE" in status.detail
+
+
+def test_watch_sources_report_unreachable_on_deeply_nested_json(monkeypatch) -> None:
+    deep = "[" * 30000 + "]" * 30000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=deep)
+
+    client = _client(handler)
+    for fetcher in (fetch_qiita, fetch_zenn, fetch_github):
+        status, items = fetcher(("o/r",), 1, client)
+        assert not status.reachable
+        assert items == ()
+    status, items = fetch_hf("GGUF", 1, client)
+    assert not status.reachable and items == ()
+    monkeypatch.setenv("NMESH_X_BEARER_TOKEN", "x")
+    status, items = fetch_x("llm", 1, client)
+    assert not status.reachable and items == ()
+
+
+def test_verify_tree_weight_sets_ignores_deeply_nested_json() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content="[" * 30000 + "]" * 30000)
+
+    assert _tree_weight_sets("o/r", _client(handler)) == {}

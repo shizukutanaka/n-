@@ -404,7 +404,7 @@ class Supervisor:
     def _entry_alive(cls, entry: Mapping[str, object]) -> bool:
         pid = entry.get("pid")
         if pid is not None:
-            if not isinstance(pid, (int, float, str)):
+            if not isinstance(pid, (int, float, str)) or isinstance(pid, bool):
                 return False
             try:
                 raw_created = entry.get("create_time")
@@ -414,7 +414,7 @@ class Supervisor:
                     else None
                 )
                 return _pid_alive(int(pid), created)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return False
         if entry.get("shared") or entry.get("external"):
             return cls._health_url_alive(entry.get("health_url"))
@@ -506,7 +506,7 @@ class Supervisor:
                 live = pid is not None and self._entry_alive(gateway)
             except (TypeError, ValueError):
                 live = False
-            if live and isinstance(pid, (int, float, str)):
+            if live and isinstance(pid, (int, float, str)) and not isinstance(pid, bool):
                 self._terminator(int(pid))
             elif foreign:
                 port = gateway.get("port")
