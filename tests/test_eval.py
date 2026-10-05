@@ -2265,3 +2265,9 @@ def test_json_person_grader_rejects_non_finite_age() -> None:
     assert grader('{"name": "alice", "age": "inf"}') is False
     assert grader('{"name": "alice", "age": 1e999}') is False
     assert grader('{"name": "alice", "age": "30"}') is True
+
+
+def test_json_object_grader_rejects_deeply_nested_output() -> None:
+    task = next(task for task in TASKS if task.id == "format.json_city")
+    nested = "[" * 30000 + "]" * 30000
+    assert not task.check('{"city": ' + nested + "}")

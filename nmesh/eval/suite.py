@@ -40,7 +40,7 @@ def _json_object(text: str) -> dict[str, object] | None:
         return None
     try:
         parsed = json.loads(value[start:end + 1])
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return None
     return parsed if isinstance(parsed, dict) else None
 
