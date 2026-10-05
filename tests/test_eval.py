@@ -2258,6 +2258,15 @@ def test_eval_cli_refuses_rerank_service(monkeypatch, capsys) -> None:
     assert "no chat path" in err
 
 
+def test_json_person_grader_rejects_non_finite_age() -> None:
+    from nmesh.eval.generated import _json_person
+
+    grader = _json_person("alice", "30")
+    assert grader('{"name": "alice", "age": "inf"}') is False
+    assert grader('{"name": "alice", "age": 1e999}') is False
+    assert grader('{"name": "alice", "age": "30"}') is True
+
+
 def test_json_object_grader_rejects_deeply_nested_output() -> None:
     task = next(task for task in TASKS if task.id == "format.json_city")
     nested = "[" * 30000 + "]" * 30000

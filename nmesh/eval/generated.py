@@ -147,7 +147,7 @@ def _json_person(name: str, age: str):
             return False
         try:
             numeric = int(float(str(value).strip()))
-        except ValueError:
+        except (ValueError, OverflowError):
             return False
         return (
             isinstance(parsed["name"], str)
