@@ -628,7 +628,7 @@ async def _record_prompt_calibration(
         return
     try:
         prompt_tokens = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return
     if prompt_tokens < 0:
         return
