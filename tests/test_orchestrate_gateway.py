@@ -304,3 +304,36 @@ def test_delegate_scales_upstream_timeout_with_max_tokens(monkeypatch) -> None:
         )
         assert response.status_code == 200
     assert read_timeouts == [30.0 + 256, 30.0 + 4096]
+
+
+def test_delegate_model_handles_non_finite_max_tokens(monkeypatch) -> None:
+    plan = _delegation_plan()
+    record = _record(plan)
+    monkeypatch.setattr(gateway_module, "load_cache", lambda: {"record": record})
+    seen: list[int] = []
+
+    def fake_delegate(client, prompt, max_tokens, *, lead, worker, ledger, timeout=None):
+        seen.append(max_tokens)
+        ledger.worker.add(Call("worker", 3, 4, False, 0.0))
+        ledger.verify.add(Call("YES", 5, 1, False, 0.0))
+        return Delegation(
+            "worker",
+            True,
+            False,
+            False,
+            Call("worker", 3, 4, False, 0.0),
+            Call("YES", 5, 1, False, 0.0),
+        )
+
+    monkeypatch.setattr(gateway_module, "delegate", fake_delegate)
+    with TestClient(create_app(plan)) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            content=(
+                b'{"model": "nmesh-delegate", "messages": '
+                b'[{"role": "user", "content": "hi"}], "max_tokens": 1e999}'
+            ),
+            headers={"Content-Type": "application/json"},
+        )
+    assert response.status_code == 200
+    assert seen == [256]

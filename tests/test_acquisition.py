@@ -842,3 +842,63 @@ def test_fast_download_noop_without_package(monkeypatch) -> None:
     acquisition._enable_fast_download()
     assert "HF_XET_HIGH_PERFORMANCE" not in acquisition.os.environ
     assert "HF_HUB_ENABLE_HF_TRANSFER" not in acquisition.os.environ
+
+
+def test_local_gguf_skips_file_vanished_mid_scan(tmp_path, monkeypatch) -> None:
+    """A cached GGUF removed between the directory scan and the size stat()
+    is 'incomplete' like a missing split part — skip it, don't crash."""
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 10)
+    service = SimpleNamespace(
+        model_id="model",
+        quant="q4_k_m",
+        name="chat",
+        download_repo="repo",
+        memory=SimpleNamespace(weight_bytes=100),
+    )
+    real_stat = Path.stat
+
+    def flaky(self, *args, **kwargs):
+        if self.name == "model-Q4_K_M.gguf":
+            raise FileNotFoundError(str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky)
+
+    resolved, corrupt = acquisition._local_gguf(
+        tmp_path / "model-Q4_K_M.gguf", service
+    )
+    assert resolved is None and corrupt is None
+
+
+def test_acquire_falls_to_download_when_cached_gguf_vanishes(
+    tmp_path, monkeypatch
+) -> None:
+    """The exists()→stat() window in the cached-artifact check must not let a
+    concurrent deletion crash acquire — treat it as 'not on disk' and
+    continue to the download path."""
+    target = tmp_path / "planned.gguf"
+    target.write_bytes(b"artifact")
+    service = _llamacpp_service(tmp_path)
+    monkeypatch.setattr(
+        acquisition,
+        "_resolve_gguf",
+        lambda _repo, _quant: ("q4_k_m", ["model-Q4_K_M.gguf"], 100),
+    )
+
+    def fake_download(**_kwargs):
+        dest = tmp_path / "model-Q4_K_M.gguf"
+        dest.write_bytes(b"x" * 100)
+        return str(dest)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    real_stat = Path.stat
+
+    def flaky(self, *args, **kwargs):
+        if self == target:
+            raise FileNotFoundError(str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky)
+
+    acquired = acquisition.acquire(service)
+    assert acquired.path == tmp_path / "model-Q4_K_M.gguf"

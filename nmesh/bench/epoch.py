@@ -139,7 +139,7 @@ def measure_reference(
             check=False,
             timeout=_reference_timeout(model, gen, reps),
         )
-    except (OSError, subprocess.SubprocessError) as error:
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError) as error:
         raise RuntimeError(f"reference workload failed: {error}") from error
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit code {result.returncode}"

@@ -181,7 +181,7 @@ def detect_windows() -> list[GPUInfo]:
     ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return []
     if result.returncode != 0 or not result.stdout.strip():
         return []
