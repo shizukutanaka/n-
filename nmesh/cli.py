@@ -4105,6 +4105,7 @@ def _watch(args: argparse.Namespace) -> int:
         OSError,
         TypeError,
         ValueError,
+        RecursionError,
         json.JSONDecodeError,
         httpx.HTTPError,
     ) as error:
