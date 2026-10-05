@@ -314,3 +314,36 @@ def test_prompt_calibration_uses_text_key_for_prompt_requests(monkeypatch) -> No
         {"prompt_tokens": 5},
     ))
     assert calls == [(calibration_key(service.model_id, False), "hello", 5)]
+
+
+def test_prompt_calibration_ignores_nonfinite_usage(monkeypatch) -> None:
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        gateway,
+        "record_token_calibration",
+        lambda *args: calls.append(args),
+    )
+    service = _routing_plan().services[0]
+    for value in (1e999, -1e999, float("nan")):
+        asyncio.run(gateway._record_prompt_calibration(
+            service,
+            {"messages": [{"content": "hello"}]},
+            {"prompt_tokens": value},
+        ))
+    assert calls == []
+
+
+def test_exact_tokens_rejects_bool_payload() -> None:
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"tokens": True}
+
+    class Client:
+        async def post(self, *args, **kwargs):
+            return Response()
+
+    from nmesh.gateway.tokens import exact_tokens
+    assert asyncio.run(exact_tokens("http://x", "hi", Client())) is None
