@@ -190,6 +190,16 @@ def test_backend_version_line_prefers_line_containing_version() -> None:
     ) == "Warning: client version is 0.33.2"
 
 
+def test_run_returns_none_on_undecodable_output(monkeypatch) -> None:
+    import subprocess
+
+    def run(*args, **kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert detector._run(["nvidia-smi", "--query-gpu=name"]) == (None, None)
+
+
 def test_nvidia_smi_parser_skips_non_finite_fields() -> None:
     text = "0, GPU A, inf, 10000, 8.6\n1, GPU B, 8192, 4096, 8.0"
     gpus = parse_nvidia_smi(text)

@@ -38,7 +38,7 @@ def _run(command: list[str]) -> tuple[str | None, str | None]:
             timeout=5,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
         return None, None
     return result.stdout, result.stderr
 
