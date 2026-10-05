@@ -1291,3 +1291,62 @@ def test_gateway_origins_env_opt_in(monkeypatch) -> None:
     monkeypatch.setenv("NMESH_GATEWAY_ORIGINS", "https://other.example")
     response = client.get("/v1/models", headers={"Origin": origin})
     assert response.status_code == 403
+
+
+def _rerank_plan(port: int) -> Plan:
+    model = ModelSpec("embed-model", "test", 500_000_000, 24, 16, 2, 64,
+                      1024, 4096, ["embed"], 80.0, "test",
+                      {"hf_gguf": "test/repo"})
+    plan = build_plan(
+        profile(64, (24,)), [model], Policy(roles=["rerank"]),
+    )
+    return replace(
+        plan, services=[replace(plan.services[0], port=port)]
+    )
+
+
+def test_gateway_rejects_oversized_declared_body(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_module, "MAX_REQUEST_BYTES", 32)
+    client = TestClient(create_app(_rerank_plan(1)))
+    response = client.post("/v1/rerank", json={
+        "model": "nmesh-auto",
+        "query": "a query much longer than thirty two bytes",
+        "documents": ["d"],
+    })
+    assert response.status_code == 413
+    assert response.json()["error"]["type"] == "invalid_request_error"
+
+
+def test_gateway_rejects_oversized_chunked_body(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_module, "MAX_REQUEST_BYTES", 32)
+    client = TestClient(create_app(_rerank_plan(1)))
+    body = b'{"model":"nmesh-auto","query":"q","documents":["' + b"x" * 64 + b'"]}'
+    chunks = (body[i:i + 16] for i in range(0, len(body), 16))
+    response = client.post(
+        "/v1/rerank",
+        content=chunks,
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 413
+
+
+def test_gateway_chunked_body_within_cap_reaches_upstream(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_module, "MAX_REQUEST_BYTES", 4096)
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _RerankHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        plan = _rerank_plan(upstream.server_address[1])
+        client = TestClient(create_app(plan))
+        body = b'{"model":"nmesh-auto","query":"q","documents":["a","b"]}'
+        chunks = (body[i:i + 8] for i in range(0, len(body), 8))
+        response = client.post(
+            "/v1/rerank",
+            content=chunks,
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code == 200
+        assert _RerankHandler.request_body["query"] == "q"
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
