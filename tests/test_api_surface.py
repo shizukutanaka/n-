@@ -764,3 +764,18 @@ def test_jobs_list_rejects_negative_limit() -> None:
         ok = client.get("/v1/jobs?limit=0")
         assert ok.status_code == 200
         assert ok.json()["jobs"] == []
+
+
+def test_reserved_tokens_skips_non_finite_limits() -> None:
+    assert gateway_module._reserved_tokens({"max_tokens": float("inf")}) == 0
+    assert gateway_module._reserved_tokens({"max_tokens": 1e999}) == 0
+    assert gateway_module._reserved_tokens(
+        {"max_tokens": 1e999, "max_completion_tokens": 8}
+    ) == 8
+
+
+def test_created_timestamp_falls_back_for_non_finite() -> None:
+    ts = gateway_module._created_timestamp(
+        SimpleNamespace(created_at="Infinity")
+    )
+    assert isinstance(ts, int) and ts > 0
