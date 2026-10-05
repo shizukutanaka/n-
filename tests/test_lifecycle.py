@@ -2134,3 +2134,28 @@ def test_log_max_bytes_invalid_falls_back(
     handle = open_log("chat")
     handle.close()
     assert (tmp_path / "logs" / "chat.log.1").exists()
+
+
+def test_open_log_tolerates_log_vanishing_during_rotate(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A log file deleted between open_log's exists() check and rotate()'s
+    stat() must not crash the supervisor's spawn path — rotation is
+    housekeeping, so skip it and open the log normally."""
+    monkeypatch.setenv("NMESH_HOME", str(tmp_path))
+    path = log_path("chat")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"old")
+    real_stat = Path.stat
+
+    def flaky(self, *args, **kwargs):
+        if self == path:
+            raise FileNotFoundError(str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky)
+
+    handle = open_log("chat")
+    handle.write(b"new")
+    handle.close()
+    assert path.read_bytes() == b"oldnew"
