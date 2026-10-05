@@ -1193,6 +1193,7 @@ def _runtime(args: argparse.Namespace) -> int:
             port = (
                 int(recorded_port)
                 if isinstance(recorded_port, (int, float, str))
+                and not isinstance(recorded_port, bool)
                 else args.port
             )
             with local_urlopen(f"http://127.0.0.1:{port}/health", timeout=2):

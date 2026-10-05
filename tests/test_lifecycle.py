@@ -2136,6 +2136,36 @@ def test_log_max_bytes_invalid_falls_back(
     assert (tmp_path / "logs" / "chat.log.1").exists()
 
 
+def test_entry_alive_rejects_boolean_pid() -> None:
+    assert Supervisor._entry_alive({"pid": True}) is False
+    assert Supervisor._entry_alive({"pid": False}) is False
+
+
+def test_stop_gateway_ignores_boolean_pid(monkeypatch, tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "owner_pid": os.getpid() + 1,
+                "gateway": {"pid": True, "port": 18000,
+                            "owner_pid": os.getpid() + 1},
+                "services": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        "nmesh.runtime.supervisor.gateway_listener_pid", lambda _port: 4242,
+    )
+    supervisor = Supervisor(state_path=state_path, terminator=terminated.append)
+
+    supervisor.down(foreign=True)
+
+    assert terminated == [4242]
+
+
 def test_entry_alive_rejects_non_finite_pid() -> None:
     assert Supervisor._entry_alive({"pid": float("inf")}) is False
 
