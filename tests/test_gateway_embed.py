@@ -649,3 +649,24 @@ def test_non_embed_route_is_unchanged(monkeypatch) -> None:
     finally:
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_embedding_input_with_lone_surrogate_returns_400_not_500(
+    monkeypatch,
+) -> None:
+    upstream = _start_autochunk_upstream()
+    try:
+        with _client(monkeypatch, upstream) as client:
+            response = client.post(
+                "/v1/embeddings",
+                content=b'{"model":"nmesh-auto","input":"ok \\ud800 still"}',
+                headers={"Content-Type": "application/json"},
+            )
+        assert response.status_code == 400
+        error = response.json()["error"]
+        assert error["type"] == "invalid_request_error"
+        assert "surrogate" in error["message"]
+        assert len(_AutoChunkHandler.request_bodies) == 0
+    finally:
+        upstream.shutdown()
+        upstream.server_close()

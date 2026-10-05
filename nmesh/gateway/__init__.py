@@ -1448,6 +1448,20 @@ def create_app(
                 if job is not None:
                     jobs.finish(job, ok=False, detail="upstream_unreachable")
                 raise
+            except UnicodeEncodeError as error:
+                await client.aclose()
+                in_flight.leave(service.name, ticket)
+                last_use.touch(service.name)
+                if locked:
+                    gate.release()
+                if limit_slots:
+                    limiter.release(slot_token)
+                if job is not None:
+                    jobs.finish(job, ok=False, detail=str(error))
+                raise HTTPException(
+                    status_code=400,
+                    detail="request contains unpaired surrogates",
+                ) from error
             except httpx.HTTPError as error:
                 await client.aclose()
                 in_flight.leave(service.name, ticket)
@@ -1651,6 +1665,11 @@ def create_app(
             async def post_upstream(payload: Mapping[str, object]) -> httpx.Response:
                 try:
                     return await client.post(url, json=payload)
+                except UnicodeEncodeError as error:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="request contains unpaired surrogates",
+                    ) from error
                 except (httpx.ConnectError, httpx.ConnectTimeout):
                     try:
                         await asyncio.to_thread(
