@@ -230,3 +230,29 @@ def test_bench_cache_rejects_non_finite_measurements(tmp_path) -> None:
     )
     records = load_records(cache)
     assert set(records) == {"legacy_ok", "record_ok"}
+
+
+def test_bench_cache_rejects_non_finite_run_counts(tmp_path) -> None:
+    from nmesh.bench import load_records
+
+    record = {
+        "tps": 12.0,
+        "decode_tps_min": 10.0,
+        "decode_tps_max": 14.0,
+        "runs": 3,
+        "passes": 2,
+        "stable": True,
+        "measured_at": "now",
+        "harness": "bench-v2",
+        "sessions": [12.0],
+    }
+    cache = tmp_path / "bench.json"
+    cache.write_text(
+        json.dumps({
+            "record_infinite_runs": {**record, "runs": float("inf")},
+            "record_infinite_passes": {**record, "passes": float("inf")},
+            "record_ok": record,
+        }),
+        encoding="utf-8",
+    )
+    assert set(load_records(cache)) == {"record_ok"}

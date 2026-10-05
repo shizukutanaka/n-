@@ -1909,9 +1909,13 @@ def _models(args: argparse.Namespace) -> int:
             quant = (
                 FILE_TYPE_QUANT.get(info.file_type) if info.file_type is not None else None
             ) if info is not None else label
+            try:
+                size = path.stat().st_size
+            except OSError:
+                continue
             items.append({
                 "path": str(path),
-                "bytes": path.stat().st_size,
+                "bytes": size,
                 "quant": quant,
                 "label": label,
                 "label_mismatch": inventory_label_mismatch(quant, label),
@@ -2124,7 +2128,11 @@ def _reference_context(
         return None
     threads = max(1, min(os.cpu_count() or 4, 8))
     engine_build = active.tag if active is not None else server.name
-    return binary, model, reference_id(engine_build, model, threads, 32), threads
+    try:
+        rid = reference_id(engine_build, model, threads, 32)
+    except OSError:
+        return None
+    return binary, model, rid, threads
 
 
 def _unbounded_client() -> httpx.Client:
@@ -4106,6 +4114,7 @@ def _watch(args: argparse.Namespace) -> int:
         OSError,
         TypeError,
         ValueError,
+        RecursionError,
         json.JSONDecodeError,
         httpx.HTTPError,
     ) as error:

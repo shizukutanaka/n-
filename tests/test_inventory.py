@@ -238,3 +238,27 @@ def test_cli_scan_and_local_report_header_metadata(
     missing = tmp_path / "missing"
     assert cli.main(["models", "scan", "--json", "--root", str(missing)]) == 1
     assert "not an existing directory" in capsys.readouterr().err
+
+
+def test_models_local_skips_file_vanished_mid_listing(
+    tmp_path: Path, monkeypatch, capsys,
+) -> None:
+    """`nmesh models local` scanning files that are concurrently removed
+    (e.g. `models rm` in another shell) must not crash with a
+    FileNotFoundError traceback — the vanished entry is simply omitted."""
+    home = tmp_path / "home"
+    gone = _write(home / "models" / "gone-f16.gguf")
+    kept = _write(home / "models" / "kept-q4km.gguf")
+    monkeypatch.setenv("NMESH_HOME", str(home))
+    real_stat = Path.stat
+
+    def flaky(self, *args, **kwargs):
+        if self == gone:
+            raise FileNotFoundError(str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky)
+
+    assert cli.main(["models", "local", "--json"]) == 0
+    local = json.loads(capsys.readouterr().out)
+    assert [item["path"] for item in local] == [str(kept)]

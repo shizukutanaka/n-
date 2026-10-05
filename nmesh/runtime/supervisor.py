@@ -414,7 +414,7 @@ class Supervisor:
                     else None
                 )
                 return _pid_alive(int(pid), created)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return False
         if entry.get("shared") or entry.get("external"):
             return cls._health_url_alive(entry.get("health_url"))
