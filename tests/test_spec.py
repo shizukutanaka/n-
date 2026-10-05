@@ -1089,3 +1089,37 @@ def test_spec_measure_ignores_orphan_pid_serving_other_model(
     ]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["decision"] == "allow"
+
+
+def test_draft_vanishing_after_resolution_degrades_to_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A draft file removed between _spec_draft_path's is_file() probe and
+    the size stat() must degrade to spec=none with the missing-draft
+    warning — not crash plan() with FileNotFoundError."""
+    draft = tmp_path / "models" / "draft.gguf"
+    draft.parent.mkdir()
+    draft.write_bytes(b"draft")
+    monkeypatch.setattr(
+        "nmesh.planner.core._spec_draft_path", lambda _value: draft
+    )
+    real_stat = Path.stat
+
+    def flaky(self, *args, **kwargs):
+        if self == draft:
+            raise FileNotFoundError(str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky)
+    result = _planned_spec(
+        tmp_path,
+        monkeypatch,
+        decision=None,
+        flags=("--spec-type", "--spec-draft-model", "--spec-draft-n-max"),
+        policy=Policy(
+            roles=["chat"], min_decode_tps=0, eval_evidence=False,
+            spec="draft", spec_draft="draft",
+        ),
+    )
+    assert any("not found" in warning for warning in result.warnings)
+    assert "--spec-type" not in result.services[0].launch.argv
