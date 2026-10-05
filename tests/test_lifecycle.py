@@ -2136,6 +2136,10 @@ def test_log_max_bytes_invalid_falls_back(
     assert (tmp_path / "logs" / "chat.log.1").exists()
 
 
+def test_entry_alive_rejects_non_finite_pid() -> None:
+    assert Supervisor._entry_alive({"pid": float("inf")}) is False
+
+
 def test_open_log_tolerates_log_vanishing_during_rotate(
     monkeypatch, tmp_path: Path
 ) -> None:
