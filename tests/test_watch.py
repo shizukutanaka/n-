@@ -744,6 +744,18 @@ def test_watch_state_tmp_name_is_pid_namespaced(
     assert (tmp_path / "watch.json").exists()
 
 
+def test_arxiv_doctype_feed_reports_unreachable() -> None:
+    feed = """<?xml version="1.0"?>
+    <!DOCTYPE feed [<!ENTITY a "x">]>
+    <feed xmlns="http://www.w3.org/2005/Atom"><entry><id>u</id></entry></feed>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=feed)
+    status, items = fetch_arxiv("all:x", 1, _client(handler))
+    assert not status.reachable and items == ()
+    assert "DOCTYPE" in status.detail
+
+
 def test_watch_sources_report_unreachable_on_deeply_nested_json(monkeypatch) -> None:
     deep = "[" * 30000 + "]" * 30000
 
