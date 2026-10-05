@@ -155,7 +155,7 @@ def _tree_weight_sets(repo: str, client: httpx.Client) -> dict[str, int]:
         if response.status_code != 200:
             return {}
         return _weight_sets(response.json())
-    except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError):
+    except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError, RecursionError):
         return {}
 
 
@@ -232,7 +232,7 @@ def _model_finding(
         if weight_sets:
             verified["smallest_weight_bytes"] = min(weight_sets.values())
         return Finding("catalog_gap", repo, mention.count, mention.sources, verified)
-    except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError):
+    except (httpx.HTTPError, ValueError, TypeError, json.JSONDecodeError, RecursionError):
         return None
 
 

@@ -239,7 +239,7 @@ async def exact_tokens(base_url: str, text: str, client: AsyncClient) -> int | N
         tokens = payload.get("tokens") if isinstance(payload, dict) else None
         if isinstance(tokens, list):
             return len(tokens)
-        if isinstance(tokens, int) and tokens >= 0:
+        if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0:
             return tokens
     # Any client or transport error must fall back to the estimate, never fail the request.
     except Exception:  # noqa: BLE001
