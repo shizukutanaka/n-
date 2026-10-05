@@ -548,7 +548,7 @@ def _reserved_tokens(request: Mapping[str, object]) -> int:
             continue
         try:
             values.append(int(value))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
     return max(values)
 
@@ -556,7 +556,7 @@ def _reserved_tokens(request: Mapping[str, object]) -> int:
 def _created_timestamp(plan: Plan) -> int:
     try:
         return int(float(plan.created_at))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         try:
             created = datetime.fromisoformat(plan.created_at.replace("Z", "+00:00"))
             if created.tzinfo is None:
@@ -628,7 +628,7 @@ async def _record_prompt_calibration(
         return
     try:
         prompt_tokens = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return
     if prompt_tokens < 0:
         return
@@ -1974,7 +1974,7 @@ def create_app(
                 if isinstance(requested_limit, (int, float, str))
                 else 256
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             max_tokens = 256
         prompt = _content(request)
         ledger = Ledger()

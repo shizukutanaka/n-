@@ -22,7 +22,13 @@ from nmesh.watch.sources import (
     fetch_zenn,
 )
 from nmesh.watch.state import WatchState, load_state, save_state
-from nmesh.watch.verify import Finding, _known_quant, _weight_sets, verify
+from nmesh.watch.verify import (
+    Finding,
+    _known_quant,
+    _tree_weight_sets,
+    _weight_sets,
+    verify,
+)
 
 
 def _client(handler: object) -> httpx.Client:
@@ -748,3 +754,28 @@ def test_arxiv_doctype_feed_reports_unreachable() -> None:
     status, items = fetch_arxiv("all:x", 1, _client(handler))
     assert not status.reachable and items == ()
     assert "DOCTYPE" in status.detail
+
+
+def test_watch_sources_report_unreachable_on_deeply_nested_json(monkeypatch) -> None:
+    deep = "[" * 30000 + "]" * 30000
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=deep)
+
+    client = _client(handler)
+    for fetcher in (fetch_qiita, fetch_zenn, fetch_github):
+        status, items = fetcher(("o/r",), 1, client)
+        assert not status.reachable
+        assert items == ()
+    status, items = fetch_hf("GGUF", 1, client)
+    assert not status.reachable and items == ()
+    monkeypatch.setenv("NMESH_X_BEARER_TOKEN", "x")
+    status, items = fetch_x("llm", 1, client)
+    assert not status.reachable and items == ()
+
+
+def test_verify_tree_weight_sets_ignores_deeply_nested_json() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content="[" * 30000 + "]" * 30000)
+
+    assert _tree_weight_sets("o/r", _client(handler)) == {}

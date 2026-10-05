@@ -150,7 +150,7 @@ def _record(value: object) -> BenchRecord | None:
             value.get("last_rejected_reference_id", "")
         )
         last_rejected_epoch = str(value.get("last_rejected_epoch", "unknown"))
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError, ValueError, OverflowError):
         return None
     values = (tps, minimum, maximum, *sessions, *rejected)
     optional = (
