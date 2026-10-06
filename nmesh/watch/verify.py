@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 import httpx
 
 from nmesh.catalog import load_catalog
+from nmesh.net import bounded_get
 from nmesh.paths import nmesh_home
 from nmesh.planner import BPW
 
@@ -149,8 +150,9 @@ def _weight_sets(payload: object) -> dict[str, int]:
 
 def _tree_weight_sets(repo: str, client: httpx.Client) -> dict[str, int]:
     try:
-        response = client.get(
-            f"https://huggingface.co/api/models/{repo}/tree/main?recursive=1"
+        response = bounded_get(
+            client,
+            f"https://huggingface.co/api/models/{repo}/tree/main?recursive=1",
         )
         if response.status_code != 200:
             return {}
@@ -170,7 +172,7 @@ def _model_finding(
             if stats is not None:
                 stats["in_catalog"] = stats.get("in_catalog", 0) + 1
             return None
-        response = client.get(f"https://huggingface.co/api/models/{repo}")
+        response = bounded_get(client, f"https://huggingface.co/api/models/{repo}")
         if response.status_code in {401, 404}:
             return None
         response.raise_for_status()
@@ -200,19 +202,21 @@ def _model_finding(
         })
         config_repo = repo
         config_fields: dict[str, object] = {}
-        config_response = client.get(
-            f"https://huggingface.co/{repo}/raw/main/config.json"
+        config_response = bounded_get(
+            client, f"https://huggingface.co/{repo}/raw/main/config.json"
         )
         if config_response.status_code == 404 and repo.casefold().endswith("-gguf"):
             base_repo = re.sub(r"-gguf$", "", repo, flags=re.IGNORECASE)
-            fallback = client.get(
-                f"https://huggingface.co/{base_repo}/raw/main/config.json"
+            fallback = bounded_get(
+                client,
+                f"https://huggingface.co/{base_repo}/raw/main/config.json",
             )
             if fallback.status_code == 200:
                 config_repo = base_repo
                 config_response = fallback
-                base_metadata_response = client.get(
-                    f"https://huggingface.co/api/models/{base_repo}"
+                base_metadata_response = bounded_get(
+                    client,
+                    f"https://huggingface.co/api/models/{base_repo}",
                 )
                 if base_metadata_response.status_code == 200:
                     base_metadata = _mapping(base_metadata_response.json())
