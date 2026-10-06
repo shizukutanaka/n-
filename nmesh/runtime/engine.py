@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from nmesh.net import bounded_read
 from nmesh.paths import nmesh_home
 
 ATOM_URL = "https://github.com/ggml-org/llama.cpp/releases.atom"
@@ -61,7 +62,7 @@ def _require_https(url: str) -> str:
 
 def _fetch_url(url: str) -> bytes:
     with urllib.request.urlopen(_require_https(url), timeout=30) as response:
-        return response.read()
+        return bounded_read(response)
 
 
 def _text(value: bytes | str) -> str:

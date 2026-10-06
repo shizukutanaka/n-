@@ -10,14 +10,15 @@ call is silently routed through a dead end: healthy engines look dead
 (restart loops), and gateway requests fail before reaching the service.
 The helpers below bypass env proxies for those known-local targets;
 remote endpoints (model downloads, watch sources) keep honoring the
-user's proxy settings.
+user's proxy settings — `bounded_get`/`bounded_read` cap those remote
+response bodies.
 """
 
 from __future__ import annotations
 
 import urllib.request
 import urllib.response
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import httpx
@@ -64,3 +65,45 @@ def local_async_client(
         trust_env=False,
         follow_redirects=follow_redirects,
     )
+
+
+_MAX_BODY_BYTES = 16 * 1024 * 1024
+
+
+def bounded_get(
+    session: httpx.Client,
+    url: str,
+    *,
+    max_bytes: int = _MAX_BODY_BYTES,
+    **kwargs: Any,
+) -> httpx.Response:
+    """GET a remote endpoint with a capped body: remote servers can answer
+    with arbitrarily large responses, so stream and abort past `max_bytes`
+    instead of buffering the whole body in memory."""
+    import httpx
+
+    with session.stream("GET", url, **kwargs) as response:
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes(64 * 1024):
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError("upstream response exceeds the fetch body limit")
+            chunks.append(chunk)
+        return httpx.Response(
+            response.status_code,
+            headers=response.headers,
+            content=b"".join(chunks),
+            request=response.request,
+        )
+
+
+def bounded_read(
+    response: urllib.response.addinfourl, *, max_bytes: int = _MAX_BODY_BYTES
+) -> bytes:
+    """read() a urlopen remote response with a cap — the server can answer
+    with an unbounded body, so read at most `max_bytes` + 1 and fail."""
+    body = response.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        raise ValueError("upstream response exceeds the fetch body limit")
+    return body
