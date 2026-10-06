@@ -5,6 +5,7 @@ import json
 import os
 import shlex
 import socket
+import stat
 import sys
 import threading
 import time
@@ -2193,3 +2194,20 @@ def test_open_log_tolerates_log_vanishing_during_rotate(
     handle.write(b"new")
     handle.close()
     assert path.read_bytes() == b"oldnew"
+
+
+def test_autostart_env_file_born_owner_only(
+    monkeypatch, tmp_path: Path
+) -> None:
+    if sys.platform == "win32":
+        pytest.skip("POSIX file modes do not apply on Windows")
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(service_unit_module, "nmesh_home", lambda: tmp_path)
+    monkeypatch.setattr(cli, "is_windows", lambda: False)
+    monkeypatch.setenv("NMESH_API_KEY", "secret-key")
+
+    assert cli.main(["autostart", "--install", "--json"]) == 0
+    env_path = tmp_path / "gateway.env"
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+    assert "secret-key" in env_path.read_text(encoding="utf-8")
+
