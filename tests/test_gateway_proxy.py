@@ -1411,3 +1411,49 @@ def test_forward_timeout_keeps_floor_for_non_streamed_generation() -> None:
     assert blocking.read >= gateway_module.GENERATION_TIMEOUT_FLOOR
     assert completion.read >= gateway_module.GENERATION_TIMEOUT_FLOOR
     assert streamed.read < gateway_module.GENERATION_TIMEOUT_FLOOR
+
+
+def test_gateway_chunked_with_small_content_length_still_capped(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(gateway_module, "MAX_REQUEST_BYTES", 32)
+    client = TestClient(create_app(_rerank_plan(1)))
+    body = b'{"model":"nmesh-auto","query":"q","documents":["' + b"x" * 64 + b'"]}'
+    chunks = (body[i:i + 16] for i in range(0, len(body), 16))
+    response = client.post(
+        "/v1/rerank",
+        content=chunks,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": "10",
+            "Transfer-Encoding": "chunked",
+        },
+    )
+    assert response.status_code == 413
+
+
+def test_gateway_chunked_get_body_is_capped(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_module, "MAX_REQUEST_BYTES", 32)
+    client = TestClient(create_app(_rerank_plan(1)))
+    response = client.request(
+        "GET",
+        "/v1/models",
+        content=iter([b"x" * 64]),
+    )
+    assert response.status_code == 413
+
+
+def test_gateway_too_large_response_keeps_cors_headers(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(gateway_module, "MAX_REQUEST_BYTES", 32)
+    client = TestClient(create_app(_rerank_plan(1)))
+    origin = "http://localhost:3000"
+    response = client.post(
+        "/v1/rerank",
+        content=iter([b"x" * 64]),
+        headers={"Origin": origin, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 413
+    assert response.headers["Access-Control-Allow-Origin"] == origin
+    assert response.headers["Vary"] == "Origin"
