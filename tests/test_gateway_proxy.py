@@ -1352,6 +1352,26 @@ def test_gateway_chunked_body_within_cap_reaches_upstream(monkeypatch) -> None:
         upstream.server_close()
 
 
+def test_gateway_unhandled_error_returns_json_envelope(monkeypatch) -> None:
+    def _boom(*_args: object, **_kwargs: object) -> str:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(gateway_module, "route", _boom)
+    client = TestClient(create_app(_rerank_plan(1)), raise_server_exceptions=False)
+    origin = "http://localhost:3000"
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "nmesh-auto", "messages": []},
+        headers={"Origin": origin},
+    )
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    payload = response.json()
+    assert payload["error"]["type"] == "server_error"
+    assert payload["error"]["code"] == 500
+    assert response.headers["Access-Control-Allow-Origin"] == origin
+
+
 def test_forward_timeout_scales_with_prompt_tokens() -> None:
     service = _rerank_plan(1).services[0]
     small = gateway_module._forward_timeout({"query": "q"}, service)

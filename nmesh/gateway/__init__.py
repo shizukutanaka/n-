@@ -8,6 +8,7 @@ import re
 import secrets
 import sys
 import time
+import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
@@ -1266,6 +1267,40 @@ def create_app(
             media_type="application/json",
             headers=dict(error.headers or {}),
         )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(
+        _request: Request, error: Exception
+    ) -> Response:
+        # Without a handler Starlette answers unhandled errors with a plain
+        # text 500, breaking the OpenAI-style JSON envelope every other error
+        # uses — an API client then cannot even parse the failure. Keep the
+        # traceback on stderr (the handler consumes the exception) but the
+        # body generic.
+        traceback.print_exc()
+        payload = {
+            "error": {
+                "message": "Internal server error",
+                "type": "server_error",
+                "code": 500,
+            }
+        }
+        response = Response(
+            content=json.dumps(payload),
+            status_code=500,
+            media_type="application/json",
+        )
+        # This handler runs above the http middleware, so the middleware's
+        # post-block CORS headers never reach its response — attach them here.
+        origin = _request.headers.get("origin")
+        if (
+            origin
+            and _origin_allowed(origin)
+            and _request.url.path.startswith("/v1/")
+        ):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+        return response
 
     gate = SwapGate()
     limiter = SlotLimiter()
