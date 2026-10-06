@@ -1350,3 +1350,110 @@ def test_gateway_chunked_body_within_cap_reaches_upstream(monkeypatch) -> None:
     finally:
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_gateway_unhandled_error_returns_json_envelope(monkeypatch) -> None:
+    def _boom(*_args: object, **_kwargs: object) -> str:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(gateway_module, "route", _boom)
+    client = TestClient(create_app(_rerank_plan(1)), raise_server_exceptions=False)
+    origin = "http://localhost:3000"
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "nmesh-auto", "messages": []},
+        headers={"Origin": origin},
+    )
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    payload = response.json()
+    assert payload["error"]["type"] == "server_error"
+    assert payload["error"]["code"] == 500
+    assert response.headers["Access-Control-Allow-Origin"] == origin
+
+
+def test_forward_timeout_scales_with_prompt_tokens() -> None:
+    service = _rerank_plan(1).services[0]
+    small = gateway_module._forward_timeout({"query": "q"}, service)
+    big = gateway_module._forward_timeout(
+        {"documents": ["word " * 4000]}, service
+    )
+    assert small.connect == gateway_module.CONNECT_TIMEOUT
+    assert small.read < big.read
+
+
+def test_forward_timeout_caps_at_slots_times_context() -> None:
+    service = _rerank_plan(1).services[0]
+    request = {"messages": [{"role": "user", "content": "x " * 10**7}]}
+    timeout = gateway_module._forward_timeout(request, service)
+    expected = gateway_module.FORWARD_TIMEOUT_BASE + (
+        service.context * max(1, service.memory.parallel_slots)
+    )
+    assert timeout.read == expected
+
+
+def test_forward_timeout_counts_input_and_ids() -> None:
+    service = _rerank_plan(1).services[0]
+    plain = gateway_module._forward_timeout({}, service)
+    with_ids = gateway_module._forward_timeout(
+        {"input": [[1, 2, 3] * 500]}, service
+    )
+    assert plain.read == gateway_module.FORWARD_TIMEOUT_BASE
+    assert with_ids.read > plain.read
+
+
+def test_forward_timeout_keeps_floor_for_non_streamed_generation() -> None:
+    service = _rerank_plan(1).services[0]
+    chat = {"messages": [{"role": "user", "content": "hi"}]}
+    blocking = gateway_module._forward_timeout(chat, service)
+    streamed = gateway_module._forward_timeout(dict(chat, stream=True), service)
+    completion = gateway_module._forward_timeout({"prompt": "hi"}, service)
+    assert blocking.read >= gateway_module.GENERATION_TIMEOUT_FLOOR
+    assert completion.read >= gateway_module.GENERATION_TIMEOUT_FLOOR
+    assert streamed.read < gateway_module.GENERATION_TIMEOUT_FLOOR
+
+
+def test_gateway_chunked_with_small_content_length_still_capped(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(gateway_module, "MAX_REQUEST_BYTES", 32)
+    client = TestClient(create_app(_rerank_plan(1)))
+    body = b'{"model":"nmesh-auto","query":"q","documents":["' + b"x" * 64 + b'"]}'
+    chunks = (body[i:i + 16] for i in range(0, len(body), 16))
+    response = client.post(
+        "/v1/rerank",
+        content=chunks,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": "10",
+            "Transfer-Encoding": "chunked",
+        },
+    )
+    assert response.status_code == 413
+
+
+def test_gateway_chunked_get_body_is_capped(monkeypatch) -> None:
+    monkeypatch.setattr(gateway_module, "MAX_REQUEST_BYTES", 32)
+    client = TestClient(create_app(_rerank_plan(1)))
+    response = client.request(
+        "GET",
+        "/v1/models",
+        content=iter([b"x" * 64]),
+    )
+    assert response.status_code == 413
+
+
+def test_gateway_too_large_response_keeps_cors_headers(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(gateway_module, "MAX_REQUEST_BYTES", 32)
+    client = TestClient(create_app(_rerank_plan(1)))
+    origin = "http://localhost:3000"
+    response = client.post(
+        "/v1/rerank",
+        content=iter([b"x" * 64]),
+        headers={"Origin": origin, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 413
+    assert response.headers["Access-Control-Allow-Origin"] == origin
+    assert response.headers["Vary"] == "Origin"
