@@ -807,3 +807,20 @@ def test_bounded_get_passes_small_body_through() -> None:
     response = sources._bounded_get(client, "http://example/feed")
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+
+
+def test_bounded_get_decodes_compressed_body_once() -> None:
+    import gzip
+
+    from nmesh.watch import sources
+
+    def handler(_request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=gzip.compress(b'{"ok": true}'),
+            headers={"Content-Encoding": "gzip"},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    response = sources._bounded_get(client, "http://example/feed")
+    assert response.json() == {"ok": True}
