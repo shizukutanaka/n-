@@ -14,12 +14,14 @@ from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.catalog.loader import _model_from_mapping
 from nmesh.planner import (
     BPW,
+    PlannedService,
     Policy,
     build_plan,
     estimate_memory,
     free_budgets,
     load_plan,
     save_plan,
+    set_flag_value,
     structural_weight_bytes,
 )
 from nmesh.planner.core import _gpu_budget
@@ -3237,3 +3239,51 @@ def test_load_plan_rejects_nan_budget_gate(tmp_path, catalog: list[ModelSpec]) -
     payload["policy"]["allow_download_gb"] = float("inf")
     path.write_text(json.dumps(payload))
     assert load_plan(path) is None
+
+
+def test_set_flag_value_handles_truncated_argv() -> None:
+    argv = ["-m"]
+    set_flag_value(argv, "-m", "model.gguf")
+    assert argv == ["-m"]
+    argv = ["-m", "old.gguf"]
+    set_flag_value(argv, "-m", "new.gguf")
+    assert argv == ["-m", "new.gguf"]
+    argv = ["--other", "x"]
+    set_flag_value(argv, "-m", "new.gguf")
+    assert argv == ["--other", "x"]
+
+
+def _truncated_argv_service(catalog: list[ModelSpec]) -> PlannedService:
+    plan = build_plan(profile(32, ()), catalog)
+    service = plan.services[0]
+    return replace(
+        service,
+        backend="llamacpp",
+        n_cpu_moe=2,
+        launch=replace(
+            service.launch,
+            argv=["llama-server", "-m", "model.gguf", "--n-cpu-moe"],
+        ),
+    )
+
+
+def test_rebuild_launch_ignores_trailing_flag(catalog: list[ModelSpec]) -> None:
+    # A hand-edited plan.json or adopted cmdline can end argv in a
+    # value-taking flag; rewriting must not IndexError.
+    service = _truncated_argv_service(catalog)
+    rebuilt = planner_core._rebuild_launch(service, 1, 0)
+    assert rebuilt.argv[-1] == "--n-cpu-moe"
+
+
+def test_rewrite_launch_ignores_trailing_flag(catalog: list[ModelSpec]) -> None:
+    service = _truncated_argv_service(catalog)
+    service = replace(
+        service,
+        n_cpu_moe=0,
+        launch=replace(
+            service.launch, argv=["llama-server", "-m", "model.gguf", "-c"]
+        ),
+    )
+    rewritten = planner_core._rewrite_launch(service, 1, None)
+    assert "-c" in rewritten.argv
+    assert rewritten.argv[-1] == "1"  # appended --parallel slot count
