@@ -534,8 +534,11 @@ def test_jobs_cancel_queued_job() -> None:
             assert cancelled.json()["state"] == "cancelled"
             second.join(timeout=5)
             assert results[0].status_code == 409
+            # A finished (cancelled) job is removed, not rejected.
             again = client.delete(f"/v1/jobs/{queued_id}")
-            assert again.status_code == 409
+            assert again.status_code == 200
+            assert client.get(f"/v1/jobs/{queued_id}").status_code == 404
+            assert client.delete(f"/v1/jobs/{queued_id}").status_code == 404
             assert client.delete("/v1/jobs/job-nope").status_code == 404
             _LimitHandler.release.set()
             first.join(timeout=5)
@@ -558,6 +561,20 @@ def test_job_registry_cancel() -> None:
     assert registry.cancel(running) is False
     listed = [j.id for j in registry.list()]
     assert queued.id in listed and running.id in listed
+
+
+def test_job_registry_remove_only_finished() -> None:
+    from nmesh.gateway.jobs import JobRegistry
+
+    registry = JobRegistry()
+    queued = registry.submit("chat", "/v1/chat/completions")
+    assert registry.remove(queued) is False
+    assert registry.start(queued) is True
+    assert registry.remove(queued) is False
+    registry.finish(queued, ok=True)
+    assert registry.remove(queued) is True
+    assert registry.get(queued.id) is None
+    assert [j.id for j in registry.list()] == []
 
 
 def test_env_timeout_rejects_non_finite_and_negative(monkeypatch) -> None:
