@@ -13,6 +13,7 @@ import re
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlencode
 
 import httpx
@@ -38,6 +39,29 @@ class SourceStatus:
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_MAX_BODY_BYTES = 16 * 1024 * 1024
+
+
+def _bounded_get(session: httpx.Client, url: str, **kwargs: Any) -> httpx.Response:
+    """GET with a capped body: remote endpoints can serve unbounded
+    responses, so stream and abort past the cap instead of buffering
+    the whole body in memory."""
+    with session.stream("GET", url, **kwargs) as response:
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes(64 * 1024):
+            total += len(chunk)
+            if total > _MAX_BODY_BYTES:
+                raise ValueError("upstream response exceeds the watch body limit")
+            chunks.append(chunk)
+        return httpx.Response(
+            response.status_code,
+            headers=response.headers,
+            content=b"".join(chunks),
+            request=response.request,
+        )
+
+
 _GITHUB_REPOS = ("ggml-org/llama.cpp", "vllm-project/vllm", "ollama/ollama")
 _ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
 _ARXIV_QUERY = (
@@ -94,7 +118,7 @@ def fetch_qiita(
         failed_tags: list[str] = []
         for tag in tags:
             try:
-                response = session.get(
+                response = _bounded_get(session, 
                     "https://qiita.com/api/v2/items",
                     params={"per_page": limit, "query": f"tag:{tag}"},
                     headers=headers,
@@ -151,7 +175,7 @@ def fetch_zenn(
         yields: list[str] = []
         for topic in topics:
             try:
-                response = session.get(
+                response = _bounded_get(session, 
                     "https://zenn.dev/api/articles",
                     params={
                         "topicname": topic,
@@ -179,7 +203,7 @@ def fetch_zenn(
                     continue
                 url = f"https://zenn.dev{path}"
                 try:
-                    page = session.get(url)
+                    page = _bounded_get(session, url)
                     page.raise_for_status()
                 except httpx.HTTPError:
                     # A removed or members-only article must not take down the
@@ -235,7 +259,7 @@ def fetch_github(
         ok_repos = 0
         for repo in repos:
             try:
-                response = session.get(
+                response = _bounded_get(session, 
                     f"https://api.github.com/repos/{repo}/releases",
                     params={"per_page": min(max(limit, 1), 100)},
                     headers=headers,
@@ -315,7 +339,7 @@ def fetch_arxiv(
             },
             safe=":",
         )
-        response = session.get(f"https://export.arxiv.org/api/query?{params}")
+        response = _bounded_get(session, f"https://export.arxiv.org/api/query?{params}")
         response.raise_for_status()
         # ElementTree/expat expands internal entities, so reject a feed
         # carrying a DOCTYPE (the only place entities can be declared) before
@@ -381,7 +405,7 @@ def fetch_hf(
         )
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        response = session.get(
+        response = _bounded_get(session, 
             "https://huggingface.co/api/models",
             params={
                 "filter": tag,
@@ -406,7 +430,7 @@ def fetch_hf(
                 continue
             url = f"https://huggingface.co/{model_id}"
             try:
-                card = session.get(f"{url}/raw/main/README.md", headers=headers)
+                card = _bounded_get(session, f"{url}/raw/main/README.md", headers=headers)
             except httpx.HTTPError:
                 card = None
             body = (
@@ -452,7 +476,7 @@ def fetch_x(
     own_client = client is None
     session = client or httpx.Client(timeout=10.0, follow_redirects=True)
     try:
-        response = session.get(
+        response = _bounded_get(session, 
             "https://api.x.com/2/tweets/search/recent",
             params={"query": query, "max_results": min(max(limit, 10), 100)},
             headers={"Authorization": f"Bearer {token}"},
