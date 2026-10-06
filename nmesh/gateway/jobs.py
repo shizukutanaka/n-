@@ -77,6 +77,16 @@ class JobRegistry:
             self._evict()
             return True
 
+    def remove(self, job: Job) -> bool:
+        """Delete a finished job record. Returns False for active jobs."""
+        with self._lock:
+            if job.state in {"queued", "running"}:
+                return False
+            self._jobs.pop(job.id, None)
+            if job.id in self._finished_order:
+                self._finished_order.remove(job.id)
+            return True
+
     def _evict(self) -> None:
         while len(self._finished_order) > self._capacity:
             old = self._finished_order.pop(0)
