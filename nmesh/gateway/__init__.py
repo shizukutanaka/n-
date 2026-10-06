@@ -1304,15 +1304,8 @@ def create_app(
                     media_type="application/json",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
-        declared = request.headers.get("content-length")
-        declared_size = 0
-        if declared is not None:
-            try:
-                declared_size = int(declared)
-            except ValueError:
-                declared_size = -1
-        if declared_size > MAX_REQUEST_BYTES:
-            return Response(
+        def body_too_large() -> Response:
+            response = Response(
                 content=json.dumps({
                     "error": {
                         "message": "Request body too large",
@@ -1323,25 +1316,36 @@ def create_app(
                 status_code=413,
                 media_type="application/json",
             )
-        if declared_size <= 0 and request.method in {
-            "POST", "PUT", "PATCH", "DELETE"
-        }:
+            if origin and path.startswith("/v1/"):
+                response.headers["Access-Control-Allow-Origin"] = origin
+                response.headers["Vary"] = "Origin"
+            return response
+
+        declared = request.headers.get("content-length")
+        declared_size = 0
+        if declared is not None:
+            try:
+                declared_size = int(declared)
+            except ValueError:
+                declared_size = -1
+        chunked = "chunked" in request.headers.get(
+            "transfer-encoding", ""
+        ).lower()
+        if declared_size > MAX_REQUEST_BYTES:
+            return body_too_large()
+        # Any chunked body is measured while streaming — the declared length
+        # cannot be trusted when both headers are present, and a body can
+        # arrive on methods that normally carry none.
+        if chunked or (
+            declared_size <= 0
+            and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        ):
             parts: list[bytes] = []
             received = 0
             async for chunk in request.stream():
                 received += len(chunk)
                 if received > MAX_REQUEST_BYTES:
-                    return Response(
-                        content=json.dumps({
-                            "error": {
-                                "message": "Request body too large",
-                                "type": "invalid_request_error",
-                                "code": 413,
-                            }
-                        }),
-                        status_code=413,
-                        media_type="application/json",
-                    )
+                    return body_too_large()
                 parts.append(chunk)
             request._body = b"".join(parts)
         response = await call_next(request)
