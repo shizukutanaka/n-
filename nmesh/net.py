@@ -90,9 +90,16 @@ def bounded_get(
             if total > max_bytes:
                 raise ValueError("upstream response exceeds the fetch body limit")
             chunks.append(chunk)
+        # iter_bytes already decoded the body, so drop Content-Encoding or
+        # the rebuilt response would try to decode it a second time.
+        headers = [
+            (key, value)
+            for key, value in response.headers.multi_items()
+            if key.lower() != "content-encoding"
+        ]
         return httpx.Response(
             response.status_code,
-            headers=response.headers,
+            headers=headers,
             content=b"".join(chunks),
             request=response.request,
         )

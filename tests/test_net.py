@@ -120,3 +120,20 @@ def test_bounded_read_returns_small_body():
             return self._data[:n]
 
     assert bounded_read(_Response(b"payload")) == b"payload"  # type: ignore[arg-type]
+
+
+def test_bounded_get_decodes_compressed_body_once():
+    import gzip
+
+    from nmesh.net import bounded_get
+
+    def handler(_request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=gzip.compress(b'{"ok": true}'),
+            headers={"Content-Encoding": "gzip"},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    response = bounded_get(client, "http://example/feed")
+    assert response.json() == {"ok": True}
