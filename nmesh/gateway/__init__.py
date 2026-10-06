@@ -78,6 +78,13 @@ QUEUE_TIMEOUT = _env_timeout("NMESH_QUEUE_TIMEOUT", 120.0)
 KEEP_ALIVE = _env_timeout("NMESH_KEEP_ALIVE", 0.0)
 CONNECT_TIMEOUT = _env_timeout("NMESH_CONNECT_TIMEOUT", 10.0, allow_zero=False)
 
+# The endpoint bodies are parsed as dicts, so the whole request body is
+# buffered before a handler runs; an unbounded body is a memory-DoS on the
+# gateway (and therefore on every service behind it). A legitimate body is
+# bounded by the model's context — the largest prompts and embedding batches
+# fit in a few MB — so 64 MiB leaves generous headroom.
+MAX_REQUEST_BYTES = 64 * 1024 * 1024
+
 # A swap-gated request waits on two phases: draining the outgoing member's
 # in-flight requests (kept at a fixed 300s so a wedged stream cannot park the
 # waiter forever) and cold-loading the incoming model, which scales with the
@@ -1297,6 +1304,46 @@ def create_app(
                     media_type="application/json",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
+        declared = request.headers.get("content-length")
+        declared_size = 0
+        if declared is not None:
+            try:
+                declared_size = int(declared)
+            except ValueError:
+                declared_size = -1
+        if declared_size > MAX_REQUEST_BYTES:
+            return Response(
+                content=json.dumps({
+                    "error": {
+                        "message": "Request body too large",
+                        "type": "invalid_request_error",
+                        "code": 413,
+                    }
+                }),
+                status_code=413,
+                media_type="application/json",
+            )
+        if declared_size <= 0 and request.method in {
+            "POST", "PUT", "PATCH", "DELETE"
+        }:
+            parts: list[bytes] = []
+            received = 0
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > MAX_REQUEST_BYTES:
+                    return Response(
+                        content=json.dumps({
+                            "error": {
+                                "message": "Request body too large",
+                                "type": "invalid_request_error",
+                                "code": 413,
+                            }
+                        }),
+                        status_code=413,
+                        media_type="application/json",
+                    )
+                parts.append(chunk)
+            request._body = b"".join(parts)
         response = await call_next(request)
         if origin and path.startswith("/v1/"):
             response.headers["Access-Control-Allow-Origin"] = origin
