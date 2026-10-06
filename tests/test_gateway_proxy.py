@@ -1350,3 +1350,33 @@ def test_gateway_chunked_body_within_cap_reaches_upstream(monkeypatch) -> None:
     finally:
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_forward_timeout_scales_with_prompt_tokens() -> None:
+    service = _rerank_plan(1).services[0]
+    small = gateway_module._forward_timeout({"query": "q"}, service)
+    big = gateway_module._forward_timeout(
+        {"documents": ["word " * 4000]}, service
+    )
+    assert small.connect == gateway_module.CONNECT_TIMEOUT
+    assert small.read < big.read
+
+
+def test_forward_timeout_caps_at_slots_times_context() -> None:
+    service = _rerank_plan(1).services[0]
+    request = {"messages": [{"role": "user", "content": "x " * 10**7}]}
+    timeout = gateway_module._forward_timeout(request, service)
+    expected = gateway_module.FORWARD_TIMEOUT_BASE + (
+        service.context * max(1, service.memory.parallel_slots)
+    )
+    assert timeout.read == expected
+
+
+def test_forward_timeout_counts_input_and_ids() -> None:
+    service = _rerank_plan(1).services[0]
+    plain = gateway_module._forward_timeout({}, service)
+    with_ids = gateway_module._forward_timeout(
+        {"input": [[1, 2, 3] * 500]}, service
+    )
+    assert plain.read == gateway_module.FORWARD_TIMEOUT_BASE
+    assert with_ids.read > plain.read
