@@ -191,14 +191,30 @@ def _identity(info: GgufInfo) -> str:
     return f"{info.arch}|{info.elements}|{info.tensors}|{info.file_type}|{histogram}"
 
 
-def scan(stores: dict[str, Path]) -> list[Artifact]:
+def scan(
+    stores: dict[str, Path],
+    problems: list[str] | None = None,
+) -> list[Artifact]:
+    def note(error: OSError) -> None:
+        if problems is None:
+            return
+        if error.filename:
+            problems.append(f"{error.filename}: {error.strerror or error}")
+        else:
+            problems.append(str(error))
+
     artifacts: list[Artifact] = []
     for store, root in stores.items():
         if not root.is_dir():
             continue
         tags = ollama_tags(root.parent) if store == "ollama" else {}
         visited: set[str] = set()
-        for current, _directories, filenames in os.walk(root, followlinks=False):
+        walk = os.walk(
+            root,
+            followlinks=False,
+            onerror=note if problems is not None else None,
+        )
+        for current, _directories, filenames in walk:
             for filename in filenames:
                 path = Path(current) / filename
                 try:
@@ -211,7 +227,12 @@ def scan(stores: dict[str, Path]) -> list[Artifact]:
                     info = gguf_info(path)
                     if info is None:
                         continue
-                except (OSError, RuntimeError):
+                except FileNotFoundError:
+                    continue
+                except OSError as error:
+                    note(error)
+                    continue
+                except RuntimeError:
                     continue
                 label = parse_label(path.name)
                 artifacts.append(Artifact(

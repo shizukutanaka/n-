@@ -262,3 +262,45 @@ def test_models_local_skips_file_vanished_mid_listing(
     assert cli.main(["models", "local", "--json"]) == 0
     local = json.loads(capsys.readouterr().out)
     assert [item["path"] for item in local] == [str(kept)]
+
+
+def test_scan_reports_unreadable_entries(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Entries that exist but cannot be stat/read must surface in
+    ``problems`` — a silently skipped file understates reclaimable bytes."""
+    kept = _write(tmp_path / "kept-f16.gguf")
+    broken = _write(tmp_path / "broken-q4km.gguf")
+    problems: list[str] = []
+
+    real_info = inventory.gguf_info
+
+    def refusing(path: Path):
+        if path == broken:
+            raise PermissionError(str(path))
+        return real_info(path)
+
+    monkeypatch.setattr(inventory, "gguf_info", refusing)
+
+    artifacts = inventory.scan({"store": tmp_path}, problems=problems)
+    assert [artifact.path for artifact in artifacts] == [kept]
+    assert problems and str(broken) in problems[0]
+
+
+def test_scan_omits_file_vanished_mid_listing(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A file removed between listing and read is a normal race and must
+    not appear in ``problems`` — only unreadable entries do."""
+    gone = _write(tmp_path / "gone-f16.gguf")
+    problems: list[str] = []
+
+    def refusing(path: Path):
+        if path == gone:
+            raise FileNotFoundError(str(path))
+        raise AssertionError("unexpected file")
+
+    monkeypatch.setattr(inventory, "gguf_info", refusing)
+
+    assert inventory.scan({"store": tmp_path}, problems=problems) == []
+    assert problems == []
