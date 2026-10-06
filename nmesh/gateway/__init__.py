@@ -2431,12 +2431,21 @@ def create_app(
         job = jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
-        if not jobs.cancel(job):
+        if job.state == "queued":
+            if not jobs.cancel(job):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"job {job.id} is {job.state}; "
+                        "only queued jobs can be cancelled"
+                    ),
+                )
+        elif not jobs.remove(job):
             raise HTTPException(
                 status_code=409,
                 detail=(
                     f"job {job.id} is {job.state}; "
-                    "only queued jobs can be cancelled"
+                    "a running job cannot be deleted"
                 ),
             )
         return job.as_dict()
