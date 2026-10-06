@@ -10,6 +10,7 @@ from __future__ import annotations
 import html
 import os
 import re
+import time
 import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -69,6 +70,21 @@ def _bounded_get(session: httpx.Client, url: str, **kwargs: Any) -> httpx.Respon
         )
 
 
+# One immediate second look at a transport-level failure — a dropped
+# connection or a read timeout is worth it; an answered HTTP status is not
+# (the caller's raise_for_status decides how to degrade). Watch is a batch
+# job, so a short sleep per query stays well inside the interval.
+_RETRY_DELAY = 1.0
+
+
+def _get(session: httpx.Client, url: str, **kwargs: Any) -> httpx.Response:
+    try:
+        return _bounded_get(session, url, **kwargs)
+    except httpx.TransportError:
+        time.sleep(_RETRY_DELAY)
+        return _bounded_get(session, url, **kwargs)
+
+
 _GITHUB_REPOS = ("ggml-org/llama.cpp", "vllm-project/vllm", "ollama/ollama")
 _ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
 _ARXIV_QUERY = (
@@ -125,7 +141,7 @@ def fetch_qiita(
         failed_tags: list[str] = []
         for tag in tags:
             try:
-                response = _bounded_get(session, 
+                response = _get(session, 
                     "https://qiita.com/api/v2/items",
                     params={"per_page": limit, "query": f"tag:{tag}"},
                     headers=headers,
@@ -182,7 +198,7 @@ def fetch_zenn(
         yields: list[str] = []
         for topic in topics:
             try:
-                response = _bounded_get(session, 
+                response = _get(session, 
                     "https://zenn.dev/api/articles",
                     params={
                         "topicname": topic,
@@ -210,7 +226,7 @@ def fetch_zenn(
                     continue
                 url = f"https://zenn.dev{path}"
                 try:
-                    page = _bounded_get(session, url)
+                    page = _get(session, url)
                     page.raise_for_status()
                 except httpx.HTTPError:
                     # A removed or members-only article must not take down the
@@ -266,7 +282,7 @@ def fetch_github(
         ok_repos = 0
         for repo in repos:
             try:
-                response = _bounded_get(session, 
+                response = _get(session, 
                     f"https://api.github.com/repos/{repo}/releases",
                     params={"per_page": min(max(limit, 1), 100)},
                     headers=headers,
@@ -346,7 +362,7 @@ def fetch_arxiv(
             },
             safe=":",
         )
-        response = _bounded_get(session, f"https://export.arxiv.org/api/query?{params}")
+        response = _get(session, f"https://export.arxiv.org/api/query?{params}")
         response.raise_for_status()
         # ElementTree/expat expands internal entities, so reject a feed
         # carrying a DOCTYPE (the only place entities can be declared) before
@@ -412,7 +428,7 @@ def fetch_hf(
         )
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        response = _bounded_get(session, 
+        response = _get(session, 
             "https://huggingface.co/api/models",
             params={
                 "filter": tag,
@@ -437,7 +453,7 @@ def fetch_hf(
                 continue
             url = f"https://huggingface.co/{model_id}"
             try:
-                card = _bounded_get(session, f"{url}/raw/main/README.md", headers=headers)
+                card = _get(session, f"{url}/raw/main/README.md", headers=headers)
             except httpx.HTTPError:
                 card = None
             body = (
@@ -483,7 +499,7 @@ def fetch_x(
     own_client = client is None
     session = client or httpx.Client(timeout=10.0, follow_redirects=True)
     try:
-        response = _bounded_get(session, 
+        response = _get(session, 
             "https://api.x.com/2/tweets/search/recent",
             params={"query": query, "max_results": min(max(limit, 10), 100)},
             headers={"Authorization": f"Bearer {token}"},
