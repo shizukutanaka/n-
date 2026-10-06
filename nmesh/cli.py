@@ -392,7 +392,10 @@ def _profile_warnings(profile: HardwareProfile, language: str) -> list[str]:
 
 def _load_profile(path: str) -> HardwareProfile:
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        target = Path(path)
+        if not target.is_file():
+            raise ValueError("profile path is not a regular file")
+        payload = json.loads(target.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise TypeError("profile must be an object")
         return profile_from_dict(payload)
@@ -4015,7 +4018,10 @@ def _spec_show(args: argparse.Namespace) -> int:
 def _offline_items(path: str, sources: Sequence[str]) -> tuple[
     tuple[SourceStatus, ...], tuple[SourceItem, ...]
 ]:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    target = Path(path)
+    if not target.is_file():
+        raise TypeError("offline items path is not a regular file")
+    payload = json.loads(target.read_text(encoding="utf-8"))
     raw_items = payload.get("items") if isinstance(payload, dict) else payload
     if not isinstance(raw_items, list):
         raise TypeError("offline items must be a JSON list or an object with items")
