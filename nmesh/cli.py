@@ -239,6 +239,10 @@ def _console() -> Console:
     return Console(legacy_windows=False, markup=False)
 
 
+def _warn_console() -> Console:
+    return Console(legacy_windows=False, markup=False, stderr=True)
+
+
 def _configure_output() -> None:
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -428,7 +432,7 @@ def _doctor(as_json: bool, profile_path: str | None = None) -> int:
         _print_json(data)
         return 0
     if profile_path:
-        _console().print(i18n.t("warn.simulated_profile", language), style="yellow")
+        _warn_console().print(i18n.t("warn.simulated_profile", language), style="yellow")
     table = Table(title="nmesh doctor")
     table.add_column(i18n.t("label.item", language))
     table.add_column(i18n.t("label.value", language))
@@ -838,7 +842,7 @@ def _plan(args: argparse.Namespace) -> int:
         return 0
     language = result.policy.lang
     if getattr(args, "_simulated", False):
-        _console().print(i18n.t("warn.simulated_profile", language), style="yellow")
+        _warn_console().print(i18n.t("warn.simulated_profile", language), style="yellow")
     _render_plan(result)
     if path is not None:
         _console().print(i18n.t("label.saved_to", language, path=path))
@@ -2384,9 +2388,7 @@ def _bench(args: argparse.Namespace) -> int:
                 )
             )
             if embed_record.cap is not None and embed_record.cap < service.context:
-                _console().print(
-                    i18n.t(
-                        "warn.embed_truncated",
+                _warn_console().print(i18n.t("warn.embed_truncated",
                         language,
                         cap=embed_record.cap,
                     )
@@ -2451,16 +2453,13 @@ def _bench(args: argparse.Namespace) -> int:
                     )
                 )
                 if not retrieval_record.control_passed:
-                    _console().print(
-                        i18n.t("warn.retrieval_control", language)
+                    _warn_console().print(i18n.t("warn.retrieval_control", language)
                     )
                 if (
                     retrieval_record.degraded_tokens is not None
                     and service.context > retrieval_record.degraded_tokens
                 ):
-                    _console().print(
-                        i18n.t(
-                            "warn.retrieval_degraded",
+                    _warn_console().print(i18n.t("warn.retrieval_degraded",
                             language,
                             degraded=retrieval_record.degraded_tokens,
                             context=service.context,
@@ -2715,10 +2714,9 @@ def _bench(args: argparse.Namespace) -> int:
         for warning in warnings:
             _console().print(warning)
         if args.passes == 1:
-            _console().print(i18n.t("warn.bench_no_control", language))
+            _warn_console().print(i18n.t("warn.bench_no_control", language))
         elif not controlled.stable:
-            _console().print(i18n.t(
-                "warn.bench_control",
+            _warn_console().print(i18n.t("warn.bench_control",
                 language,
                 ratio=controlled.control_ratio or 0.0,
                 kept=i18n.t(
@@ -2728,8 +2726,7 @@ def _bench(args: argparse.Namespace) -> int:
                 ),
             ))
         if epoch == "degraded":
-            _console().print(i18n.t(
-                "warn.bench_epoch",
+            _warn_console().print(i18n.t("warn.bench_epoch",
                 language,
                 ratio=(
                     reference_tps / reference_baseline
@@ -2742,28 +2739,24 @@ def _bench(args: argparse.Namespace) -> int:
                 ),
             ))
         elif reference_tps is None:
-            _console().print(i18n.t("warn.bench_no_reference", language))
+            _warn_console().print(i18n.t("warn.bench_no_reference", language))
         if demoted:
-            _console().print(i18n.t(
-                "warn.bench_demoted",
+            _warn_console().print(i18n.t("warn.bench_demoted",
                 language,
                 count=len(demoted),
             ))
         if spec_demoted:
-            _console().print(i18n.t(
-                "warn.bench_spec_demoted",
+            _warn_console().print(i18n.t("warn.bench_spec_demoted",
                 language,
                 count=len(spec_demoted),
             ))
         if delegation_demoted:
-            _console().print(i18n.t(
-                "warn.bench_orchestrate_demoted",
+            _warn_console().print(i18n.t("warn.bench_orchestrate_demoted",
                 language,
                 count=len(delegation_demoted),
             ))
         if decode_spread is not None and decode_spread > 0.25:
-            _console().print(i18n.t(
-                "warn.bench_reproducibility",
+            _warn_console().print(i18n.t("warn.bench_reproducibility",
                 language,
                 minimum=measurement.decode_tps_min,
                 maximum=measurement.decode_tps_max,
@@ -3603,12 +3596,11 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
         ),
     )))
     if epoch == "degraded":
-        _console().print(i18n.t("warn.orchestrate_degraded", language))
+        _warn_console().print(i18n.t("warn.orchestrate_degraded", language))
     elif reference_tps is None and not args.no_reference:
-        _console().print(i18n.t("warn.bench_no_reference", language))
+        _warn_console().print(i18n.t("warn.bench_no_reference", language))
     if demoted:
-        _console().print(i18n.t(
-            "warn.orchestrate_demoted",
+        _warn_console().print(i18n.t("warn.orchestrate_demoted",
             language,
             count=len(demoted),
         ))
@@ -3962,12 +3954,11 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
             identical=identical,
         ))
         if record.epoch == "degraded":
-            _console().print(i18n.t("warn.spec_degraded", language))
+            _warn_console().print(i18n.t("warn.spec_degraded", language))
         elif reference_tps is None and not args.no_reference:
-            _console().print(i18n.t("warn.bench_no_reference", language))
+            _warn_console().print(i18n.t("warn.bench_no_reference", language))
         if demoted:
-            _console().print(i18n.t(
-                "warn.spec_demoted",
+            _warn_console().print(i18n.t("warn.spec_demoted",
                 language,
                 count=len(demoted),
             ))
@@ -4143,7 +4134,7 @@ def _watch(args: argparse.Namespace) -> int:
     try:
         save_state(next_state)
     except OSError as error:
-        print(i18n.t("warn.watch_state", language, error=error))
+        print(i18n.t("warn.watch_state", language, error=error), file=sys.stderr)
     drafts: list[str] = []
     if args.write_drafts:
         for finding in findings:
@@ -4151,7 +4142,7 @@ def _watch(args: argparse.Namespace) -> int:
                 try:
                     drafts.append(str(write_draft(finding, args.write_drafts)))
                 except OSError as error:
-                    print(i18n.t("warn.watch_draft", language, error=error))
+                    print(i18n.t("warn.watch_draft", language, error=error), file=sys.stderr)
     notes = [
         i18n.t("note.watch_external_claim", language),
         i18n.t("note.watch_route", language),
