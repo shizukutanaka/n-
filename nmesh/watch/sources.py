@@ -40,6 +40,51 @@ class SourceStatus:
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_MAX_BODY_BYTES = 16 * 1024 * 1024
+
+
+def _bounded_get(session: httpx.Client, url: str, **kwargs: Any) -> httpx.Response:
+    """GET with a capped body: remote endpoints can serve unbounded
+    responses, so stream and abort past the cap instead of buffering
+    the whole body in memory."""
+    with session.stream("GET", url, **kwargs) as response:
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in response.iter_bytes(64 * 1024):
+            total += len(chunk)
+            if total > _MAX_BODY_BYTES:
+                raise ValueError("upstream response exceeds the watch body limit")
+            chunks.append(chunk)
+        # iter_bytes already decoded the body, so drop Content-Encoding or
+        # the rebuilt response would try to decode it a second time.
+        headers = [
+            (key, value)
+            for key, value in response.headers.multi_items()
+            if key.lower() != "content-encoding"
+        ]
+        return httpx.Response(
+            response.status_code,
+            headers=headers,
+            content=b"".join(chunks),
+            request=response.request,
+        )
+
+
+# One immediate second look at a transport-level failure — a dropped
+# connection or a read timeout is worth it; an answered HTTP status is not
+# (the caller's raise_for_status decides how to degrade). Watch is a batch
+# job, so a short sleep per query stays well inside the interval.
+_RETRY_DELAY = 1.0
+
+
+def _get(session: httpx.Client, url: str, **kwargs: Any) -> httpx.Response:
+    try:
+        return _bounded_get(session, url, **kwargs)
+    except httpx.TransportError:
+        time.sleep(_RETRY_DELAY)
+        return _bounded_get(session, url, **kwargs)
+
+
 _GITHUB_REPOS = ("ggml-org/llama.cpp", "vllm-project/vllm", "ollama/ollama")
 _ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
 _ARXIV_QUERY = (
@@ -58,25 +103,10 @@ _QIITA_TAGS = (
 )
 
 
-def _failure(
-    name: str, error: object, auth_required: bool = False
-) -> tuple[SourceStatus, tuple[SourceItem, ...]]:
+def _failure(name: str, error: object, auth_required: bool = False) -> tuple[
+    SourceStatus, tuple[SourceItem, ...]
+]:
     return SourceStatus(name, False, 0, False, auth_required, str(error)), ()
-
-
-# One immediate second look at a transport-level failure — a dropped
-# connection or a read timeout is worth it; an answered HTTP status is not
-# (the caller's raise_for_status decides how to degrade). Watch is a batch
-# job, so a short sleep per query stays well inside the interval.
-_RETRY_DELAY = 1.0
-
-
-def _get(session: httpx.Client, url: str, **kwargs: Any) -> httpx.Response:
-    try:
-        return session.get(url, **kwargs)
-    except httpx.TransportError:
-        time.sleep(_RETRY_DELAY)
-        return session.get(url, **kwargs)
 
 
 def _mapping(value: object) -> Mapping[str, object] | None:
@@ -111,8 +141,7 @@ def fetch_qiita(
         failed_tags: list[str] = []
         for tag in tags:
             try:
-                response = _get(
-                    session,
+                response = _get(session, 
                     "https://qiita.com/api/v2/items",
                     params={"per_page": limit, "query": f"tag:{tag}"},
                     headers=headers,
@@ -131,19 +160,19 @@ def fetch_qiita(
                 url = _text(item.get("url"))
                 if not url:
                     continue
-                items.append(
-                    SourceItem(
-                        "qiita",
-                        url,
-                        _text(item.get("title")),
-                        _text(item.get("body")),
-                        _text(item.get("created_at")),
-                    )
-                )
+                items.append(SourceItem(
+                    "qiita",
+                    url,
+                    _text(item.get("title")),
+                    _text(item.get("body")),
+                    _text(item.get("created_at")),
+                ))
         if tags and len(failed_tags) == len(tags):
             return _failure("qiita", "every tag query failed")
         selected = _unique_items(items)
-        detail = f"unreachable tags: {', '.join(failed_tags)}" if failed_tags else ""
+        detail = (
+            f"unreachable tags: {', '.join(failed_tags)}" if failed_tags else ""
+        )
         return SourceStatus("qiita", True, len(selected), True, False, detail), selected
     except (httpx.HTTPError, ValueError, TypeError, RecursionError) as error:
         return _failure("qiita", error)
@@ -169,8 +198,7 @@ def fetch_zenn(
         yields: list[str] = []
         for topic in topics:
             try:
-                response = _get(
-                    session,
+                response = _get(session, 
                     "https://zenn.dev/api/articles",
                     params={
                         "topicname": topic,
@@ -179,7 +207,9 @@ def fetch_zenn(
                 )
                 response.raise_for_status()
                 payload = _mapping(response.json())
-                raw_articles = payload.get("articles") if payload is not None else None
+                raw_articles = (
+                    payload.get("articles") if payload is not None else None
+                )
                 if not isinstance(raw_articles, list):
                     raise TypeError("Zenn response did not contain articles")
             except (httpx.HTTPError, ValueError, TypeError, RecursionError):
@@ -202,16 +232,16 @@ def fetch_zenn(
                     # A removed or members-only article must not take down the
                     # whole source; the list endpoint already succeeded.
                     continue
-                items.append(
-                    SourceItem(
-                        "zenn",
-                        url,
-                        _text(article.get("title")),
-                        _strip_html(page.text),
-                        _text(article.get("published_at") or article.get("publishedAt")),
-                    )
-                )
-        if yields and all(yielded.endswith("=unreachable") for yielded in yields):
+                items.append(SourceItem(
+                    "zenn",
+                    url,
+                    _text(article.get("title")),
+                    _strip_html(page.text),
+                    _text(article.get("published_at") or article.get("publishedAt")),
+                ))
+        if yields and all(
+            yielded.endswith("=unreachable") for yielded in yields
+        ):
             return _failure("zenn", "every topic query failed")
         selected = _unique_items(items)
         return SourceStatus(
@@ -252,8 +282,7 @@ def fetch_github(
         ok_repos = 0
         for repo in repos:
             try:
-                response = _get(
-                    session,
+                response = _get(session, 
                     f"https://api.github.com/repos/{repo}/releases",
                     params={"per_page": min(max(limit, 1), 100)},
                     headers=headers,
@@ -281,15 +310,13 @@ def fetch_github(
                 url = _text(release.get("html_url"))
                 if not url:
                     continue
-                items.append(
-                    SourceItem(
-                        "github",
-                        url,
-                        _text(release.get("name") or release.get("tag_name")),
-                        _text(release.get("body")),
-                        _text(release.get("published_at")),
-                    )
-                )
+                items.append(SourceItem(
+                    "github",
+                    url,
+                    _text(release.get("name") or release.get("tag_name")),
+                    _text(release.get("body")),
+                    _text(release.get("published_at")),
+                ))
                 fetched += 1
             yields.append(f"{repo}={fetched}")
         if repos and ok_repos == 0:
@@ -357,16 +384,16 @@ def fetch_arxiv(
             title = _text(entry.findtext("atom:title", default="", namespaces=_ARXIV_NS))
             summary = _text(entry.findtext("atom:summary", default="", namespaces=_ARXIV_NS))
             published = _text(entry.findtext("atom:published", default="", namespaces=_ARXIV_NS))
-            items.append(
-                SourceItem(
-                    "arxiv",
-                    url,
-                    " ".join(title.split()),
-                    " ".join(summary.split()),
-                    published,
-                )
-            )
-        return SourceStatus("arxiv", True, len(items), bool(items), False, ""), tuple(items)
+            items.append(SourceItem(
+                "arxiv",
+                url,
+                " ".join(title.split()),
+                " ".join(summary.split()),
+                published,
+            ))
+        return SourceStatus(
+            "arxiv", True, len(items), bool(items), False, ""
+        ), tuple(items)
     except (httpx.HTTPError, ValueError, TypeError, ET.ParseError) as error:
         return _failure("arxiv", error)
     finally:
@@ -395,11 +422,13 @@ def fetch_hf(
     session = client or httpx.Client(timeout=15.0, follow_redirects=True)
     try:
         headers = {"Accept": "application/json"}
-        token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        token = (
+            os.environ.get("HF_TOKEN")
+            or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        )
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        response = _get(
-            session,
+        response = _get(session, 
             "https://huggingface.co/api/models",
             params={
                 "filter": tag,
@@ -428,19 +457,19 @@ def fetch_hf(
             except httpx.HTTPError:
                 card = None
             body = (
-                card.text[:_HF_CARD_BYTES] if card is not None and card.status_code == 200 else ""
+                card.text[:_HF_CARD_BYTES]
+                if card is not None and card.status_code == 200
+                else ""
             )
             if body:
                 cards += 1
-            items.append(
-                SourceItem(
-                    "hf",
-                    url,
-                    model_id,
-                    body,
-                    _text(entry.get("lastModified") or entry.get("last_modified")),
-                )
-            )
+            items.append(SourceItem(
+                "hf",
+                url,
+                model_id,
+                body,
+                _text(entry.get("lastModified") or entry.get("last_modified")),
+            ))
         selected = _unique_items(items)
         return SourceStatus(
             "hf",
@@ -470,8 +499,7 @@ def fetch_x(
     own_client = client is None
     session = client or httpx.Client(timeout=10.0, follow_redirects=True)
     try:
-        response = _get(
-            session,
+        response = _get(session, 
             "https://api.x.com/2/tweets/search/recent",
             params={"query": query, "max_results": min(max(limit, 10), 100)},
             headers={"Authorization": f"Bearer {token}"},
@@ -491,15 +519,13 @@ def fetch_x(
             tweet_id = _text(tweet.get("id"))
             if not tweet_id:
                 continue
-            items.append(
-                SourceItem(
-                    "x",
-                    f"https://x.com/i/web/status/{tweet_id}",
-                    "",
-                    _text(tweet.get("text")),
-                    _text(tweet.get("created_at")),
-                )
-            )
+            items.append(SourceItem(
+                "x",
+                f"https://x.com/i/web/status/{tweet_id}",
+                "",
+                _text(tweet.get("text")),
+                _text(tweet.get("created_at")),
+            ))
         selected = tuple(items)
         return SourceStatus("x", True, len(selected), True, False, ""), selected
     except (httpx.HTTPError, ValueError, TypeError, RecursionError) as error:

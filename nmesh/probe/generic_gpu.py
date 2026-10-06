@@ -4,6 +4,7 @@ import json
 import platform
 import re
 import subprocess
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -131,9 +132,16 @@ def _read_sysfs_card(card: Path, index: int) -> GPUInfo | None:
     return GPUInfo(index, product, vendor, total, total, None, True, source)
 
 
+def _card_number(card: Path) -> tuple[int, str]:
+    suffix = card.name.removeprefix("card")
+    return (int(suffix) if suffix.isdigit() else sys.maxsize, card.name)
+
+
 def detect_linux_sysfs(root: Path = Path("/sys/class/drm")) -> list[GPUInfo]:
     gpus: list[GPUInfo] = []
-    for index, card in enumerate(sorted(root.glob("card*/"))):
+    # Sort by the numeric suffix, not lexically: "card10" sorts before
+    # "card2" alphabetically, which would misnumber indices beyond 9 cards.
+    for index, card in enumerate(sorted(root.glob("card*/"), key=_card_number)):
         gpu = _read_sysfs_card(card, index)
         if gpu is not None:
             gpus.append(gpu)
