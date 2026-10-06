@@ -779,3 +779,48 @@ def test_verify_tree_weight_sets_ignores_deeply_nested_json() -> None:
         return httpx.Response(200, content="[" * 30000 + "]" * 30000)
 
     assert _tree_weight_sets("o/r", _client(handler)) == {}
+
+
+def test_bounded_get_aborts_on_oversized_body(monkeypatch) -> None:
+    from nmesh.watch import sources
+    oversized = sources._MAX_BODY_BYTES + 1024
+
+    def handler(_request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * oversized)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        sources._bounded_get(client, "http://example/feed")
+    except ValueError as error:
+        assert "body limit" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_bounded_get_passes_small_body_through() -> None:
+    from nmesh.watch import sources
+
+    def handler(_request) -> httpx.Response:
+        return httpx.Response(200, content=b'{"ok": true}')
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    response = sources._bounded_get(client, "http://example/feed")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_bounded_get_decodes_compressed_body_once() -> None:
+    import gzip
+
+    from nmesh.watch import sources
+
+    def handler(_request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=gzip.compress(b'{"ok": true}'),
+            headers={"Content-Encoding": "gzip"},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    response = sources._bounded_get(client, "http://example/feed")
+    assert response.json() == {"ok": True}
