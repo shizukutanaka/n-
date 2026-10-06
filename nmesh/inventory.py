@@ -226,6 +226,16 @@ def scan(
                     visited.add(realpath)
                     info = gguf_info(path)
                     if info is None:
+                        # gguf_info returns None both for non-GGUF files and
+                        # for open/read failures; probe the open directly so
+                        # an unreadable file is reported rather than skipped.
+                        try:
+                            with path.open("rb") as probe:
+                                probe.read(4)
+                        except FileNotFoundError:
+                            pass
+                        except OSError as error:
+                            note(error)
                         continue
                 except FileNotFoundError:
                     continue

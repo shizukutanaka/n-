@@ -287,6 +287,28 @@ def test_scan_reports_unreadable_entries(
     assert problems and str(broken) in problems[0]
 
 
+def test_scan_reports_unreadable_open_swallowed_by_gguf_info(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """gguf_info turns an open failure into ``None`` (its "not a GGUF"
+    result), so the scan must probe the open itself — otherwise a file the
+    process cannot read is silently skipped and bytes are understated."""
+    blocked = _write(tmp_path / "blocked.gguf")
+    problems: list[str] = []
+
+    real_open = Path.open
+
+    def refusing_open(self: Path, *args, **kwargs):
+        if self == blocked:
+            raise PermissionError(str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", refusing_open)
+
+    assert inventory.scan({"store": tmp_path}, problems=problems) == []
+    assert problems and str(blocked) in problems[0]
+
+
 def test_scan_omits_file_vanished_mid_listing(
     tmp_path: Path, monkeypatch,
 ) -> None:
