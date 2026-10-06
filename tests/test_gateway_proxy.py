@@ -1380,3 +1380,14 @@ def test_forward_timeout_counts_input_and_ids() -> None:
     )
     assert plain.read == gateway_module.FORWARD_TIMEOUT_BASE
     assert with_ids.read > plain.read
+
+
+def test_forward_timeout_keeps_floor_for_non_streamed_generation() -> None:
+    service = _rerank_plan(1).services[0]
+    chat = {"messages": [{"role": "user", "content": "hi"}]}
+    blocking = gateway_module._forward_timeout(chat, service)
+    streamed = gateway_module._forward_timeout(dict(chat, stream=True), service)
+    completion = gateway_module._forward_timeout({"prompt": "hi"}, service)
+    assert blocking.read >= gateway_module.GENERATION_TIMEOUT_FLOOR
+    assert completion.read >= gateway_module.GENERATION_TIMEOUT_FLOOR
+    assert streamed.read < gateway_module.GENERATION_TIMEOUT_FLOOR

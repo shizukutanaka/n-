@@ -97,6 +97,9 @@ SWAP_LOAD_TIMEOUT_MAX = 1800.0
 # Base margin for upstream request timeouts: covers queueing, TLS setup and
 # decode gaps — the silence no healthy engine exceeds without prompt work.
 FORWARD_TIMEOUT_BASE = 60.0
+# A non-streamed generation sends nothing until decoding finishes, so its
+# read bound never drops below the previous fixed 300 s.
+GENERATION_TIMEOUT_FLOOR = 300.0
 
 
 def _swap_timeout(service: PlannedService) -> float:
@@ -602,6 +605,8 @@ def _forward_timeout(request: Mapping[str, object], service: PlannedService) -> 
     budget = service.context if service.context > 0 else max(tokens, 1)
     slots = max(1, service.memory.parallel_slots)
     read = FORWARD_TIMEOUT_BASE + min(tokens, budget) + (slots - 1) * budget
+    if not request.get("stream") and ("messages" in request or "prompt" in request):
+        read = max(read, GENERATION_TIMEOUT_FLOOR)
     return httpx.Timeout(read, connect=CONNECT_TIMEOUT)
 
 
