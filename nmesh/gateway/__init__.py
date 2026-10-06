@@ -8,6 +8,7 @@ import re
 import secrets
 import sys
 import time
+import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
@@ -96,6 +97,13 @@ MAX_REQUEST_BYTES = 64 * 1024 * 1024
 SWAP_DRAIN_TIMEOUT = 300.0
 SWAP_LOAD_FLOOR_BPS = 50.0 * 1024 * 1024
 SWAP_LOAD_TIMEOUT_MAX = 1800.0
+
+# Base margin for upstream request timeouts: covers queueing, TLS setup and
+# decode gaps — the silence no healthy engine exceeds without prompt work.
+FORWARD_TIMEOUT_BASE = 60.0
+# A non-streamed generation sends nothing until decoding finishes, so its
+# read bound never drops below the previous fixed 300 s.
+GENERATION_TIMEOUT_FLOOR = 300.0
 
 
 def _swap_timeout(service: PlannedService) -> float:
@@ -563,6 +571,57 @@ def _reserved_tokens(request: Mapping[str, object]) -> int:
     return max(values)
 
 
+def _forward_timeout(request: Mapping[str, object], service: PlannedService) -> httpx.Timeout:
+    # httpx applies the read bound per socket read, so it must cover the
+    # longest legitimate silence — upstream prefill (or embed/rerank scoring)
+    # before the first response bytes — not the whole generation. One second
+    # per prompt token admits prefill down to ~1 token/s (the floor the bench
+    # runner already uses); decode gaps are far shorter. Scale with the
+    # request's estimated prompt tokens, capped at the service context
+    # (upstream rejects longer prompts anyway), plus one extra context per
+    # other slot on daemons that serialize admissions (e.g. NUM_PARALLEL=1)
+    # so a request queued behind in-flight ones is not cut off either. A fixed
+    # ceiling cuts slow CPUs on big prompts; no bound lets a wedged engine
+    # hold a slot forever.
+    texts = [_content(request)]
+    ids = 0
+    value = request.get("input")
+    if isinstance(value, str):
+        texts.append(value)
+    elif isinstance(value, list):
+        for element in value:
+            if isinstance(element, str):
+                texts.append(element)
+            elif _is_token_list(element):
+                ids += len(element)
+    for key in ("query", "documents"):
+        extra = request.get(key)
+        if isinstance(extra, str):
+            texts.append(extra)
+        elif isinstance(extra, list):
+            texts.extend(item for item in extra if isinstance(item, str))
+    tokens = estimate_tokens(
+        " ".join(texts),
+        calibration_for(
+            calibration_key(service.model_id, _is_chat_request(request))
+        ),
+    ) + ids
+    budget = service.context if service.context > 0 else max(tokens, 1)
+    slots = max(1, service.memory.parallel_slots)
+    read = FORWARD_TIMEOUT_BASE + min(tokens, budget) + (slots - 1) * budget
+    if not request.get("stream") and ("messages" in request or "prompt" in request):
+        read = max(read, GENERATION_TIMEOUT_FLOOR)
+    return httpx.Timeout(read, connect=CONNECT_TIMEOUT)
+
+
+def _probe_timeout(text: str) -> httpx.Timeout:
+    # Same reasoning as _forward_timeout — the probe's silence is upstream
+    # processing of exactly this text (~1 token/s prefill floor).
+    return httpx.Timeout(
+        FORWARD_TIMEOUT_BASE + estimate_tokens(text), connect=CONNECT_TIMEOUT
+    )
+
+
 def _created_timestamp(plan: Plan) -> int:
     try:
         return int(float(plan.created_at))
@@ -703,7 +762,7 @@ async def _confirm_embedding_truncation(
     assert httpx is not None
     try:
         async with local_async_client(
-            timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
+            timeout=_probe_timeout(input_text)
         ) as client:
             response = await client.post(url, json=probe)
     except httpx.HTTPError:
@@ -784,16 +843,16 @@ async def _verify_embedding_batch(
     if len(suspects) > _EMBED_BATCH_PROBE_LIMIT:
         return "unverified"
     assert httpx is not None
-    async with local_async_client(
-        timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT)
-    ) as client:
+    async with local_async_client(timeout=_probe_timeout("")) as client:
         for index, element in suspects:
             pieces = _byte_split_embedding_input(element, cap)
             if pieces is None:
                 return "unverified"
             try:
                 response = await client.post(
-                    url, json={"model": body.get("model"), "input": pieces}
+                    url,
+                    json={"model": body.get("model"), "input": pieces},
+                    timeout=_probe_timeout(element),
                 )
             except httpx.HTTPError:
                 return "unverified"
@@ -1212,6 +1271,40 @@ def create_app(
             headers=dict(error.headers or {}),
         )
 
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(
+        _request: Request, error: Exception
+    ) -> Response:
+        # Without a handler Starlette answers unhandled errors with a plain
+        # text 500, breaking the OpenAI-style JSON envelope every other error
+        # uses — an API client then cannot even parse the failure. Keep the
+        # traceback on stderr (the handler consumes the exception) but the
+        # body generic.
+        traceback.print_exc()
+        payload = {
+            "error": {
+                "message": "Internal server error",
+                "type": "server_error",
+                "code": 500,
+            }
+        }
+        response = Response(
+            content=json.dumps(payload),
+            status_code=500,
+            media_type="application/json",
+        )
+        # This handler runs above the http middleware, so the middleware's
+        # post-block CORS headers never reach its response — attach them here.
+        origin = _request.headers.get("origin")
+        if (
+            origin
+            and _origin_allowed(origin)
+            and _request.url.path.startswith("/v1/")
+        ):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+        return response
+
     gate = SwapGate()
     limiter = SlotLimiter()
     jobs = JobRegistry()
@@ -1446,7 +1539,7 @@ def create_app(
                 else None
             )
             assert httpx is not None
-            client = local_async_client(timeout=httpx.Timeout(300.0, connect=CONNECT_TIMEOUT))
+            client = local_async_client(timeout=_forward_timeout(request, service))
             ticket = in_flight.enter(service.name)
         except BaseException as error:
             # A failed acquire/revive must not keep the slot (or a held swap
@@ -2341,12 +2434,21 @@ def create_app(
         job = jobs.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="job not found")
-        if not jobs.cancel(job):
+        if job.state == "queued":
+            if not jobs.cancel(job):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"job {job.id} is {job.state}; "
+                        "only queued jobs can be cancelled"
+                    ),
+                )
+        elif not jobs.remove(job):
             raise HTTPException(
                 status_code=409,
                 detail=(
                     f"job {job.id} is {job.state}; "
-                    "only queued jobs can be cancelled"
+                    "a running job cannot be deleted"
                 ),
             )
         return job.as_dict()
