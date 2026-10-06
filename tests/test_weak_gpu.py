@@ -153,3 +153,13 @@ def test_low_vram_generic_gpu_remains_visible_with_explanation(monkeypatch) -> N
     assert profile.tier == Tier.T0_CPU
     assert profile.warnings[0] == "warn.low_vram"
     assert profile.warning_params[0] == {"gpu": "Intel UHD"}
+
+
+def test_linux_sysfs_cards_sort_by_numeric_suffix(tmp_path) -> None:
+    for number in (2, 10):
+        card = tmp_path / f"card{number}" / "device"
+        card.mkdir(parents=True)
+        (card / "vendor").write_text("0x1002\n", encoding="ascii")
+    gpus = detect_linux_sysfs(tmp_path)
+    assert [gpu.index for gpu in gpus] == [0, 1]
+    assert gpus[0].vendor == "amd"
