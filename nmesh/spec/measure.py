@@ -236,10 +236,16 @@ def _ask(
     timings = payload.get("timings")
     timings = timings if isinstance(timings, dict) else {}
     reported = timings.get("predicted_per_second")
-    completion = int(tokens) if isinstance(tokens, int) else 0
+    completion = (
+        int(tokens)
+        if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0
+        else 0
+    )
     tps = (
         float(reported)
-        if isinstance(reported, (int, float)) and reported > 0
+        if isinstance(reported, (int, float))
+        and not isinstance(reported, bool)
+        and reported > 0
         else (completion / elapsed if elapsed > 0 else 0.0)
     )
     drafted = timings.get("draft_n")
@@ -249,8 +255,12 @@ def _ask(
         completion,
         tps,
         elapsed,
-        int(drafted) if isinstance(drafted, int) else 0,
-        int(accepted) if isinstance(accepted, int) else 0,
+        int(drafted)
+        if isinstance(drafted, int) and not isinstance(drafted, bool) and drafted >= 0
+        else 0,
+        int(accepted)
+        if isinstance(accepted, int) and not isinstance(accepted, bool) and accepted >= 0
+        else 0,
     )
 
 
