@@ -77,6 +77,9 @@ def _env_timeout(name: str, default: float, *, allow_zero: bool = True) -> float
 QUEUE_TIMEOUT = _env_timeout("NMESH_QUEUE_TIMEOUT", 120.0)
 KEEP_ALIVE = _env_timeout("NMESH_KEEP_ALIVE", 0.0)
 CONNECT_TIMEOUT = _env_timeout("NMESH_CONNECT_TIMEOUT", 10.0, allow_zero=False)
+WATCHDOG_INTERVAL = _env_timeout(
+    "NMESH_WATCHDOG_INTERVAL", 15.0, allow_zero=False
+)
 
 # The endpoint bodies are parsed as dicts, so the whole request body is
 # buffered before a handler runs; an unbounded body is a memory-DoS on the
@@ -1143,7 +1146,7 @@ def _origin_allowed(origin: str) -> bool:
 def create_app(
     plan: Plan | None = None,
     watchdog: bool = False,
-    watchdog_interval: float = 15.0,
+    watchdog_interval: float = WATCHDOG_INTERVAL,
 ) -> FastAPIApp:
     if FastAPI is None:
         raise ImportError("Install nmesh[gateway] to use the gateway")
