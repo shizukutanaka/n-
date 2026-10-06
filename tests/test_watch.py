@@ -779,3 +779,51 @@ def test_verify_tree_weight_sets_ignores_deeply_nested_json() -> None:
         return httpx.Response(200, content="[" * 30000 + "]" * 30000)
 
     assert _tree_weight_sets("o/r", _client(handler)) == {}
+
+
+def test_transport_error_is_retried_once(monkeypatch) -> None:
+    monkeypatch.setattr("nmesh.watch.sources._RETRY_DELAY", 0.0)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectError("connection reset", request=request)
+        return httpx.Response(200, json=[
+            {"url": "https://qiita.com/llm/one", "title": "t", "body": ""},
+        ])
+
+    status, items = fetch_qiita(("llm",), 1, _client(handler))
+    assert calls == 2
+    assert status.reachable is True
+    assert len(items) == 1
+
+
+def test_persistent_transport_error_still_reports_unreachable(monkeypatch) -> None:
+    monkeypatch.setattr("nmesh.watch.sources._RETRY_DELAY", 0.0)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectTimeout("timeout", request=request)
+
+    status, _items = fetch_github(("o/r",), 5, _client(handler))
+    assert calls == 2
+    assert status.reachable is False
+    assert status.items == 0
+
+
+def test_http_status_error_is_not_retried(monkeypatch) -> None:
+    monkeypatch.setattr("nmesh.watch.sources._RETRY_DELAY", 0.0)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(500)
+
+    status, _items = fetch_zenn(("llm",), 1, _client(handler))
+    assert calls == 1
+    assert status.reachable is False
