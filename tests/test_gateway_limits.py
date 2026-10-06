@@ -590,3 +590,14 @@ def test_env_timeout_rejects_non_finite_and_negative(monkeypatch) -> None:
     assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 2.5
     monkeypatch.delenv("NMESH_TEST_TIMEOUT")
     assert _env_timeout("NMESH_TEST_TIMEOUT", 7.5) == 7.5
+
+
+def test_watchdog_interval_env_feeds_default() -> None:
+    import inspect
+
+    import nmesh.gateway as gateway_module
+
+    default = inspect.signature(
+        gateway_module.create_app
+    ).parameters["watchdog_interval"].default
+    assert default == gateway_module.WATCHDOG_INTERVAL

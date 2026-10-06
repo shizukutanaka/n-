@@ -247,6 +247,10 @@ port selected for `nmesh up --port` does not conflict with it.
 to a backend service before treating it as down (default `10.0` seconds).
 Increase it on slow networks, or lower it in tests.
 
+`NMESH_WATCHDOG_INTERVAL` controls how often the gateway's watchdog sweeps
+services (default `15.0` seconds). Each sweep runs a heartbeat pass over the
+plan, so raise it on very busy hosts or lower it for faster revival.
+
 `NMESH_MODEL_ROOTS` adds extra directories to the model inventory scan
 (`nmesh models scan`; per-run roots can also be passed with `--root`) —
 an `os.pathsep`-separated list of roots consulted in addition to
