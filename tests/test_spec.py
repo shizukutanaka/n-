@@ -1123,3 +1123,31 @@ def test_draft_vanishing_after_resolution_degrades_to_none(
     )
     assert any("not found" in warning for warning in result.warnings)
     assert "--spec-type" not in result.services[0].launch.argv
+
+
+def test_ask_rejects_bool_and_negative_upstream_counts() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"completion_tokens": True},
+                "timings": {
+                    "predicted_per_second": True,
+                    "draft_n": -2,
+                    "draft_n_accepted": True,
+                },
+            },
+            request=request,
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    content, completion, tps, elapsed, drafted, accepted = spec_measure._ask(
+        client, "http://upstream", "model", Workload("w", "p", 4)
+    )
+    assert content == "ok"
+    assert completion == 0
+    assert tps == 0.0
+    assert drafted == 0
+    assert accepted == 0
+    assert elapsed >= 0
