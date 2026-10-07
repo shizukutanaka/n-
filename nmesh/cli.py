@@ -4955,14 +4955,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 launcher_path.chmod(0o700)
             if not env_path.exists():
                 api_key = os.environ.get("NMESH_API_KEY", "")
-                env_path.write_text(
+                env_text = (
                     f"NMESH_API_KEY={api_key}\n"
-                    "# NMESH_HOME is set by the launcher to its own directory.\n",
-                    encoding="utf-8",
-                    newline="",
+                    "# NMESH_HOME is set by the launcher to its own directory.\n"
                 )
-                if not is_windows():
-                    env_path.chmod(0o600)
+                if is_windows():
+                    env_path.write_text(
+                        env_text, encoding="utf-8", newline="")
+                else:
+                    try:
+                        with os.fdopen(
+                            os.open(
+                                env_path,
+                                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                                0o600,
+                            ),
+                            "w",
+                            encoding="utf-8",
+                            newline="",
+                        ) as handle:
+                            handle.write(env_text)
+                    except FileExistsError:
+                        pass
             unit_path = unit_install_path(filename, os_name)
             if unit_path is not None:
                 unit_path.parent.mkdir(parents=True, exist_ok=True)
