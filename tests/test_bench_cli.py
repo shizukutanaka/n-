@@ -323,7 +323,7 @@ def test_bench_json_reports_spread_and_warns(monkeypatch, capsys) -> None:
     assert result["decode_spread"] == 1.0
 
     assert cli.main(["bench", "--runs", "3"]) == 0
-    assert "not reproducible" in capsys.readouterr().out
+    assert "not reproducible" in capsys.readouterr().err
 
 
 def test_bench_cli_leaves_cache_prompt_unset_for_non_llamacpp(
