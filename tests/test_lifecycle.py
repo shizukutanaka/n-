@@ -2193,3 +2193,17 @@ def test_open_log_tolerates_log_vanishing_during_rotate(
     handle.write(b"new")
     handle.close()
     assert path.read_bytes() == b"oldnew"
+
+
+def test_profile_rejects_non_regular_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    assert cli.main(["doctor", "--profile", str(fifo)]) == 1
+
+
+def test_offline_items_rejects_non_regular_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    assert cli.main(["watch", "--offline", str(fifo)]) == 1
