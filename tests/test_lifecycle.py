@@ -2213,6 +2213,32 @@ def test_autostart_env_file_born_owner_only(
 
 
 
+def test_down_ignores_state_unlink_permission_error(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    """A state file that exists but cannot be unlinked (read-only dir,
+    permissions changed mid-run) must not crash teardown — the missing-file
+    case was already tolerated; sibling OSErrors are the same best-effort
+    cleanup."""
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({"version": 2, "owner_pid": os.getpid(), "services": []}),
+        encoding="utf-8",
+    )
+    supervisor = Supervisor(state_path=state_path)
+    real_unlink = Path.unlink
+
+    def refusing(self, *args, **kwargs):
+        if self == state_path:
+            raise PermissionError(str(self))
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refusing)
+
+    status = supervisor.down()
+    assert status.running is False
+
+
 def _json_body_response(body: bytes):
     class _Response:
         status = 200
