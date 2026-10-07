@@ -245,7 +245,7 @@ def measure(
             unparsed_verdict=row.unparsed_verdict,
             unscorable=row.unscorable,
         )
-        for row, flag in zip(rows, ceiling_flags)
+        for row, flag in zip(rows, ceiling_flags, strict=True)
     ]
     agreements = sum(1 for row in rows if row.accepted == row.worker_passed)
     return DelegationRun(
