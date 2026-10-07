@@ -256,3 +256,19 @@ def test_bench_cache_rejects_non_finite_run_counts(tmp_path) -> None:
         encoding="utf-8",
     )
     assert set(load_records(cache)) == {"record_ok"}
+
+
+def test_cosine_rejects_ragged_vectors() -> None:
+    import pytest
+
+    from nmesh.bench.retrieval import _cosine
+
+    with pytest.raises(ValueError):
+        _cosine([1.0, 0.0, 0.0], [1.0, 0.0])
+
+
+def test_cosine_scores_orthogonal_and_identical() -> None:
+    from nmesh.bench.retrieval import _cosine
+
+    assert _cosine([1.0, 0.0], [0.0, 1.0]) == 0.0
+    assert _cosine([1.0, 0.0], [1.0, 0.0]) == 1.0
