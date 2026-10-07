@@ -33,6 +33,7 @@ from nmesh.planner import (
     free_budgets,
     load_plan,
     save_plan,
+    set_flag_value,
     split_memory,
 )
 from nmesh.probe import HardwareProfile, detect_hardware
@@ -797,9 +798,9 @@ class Supervisor:
             )
         argv = list(service.launch.argv)
         if service.backend == "llamacpp" and "-m" in argv:
-            argv[argv.index("-m") + 1] = model_ref
+            set_flag_value(argv, "-m", model_ref)
         elif "--model" in argv:
-            argv[argv.index("--model") + 1] = model_ref
+            set_flag_value(argv, "--model", model_ref)
         elif service.backend == "vllm" and len(argv) > 2:
             argv[2] = model_ref
         updated = replace(
@@ -1164,20 +1165,20 @@ class Supervisor:
                 layers = max(layers - max(1, layers // 4), 0)
             argv = list(service.launch.argv)
             if "--max-model-len" in argv:
-                argv[argv.index("--max-model-len") + 1] = str(context)
+                set_flag_value(argv, "--max-model-len", str(context))
             if "-c" in argv:
                 context_value = context
                 if "--parallel" in argv:
                     context_value *= service.memory.parallel_slots
-                argv[argv.index("-c") + 1] = str(context_value)
+                set_flag_value(argv, "-c", str(context_value))
             for flag in ("-ngl", "--gpu-layers", "--n-gpu-layers"):
                 if flag in argv and layers is not None:
-                    argv[argv.index(flag) + 1] = str(layers)
+                    set_flag_value(argv, flag, str(layers))
             model_ref = service.model_ref
             if service.backend == "llamacpp":
                 model_ref = model_ref.replace(f"-{service.quant}.gguf", f"-{quant}.gguf")
                 if "-m" in argv:
-                    argv[argv.index("-m") + 1] = model_ref
+                    set_flag_value(argv, "-m", model_ref)
             launch = replace(service.launch, argv=argv)
             services.append(replace(service, quant=quant, context=context,
                                     model_ref=model_ref, n_gpu_layers=layers, launch=launch))
