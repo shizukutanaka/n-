@@ -13,6 +13,14 @@ from .models import GPUInfo, Vendor, VramSource
 _SATURATED_ADAPTER_RAM = 4095 * 1024**2
 _DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
 
+_VENDOR_LABELS: dict[Vendor, str] = {
+    "nvidia": "NVIDIA",
+    "amd": "AMD",
+    "intel": "Intel",
+    "apple": "Apple",
+    "unknown": "Unknown",
+}
+
 
 def _vendor(value: object) -> Vendor | None:
     text = str(value).strip().lower()
@@ -111,14 +119,15 @@ def _read_sysfs_card(card: Path, index: int) -> GPUInfo | None:
     vendor = _vendor(vendor_id)
     if vendor is None:
         return None
+    label = _VENDOR_LABELS.get(vendor, vendor.title())
     try:
         name = card.joinpath("device", "uevent").read_text(encoding="utf-8")
         product = next(
             (line.split("=", 1)[1] for line in name.splitlines() if line.startswith("DRIVER=")),
-            f"{vendor.title()} GPU {index}",
+            f"{label} GPU {index}",
         )
     except OSError:
-        product = f"{vendor.title()} GPU {index}"
+        product = f"{label} GPU {index}"
     total = 0
     source: VramSource = "unknown"
     try:
