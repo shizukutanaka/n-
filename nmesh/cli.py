@@ -396,7 +396,10 @@ def _profile_warnings(profile: HardwareProfile, language: str) -> list[str]:
 
 def _load_profile(path: str) -> HardwareProfile:
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        target = Path(path)
+        if not target.is_file():
+            raise ValueError("profile path is not a regular file")
+        payload = json.loads(target.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise TypeError("profile must be an object")
         return profile_from_dict(payload)
@@ -1417,7 +1420,15 @@ def _unload(args: argparse.Namespace) -> int:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         print(i18n.t("err.gateway_unload", i18n.lang(), error=error), file=sys.stderr)
         return 1
-    unloaded = data.get("unloaded", [])
+    if not isinstance(data, dict):
+        print(i18n.t("err.gateway_unload", i18n.lang(),
+                     error="non-object response"), file=sys.stderr)
+        return 1
+    raw_unloaded = data.get("unloaded", [])
+    unloaded = (
+        [name for name in raw_unloaded if isinstance(name, str)]
+        if isinstance(raw_unloaded, list) else []
+    )
     if args.service is not None and not unloaded:
         result = next(
             (
@@ -1503,7 +1514,15 @@ def _jobs(args: argparse.Namespace) -> int:
     if args.json:
         _print_json(data)
         return 0
-    job_list = data.get("jobs", [])
+    if not isinstance(data, dict):
+        print(i18n.t("err.jobs_gateway", language, port=args.port),
+              file=sys.stderr)
+        return 1
+    raw_jobs = data.get("jobs", [])
+    job_list = (
+        [job for job in raw_jobs if isinstance(job, dict)]
+        if isinstance(raw_jobs, list) else []
+    )
     if not job_list:
         _console().print(i18n.t("jobs.empty", language))
         return 0
@@ -1515,7 +1534,14 @@ def _jobs(args: argparse.Namespace) -> int:
     table.add_column(i18n.t("label.age_s", language), justify="right")
     now = time.time()
     for job in job_list:
-        age = now - float(job.get("queued_at") or now)
+        queued_at = job.get("queued_at")
+        age = (
+            now - float(queued_at)
+            if isinstance(queued_at, (int, float))
+            and not isinstance(queued_at, bool)
+            and queued_at > 0
+            else 0.0
+        )
         state = str(job.get("state") or "")
         progress = job.get("progress")
         if state == "running" and isinstance(progress, dict):
@@ -1676,9 +1702,18 @@ def _reload(args: argparse.Namespace) -> int:
         return 1
     if args.json:
         _print_json(data)
+    elif not isinstance(data, dict):
+        print(i18n.t("err.gateway_reload", i18n.lang(),
+                     error="non-object response"), file=sys.stderr)
+        return 1
     else:
+        raw_services = data.get("services", [])
+        services = (
+            [name for name in raw_services if isinstance(name, str)]
+            if isinstance(raw_services, list) else []
+        )
         print(i18n.t("label.reloaded", i18n.lang(),
-                     services=", ".join(data.get("services", [])),
+                     services=", ".join(services),
                      created_at=data.get("created_at")))
     return 0
 
@@ -4006,7 +4041,10 @@ def _spec_show(args: argparse.Namespace) -> int:
 def _offline_items(path: str, sources: Sequence[str]) -> tuple[
     tuple[SourceStatus, ...], tuple[SourceItem, ...]
 ]:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    target = Path(path)
+    if not target.is_file():
+        raise TypeError("offline items path is not a regular file")
+    payload = json.loads(target.read_text(encoding="utf-8"))
     raw_items = payload.get("items") if isinstance(payload, dict) else payload
     if not isinstance(raw_items, list):
         raise TypeError("offline items must be a JSON list or an object with items")
@@ -4309,7 +4347,13 @@ def _run_prompt(args: argparse.Namespace) -> int:
                 if args.json:
                     print(json.dumps(payload, indent=2))
                 else:
-                    print(payload["choices"][0]["message"]["content"])
+                    choices = payload.get("choices") if isinstance(payload, dict) else None
+                    first = choices[0] if isinstance(choices, list) and choices else None
+                    message = first.get("message") if isinstance(first, dict) else None
+                    content = message.get("content") if isinstance(message, dict) else None
+                    if not isinstance(content, str):
+                        raise TypeError("upstream returned no message content")
+                    print(content)
                 return 0
             for raw in response:
                 line = raw.decode("utf-8", "replace").strip()
@@ -4322,10 +4366,16 @@ def _run_prompt(args: argparse.Namespace) -> int:
                     chunk = json.loads(data)
                 except json.JSONDecodeError:
                     continue
+                choices = chunk.get("choices") if isinstance(chunk, dict) else None
+                first = (
+                    choices[0]
+                    if isinstance(choices, list) and choices
+                    else None
+                )
+                delta_obj = first.get("delta") if isinstance(first, dict) else None
                 delta = (
-                    chunk.get("choices", [{}])[0]
-                    .get("delta", {})
-                    .get("content")
+                    delta_obj.get("content")
+                    if isinstance(delta_obj, dict) else None
                 )
                 if delta:
                     sys.stdout.write(delta)
@@ -4344,7 +4394,8 @@ def _run_prompt(args: argparse.Namespace) -> int:
         print(i18n.t("err.gateway_http", i18n.lang(), code=error.code,
                      detail=detail or str(error)), file=sys.stderr)
         return 1
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError,
+            TypeError, KeyError, IndexError) as error:
         output = i18n.t("err.gateway_unavailable", i18n.lang(), error=error)
     print(output, file=sys.stderr)
     print(i18n.t("err.gateway_unavailable.hint", i18n.lang()), file=sys.stderr)
