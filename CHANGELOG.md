@@ -23,6 +23,7 @@
 
 ### Fixed
 - **i18n 日本語テーブルの `note.eval_underpowered` が二重定義で片方がデッドコード化していた問題を修正**: `MESSAGES["ja"]` への `update()` が同一キーを2回登録しており、後勝ちのため先に定義された方（拡張スイート案内を含まない旧訳）は決して参照されないデッドコードになっていました — 将来こちらを編集しても無反応になる罠を残していました。現在の有効値（`{upgrade_tasks}`/`{upgrade_minimum}` を含む新版、en テンプレートと一致）はそのままに、影の旧定義を削除し、同一言語でのキー重複を検査するソースレベルの回帰テストを追加
+- **棚卸しの走査で読み取れないファイル・ディレクトリが無言でスキップされ回収可能バイトが過少報告されていた問題を修正**: `inventory.scan` は列挙失敗（`os.walk` の onerror）と stat/read の `OSError` を全て握り潰していたため、権限喪失したモデルストア配下は存在自体が帳簿から抜け落ちていました。`scan(stores, problems=...)` に省略可能な problems 出力を追加し、`nmesh models scan` が各項目を `warn.inventory_unreadable` で表示 — 走査途中に消えたファイル（正常競合）は従来どおり黙って除外
 - **`warn.*` メッセージが stdout へ出力され `--json` 出力を破壊する問題を修正**: 警告は rich コンソールの既定 stdout と無印 `print`（共に stdout）へ出ていました。`watch --json` では状態保存・ドラフト書き込み失敗時の警告が JSON 出力の前に混入し、パイプ先の JSON 解析を壊します（`nmesh watch --json | jq` が失敗）。警告専用の stderr コンソール `_warn_console()`（`Console(stderr=True)`）を追加し、全警告出力を stderr へ振り分け — `--json` ストリームは常に純粋な JSON を維持します
 - **argv が値を取るフラグで終わる場合の IndexError クラッシュを修正**: `plan.json` はユーザ編集可能で、採用プロセスの cmdline は psutil 由来のため、`["-m"]` や `["-c"]` のように末尾が値フラグで終わる argv が外部から入り得ます。スワップのフォールバックラダー・再計画・オートチューンの argv 書き換え経路は `argv[argv.index(flag) + 1] = ...` で値を上書きしており、末尾フラグだと IndexError でトレースバックになっていました。`planner.set_flag_value` ヘルパに集約し、末尾フラグは安全にスキップします
 - **sysfs 検出のフォールバック製品名が AMD GPU を "Amd GPU" と表示していた問題を修正**: `_read_sysfs_card` は `uevent` が読めない・`DRIVER=` が無い場合の製品名に `vendor.title()` を使っており、`"amd".title()` の結果 "Amd" という不正確な表記が `nmesh doctor`/`status` の GPU 名として出ていました。ベンダー表示ラベル（AMD/Intel/NVIDIA/Apple）のマップを導入
