@@ -2293,3 +2293,17 @@ def test_run_prompt_stream_skips_non_object_chunks(monkeypatch) -> None:
         lambda *_args, **_kwargs: _StreamResponse(),
     )
     assert cli.main(["run", "hello", "--stream"]) == 0
+
+
+def test_profile_rejects_non_regular_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    assert cli.main(["doctor", "--profile", str(fifo)]) == 1
+
+
+def test_offline_items_rejects_non_regular_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    assert cli.main(["watch", "--offline", str(fifo)]) == 1
