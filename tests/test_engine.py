@@ -503,6 +503,34 @@ def test_install_warns_when_version_probe_hangs(
     assert any("did not respond" in warning for warning in warnings)
 
 
+def test_install_warns_when_version_probe_cannot_exec(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A binary that fails to exec (wrong arch, no +x, vanished between
+    rglob and spawn) raises OSError — not a SubprocessError — which
+    previously escaped the catch as a raw traceback."""
+    monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as source:
+        source.writestr("llama-server.exe", "fake")
+
+    def noexec(*args: object, **kwargs: object) -> object:
+        raise OSError(8, "Exec format error")
+
+    monkeypatch.setattr("subprocess.run", noexec)
+    monkeypatch.setattr("nmesh.probe.caps.llamacpp_caps", lambda _: None)
+    _, warnings = engine.install(
+        "b10830",
+        dest=tmp_path,
+        fetch=lambda _: ASSETS,
+        download=lambda _url, path: path.write_bytes(archive.getvalue()),
+        system="windows",
+        machine="AMD64",
+        accelerator=None,
+    )
+    assert any("could not be executed" in warning for warning in warnings)
+
+
 def test_tar_member_path_traversal_is_rejected(tmp_path: Path) -> None:
     archive = tmp_path / "bad.tar.gz"
     with tarfile.open(archive, "w:gz") as source:
