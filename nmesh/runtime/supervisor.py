@@ -486,7 +486,7 @@ class Supervisor:
                 else:
                     try:
                         self.state_path.unlink()
-                    except FileNotFoundError:
+                    except OSError:
                         pass
 
     def stop_gateway(self, foreign: bool = False) -> bool:
@@ -524,7 +524,7 @@ class Supervisor:
             else:
                 try:
                     self.state_path.unlink()
-                except FileNotFoundError:
+                except OSError:
                     pass
             return bool(live)
 
@@ -1504,7 +1504,7 @@ class Supervisor:
                 else:
                     try:
                         self.state_path.unlink()
-                    except FileNotFoundError:
+                    except OSError:
                         pass
             self.processes.clear()
             self.launched_argv.clear()
@@ -1893,7 +1893,7 @@ class Supervisor:
                 else:
                     try:
                         self.state_path.unlink()
-                    except FileNotFoundError:
+                    except OSError:
                         pass
         elif payload is not None:
             # state.json records everything nmesh started; this supervisor may
@@ -1933,7 +1933,7 @@ class Supervisor:
                     else:
                         try:
                             self.state_path.unlink()
-                        except FileNotFoundError:
+                        except OSError:
                             pass
         names = {str(item.get("service")) for item in entries}
         entries.extend({
