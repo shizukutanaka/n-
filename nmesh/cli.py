@@ -1761,7 +1761,13 @@ def _models_scan(args: argparse.Namespace) -> int:
             return 1
         stores[f"extra:{next_extra}"] = root_path
         next_extra += 1
-    artifacts = scan_inventory(stores)
+    problems: list[str] = []
+    artifacts = scan_inventory(stores, problems=problems)
+    for detail in problems:
+        print(
+            i18n.t("warn.inventory_unreadable", i18n.lang(), detail=detail),
+            file=sys.stderr,
+        )
     plan = load_plan()
     planned = {
         str(Path(service.model_ref).resolve()).casefold()
