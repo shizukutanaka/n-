@@ -2213,6 +2213,34 @@ def test_autostart_env_file_born_owner_only(
 
 
 
+def test_watch_json_stays_parseable_when_state_save_fails(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    items = tmp_path / "items.json"
+    items.write_text(
+        json.dumps({
+            "items": [{
+                "source": "zenn",
+                "url": "https://example.invalid/a",
+                "title": "t",
+                "body": "b",
+                "published": "2026-01-01T00:00:00+00:00",
+            }]
+        }),
+        encoding="utf-8",
+    )
+
+    def _raise(_state):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(cli, "save_state", _raise)
+    assert cli.main(["watch", "--offline", str(items), "--json"]) == 0
+    captured = capsys.readouterr()
+    json.loads(captured.out)
+    assert captured.err
+
+
 def test_down_ignores_state_unlink_permission_error(
     monkeypatch, tmp_path: Path,
 ) -> None:
