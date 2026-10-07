@@ -695,6 +695,6 @@ def remove(tag: str) -> bool:
     if was_active:
         try:
             (engines_dir() / "active.json").unlink()
-        except FileNotFoundError:
+        except OSError:
             pass
     return was_active
