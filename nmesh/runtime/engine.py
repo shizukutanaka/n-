@@ -541,6 +541,7 @@ def install(
             executables,
             key=lambda candidate: (len(candidate.relative_to(target).parts), str(candidate)),
         ).resolve()
+        spawn_error: str | None = None
         try:
             result = subprocess.run(
                 [str(exe), "--version"],
@@ -551,6 +552,10 @@ def install(
             )
             version_text = (result.stdout or "") + "\n" + (result.stderr or "")
             returncode: int | None = result.returncode
+        except OSError as error:
+            version_text = ""
+            returncode = None
+            spawn_error = str(error)
         except subprocess.SubprocessError:
             version_text = ""
             returncode = None
@@ -561,10 +566,16 @@ def install(
         )
         if returncode != 0:
             if returncode is None:
-                warning = (
-                    "llama.cpp binary did not respond to --version within 30s; "
-                    "the installed engine cannot run"
-                )
+                if spawn_error is not None:
+                    warning = (
+                        f"llama.cpp binary could not be executed ({spawn_error}); "
+                        "the installed engine cannot run"
+                    )
+                else:
+                    warning = (
+                        "llama.cpp binary did not respond to --version within 30s; "
+                        "the installed engine cannot run"
+                    )
             else:
                 warning = (
                     f"llama.cpp binary failed to launch (--version exited "
