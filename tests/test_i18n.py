@@ -121,3 +121,23 @@ def test_language_preference_does_not_filter_uncovered_role() -> None:
     assert plan.services[0].model_id == "english-embed"
     assert any("english-embed" in warning for warning in plan.warnings)
     assert any("publisher/vendor" in warning for warning in plan.warnings)
+
+
+def test_i18n_source_has_no_duplicate_keys() -> None:
+    """Every key legitimately appears twice (en + ja tables); a third
+    occurrence means a same-language duplicate that silently shadows
+    the other definition."""
+    import ast
+    from collections import Counter
+    from pathlib import Path
+
+    tree = ast.parse(Path("nmesh/i18n.py").read_text(encoding="utf-8"))
+    keys = [
+        k.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for k in node.keys
+        if isinstance(k, ast.Constant) and isinstance(k.value, str) and "." in k.value
+    ]
+    dupes = sorted(k for k, c in Counter(keys).items() if c > 2)
+    assert not dupes, f"same-language duplicate i18n keys: {dupes}"
