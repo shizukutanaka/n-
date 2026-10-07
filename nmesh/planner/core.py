@@ -278,6 +278,21 @@ class PlannedService:
     sleep_mode: bool = False
 
 
+def set_flag_value(argv: list[str], flag: str, value: str) -> None:
+    """Overwrite ``flag``'s value in place, ignoring a truncated argv.
+
+    plan.json argv is user-editable and adopted-process cmdlines come from
+    psutil, so a value-taking flag can appear as the last element; rewriting
+    must not IndexError.
+    """
+    try:
+        index = argv.index(flag) + 1
+    except ValueError:
+        return
+    if index < len(argv):
+        argv[index] = value
+
+
 def _is_embed_only(value: ModelSpec | PlannedService) -> bool:
     return value.roles == ["embed"]
 
@@ -1865,7 +1880,7 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
     if service.backend == "vllm":
         if tensor_parallel > 1:
             if "--tensor-parallel-size" in argv:
-                argv[argv.index("--tensor-parallel-size") + 1] = str(tensor_parallel)
+                set_flag_value(argv, "--tensor-parallel-size", str(tensor_parallel))
             else:
                 argv.extend(["--tensor-parallel-size", str(tensor_parallel)])
         elif "--tensor-parallel-size" in argv:
@@ -1881,7 +1896,7 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
             value = ",".join(str(part) for part in parts)
             supported = backend_flags is None or "--tensor-split" in backend_flags
             if supported and "--tensor-split" in argv:
-                argv[argv.index("--tensor-split") + 1] = value
+                set_flag_value(argv, "--tensor-split", value)
             elif supported:
                 argv.extend(["--tensor-split", value])
             else:
@@ -1898,7 +1913,7 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
         if "--n-cpu-moe" in argv:
             index = argv.index("--n-cpu-moe")
             if service.n_cpu_moe > 0:
-                argv[index + 1] = str(service.n_cpu_moe)
+                set_flag_value(argv, "--n-cpu-moe", str(service.n_cpu_moe))
             else:
                 del argv[index:index + 2]
         elif service.n_cpu_moe > 0 and (
@@ -1910,7 +1925,7 @@ def _rebuild_launch(service: PlannedService, tensor_parallel: int,
         if layers is not None and gpu_layers_supported:
             for flag in gpu_layer_flags:
                 if flag in argv:
-                    argv[argv.index(flag) + 1] = str(layers)
+                    set_flag_value(argv, flag, str(layers))
                     break
         elif not gpu_layers_supported:
             removed = False
@@ -2498,15 +2513,16 @@ def _rewrite_launch(
             flag in flags for flag in ("-np", "--parallel")
         )
         if "-c" in argv:
-            argv[argv.index("-c") + 1] = str(
-                service.context * slots if parallel else service.context
+            set_flag_value(
+                argv, "-c",
+                str(service.context * slots if parallel else service.context)
             )
         else:
             argv.extend([
                 "-c", str(service.context * slots if parallel else service.context)
             ])
         if parallel and "--parallel" in argv:
-            argv[argv.index("--parallel") + 1] = str(slots)
+            set_flag_value(argv, "--parallel", str(slots))
         elif parallel:
             argv.extend(["--parallel", str(slots)])
         elif "--parallel" in argv:
@@ -2518,13 +2534,13 @@ def _rewrite_launch(
             )
     elif service.backend == "vllm":
         if "--max-num-seqs" in argv:
-            argv[argv.index("--max-num-seqs") + 1] = str(slots)
+            set_flag_value(argv, "--max-num-seqs", str(slots))
         else:
             argv.extend(["--max-num-seqs", str(slots)])
         if gpu_fraction is not None:
             formatted = f"{gpu_fraction:.3f}"
             if "--gpu-memory-utilization" in argv:
-                argv[argv.index("--gpu-memory-utilization") + 1] = formatted
+                set_flag_value(argv, "--gpu-memory-utilization", formatted)
             else:
                 argv.extend(["--gpu-memory-utilization", formatted])
     return replace(service.launch, argv=argv)
