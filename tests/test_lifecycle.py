@@ -2211,3 +2211,117 @@ def test_autostart_env_file_born_owner_only(
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
     assert "secret-key" in env_path.read_text(encoding="utf-8")
 
+
+
+def _json_body_response(body: bytes):
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return body
+
+    return _Response()
+
+
+def test_unload_rejects_non_object_gateway_payload(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        "nmesh.cli.local_urlopen",
+        lambda *_args, **_kwargs: _json_body_response(b"[1, 2]"),
+    )
+    assert cli.main(["unload"]) == 1
+    assert capsys.readouterr().err
+
+
+def test_unload_filters_non_string_names(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "nmesh.cli.local_urlopen",
+        lambda *_args, **_kwargs: _json_body_response(
+            b'{"unloaded": ["chat", 3, true], "results": []}'
+        ),
+    )
+    assert cli.main(["unload"]) == 0
+
+
+def test_jobs_rejects_non_object_gateway_payload(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        "nmesh.cli.local_urlopen",
+        lambda *_args, **_kwargs: _json_body_response(b"\"nope\""),
+    )
+    assert cli.main(["jobs"]) == 1
+    assert capsys.readouterr().err
+
+
+def test_jobs_skips_non_object_items(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "nmesh.cli.local_urlopen",
+        lambda *_args, **_kwargs: _json_body_response(
+            b'{"jobs": [true, {"id": "j1", "state": "queued"}]}'
+        ),
+    )
+    assert cli.main(["jobs"]) == 0
+
+
+def test_reload_rejects_non_object_gateway_payload(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        "nmesh.cli.local_urlopen",
+        lambda *_args, **_kwargs: _json_body_response(b"42"),
+    )
+    assert cli.main(["reload"]) == 1
+    assert capsys.readouterr().err
+
+
+def test_run_prompt_rejects_non_object_payload(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        "nmesh.cli.local_urlopen",
+        lambda *_args, **_kwargs: _json_body_response(b"[1]"),
+    )
+    assert cli.main(["run", "hello"]) == 1
+    assert capsys.readouterr().err
+
+
+def test_run_prompt_stream_skips_non_object_chunks(monkeypatch) -> None:
+    class _StreamResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def __iter__(self):
+            yield b"data: [1, 2]\n"
+            yield b'data: {"choices": ["bad"]}\n'
+            yield (
+                b'data: {"choices": [{"delta": {"content": "hi"}}]}\n'
+            )
+            yield b"data: [DONE]\n"
+
+        def read(self) -> bytes:
+            return b""
+
+    monkeypatch.setattr(
+        "nmesh.cli.local_urlopen",
+        lambda *_args, **_kwargs: _StreamResponse(),
+    )
+    assert cli.main(["run", "hello", "--stream"]) == 0
+
+
+def test_profile_rejects_non_regular_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    assert cli.main(["doctor", "--profile", str(fifo)]) == 1
+
+
+def test_offline_items_rejects_non_regular_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(cli, "nmesh_home", lambda: tmp_path)
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    assert cli.main(["watch", "--offline", str(fifo)]) == 1
