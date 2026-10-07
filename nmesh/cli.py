@@ -156,6 +156,7 @@ from nmesh.planner import (
     free_budgets,
     load_plan,
     save_plan,
+    set_flag_value,
 )
 from nmesh.probe import HardwareProfile, detect_hardware, profile_from_dict
 from nmesh.runtime import (
@@ -4855,7 +4856,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             for layers in layer_values:
                 argv = list(service.launch.argv)
                 if "--max-model-len" in argv:
-                    argv[argv.index("--max-model-len") + 1] = str(context)
+                    set_flag_value(argv, "--max-model-len", str(context))
                 if "-c" in argv:
                     # llama.cpp's -c is the shared KV pool total: the
                     # planner emits context * slots when --parallel is
@@ -4868,9 +4869,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                             )
                         except (IndexError, ValueError):
                             slots = 1
-                    argv[argv.index("-c") + 1] = str(context * slots)
+                    set_flag_value(argv, "-c", str(context * slots))
                 if "-ngl" in argv:
-                    argv[argv.index("-ngl") + 1] = str(layers)
+                    set_flag_value(argv, "-ngl", str(layers))
                 tuned = replace(
                     service, context=context, n_gpu_layers=layers,
                     launch=replace(service.launch, argv=argv),
