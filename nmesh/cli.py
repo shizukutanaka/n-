@@ -1094,6 +1094,7 @@ def _runtime(args: argparse.Namespace) -> int:
             exit_code = process.wait()
         except KeyboardInterrupt:
             process.terminate()
+            _reap_gateway(process)
             exit_code = 1
         finally:
             clear_gateway(process.pid)
@@ -1163,6 +1164,7 @@ def _runtime(args: argparse.Namespace) -> int:
                 if not _wait_gateway(args.port, process):
                     clear_gateway(process.pid)
                     process.terminate()
+                    _reap_gateway(process)
                     print(
                         i18n.t("err.gateway_not_ready", i18n.lang(), path=log_path),
                         file=sys.stderr,
@@ -1175,6 +1177,7 @@ def _runtime(args: argparse.Namespace) -> int:
                     exit_code = process.wait()
                 except KeyboardInterrupt:
                     process.terminate()
+                    _reap_gateway(process)
                     runtime_down()
                     exit_code = 1
                 finally:
@@ -1568,6 +1571,10 @@ class _GatewayProcess(Protocol):
 
     def terminate(self) -> None: ...
 
+    def wait(self, timeout: float | None = None) -> int: ...
+
+    def kill(self) -> None: ...
+
 
 class _AdoptedGateway:
     """Process-like handle for a gateway that was already serving the port."""
@@ -1597,6 +1604,24 @@ class _AdoptedGateway:
             psutil.Process(self.pid).terminate()
         except psutil.Error:
             pass
+
+    def kill(self) -> None:
+        try:
+            psutil.Process(self.pid).kill()
+        except psutil.Error:
+            pass
+
+
+def _reap_gateway(process: _GatewayProcess) -> None:
+    """Reap a SIGTERM'd gateway child — ``terminate()`` only signals, and an
+    unwaited child stays a zombie for as long as this CLI keeps running."""
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
+    except OSError:
+        pass
 
 
 def _gateway_recorded_version(pid: int) -> str | None:
@@ -4831,6 +4856,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not _wait_gateway(gateway_port, process):
                 clear_gateway(process.pid)
                 process.terminate()
+                _reap_gateway(process)
                 print(
                     i18n.t(
                         "err.gateway_not_ready",

@@ -1271,7 +1271,13 @@ def test_launch_gateway_refuses_unknown_port_owner(
 
 def test_detached_gateway_timeout_only_stops_owned_runtime(monkeypatch, tmp_path: Path) -> None:
     plan = build_plan(profile(32, (24,)), load_catalog(), Policy(roles=["chat"]))
-    process = SimpleNamespace(pid=1234, terminate=lambda: None)
+    calls: list[str] = []
+    process = SimpleNamespace(
+        pid=1234,
+        terminate=lambda: calls.append("terminate"),
+        wait=lambda *args, **kwargs: calls.append("wait") or 0,
+        kill=lambda: calls.append("kill"),
+    )
     down_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     monkeypatch.setattr(cli, "load_plan", lambda: plan)
@@ -1295,6 +1301,7 @@ def test_detached_gateway_timeout_only_stops_owned_runtime(monkeypatch, tmp_path
 
     assert result == 1
     assert down_calls == [((), {})]
+    assert calls == ["terminate", "wait"]
 
 
 def test_fallback_only_scales_context_with_parallel_flag(tmp_path: Path) -> None:
