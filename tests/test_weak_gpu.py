@@ -73,9 +73,13 @@ def test_linux_generic_gpu_reads_amd_vram_and_does_not_invent_intel_vram(tmp_pat
     assert gpus[0].vendor == "amd"
     assert gpus[0].total_vram_bytes == 8 * GIB
     assert gpus[0].vram_source == "sysfs"
+    # Vendor labels keep trademark casing — no uevent file means the label
+    # is the fallback product name.
+    assert gpus[0].name == "AMD GPU 0"
     assert gpus[1].vendor == "intel"
     assert gpus[1].total_vram_bytes == 0
     assert gpus[1].vram_source == "unknown"
+    assert gpus[1].name == "Intel GPU 1"
 
 
 def test_known_cpu_only_llamacpp_forces_cpu_placement() -> None:
