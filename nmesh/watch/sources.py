@@ -19,6 +19,8 @@ from urllib.parse import urlencode
 
 import httpx
 
+from nmesh.net import bounded_get
+
 
 @dataclass(frozen=True)
 class SourceItem:
@@ -40,34 +42,6 @@ class SourceStatus:
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
-_MAX_BODY_BYTES = 16 * 1024 * 1024
-
-
-def _bounded_get(session: httpx.Client, url: str, **kwargs: Any) -> httpx.Response:
-    """GET with a capped body: remote endpoints can serve unbounded
-    responses, so stream and abort past the cap instead of buffering
-    the whole body in memory."""
-    with session.stream("GET", url, **kwargs) as response:
-        chunks: list[bytes] = []
-        total = 0
-        for chunk in response.iter_bytes(64 * 1024):
-            total += len(chunk)
-            if total > _MAX_BODY_BYTES:
-                raise ValueError("upstream response exceeds the watch body limit")
-            chunks.append(chunk)
-        # iter_bytes already decoded the body, so drop Content-Encoding or
-        # the rebuilt response would try to decode it a second time.
-        headers = [
-            (key, value)
-            for key, value in response.headers.multi_items()
-            if key.lower() != "content-encoding"
-        ]
-        return httpx.Response(
-            response.status_code,
-            headers=headers,
-            content=b"".join(chunks),
-            request=response.request,
-        )
 
 
 # One immediate second look at a transport-level failure — a dropped
@@ -79,10 +53,10 @@ _RETRY_DELAY = 1.0
 
 def _get(session: httpx.Client, url: str, **kwargs: Any) -> httpx.Response:
     try:
-        return _bounded_get(session, url, **kwargs)
+        return bounded_get(session, url, **kwargs)
     except httpx.TransportError:
         time.sleep(_RETRY_DELAY)
-        return _bounded_get(session, url, **kwargs)
+        return bounded_get(session, url, **kwargs)
 
 
 _GITHUB_REPOS = ("ggml-org/llama.cpp", "vllm-project/vllm", "ollama/ollama")
