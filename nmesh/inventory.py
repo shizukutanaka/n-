@@ -88,10 +88,6 @@ class DuplicateGroup:
     artifacts: tuple[Artifact, ...]
     reclaimable_bytes: int
 
-    @property
-    def members(self) -> tuple[Artifact, ...]:
-        return self.artifacts
-
 
 @dataclass(frozen=True)
 class VariantGroup:
@@ -99,10 +95,6 @@ class VariantGroup:
     quant: str | None
     name: str
     artifacts: tuple[Artifact, ...]
-
-    @property
-    def members(self) -> tuple[Artifact, ...]:
-        return self.artifacts
 
 
 def default_stores() -> dict[str, Path]:
