@@ -1982,6 +1982,40 @@ def test_missing_state_is_silent(tmp_path: Path, capsys) -> None:
     assert capsys.readouterr().err == ""
 
 
+def test_malformed_services_state_warns(tmp_path: Path, capsys) -> None:
+    """A dict payload whose `services` is not a list is malformed: warn,
+    but still return the payload so a valid `gateway` record stays usable."""
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps({"services": {"chat": {}}, "gateway": {"pid": 1}}),
+        encoding="utf-8",
+    )
+    supervisor = Supervisor(state_path=state_path, terminator=lambda _pid: None)
+    payload = supervisor._load_state()
+    assert isinstance(payload, dict)
+    assert payload["gateway"] == {"pid": 1}
+    assert "could not be read" in capsys.readouterr().err
+
+
+def test_unreadable_state_warns_for_each_path(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    """The warning is once per state path, not once per supervisor: the
+    module-level default supervisor outlives an NMESH_HOME change."""
+    home_a = tmp_path / "a"
+    home_b = tmp_path / "b"
+    for home in (home_a, home_b):
+        home.mkdir()
+        (home / "state.json").write_text("{not json", encoding="utf-8")
+    supervisor = Supervisor(terminator=lambda _pid: None)
+    monkeypatch.setenv("NMESH_HOME", str(home_a))
+    assert supervisor._load_state() is None
+    assert "could not be read" in capsys.readouterr().err
+    monkeypatch.setenv("NMESH_HOME", str(home_b))
+    assert supervisor._load_state() is None
+    assert "could not be read" in capsys.readouterr().err
+
+
 def _ollama_service(name: str, model: str) -> SimpleNamespace:
     return SimpleNamespace(
         name=name,

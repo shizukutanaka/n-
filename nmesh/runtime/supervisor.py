@@ -243,7 +243,7 @@ class Supervisor:
         self._loaded_plan_stamp: tuple[float, int] | None = None
         self._sleep_probe: dict[str, bool] | None = None
         self._boot_recovery = False
-        self._state_warned = False
+        self._state_warned_paths: set[Path] = set()
         self.notes: dict[str, str] = {}
         self._lock = RLock()
         self._atexit_armed = False
@@ -422,9 +422,10 @@ class Supervisor:
         return False
 
     def _warn_unreadable_state(self) -> None:
-        if self._state_warned:
+        path = self.state_path
+        if path in self._state_warned_paths:
             return
-        self._state_warned = True
+        self._state_warned_paths.add(path)
         print(i18n.t("warn.state_unreadable", i18n.lang()), file=sys.stderr)
 
     def _load_state(self) -> dict[str, object] | None:
@@ -438,6 +439,8 @@ class Supervisor:
         if not isinstance(payload, dict):
             self._warn_unreadable_state()
             return None
+        if not isinstance(payload.get("services"), list):
+            self._warn_unreadable_state()
         return payload
 
     def _write_state(self, payload: Mapping[str, object]) -> None:
