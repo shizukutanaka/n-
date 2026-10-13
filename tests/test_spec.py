@@ -607,6 +607,20 @@ def _planned_spec(
     return result
 
 
+class _StopAfterSpecArm(BaseException):
+    pass
+
+
+def _non_llamacpp_service(service, name: str, backend: str):
+    return replace(
+        service,
+        name=name,
+        roles=("chat",),
+        backend=backend,
+        launch=replace(service.launch, argv=[backend, "serve"]),
+    )
+
+
 @pytest.mark.parametrize(
     ("decision", "reason"),
     [(None, "no_evidence"), ("not_identical", "not_identical"),
@@ -919,6 +933,119 @@ def test_spec_measure_rejects_nonpositive_n_max() -> None:
             cli.main(["spec", "measure", "--kind", "draft",
                       "--draft", "d", "--n-max", bad])
         assert raised.value.code == 2
+
+
+def test_spec_measure_rejects_explicit_ollama_before_supervisor_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plan = _planned_spec(tmp_path, monkeypatch, decision=None)
+    service = _non_llamacpp_service(
+        plan.services[0], "ollama-chat", "ollama"
+    )
+    plan = replace(plan, services=[service])
+    up_calls: list[str] = []
+
+    class FakeSupervisor:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def up(self, *_args, **_kwargs) -> None:
+            up_calls.append("up")
+            raise _StopAfterSpecArm
+
+        def down(self) -> None:
+            return None
+
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", dict)
+    monkeypatch.setattr(cli, "_domain_member_occupied", lambda *_args: False)
+    monkeypatch.setattr(cli, "Supervisor", FakeSupervisor)
+
+    try:
+        result = cli.main([
+            "spec", "measure", "--kind", "ngram", "--no-reference",
+            "--service", "ollama-chat",
+        ])
+    except _StopAfterSpecArm:
+        result = None
+
+    assert up_calls == []
+    assert result == 1
+    error = capsys.readouterr().err
+    assert "ollama-chat" in error
+    assert "ollama" in error
+
+
+def test_spec_measure_auto_picks_llamacpp_after_ollama(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _planned_spec(tmp_path, monkeypatch, decision=None)
+    llama = replace(plan.services[0], name="llama-chat", roles=("chat",))
+    ollama = _non_llamacpp_service(plan.services[0], "ollama-chat", "ollama")
+    plan = replace(plan, services=[ollama, llama])
+    selected = []
+
+    class FakeSupervisor:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def up(self, arm_plan, **_kwargs) -> None:
+            selected.append(arm_plan.services[0])
+            raise _StopAfterSpecArm
+
+        def down(self) -> None:
+            return None
+
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", dict)
+    monkeypatch.setattr(cli, "_domain_member_occupied", lambda *_args: False)
+    monkeypatch.setattr(cli, "Supervisor", FakeSupervisor)
+
+    with pytest.raises(_StopAfterSpecArm):
+        cli.main(["spec", "measure", "--kind", "ngram", "--no-reference"])
+
+    assert selected[0].name == "llama-chat"
+    assert selected[0].backend == "llamacpp"
+
+
+def test_spec_measure_rejects_auto_pick_without_llamacpp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plan = _planned_spec(tmp_path, monkeypatch, decision=None)
+    ollama = _non_llamacpp_service(plan.services[0], "ollama-chat", "ollama")
+    vllm = _non_llamacpp_service(plan.services[0], "vllm-code", "vllm")
+    vllm = replace(vllm, roles=("code",))
+    plan = replace(plan, services=[ollama, vllm])
+    up_calls: list[str] = []
+
+    class FakeSupervisor:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def up(self, *_args, **_kwargs) -> None:
+            up_calls.append("up")
+            raise _StopAfterSpecArm
+
+        def down(self) -> None:
+            return None
+
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", dict)
+    monkeypatch.setattr(cli, "_domain_member_occupied", lambda *_args: False)
+    monkeypatch.setattr(cli, "Supervisor", FakeSupervisor)
+
+    assert cli.main([
+        "spec", "measure", "--kind", "ngram", "--no-reference",
+    ]) == 1
+    assert up_calls == []
+    error = capsys.readouterr().err
+    assert "ollama-chat" in error
+    assert "ollama" in error
 
 
 def test_spec_measure_refuses_while_target_domain_busy(

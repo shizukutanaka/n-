@@ -3750,17 +3750,41 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
         if service is None:
             print(i18n.t("err.unknown_service", language, service=args.service), file=sys.stderr)
             return 1
+        if service.backend != "llamacpp":
+            print(
+                i18n.t(
+                    "err.spec_backend",
+                    language,
+                    service=service.name,
+                    backend=service.backend,
+                ),
+                file=sys.stderr,
+            )
+            return 1
     else:
+        generative = [
+            item for item in plan.services
+            if set(item.roles) & {"chat", "code", "worker"}
+        ]
+        if not generative:
+            print(
+                i18n.t("err.spec_no_generative_service", language),
+                file=sys.stderr,
+            )
+            return 1
         service = next(
-            (
-                item for item in plan.services
-                if set(item.roles) & {"chat", "code", "worker"}
-            ),
+            (item for item in generative if item.backend == "llamacpp"),
             None,
         )
         if service is None:
+            unavailable = generative[0]
             print(
-                i18n.t("err.spec_no_generative_service", language),
+                i18n.t(
+                    "err.spec_backend",
+                    language,
+                    service=unavailable.name,
+                    backend=unavailable.backend,
+                ),
                 file=sys.stderr,
             )
             return 1
