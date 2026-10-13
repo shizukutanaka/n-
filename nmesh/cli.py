@@ -2225,9 +2225,7 @@ def _bench(args: argparse.Namespace) -> int:
     if not _ensure_service_running(service, plan):
         print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
         return 1
-    base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
-        f"http://127.0.0.1:{service.port}"
-    )
+    base_url = _service_base_url(service)
     if service.roles == ["embed"]:
         try:
             with _unbounded_client() as client:
@@ -2859,9 +2857,7 @@ def _eval(args: argparse.Namespace) -> int:
     if not tasks:
         print(i18n.t("err.eval_categories", i18n.lang()), file=sys.stderr)
         return 1
-    base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
-        f"http://127.0.0.1:{service.port}"
-    )
+    base_url = _service_base_url(service)
     allowance = max(0, getattr(args, "reasoning_allowance", 0) or 0)
     timeout = getattr(args, "timeout", None)
     depth = max(0, getattr(args, "depth", 0) or 0)
@@ -3326,10 +3322,16 @@ def _orchestration_generative(service: PlannedService) -> bool:
     return bool(set(service.roles) & {"chat", "code", "worker"})
 
 
-def _orchestration_url(service: PlannedService) -> str:
+def _service_base_url(service: PlannedService) -> str:
+    if service.backend == "magnitude":
+        return "http://127.0.0.1:10100/inference"
     return "http://127.0.0.1:11434" if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
     )
+
+
+def _orchestration_url(service: PlannedService) -> str:
+    return _service_base_url(service)
 
 
 def _orchestrate_measure_command(args: argparse.Namespace) -> int:
@@ -4838,9 +4840,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     file=sys.stderr,
                 )
 
-        base_url = "http://127.0.0.1:11434" if service.backend == "ollama" else (
-            f"http://127.0.0.1:{service.port}"
-        )
+        base_url = _service_base_url(service)
         best: tuple[int, int, float] | None = None
         best_plan = None
         for context in context_values:

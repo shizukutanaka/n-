@@ -30,6 +30,34 @@ from nmesh.runtime.supervisor import Supervisor
 from .test_planner import profile
 
 
+def test_adopt_magnitude_does_not_kill_foreign_listener(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    terminated: list[int] = []
+    supervisor = Supervisor(
+        state_path=tmp_path / "state.json",
+        terminator=terminated.append,
+    )
+    service = SimpleNamespace(
+        name="magnitude-chat",
+        backend="magnitude",
+        model_ref="vendor/model-id",
+        port=10100,
+        launch=SimpleNamespace(
+            health_url="http://127.0.0.1:10100/health",
+            shared_daemon=True,
+            argv=["magnitude", "serve"],
+        ),
+    )
+    monkeypatch.setattr(supervisor, "_healthy", lambda _service: True)
+    monkeypatch.setattr(supervisor_module, "engine_listener_pid", lambda _port: 123)
+    monkeypatch.setattr(supervisor_module, "_pid_serves_model", lambda *_args: False)
+
+    assert supervisor._adopt(service)
+    assert service.name in supervisor.external_shared
+    assert terminated == []
+
+
 def test_gateway_state_is_terminated_and_removed(
     monkeypatch, tmp_path: Path,
 ) -> None:

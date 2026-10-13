@@ -587,6 +587,9 @@ class Supervisor:
             and self._entry_alive(entry)
             and self._healthy(service)
         ):
+            if service.backend == "magnitude":
+                self.external_shared.add(service.name)
+                return True
             recorded_model = entry.get("model_ref")
             if recorded_model is not None and recorded_model != service.model_ref:
                 # Stale process still bound to the port after a replan —
@@ -661,8 +664,10 @@ class Supervisor:
             return True
         if self._healthy(service):
             orphan_pid = engine_listener_pid(service.port)
-            if orphan_pid is not None and not _pid_serves_model(
-                orphan_pid, service.model_ref
+            if (
+                service.backend != "magnitude"
+                and orphan_pid is not None
+                and not _pid_serves_model(orphan_pid, service.model_ref)
             ):
                 # Our engine but serving a different model — reclaim the
                 # port instead of silently proxying to the wrong model.
@@ -821,6 +826,16 @@ class Supervisor:
             updated if item.name == service.name else item for item in plan.services
         ]
         return replace(plan, services=updated_services), updated, True, artifact_replanned
+
+    def _check_magnitude_model(
+        self, plan: Plan, service: PlannedService
+    ) -> tuple[Plan, PlannedService, bool]:
+        if service.backend != "magnitude":
+            return plan, service, False
+        plan, service, changed, _ = self._apply_acquired(
+            plan, service, acquire(service, local_only=True)
+        )
+        return plan, service, changed
 
     def _resolve_launch_exe(
         self, service: PlannedService
@@ -1239,11 +1254,21 @@ class Supervisor:
                         if dead:
                             self.processes.pop(service.name, None)
                         if service.name not in self.processes and self._adopt(service):
+                            current, service, changed = self._check_magnitude_model(
+                                current, service
+                            )
+                            actualized = actualized or changed
+                            self.active_plan = current
                             self.idle.discard(service.name)
                             continue
                         if self._spec_drift(service):
                             self._stop_process(service.name)
                         elif self._already_up(service):
+                            current, service, changed = self._check_magnitude_model(
+                                current, service
+                            )
+                            actualized = actualized or changed
+                            self.active_plan = current
                             self.idle.discard(service.name)
                             if service.launch.shared_daemon:
                                 self.shared_services.add(service.name)
@@ -1270,16 +1295,14 @@ class Supervisor:
                         # no_download only skips the network, never the
                         # resolution — launch.argv would otherwise keep a
                         # planned name ({id}-{quant}.gguf) that need not exist.
-                        acquired = acquire(service, local_only=no_download)
-                        current, service, changed, artifact_replanned = self._apply_acquired(
-                            current, service, acquired
-                        )
-                        actualized = actualized or changed
-                        if (
-                            artifact_replanned
-                            and admit
-                            and not replan_done
-                        ):
+                        artifact_replanned = False
+                        if service.backend != "magnitude":
+                            acquired = acquire(service, local_only=no_download)
+                            current, service, changed, artifact_replanned = self._apply_acquired(
+                                current, service, acquired
+                            )
+                            actualized = actualized or changed
+                        if artifact_replanned and admit and not replan_done:
                             try:
                                 current = self._admit(
                                     current,
@@ -1346,6 +1369,11 @@ class Supervisor:
                                     service.name, service.port, service.backend
                                 )
                             )
+                        current, service, changed = self._check_magnitude_model(
+                            current, service
+                        )
+                        actualized = actualized or changed
+                        self.active_plan = current
                     if (current is plan or actualized) and {
                         item.name for item in current.services
                     } == {item.name for item in plan.services}:
@@ -1420,6 +1448,7 @@ class Supervisor:
                         or service.name in self.processes
                         or service.name in self.adopted
                         or service.port is None
+                        or service.backend == "magnitude"
                     ):
                         continue
                     orphan_pid = engine_listener_pid(service.port)
@@ -1641,10 +1670,17 @@ class Supervisor:
                     self._terminate_record(record)
                 adopted = False
             if adopted:
-                pass
+                selected, target, changed = self._check_magnitude_model(
+                    selected, target
+                )
+                actualized = actualized or changed
             elif self._already_up(target):
                 if target.launch.shared_daemon:
                     self.shared_services.add(service_name)
+                selected, target, changed = self._check_magnitude_model(
+                    selected, target
+                )
+                actualized = actualized or changed
             else:
                 reason = self.failed.get(service_name)
                 if reason is not None:
@@ -1664,9 +1700,10 @@ class Supervisor:
                         ))
                     self._record_restart(service_name)
                 if service_name not in self.processes:
-                    selected, target, actualized, _ = self._apply_acquired(
-                        selected, target, acquire(target)
-                    )
+                    if target.backend != "magnitude":
+                        selected, target, actualized, _ = self._apply_acquired(
+                            selected, target, acquire(target)
+                        )
                     self.active_plan = selected
                 self.processes[service_name] = self.launcher(target)
                 self.launched_argv[service_name] = list(target.launch.argv)
@@ -1679,6 +1716,10 @@ class Supervisor:
                     )
                     self.failed[service_name] = message
                     raise RuntimeError(message)
+                selected, target, changed = self._check_magnitude_model(
+                    selected, target
+                )
+                actualized = actualized or changed
                 self.failed.pop(service_name, None)
             if actualized:
                 save_plan(selected, self.plan_path)

@@ -285,6 +285,7 @@ def _detect_backends(
 ]:
     backends: dict[str, str | None] = {
         "ollama": None,
+        "magnitude": None,
         "llamacpp": None,
         "vllm": None,
         "mlx": None,
@@ -294,6 +295,7 @@ def _detect_backends(
     gpu_devices: dict[str, tuple[str, ...]] = {}
     commands: dict[str, list[str]] = {
         "ollama": ["ollama", "--version"],
+        "magnitude": ["magnitude", "--version"],
         "llamacpp": ["llama-server", "--version"],
         "vllm": ["vllm", "--version"],
     }

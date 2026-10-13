@@ -943,6 +943,68 @@ def _ollama_only_model() -> ModelSpec:
     )
 
 
+def test_magnitude_only_model_uses_shared_daemon() -> None:
+    model = replace(
+        _ollama_only_model(),
+        id="magnitude-only",
+        sources={"magnitude": "vendor/model-id"},
+    )
+    result = build_plan(
+        profile(8, backends={"magnitude": "test"}),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+
+    service = result.services[0]
+    assert service.backend == "magnitude"
+    assert service.port == 10100
+    assert service.model_ref == "vendor/model-id"
+    assert service.launch.argv == ["magnitude", "serve"]
+    assert service.launch.health_url == "http://127.0.0.1:10100/health"
+    assert service.launch.shared_daemon
+    assert not result.swap_group
+    assert i18n.t(
+        "warn.magnitude_estimate", "en", service=service.name
+    ) in result.warnings
+
+
+def test_llamacpp_precedes_magnitude_when_both_sources_are_available() -> None:
+    model = replace(
+        _ollama_only_model(),
+        id="llamacpp-before-magnitude",
+        sources={
+            "hf_gguf": "vendor/gguf-repo",
+            "magnitude": "vendor/model-id",
+        },
+    )
+    result = build_plan(
+        profile(8, backends={"llamacpp": "test", "magnitude": "test"}),
+        [model],
+        Policy(roles=["chat"], min_decode_tps=0),
+    )
+
+    assert result.services[0].backend == "llamacpp"
+
+
+def test_only_one_magnitude_model_is_planned() -> None:
+    models = [
+        replace(
+            _ollama_only_model(),
+            id=f"magnitude-{role}",
+            roles=[role],
+            sources={"magnitude": f"vendor/{role}"},
+        )
+        for role in ("chat", "code")
+    ]
+    result = build_plan(
+        profile(8, backends={"magnitude": "test"}),
+        models,
+        Policy(roles=["chat", "code"], min_decode_tps=0),
+    )
+
+    assert sum(service.backend == "magnitude" for service in result.services) <= 1
+
+
 def test_ollama_daemon_env_pins_single_parallel_slot(monkeypatch) -> None:
     # Ollama auto-selects up to 4 parallel slots per model; the plan
     # accounts KV memory for one slot, so the daemon env pins it.

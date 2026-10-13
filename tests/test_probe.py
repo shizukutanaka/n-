@@ -190,6 +190,29 @@ def test_backend_version_line_prefers_line_containing_version() -> None:
     ) == "Warning: client version is 0.33.2"
 
 
+def test_magnitude_version_probe_is_registered(monkeypatch, tmp_path: Path) -> None:
+    executable = tmp_path / "magnitude"
+    executable.write_text("", encoding="utf-8")
+    monkeypatch.delenv("NMESH_MAGNITUDE_BIN", raising=False)
+    monkeypatch.setattr(
+        detector.shutil,
+        "which",
+        lambda command: str(executable) if command == "magnitude" else None,
+    )
+    calls: list[list[str]] = []
+
+    def run(argv):
+        calls.append(argv)
+        return "Magnitude version 1.2.3", None
+
+    monkeypatch.setattr(detector, "_run", run)
+    backends, _, paths, _ = detector._detect_backends([], [])
+
+    assert backends["magnitude"] == "Magnitude version 1.2.3"
+    assert paths["magnitude"] == str(executable.resolve())
+    assert calls == [[str(executable.resolve()), "--version"]]
+
+
 def test_run_returns_none_on_undecodable_output(monkeypatch) -> None:
     import subprocess
 

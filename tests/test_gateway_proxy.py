@@ -8,6 +8,7 @@ import threading
 import time
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from typing import ClassVar
 
 import httpx
@@ -42,6 +43,14 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         return
+
+
+def test_magnitude_base_url_uses_inference_path() -> None:
+    service = SimpleNamespace(backend="magnitude", port=10100)
+
+    assert gateway_module._base_url(service) == (
+        "http://127.0.0.1:10100/inference"
+    )
 
 
 class _CompatStreamHandler(BaseHTTPRequestHandler):
