@@ -7,6 +7,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import psutil
@@ -16,6 +17,10 @@ from nmesh.paths import is_windows, nmesh_home
 from .caps import llamacpp_caps
 from .generic_gpu import detect_generic
 from .models import GPUInfo, HardwareProfile, OperatingSystem, classify_tier
+
+_MAGNITUDE_DESKTOP_BINARY = Path(
+    "/Applications/Magnitude.app/Contents/Resources/magnitude"
+)
 
 
 def _append_warning(
@@ -244,6 +249,10 @@ def _resolve_backend_binary(
     located = shutil.which(command)
     if located:
         return Path(located).resolve()
+    if backend == "magnitude" and sys.platform == "darwin":
+        candidate = _MAGNITUDE_DESKTOP_BINARY
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate.resolve()
     if backend == "llamacpp":
         from nmesh.runtime.engine import active as active_engine
 
@@ -285,6 +294,7 @@ def _detect_backends(
 ]:
     backends: dict[str, str | None] = {
         "ollama": None,
+        "magnitude": None,
         "llamacpp": None,
         "vllm": None,
         "mlx": None,
@@ -294,6 +304,7 @@ def _detect_backends(
     gpu_devices: dict[str, tuple[str, ...]] = {}
     commands: dict[str, list[str]] = {
         "ollama": ["ollama", "--version"],
+        "magnitude": ["magnitude", "--version"],
         "llamacpp": ["llama-server", "--version"],
         "vllm": ["vllm", "--version"],
     }

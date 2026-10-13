@@ -458,6 +458,8 @@ def _embedding_chunks(
 
 
 def _base_url(service: PlannedService) -> str:
+    if service.backend == "magnitude":
+        return "http://127.0.0.1:10100/inference"
     return "http://127.0.0.1:11434" if service.backend == "ollama" else (
         f"http://127.0.0.1:{service.port}"
     )

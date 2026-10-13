@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -12,6 +13,7 @@ import httpx
 
 from nmesh import i18n
 from nmesh.artifacts import artifact_key, load_cache, record
+from nmesh.net import bounded_read, local_urlopen
 from nmesh.paths import nmesh_home
 from nmesh.planner import PlannedService
 
@@ -412,10 +414,41 @@ def _download_failed(repo_id: str, error: Exception) -> OSError:
 def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
     """Resolve *service*'s artifact to a real path.
 
-    With ``local_only`` no network is touched: existing files under the
+    With ``local_only`` no remote network is touched: existing files under the
     models directory are matched by quant label and model id instead of
     downloading (planned names like {id}-{quant}.gguf differ from
-    upstream filenames)."""
+    upstream filenames). Magnitude only checks its loopback model list."""
+    if service.backend == "magnitude":
+        warning = None
+        try:
+            with local_urlopen(
+                "http://127.0.0.1:10100/inference/v1/models",
+                timeout=5,
+            ) as response:
+                payload = json.loads(bounded_read(response))
+            models = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(models, list) or not any(
+                isinstance(model, dict) and model.get("id") == service.model_ref
+                for model in models
+            ):
+                warning = i18n.t(
+                    "warn.magnitude_model_missing",
+                    i18n.lang(),
+                    model=service.model_ref,
+                )
+        except (OSError, ValueError, TypeError):
+            warning = i18n.t(
+                "warn.magnitude_model_missing",
+                i18n.lang(),
+                model=service.model_ref,
+            )
+        return Acquired(
+            None,
+            None,
+            False,
+            model_ref=service.model_ref,
+            warning=warning,
+        )
     if service.backend == "ollama":
         if not local_only:
             try:

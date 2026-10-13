@@ -46,7 +46,8 @@ OpenAI 互換 API を提供します。
 
 ## バックエンドとモデル
 
-Ollama、llama.cpp、vLLM、MLX-LM をサポートします。未インストールでも
+Ollama、llama.cpp、vLLM、MLX-LM、Magnitude（ユーザー定義ソースのみ）を
+サポートします。未インストールでも
 `nmesh plan` は候補と具体的なインストール方法を表示します。
 MLX-LM は Apple Silicon 実機（M4）で chat 完走を検証済みです（embed は
 `mlx_lm.server` がエンドポイントを持たないため非対応）。mlx バックエンドは
@@ -54,6 +55,13 @@ catalog の `hf_mlx` ソース（MLX 形式リポジトリ）を優先使用し�
 `hf` を使います。
 モデルの追加や上書きは `~/.nmesh/models.yaml` に bundled catalog と同じ形式で記述します。
 同じ `id` のモデルはユーザー定義が優先されます。
+
+### Magnitude
+
+ユーザー定義モデルの `sources: {magnitude: <id>}` で opt-in できます。Magnitude
+デーモンは固定ポート 10100 を使い、一度に有効化できるモデルは1つです。
+nmesh のメモリ値は Magnitude がメモリを管理するため推定値です。モデルは
+`magnitude catalog pull <id>` で事前に取得してください。
 
 ## CI workflow
 

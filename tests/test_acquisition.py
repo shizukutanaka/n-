@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,6 +25,40 @@ def _ollama_service() -> SimpleNamespace:
         context=8192,
         name="chat",
     )
+
+
+def _magnitude_service() -> SimpleNamespace:
+    return SimpleNamespace(
+        backend="magnitude",
+        model_ref="vendor/model-id",
+        model_id="probe-model",
+        context=8192,
+        name="chat",
+    )
+
+
+def test_magnitude_missing_model_warns_with_catalog_pull_hint(monkeypatch) -> None:
+    requested: list[tuple[str, int]] = []
+
+    def local_urlopen(url, *, timeout):
+        requested.append((url, timeout))
+        return BytesIO(b'{"data":[{"id":"other/model"}]}')
+
+    monkeypatch.setattr(acquisition, "local_urlopen", local_urlopen)
+    monkeypatch.setattr(
+        acquisition.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("Magnitude acquisition must not shell out"),
+    )
+
+    acquired = acquisition.acquire(_magnitude_service())
+
+    assert requested == [
+        ("http://127.0.0.1:10100/inference/v1/models", 5)
+    ]
+    assert acquired.model_ref == "vendor/model-id"
+    assert acquired.warning is not None
+    assert "magnitude catalog pull vendor/model-id" in acquired.warning
 
 
 def test_ollama_acquisition_creates_context_model(tmp_path, monkeypatch) -> None:

@@ -63,6 +63,7 @@ GIB = 1024**3
 PLAN_PATH = nmesh_home() / "plan.json"
 INSTALL_HINTS = {
     "ollama": "install.ollama",
+    "magnitude": "install.magnitude",
     "llamacpp": "install.llamacpp",
     "vllm": "install.vllm",
     "mlx": "install.mlx",
@@ -639,6 +640,8 @@ def _backend(profile: HardwareProfile, model: ModelSpec, layers: int) -> tuple[s
         candidates.append("vllm")
     if profile.unified_memory and "hf" in model.sources:
         candidates.append("mlx")
+    if "magnitude" in model.sources:
+        candidates.append("magnitude")
     for name in candidates:
         if profile.available_backends.get(name):
             return name, True
@@ -652,6 +655,8 @@ def _source_for(backend: str, model: ModelSpec, quant: str) -> str:
         return model.sources["hf"]
     if backend == "llamacpp":
         return str(nmesh_home() / "models" / f"{model.id}-{quant}.gguf")
+    if backend == "magnitude":
+        return model.sources["magnitude"]
     return model.sources["ollama"]
 
 
@@ -662,6 +667,8 @@ def _download_repo_for(backend: str, model: ModelSpec) -> str | None:
         return model.sources.get("hf")
     if backend == "llamacpp":
         return model.sources.get("hf_gguf") or model.sources.get("hf")
+    if backend == "magnitude":
+        return model.sources.get("magnitude")
     return model.sources.get("ollama")
 
 
@@ -683,6 +690,7 @@ def _has_source(backend: str, model: ModelSpec) -> bool:
         "mlx": "hf",
         "llamacpp": "hf_gguf",
         "ollama": "ollama",
+        "magnitude": "magnitude",
     }.get(backend, "") in model.sources
 
 
@@ -716,6 +724,13 @@ def _launch(
     embed_only = list(roles) == ["embed"]
     rerank_only = list(roles) == ["rerank"]
     ref = _source_for(backend, model, quant)
+    if backend == "magnitude":
+        return LaunchSpec(
+            [binary or "magnitude", "serve"],
+            {},
+            "http://127.0.0.1:10100/health",
+            True,
+        )
     if backend == "ollama":
         env = {}
         num_parallel = os.environ.get("OLLAMA_NUM_PARALLEL")
@@ -1813,10 +1828,17 @@ def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfi
         name, group, candidate.model.id, _source_for(candidate.backend, candidate.model, candidate.quant),
         _download_repo_for(candidate.backend, candidate.model),
         candidate.quant, candidate.backend, candidate.context,
-        11434 if candidate.backend == "ollama" else port, indices,
-        None if candidate.backend in {"vllm", "mlx", "ollama"} else layers,
         (
-            resident_override
+            11434 if candidate.backend == "ollama"
+            else 10100 if candidate.backend == "magnitude"
+            else port
+        ),
+        indices,
+        None if candidate.backend in {"vllm", "mlx", "ollama", "magnitude"} else layers,
+        (
+            True
+            if candidate.backend == "magnitude"
+            else resident_override
             if resident_override is not None
             else profile.tier not in {Tier.T0_CPU, Tier.T1_LOW} or not services
         ),
@@ -1992,6 +2014,14 @@ def _place_services(
                     service=service.name,
                 )
             )
+        elif service.backend == "magnitude":
+            warnings.append(
+                t(
+                    "warn.magnitude_estimate",
+                    policy.lang,
+                    service=service.name,
+                )
+            )
 
     if not profile.gpus:
         return services
@@ -2015,7 +2045,7 @@ def _place_services(
         if (
             profile.gpus
             and service.n_gpu_layers is not None
-            and service.backend not in {"ollama", "vllm", "mlx"}
+            and service.backend not in {"ollama", "vllm", "mlx", "magnitude"}
             and (service.n_gpu_layers == 0 or not service.gpu_indices)
             and service.name not in cpu_fallback_warned
         ):
@@ -2141,7 +2171,7 @@ def _place_services(
                         split=",".join(str(part) for part in ratios),
                     )
                 )
-        elif service.backend in {"ollama", "vllm", "mlx"}:
+        elif service.backend in {"ollama", "vllm", "mlx", "magnitude"}:
             total_bytes = service.memory.cpu_bytes + service.memory.gpu_bytes
             if ram_used + total_bytes <= ram_budget + 1:
                 placed[service.name] = replace(
@@ -2295,7 +2325,13 @@ def _place_services(
     return [placed[service.name] for service in services]
 
 
-SLOT_CAPS = {"llamacpp": 8, "vllm": 32, "mlx": 1, "ollama": 1}
+SLOT_CAPS = {
+    "llamacpp": 8,
+    "vllm": 32,
+    "mlx": 1,
+    "ollama": 1,
+    "magnitude": 1,
+}
 SLOT_SPARE_FRACTION = 0.5
 
 
@@ -2704,7 +2740,10 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
     for model in catalog_models:
         if (
             any(_serves_role(model, role) for role in roles)
-            and not any(source in model.sources for source in ("hf", "hf_gguf", "ollama"))
+            and not any(
+                source in model.sources
+                for source in ("hf", "hf_gguf", "ollama", "magnitude")
+            )
         ):
             warnings.append(
                 t("warn.no_source", selected.lang, model=model.id)
@@ -2763,6 +2802,26 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                  if role != "rerank" or candidate.backend == "llamacpp"),
                 key=lambda item: item.score, reverse=True,
             ) for role in group}
+
+        def exclude_used_magnitude(
+            candidate_pool_sets: tuple[
+                dict[str, list[_Candidate]] | None,
+                dict[str, list[_Candidate]] | None,
+            ] = (pools, empty_pools),
+        ) -> None:
+            if not any(service.backend == "magnitude" for service in services):
+                return
+            for candidate_pools in candidate_pool_sets:
+                if candidate_pools is None:
+                    continue
+                for role, candidates in candidate_pools.items():
+                    candidate_pools[role] = [
+                        candidate
+                        for candidate in candidates
+                        if candidate.backend != "magnitude"
+                    ]
+
+        exclude_used_magnitude()
 
         def apply_eval_override(
             current_group: list[str], current: _Candidate,
@@ -3016,6 +3075,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                         selected.budget_source, warnings,
                         selected.lang, spec_policy=selected,
                     )
+                    exclude_used_magnitude()
                     download_key = f"{role_candidate.model.id}|{role_candidate.quant}"
                     if download_key not in seen_downloads:
                         seen_downloads.add(download_key)
