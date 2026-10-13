@@ -213,6 +213,31 @@ def test_magnitude_version_probe_is_registered(monkeypatch, tmp_path: Path) -> N
     assert calls == [[str(executable.resolve()), "--version"]]
 
 
+def test_magnitude_desktop_cli_is_used_when_not_on_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    executable = tmp_path / "Magnitude.app" / "Contents" / "Resources" / "magnitude"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("", encoding="utf-8")
+    executable.chmod(0o755)
+    monkeypatch.delenv("NMESH_MAGNITUDE_BIN", raising=False)
+    monkeypatch.setattr(detector.shutil, "which", lambda _: None)
+    monkeypatch.setattr(detector.sys, "platform", "darwin")
+    monkeypatch.setattr(detector, "_MAGNITUDE_DESKTOP_BINARY", executable)
+    calls: list[list[str]] = []
+
+    def run(argv):
+        calls.append(argv)
+        return "Magnitude version 1.2.3", None
+
+    monkeypatch.setattr(detector, "_run", run)
+    backends, _, paths, _ = detector._detect_backends([], [])
+
+    assert backends["magnitude"] == "Magnitude version 1.2.3"
+    assert paths["magnitude"] == str(executable.resolve())
+    assert calls == [[str(executable.resolve()), "--version"]]
+
+
 def test_run_returns_none_on_undecodable_output(monkeypatch) -> None:
     import subprocess
 
