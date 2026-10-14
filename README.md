@@ -1240,3 +1240,11 @@ plan, unavailable gateway/backend, failed benchmark, missing plan, or non-zero
 foreground server exit returns `1`. `status` and `down` remain idempotent:
 querying status or stopping an already-stopped runtime is a successful
 operation.
+
+## 支援・商用利用
+
+nmesh は MIT ライセンスで、個人・商用を問わず無償で使えます。継続的な開発
+（新しいモデル・バックエンドへの追従、実機での検証）を支えていただける場合は、
+リポジトリ上部の **Sponsor** ボタン（GitHub Sponsors）からご支援ください。
+導入支援・社内向けのカスタマイズなどの商用サポートは、
+[GitHub Issues](https://github.com/shizukutanaka/n-/issues) からご相談ください。

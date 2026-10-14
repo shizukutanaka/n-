@@ -4,6 +4,7 @@
 ## 未リリース
 ### Added
 
+- GitHub Sponsors の `.github/FUNDING.yml` と README の「支援・商用利用」節を追加 — 開発支援と商用サポート相談の窓口を明示
 - Magnitude をユーザー定義 `sources` から選択できる共有デーモンバックエンドとして追加。モデルの取得は `magnitude catalog pull <id>` で行い、ポート 10100・単一モデル制約・推定メモリを明示。macOS では Desktop 同梱 CLI も検出
 - `deepseek-r1-distill-llama-8b` をモデルカタログに追加 — DeepSeek-R1 の推論
   パターンを Llama-3.1-8B へ蒸留した推論特化モデル（32層、GQA 32/8、
