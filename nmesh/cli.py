@@ -3791,7 +3791,11 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-    backend_flags = plan.profile.backend_flags.get("llamacpp")
+    active_engine = engine_runtime.active()
+    if active_engine is not None and active_engine.exe.is_file():
+        backend_flags = active_engine.flags or None
+    else:
+        backend_flags = plan.profile.backend_flags.get("llamacpp")
     if not _honors_spec(service.backend, backend_flags, args.kind):
         required_flags = SPEC_TYPE_FLAGS + (
             SPEC_DRAFT_FLAGS if args.kind == KIND_DRAFT else ()
