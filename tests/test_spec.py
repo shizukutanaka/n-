@@ -1048,6 +1048,108 @@ def test_spec_measure_rejects_auto_pick_without_llamacpp(
     assert "ollama" in error
 
 
+@pytest.mark.parametrize(
+    (
+        "kind",
+        "draft",
+        "backend_flags",
+        "expected_flags",
+        "unexpected_flags",
+        "explicit",
+    ),
+    [
+        ("ngram", None, ("--parallel",), ("--spec-type",), (), True),
+        (
+            "draft",
+            "draft-model.gguf",
+            planner_core.SPEC_TYPE_FLAGS,
+            planner_core.SPEC_DRAFT_FLAGS,
+            planner_core.SPEC_TYPE_FLAGS,
+            False,
+        ),
+    ],
+)
+def test_spec_measure_rejects_missing_probed_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    kind: str,
+    draft: str | None,
+    backend_flags: tuple[str, ...],
+    expected_flags: tuple[str, ...],
+    unexpected_flags: tuple[str, ...],
+    explicit: bool,
+) -> None:
+    plan = _planned_spec(tmp_path, monkeypatch, decision=None)
+    profile = replace(plan.profile, backend_flags={"llamacpp": backend_flags})
+    plan = replace(plan, profile=profile)
+    status_calls: list[str] = []
+    supervisor_calls: list[str] = []
+
+    class FakeSupervisor:
+        def __init__(self, **_kwargs) -> None:
+            supervisor_calls.append("init")
+
+        def up(self, *_args, **_kwargs) -> None:
+            supervisor_calls.append("up")
+            raise _StopAfterSpecArm
+
+        def down(self) -> None:
+            return None
+
+    def fake_runtime_status():
+        status_calls.append("status")
+        return {}
+
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", fake_runtime_status)
+    monkeypatch.setattr(cli, "_domain_member_occupied", lambda *_args: False)
+    monkeypatch.setattr(cli, "Supervisor", FakeSupervisor)
+
+    command = ["spec", "measure", "--kind", kind, "--no-reference"]
+    if draft is not None:
+        command.extend(["--draft", draft])
+    if explicit:
+        command.extend(["--service", plan.services[0].name])
+    assert cli.main(command) == 1
+    error = capsys.readouterr().err
+    assert "not detected in this build" in error
+    assert all(flag in error for flag in expected_flags)
+    assert all(flag not in error for flag in unexpected_flags)
+    assert status_calls == []
+    assert supervisor_calls == []
+
+
+def test_spec_measure_allows_unprobed_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _planned_spec(tmp_path, monkeypatch, decision=None)
+    profile = replace(plan.profile, backend_flags={})
+    plan = replace(plan, profile=profile)
+    up_calls: list[str] = []
+
+    class FakeSupervisor:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def up(self, *_args, **_kwargs) -> None:
+            up_calls.append("up")
+            raise _StopAfterSpecArm
+
+        def down(self) -> None:
+            return None
+
+    monkeypatch.setattr(cli, "load_plan", lambda: plan)
+    monkeypatch.setattr(cli, "runtime_status", dict)
+    monkeypatch.setattr(cli, "_domain_member_occupied", lambda *_args: False)
+    monkeypatch.setattr(cli, "Supervisor", FakeSupervisor)
+
+    with pytest.raises(_StopAfterSpecArm):
+        cli.main(["spec", "measure", "--kind", "ngram", "--no-reference"])
+    assert up_calls == ["up"]
+
+
 def test_spec_measure_refuses_while_target_domain_busy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
