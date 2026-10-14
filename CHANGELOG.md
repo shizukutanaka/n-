@@ -23,6 +23,10 @@
 - **マルチ GPU への分散を VRAM 比例の `--tensor-split` に変更**: これまでは複数 GPU への分散時に常に `1,1,...` の均等分割を出していましたが、異種構成（例: 24GB + 8GB）では最小カードの取り分が全 GPU に課され、大容量カードを使い切れず配置失敗や過小見積もりにつながっていました（`--tensor-split` 省略時に llama.cpp 自身が行うメモリ比例の自動分割より悪い）。各カードの利用可能 VRAM 予算に比例した整数比（例: `3,1`）を発行し、分散プールを「最小カード×枚数」から「全カード合計」へ拡大 — 従来 CPU フォールバックしていたケースの一部が GPU 層を確保できます。比率は `plan.json` の `tensor_split` に永続化、ベンチキーは非均等比のみ `|ts` で分離、CPU 降格時はフラグと比率を除去。vLLM は均等テンソル並列のため従来どおり。LAUNCH_REVISION 4
 - **vLLM スリープモードによるスワップ切替の高速化**: スワップグループの非 resident メンバーは切替のたびにプロセスを kill→モデル再ロードで復帰に数分かかっていましたが、vLLM ≥0.9 の sleep mode（vLLM docs features/sleep_mode:`--enable-sleep-mode` + `VLLM_SERVER_DEV_MODE=1`）を使い、切替時に `POST /sleep?level=1` で重みを CPU RAM へ退避（VRAM を開放・KV キャッシュは破棄）、次のリクエストで `POST /wake_up` により秒速復帰するようになりました。退避する重みは CPU RAM を消費するため、空きメモリがプランの `weight_bytes` を下回る場合はスリープを拒否して従来どおり kill にフォールバック（予算を静かに超過させません）。vLLM が古い・バージョン検出不可の場合は警告を出して従来の再起動パスを維持し、プランナが常駐サービスにはこの機能を発行しないため dev-mode エンドポイントの露出面は最小です。supervisor 再起動後は `/is_sleeping` でパーク状態を検出し、adopted/orphan エンジンも同じ wake 経路で復帰します。`nmesh status` はスリープ中のサービスを `sleeping` で表示します。LAUNCH_REVISION 5
 
+### Changed
+
+- cli: main の autotune サブコマンド処理を `_autotune` に分離（挙動不変）
+
 ### Fixed
 - **spec measure がプローブ済み llama.cpp の未対応フラグを候補起動時に発行していた問題を修正**: 必須フラグが未検出の場合は対照測定前に拒否
 - **spec measure が llama.cpp 以外のサービスに投機フラグを付けていた問題を修正**: 自動選択は llama.cpp を優先し、他バックエンドを指定した場合は起動前に拒否
