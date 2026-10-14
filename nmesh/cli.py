@@ -158,6 +158,7 @@ from nmesh.planner import (
     save_plan,
     set_flag_value,
 )
+from nmesh.planner.core import SPEC_DRAFT_FLAGS, SPEC_TYPE_FLAGS, _honors_spec
 from nmesh.probe import HardwareProfile, detect_hardware, profile_from_dict
 from nmesh.runtime import (
     RuntimeStatus,
@@ -3790,6 +3791,28 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+    active_engine = engine_runtime.active()
+    if active_engine is not None and active_engine.exe.is_file():
+        backend_flags = active_engine.flags or None
+    else:
+        backend_flags = plan.profile.backend_flags.get("llamacpp")
+    if not _honors_spec(service.backend, backend_flags, args.kind):
+        required_flags = SPEC_TYPE_FLAGS + (
+            SPEC_DRAFT_FLAGS if args.kind == KIND_DRAFT else ()
+        )
+        missing_flags = tuple(
+            flag for flag in required_flags if flag not in (backend_flags or ())
+        )
+        print(
+            i18n.t(
+                "err.spec_flags_unsupported",
+                language,
+                kind=args.kind,
+                flags=", ".join(missing_flags),
+            ),
+            file=sys.stderr,
+        )
+        return 1
     running = runtime_status()
     domain = (
         set(plan.swap_group) if service.name in plan.swap_group else {service.name}
