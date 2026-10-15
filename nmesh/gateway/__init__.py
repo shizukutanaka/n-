@@ -248,6 +248,83 @@ def _prompt_depth(usage: object, timings: object) -> int | None:
     return prompt_n + (cache_n or 0)
 
 
+@dataclass
+class _StreamStats:
+    tokens: int = 0
+    usage: dict[str, object] | None = None
+    timings: dict[str, object] | None = None
+    first_line_time: float | None = None
+    last_line_time: float | None = None
+
+
+def _transform_sse_line(
+    line: bytes,
+    stats: _StreamStats,
+    *,
+    client_model: object,
+    request_wants_usage: bool,
+) -> bytes | None:
+    """Rewrite one upstream SSE line for the client and record its stats."""
+    ending = b""
+    content = line
+    if content.endswith(b"\n"):
+        content = content[:-1]
+        ending = b"\n"
+        if content.endswith(b"\r"):
+            content = content[:-1]
+            ending = b"\r\n"
+    if not content.startswith(b"data: ") or content == b"data: [DONE]":
+        return line
+    try:
+        payload = json.loads(content[6:])
+    except json.JSONDecodeError:
+        payload = None
+    if not isinstance(payload, dict):
+        now = time.perf_counter()
+        stats.tokens += 1
+        stats.first_line_time = stats.first_line_time or now
+        stats.last_line_time = now
+        return line
+    candidate_usage = payload.get("usage")
+    candidate_timings = payload.get("timings")
+    usage_only = (
+        isinstance(candidate_usage, dict)
+        and isinstance(payload.get("choices"), list)
+        and not payload["choices"]
+    )
+    if isinstance(candidate_usage, dict):
+        stats.usage = candidate_usage
+    if isinstance(candidate_timings, dict):
+        stats.timings = candidate_timings
+    if usage_only and not request_wants_usage:
+        return None
+    timing_only = (
+        isinstance(candidate_timings, dict)
+        and (
+            not isinstance(payload.get("choices"), list)
+            or not payload["choices"]
+        )
+    )
+    if not usage_only and not timing_only:
+        now = time.perf_counter()
+        stats.tokens += 1
+        stats.first_line_time = stats.first_line_time or now
+        stats.last_line_time = now
+    nested_message = payload.get("message")
+    if "model" in payload or (
+        isinstance(nested_message, dict) and "model" in nested_message
+    ):
+        if "model" in payload:
+            payload["model"] = client_model
+        if isinstance(nested_message, dict) and "model" in nested_message:
+            nested_message["model"] = client_model
+        content = (
+            b"data: "
+            + json.dumps(payload, separators=(",", ":")).encode()
+        )
+    return content + ending
+
+
 def _is_chat_request(request: Mapping[str, object]) -> bool:
     return "messages" in request
 
@@ -1662,84 +1739,28 @@ def create_app(
             async def stream() -> AsyncIterator[bytes]:
                 nonlocal stream_completed
                 buffer = b""
-                tokens = 0
-                usage: dict[str, object] | None = None
-                timings: dict[str, object] | None = None
-                first_line_time: float | None = None
-                last_line_time: float | None = None
-
-                def transform(line: bytes) -> bytes | None:
-                    nonlocal first_line_time, last_line_time, tokens, usage, timings
-                    ending = b""
-                    content = line
-                    if content.endswith(b"\n"):
-                        content = content[:-1]
-                        ending = b"\n"
-                        if content.endswith(b"\r"):
-                            content = content[:-1]
-                            ending = b"\r\n"
-                    if not content.startswith(b"data: ") or content == b"data: [DONE]":
-                        return line
-                    try:
-                        payload = json.loads(content[6:])
-                    except json.JSONDecodeError:
-                        payload = None
-                    if not isinstance(payload, dict):
-                        now = time.perf_counter()
-                        tokens += 1
-                        first_line_time = first_line_time or now
-                        last_line_time = now
-                        return line
-                    candidate_usage = payload.get("usage")
-                    candidate_timings = payload.get("timings")
-                    usage_only = (
-                        isinstance(candidate_usage, dict)
-                        and isinstance(payload.get("choices"), list)
-                        and not payload["choices"]
-                    )
-                    if isinstance(candidate_usage, dict):
-                        usage = candidate_usage
-                    if isinstance(candidate_timings, dict):
-                        timings = candidate_timings
-                    if usage_only and not request_wants_usage:
-                        return None
-                    timing_only = (
-                        isinstance(candidate_timings, dict)
-                        and (
-                            not isinstance(payload.get("choices"), list)
-                            or not payload["choices"]
-                        )
-                    )
-                    if not usage_only and not timing_only:
-                        now = time.perf_counter()
-                        tokens += 1
-                        first_line_time = first_line_time or now
-                        last_line_time = now
-                    nested_message = payload.get("message")
-                    if "model" in payload or (
-                        isinstance(nested_message, dict) and "model" in nested_message
-                    ):
-                        client_model = request.get("model", service.model_id)
-                        if "model" in payload:
-                            payload["model"] = client_model
-                        if isinstance(nested_message, dict) and "model" in nested_message:
-                            nested_message["model"] = client_model
-                        content = (
-                            b"data: "
-                            + json.dumps(payload, separators=(",", ":")).encode()
-                        )
-                    return content + ending
+                stats = _StreamStats()
 
                 try:
                     async for chunk in upstream.aiter_bytes():
                         buffer += chunk
                         while b"\n" in buffer:
                             line, buffer = buffer.split(b"\n", 1)
-                            output = transform(line + b"\n")
+                            output = _transform_sse_line(
+                                line + b"\n",
+                                stats,
+                                client_model=request.get("model", service.model_id),
+                                request_wants_usage=request_wants_usage,
+                            )
                             if output is not None:
                                 yield output
                     if buffer:
-                        output = transform(buffer)
+                        output = _transform_sse_line(
+                            buffer,
+                            stats,
+                            client_model=request.get("model", service.model_id),
+                            request_wants_usage=request_wants_usage,
+                        )
                         if output is not None:
                             yield output
                     stream_completed = True
@@ -1761,18 +1782,18 @@ def create_app(
                             detail=None if stream_completed else "stream_interrupted",
                         )
                     if instrument:
-                        span = (last_line_time - first_line_time
-                                if first_line_time is not None and last_line_time is not None
+                        span = (stats.last_line_time - stats.first_line_time
+                                if stats.first_line_time is not None and stats.last_line_time is not None
                                 else 0.0)
-                        timing_decode, timing_prefill = _timing_metrics(timings)
+                        timing_decode, timing_prefill = _timing_metrics(stats.timings)
                         usage_completion = (
-                            _upstream_int(usage.get("completion_tokens"))
-                            if usage is not None else None
+                            _upstream_int(stats.usage.get("completion_tokens"))
+                            if stats.usage is not None else None
                         )
                         exact = (
-                            usage is not None
+                            stats.usage is not None
                             and usage_completion is not None
-                            and "completion_tokens" in usage
+                            and "completion_tokens" in stats.usage
                             and (
                                 service.backend in _STREAM_USAGE_BACKENDS
                                 or request_wants_usage
@@ -1780,7 +1801,7 @@ def create_app(
                         )
                         completion_tokens = (
                             usage_completion if exact and usage_completion is not None
-                            else tokens
+                            else stats.tokens
                         )
                         decode = (
                             timing_decode
@@ -1794,16 +1815,16 @@ def create_app(
                         try:
                             await asyncio.to_thread(record_telemetry, Sample(
                                 service.name, telemetry_keys[service.name], decode,
-                                first_line_time - started if first_line_time is not None else None,
+                                stats.first_line_time - started if stats.first_line_time is not None else None,
                                 time.perf_counter() - started, completion_tokens, time.time(),
                                 not exact,
                                 timing_prefill,
                                 in_flight_peak,
-                                prompt_tokens=_prompt_depth(usage, timings),
+                                prompt_tokens=_prompt_depth(stats.usage, stats.timings),
                             ))
                         except Exception:  # noqa: BLE001, S110
                             pass
-                    await _record_prompt_calibration(service, request, usage)
+                    await _record_prompt_calibration(service, request, stats.usage)
             return StreamingResponse(
                 stream(), media_type="text/event-stream",
                 headers=(

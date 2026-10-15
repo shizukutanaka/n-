@@ -351,6 +351,119 @@ def test_gateway_stream_rewrites_model_and_preserves_sse_frames() -> None:
         upstream.server_close()
 
 
+def test_transform_sse_line_passes_through_done_and_non_data_lines() -> None:
+    stats = gateway_module._StreamStats()
+
+    for line in (b"data: [DONE]\n", b": keepalive\n"):
+        assert gateway_module._transform_sse_line(
+            line,
+            stats,
+            client_model="client",
+            request_wants_usage=False,
+        ) == line
+
+    assert stats.tokens == 0
+
+
+def test_transform_sse_line_rewrites_top_level_model_and_records_timing() -> None:
+    stats = gateway_module._StreamStats()
+    line = (
+        b'data: {"choices":[{"delta":{"content":"x"}}],"model":"upstream"}\r\n'
+    )
+
+    output = gateway_module._transform_sse_line(
+        line,
+        stats,
+        client_model="<client_model>",
+        request_wants_usage=False,
+    )
+
+    assert output is not None
+    assert output.endswith(b"\r\n")
+    assert json.loads(output[6:-2])["model"] == "<client_model>"
+    assert stats.tokens == 1
+    assert stats.first_line_time is not None
+    assert stats.last_line_time is not None
+
+
+def test_transform_sse_line_rewrites_nested_ollama_model() -> None:
+    stats = gateway_module._StreamStats()
+    line = b'data: {"message":{"model":"up","content":"x"}}\n'
+
+    output = gateway_module._transform_sse_line(
+        line,
+        stats,
+        client_model="client",
+        request_wants_usage=False,
+    )
+
+    assert output is not None
+    assert json.loads(output[6:-1])["message"]["model"] == "client"
+
+
+def test_transform_sse_line_filters_usage_only_chunk_when_unrequested() -> None:
+    line = b'data: {"choices":[],"usage":{"completion_tokens":5}}\n'
+
+    for request_wants_usage, expected in ((False, None), (True, line)):
+        stats = gateway_module._StreamStats()
+        output = gateway_module._transform_sse_line(
+            line,
+            stats,
+            client_model="client",
+            request_wants_usage=request_wants_usage,
+        )
+
+        assert output == expected
+        assert stats.usage == {"completion_tokens": 5}
+        assert stats.tokens == 0
+
+
+def test_transform_sse_line_records_timing_only_chunk_without_tokens() -> None:
+    stats = gateway_module._StreamStats()
+
+    output = gateway_module._transform_sse_line(
+        b'data: {"timings":{"predicted_per_second":10}}\n',
+        stats,
+        client_model="client",
+        request_wants_usage=False,
+    )
+
+    assert output is not None
+    assert stats.timings == {"predicted_per_second": 10}
+    assert stats.tokens == 0
+
+
+def test_transform_sse_line_counts_and_preserves_non_json_data() -> None:
+    stats = gateway_module._StreamStats()
+    line = b"data: garbage\n"
+
+    output = gateway_module._transform_sse_line(
+        line,
+        stats,
+        client_model="client",
+        request_wants_usage=False,
+    )
+
+    assert output == line
+    assert stats.tokens == 1
+
+
+def test_transform_sse_line_preserves_final_line_without_ending() -> None:
+    stats = gateway_module._StreamStats()
+    line = b'data: {"choices":[{"delta":{"content":"x"}}],"model":"upstream"}'
+
+    output = gateway_module._transform_sse_line(
+        line,
+        stats,
+        client_model="client",
+        request_wants_usage=False,
+    )
+
+    assert output is not None
+    assert not output.endswith(b"\n")
+    assert json.loads(output[6:])["model"] == "client"
+
+
 def test_gateway_defaults_omitted_model_to_catalog_id_for_all_responses() -> None:
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), _CompatStreamHandler)
     thread = threading.Thread(target=upstream.serve_forever, daemon=True)
