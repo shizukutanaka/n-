@@ -25,6 +25,7 @@
 
 ### Changed
 
+- gateway: ストリーミング応答の SSE 行変換を `_transform_sse_line` に分離（挙動不変）
 - cli: main の autotune サブコマンド処理を `_autotune` に分離（挙動不変）
 
 ### Fixed
