@@ -26,6 +26,7 @@
 ### Changed
 
 - gateway: ストリーミング応答の SSE 行変換を `_transform_sse_line` に分離（挙動不変）
+- planner: build_plan の eval 証拠比較フェーズを `_eval_evidence_warnings` に分離（挙動不変）
 - cli: bench の埋め込みサービス計測フェーズを `_bench_embed` に分離（挙動不変）
 
 ### Fixed
