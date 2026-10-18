@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 
 import httpx
+import pytest
 
 from nmesh import cli
 from nmesh.bench.retrieval import (
@@ -12,6 +13,7 @@ from nmesh.bench.retrieval import (
     RetrievalLimit,
     RetrievalRecord,
     RetrievalRung,
+    _int_at_least,
     load_retrieval_cache,
     measure_retrieval,
     measure_retrieval_chunk_arm,
@@ -38,6 +40,24 @@ def _record(rungs: tuple[RetrievalRung, ...]) -> RetrievalRecord:
         harness=RETRIEVAL_HARNESS_VERSION,
         at=1.0,
     )
+
+
+@pytest.mark.parametrize(
+    ("value", "minimum", "expected"),
+    [
+        (True, 0, False),
+        (False, 0, False),
+        (1.0, 1, False),
+        ("1", 1, False),
+        (None, 0, False),
+        (0, 1, False),
+        (1, 1, True),
+        (5, 0, True),
+        (-1, 0, False),
+    ],
+)
+def test_int_at_least(value: object, minimum: int, expected: bool) -> None:
+    assert _int_at_least(value, minimum) is expected
 
 
 def _ladder(
