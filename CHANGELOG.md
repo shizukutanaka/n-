@@ -33,7 +33,7 @@
 - cli: main の autotune サブコマンド処理を `_autotune` に分離（挙動不変）
 - cli: bench の埋め込みサービス計測フェーズを `_bench_embed` に分離（挙動不変）
 - gateway: 埋め込み自動チャンク分割フェーズを `_autochunk_embeddings` に分離（挙動不変）
-- gateway: ルーティング済みサービス解決の重複6箇所を _routed_service に統合（挙動不変）
+- gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
 
 ### Fixed
 - gateway: `/infill` を API キー保護対象に追加し、FIM フィールドをルーティングとタイムアウト見積もりに反映
