@@ -102,6 +102,7 @@ from nmesh.eval.stats import (
     min_resolvable_difference,
     wilson_interval,
 )
+from nmesh.evidence import identity_key
 from nmesh.evidence_inventory import collect_evidence
 from nmesh.inventory import (
     FILE_TYPE_QUANT,
@@ -665,11 +666,7 @@ def _embed_refused_tokens(record: EmbedRecord) -> int | None:
 
 def _embed_measured_keys() -> set[tuple[str, str, str]]:
     return {
-        (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
+        identity_key(record)
         for record in load_embed_cache().values()
         if record.harness == EMBED_HARNESS_VERSION
     }
@@ -680,11 +677,7 @@ def _embed_context_caps() -> dict[tuple[str, str, str], int]:
     for record in load_embed_cache().values():
         if record.harness != EMBED_HARNESS_VERSION or record.cap is None:
             continue
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
+        key = identity_key(record)
         previous = latest.get(key)
         if previous is None or record.at > previous.at:
             latest[key] = record
@@ -705,11 +698,7 @@ def _embed_retrieval_limits() -> dict[tuple[str, str, str], RetrievalLimit]:
             or record.degraded_tokens is None
         ):
             continue
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
+        key = identity_key(record)
         previous = latest.get(key)
         if previous is None or record.at > previous.at:
             latest[key] = record
