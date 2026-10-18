@@ -27,6 +27,7 @@
 
 ### Changed
 
+- cli: bench 埋め込み計測の HTTP エラー表示（3箇所の重複）を `_print_bench_http_error` に統合（挙動不変）
 - gateway: ストリーミング応答の SSE 行変換を `_transform_sse_line` に分離（挙動不変）
 - planner: build_plan の eval 証拠比較フェーズを `_eval_evidence_warnings` に分離（挙動不変）
 - gateway: proxy の上流リソース解放（7箇所の重複）を release_upstream に統合（挙動不変）

@@ -2214,6 +2214,23 @@ def _decode_capable(service: PlannedService) -> bool:
     return any(role not in _NONDECODE_ROLES for role in service.roles)
 
 
+def _print_bench_http_error(
+    error: httpx.HTTPError, *, service: str, url: str
+) -> None:
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", "unknown")
+    print(
+        i18n.t(
+            "err.bench_http",
+            i18n.lang(),
+            service=service,
+            url=url,
+            status=status,
+        ),
+        file=sys.stderr,
+    )
+
+
 def _bench_embed(
     args: argparse.Namespace,
     plan: Plan,
@@ -2230,17 +2247,10 @@ def _bench_embed(
                 runs=args.runs,
             )
     except httpx.HTTPError as error:
-        response = getattr(error, "response", None)
-        status = getattr(response, "status_code", "unknown")
-        print(
-            i18n.t(
-                "err.bench_http",
-                i18n.lang(),
-                service=service.name,
-                url=f"{base_url}/v1/embeddings",
-                status=status,
-            ),
-            file=sys.stderr,
+        _print_bench_http_error(
+            error,
+            service=service.name,
+            url=f"{base_url}/v1/embeddings",
         )
         return 1
     except (OSError, RuntimeError) as error:
@@ -2301,17 +2311,10 @@ def _bench_embed(
                     cap=embed_record.cap,
                 )
         except httpx.HTTPError as error:
-            response = getattr(error, "response", None)
-            status = getattr(response, "status_code", "unknown")
-            print(
-                i18n.t(
-                    "err.bench_http",
-                    i18n.lang(),
-                    service=service.name,
-                    url=f"{base_url}/v1/embeddings",
-                    status=status,
-                ),
-                file=sys.stderr,
+            _print_bench_http_error(
+                error,
+                service=service.name,
+                url=f"{base_url}/v1/embeddings",
             )
             return 1
         except (OSError, RuntimeError) as error:
@@ -2361,17 +2364,10 @@ def _bench_embed(
                             chunk_tokens=usable_rung.served_tokens,
                         )
                 except httpx.HTTPError as error:
-                    response = getattr(error, "response", None)
-                    status = getattr(response, "status_code", "unknown")
-                    print(
-                        i18n.t(
-                            "err.bench_http",
-                            i18n.lang(),
-                            service=service.name,
-                            url=f"{base_url}/v1/embeddings",
-                            status=status,
-                        ),
-                        file=sys.stderr,
+                    _print_bench_http_error(
+                        error,
+                        service=service.name,
+                        url=f"{base_url}/v1/embeddings",
                     )
                     return 1
                 except (OSError, RuntimeError) as error:
