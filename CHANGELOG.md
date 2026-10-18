@@ -27,6 +27,9 @@
 
 ### Changed
 
+- runtime: supervisor の state.json「書込みか削除か」の重複（4箇所）を `_persist_or_remove_state` に統合（挙動不変）
+- bench: retrieval の整数フィールド検査（16箇所の重複）を `_int_at_least` に統合（挙動不変）
+- bench: embed の整数フィールド検査（9箇所の重複）を `persist.int_at_least` に統合（挙動不変）
 - cli: bench 埋め込み計測の HTTP エラー表示（3箇所の重複）を `_print_bench_http_error` に統合（挙動不変）
 - gateway: ストリーミング応答の SSE 行変換を `_transform_sse_line` に分離（挙動不変）
 - planner: build_plan の eval 証拠比較フェーズを `_eval_evidence_warnings` に分離（挙動不変）
@@ -38,6 +41,7 @@
 - cli: eval の `eval_run` 呼出4箇所と文脈プローブの重複エラー処理を統合（挙動不変）
 - gateway: 埋め込み自動チャンク分割フェーズを `_autochunk_embeddings` に分離（挙動不変）
 - gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
+- 有限数値フィールド検査（6箇所の重複）を `persist.finite_number` に統合（挙動不変）
 - 未参照の import 時束縛パス定数4件（artifacts/bench.cache の CACHE_PATH、probe.caps の CAPS_PATH、supervisor の STATE_PATH）と、それを差し替えるだけの無効なテストフィクスチャを削除（既定パスは呼出時解決のため挙動不変）
 
 ### Fixed

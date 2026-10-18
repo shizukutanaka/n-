@@ -455,6 +455,17 @@ class Supervisor:
                 pass
             raise
 
+    def _persist_or_remove_state(
+        self, payload: Mapping[str, object], keep: bool
+    ) -> None:
+        if keep:
+            self._write_state(payload)
+            return
+        try:
+            self.state_path.unlink()
+        except OSError:
+            pass
+
     def record_gateway(self, pid: int, port: int) -> None:
         with self._lock:
             state = self._load_state() or {
@@ -482,13 +493,9 @@ class Supervisor:
                 pid is None or gateway.get("pid") == pid
             ):
                 state.pop("gateway", None)
-                if state.get("services"):
-                    self._write_state(state)
-                else:
-                    try:
-                        self.state_path.unlink()
-                    except OSError:
-                        pass
+                self._persist_or_remove_state(
+                    state, bool(state.get("services"))
+                )
 
     def stop_gateway(self, foreign: bool = False) -> bool:
         with self._lock:
@@ -520,13 +527,9 @@ class Supervisor:
                     self._terminator(orphan)
                     live = True
             state.pop("gateway", None)
-            if state.get("services"):
-                self._write_state(state)
-            else:
-                try:
-                    self.state_path.unlink()
-                except OSError:
-                    pass
+            self._persist_or_remove_state(
+                state, bool(state.get("services"))
+            )
             return bool(live)
 
     def _already_up(self, service: PlannedService) -> bool:
@@ -1529,13 +1532,9 @@ class Supervisor:
                     if self._entry_alive(entry):
                         retained.append(entry)
                 state["services"] = retained
-                if retained or gateway_retained:
-                    self._write_state(state)
-                else:
-                    try:
-                        self.state_path.unlink()
-                    except OSError:
-                        pass
+                self._persist_or_remove_state(
+                    state, bool(retained or gateway_retained)
+                )
             self.processes.clear()
             self.launched_argv.clear()
             self.notes.clear()
@@ -1970,13 +1969,9 @@ class Supervisor:
                 entries.append(gateway_entry)
                 if not gateway_running:
                     payload.pop("gateway", None)
-                    if payload.get("services"):
-                        self._write_state(payload)
-                    else:
-                        try:
-                            self.state_path.unlink()
-                        except OSError:
-                            pass
+                    self._persist_or_remove_state(
+                        payload, bool(payload.get("services"))
+                    )
         names = {str(item.get("service")) for item in entries}
         entries.extend({
             "service": name,
