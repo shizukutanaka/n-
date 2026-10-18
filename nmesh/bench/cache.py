@@ -5,7 +5,7 @@ import math
 import os
 import statistics
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -246,24 +246,15 @@ def demote_stale(
             or not refutes(previous.reference_tps, reference_tps)
         ):
             continue
-        records[key] = BenchRecord(
-            tps=previous.tps,
-            decode_tps_min=previous.decode_tps_min,
-            decode_tps_max=previous.decode_tps_max,
-            runs=previous.runs,
-            passes=previous.passes,
-            control_ratio=previous.control_ratio,
+        records[key] = replace(
+            previous,
             stable=False,
-            measured_at=previous.measured_at,
-            harness=previous.harness,
             sessions=(),
             rejected=(previous.tps, *previous.rejected)[:3],
             last_control_ratio=previous.control_ratio,
             last_rejected_at=timestamp,
             last_rejected_min=previous.decode_tps_min,
             last_rejected_max=previous.decode_tps_max,
-            reference_tps=previous.reference_tps,
-            reference_id=previous.reference_id,
             epoch="degraded",
             last_rejected_reference_tps=previous.reference_tps,
             last_rejected_reference_id=previous.reference_id,
@@ -359,25 +350,13 @@ def merge_measurement(
             ),
         )
     elif comparable and previous is not None and previous.stable:
-        record = BenchRecord(
-            tps=previous.tps,
-            decode_tps_min=previous.decode_tps_min,
-            decode_tps_max=previous.decode_tps_max,
-            runs=previous.runs,
-            passes=previous.passes,
-            control_ratio=previous.control_ratio,
-            stable=True,
-            measured_at=previous.measured_at,
-            harness=previous.harness,
-            sessions=previous.sessions,
+        record = replace(
+            previous,
             rejected=(tps, *previous.rejected)[:3],
             last_control_ratio=control_ratio,
             last_rejected_at=timestamp,
             last_rejected_min=decode_tps_min,
             last_rejected_max=decode_tps_max,
-            reference_tps=previous.reference_tps,
-            reference_id=previous.reference_id,
-            epoch=previous.epoch,
             last_rejected_reference_tps=reference_tps,
             last_rejected_reference_id=reference_id,
             last_rejected_epoch=epoch,
