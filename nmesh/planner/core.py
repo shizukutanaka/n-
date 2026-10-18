@@ -2335,6 +2335,24 @@ SLOT_CAPS = {
 SLOT_SPARE_FRACTION = 0.5
 
 
+def _memory_with_slots(
+    memory: MemoryEstimate,
+    context: int,
+    slots: int,
+) -> MemoryEstimate:
+    kv_cache_bytes = (
+        memory.kv_bytes_per_tok * context + memory.recurrent_state_bytes
+    ) * slots
+    return replace(
+        memory,
+        kv_cache_bytes=kv_cache_bytes,
+        total_bytes=(
+            memory.weight_bytes + kv_cache_bytes + memory.compute_overhead
+        ),
+        parallel_slots=slots,
+    )
+
+
 def _assign_slots(
     services: list[PlannedService],
     profile: HardwareProfile,
@@ -2451,19 +2469,8 @@ def _assign_slots(
                     slots = min(cap, requested, 1 + max(available, 0))
         slots = max(1, slots)
         if slots > 1:
-            kv_cache_bytes = (
-                service.memory.kv_bytes_per_tok * service.context
-                + service.memory.recurrent_state_bytes
-            ) * slots
-            rewritten = replace(
-                service.memory,
-                kv_cache_bytes=kv_cache_bytes,
-                total_bytes=(
-                    service.memory.weight_bytes
-                    + kv_cache_bytes
-                    + service.memory.compute_overhead
-                ),
-                parallel_slots=slots,
+            rewritten = _memory_with_slots(
+                service.memory, service.context, slots,
             )
             layers = effective_layers(service, model_layers)
             gpu_bytes, cpu_bytes = _split_memory(rewritten, model_layers, layers)
@@ -2480,19 +2487,8 @@ def _assign_slots(
                 t("warn.slots_tradeoff", policy.lang, service=service.name,
                   slots=slots, tps=f"{service.decode_tps:.1f}")
             )
-        kv_cache_bytes = (
-            service.memory.kv_bytes_per_tok * service.context
-            + service.memory.recurrent_state_bytes
-        ) * slots
-        rewritten = replace(
-            service.memory,
-            kv_cache_bytes=kv_cache_bytes,
-            total_bytes=(
-                service.memory.weight_bytes
-                + kv_cache_bytes
-                + service.memory.compute_overhead
-            ),
-            parallel_slots=slots,
+        rewritten = _memory_with_slots(
+            service.memory, service.context, slots,
         )
         gpu_bytes, cpu_bytes = _split_memory(
             rewritten,
