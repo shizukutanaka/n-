@@ -82,6 +82,51 @@ def test_record_epoch_classifies_prunes_and_handles_save_failure(
     )
 
 
+def test_measure_reference_or_none_without_context(monkeypatch) -> None:
+    def unexpected(*_args) -> float:
+        raise AssertionError("measure_reference must not be called")
+
+    monkeypatch.setattr(cli, "measure_reference", unexpected)
+    assert cli._measure_reference_or_none(None) is None
+
+
+def test_measure_reference_or_none_passes_context_arguments(monkeypatch) -> None:
+    context = (Path("llama-bench"), Path("reference.gguf"), "id", 6)
+    calls = []
+
+    def measure(*args) -> float:
+        calls.append(args)
+        return 42.5
+
+    monkeypatch.setattr(cli, "measure_reference", measure)
+    assert cli._measure_reference_or_none(context) == 42.5
+    assert calls == [(context[0], context[1], context[3])]
+
+
+@pytest.mark.parametrize("error", [OSError("os"), RuntimeError("runtime")])
+def test_measure_reference_or_none_swallows_expected_errors(
+    monkeypatch, error,
+) -> None:
+    def fail(*_args) -> float:
+        raise error
+
+    monkeypatch.setattr(cli, "measure_reference", fail)
+    assert cli._measure_reference_or_none(
+        (Path("llama-bench"), Path("reference.gguf"), "id", 6)
+    ) is None
+
+
+def test_measure_reference_or_none_propagates_other_errors(monkeypatch) -> None:
+    def fail(*_args) -> float:
+        raise ValueError("invalid output")
+
+    monkeypatch.setattr(cli, "measure_reference", fail)
+    with pytest.raises(ValueError, match="invalid output"):
+        cli._measure_reference_or_none(
+            (Path("llama-bench"), Path("reference.gguf"), "id", 6)
+        )
+
+
 def test_bench_runs_rejects_zero() -> None:
     with pytest.raises(SystemExit):
         cli.main(["bench", "--runs", "0"])

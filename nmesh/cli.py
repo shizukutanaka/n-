@@ -2190,6 +2190,17 @@ def _reference_context(
     return binary, model, rid, threads
 
 
+def _measure_reference_or_none(
+    context: tuple[Path, Path, str, int] | None,
+) -> float | None:
+    if context is None:
+        return None
+    try:
+        return measure_reference(context[0], context[1], context[3])
+    except (OSError, RuntimeError):
+        return None
+
+
 def _unbounded_client() -> httpx.Client:
     """Client for engine measurements whose duration scales with input size.
 
@@ -2559,12 +2570,7 @@ def _bench(args: argparse.Namespace) -> int:
         baseline(history, context[2])
         if context is not None else None
     )
-    before_reference = None
-    if context is not None:
-        try:
-            before_reference = measure_reference(context[0], context[1], context[3])
-        except (OSError, RuntimeError):
-            before_reference = None
+    before_reference = _measure_reference_or_none(context)
     try:
         controlled = measure_controlled(
             service,
@@ -2591,12 +2597,7 @@ def _bench(args: argparse.Namespace) -> int:
     except (OSError, RuntimeError) as error:
         print(i18n.t("err.bench_measure", i18n.lang(), error=error), file=sys.stderr)
         return 1
-    after_reference = None
-    if context is not None:
-        try:
-            after_reference = measure_reference(context[0], context[1], context[3])
-        except (OSError, RuntimeError):
-            after_reference = None
+    after_reference = _measure_reference_or_none(context)
     reference_tps = (
         statistics.mean((before_reference, after_reference))
         if before_reference is not None and after_reference is not None
@@ -3417,16 +3418,7 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
         baseline(history, reference_key)
         if reference_context is not None else None
     )
-    before_reference = None
-    if reference_context is not None:
-        try:
-            before_reference = measure_reference(
-                reference_context[0],
-                reference_context[1],
-                reference_context[3],
-            )
-        except (OSError, RuntimeError):
-            before_reference = None
+    before_reference = _measure_reference_or_none(reference_context)
     try:
         runs = [
             orchestrate_measure(
@@ -3453,16 +3445,7 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
             for _ in range(args.repeats)
         ]
         run = combine(runs)
-        after_reference = None
-        if reference_context is not None:
-            try:
-                after_reference = measure_reference(
-                    reference_context[0],
-                    reference_context[1],
-                    reference_context[3],
-                )
-            except (OSError, RuntimeError):
-                after_reference = None
+        after_reference = _measure_reference_or_none(reference_context)
         reference_tps = (
             statistics.mean((before_reference, after_reference))
             if before_reference is not None and after_reference is not None
@@ -3818,16 +3801,7 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
         baseline(history, reference_key)
         if reference_context is not None else None
     )
-    before_reference = None
-    if reference_context is not None:
-        try:
-            before_reference = measure_reference(
-                reference_context[0],
-                reference_context[1],
-                reference_context[3],
-            )
-        except (OSError, RuntimeError):
-            before_reference = None
+    before_reference = _measure_reference_or_none(reference_context)
     engine_id = engine_identity(plan.profile)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -3892,16 +3866,7 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
             candidate = arm(True)
             supervisor.down()
             control_arm = arm(False)
-            after_reference = None
-            if reference_context is not None:
-                try:
-                    after_reference = measure_reference(
-                        reference_context[0],
-                        reference_context[1],
-                        reference_context[3],
-                    )
-                except (OSError, RuntimeError):
-                    after_reference = None
+            after_reference = _measure_reference_or_none(reference_context)
             reference_tps = (
                 statistics.mean((before_reference, after_reference))
                 if before_reference is not None and after_reference is not None
