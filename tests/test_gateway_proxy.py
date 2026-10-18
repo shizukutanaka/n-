@@ -264,6 +264,48 @@ class _AnthropicHandler(BaseHTTPRequestHandler):
         return
 
 
+class _ResponsesHandler(BaseHTTPRequestHandler):
+    request_body: ClassVar[dict[str, object]] = {}
+    request_path: ClassVar[str] = ""
+    request_count: ClassVar[int] = 0
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        cls = self.__class__
+        cls.request_path = self.path
+        cls.request_count += 1
+        cls.request_body = json.loads(self.rfile.read(length))
+        self.send_response(200)
+        if cls.request_body.get("stream"):
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for frame in (
+                b"event: response.created\n"
+                + b'data: {"type":"response.created","response":{"id":"resp_1","model":"upstream-model","status":"in_progress"}}\n\n',
+                b"event: response.output_text.delta\n"
+                + b'data: {"type":"response.output_text.delta","delta":"hello"}\n\n',
+                b"event: response.completed\n"
+                + b'data: {"type":"response.completed","response":{"id":"resp_1","model":"upstream-model","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+            ):
+                self.wfile.write(frame)
+                self.wfile.flush()
+            return
+        body = json.dumps({
+            "id": "resp_2",
+            "object": "response",
+            "model": "upstream-model",
+            "output": [],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }).encode()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 def test_gateway_forwards_anthropic_messages_without_openai_fields() -> None:
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), _AnthropicHandler)
     thread = threading.Thread(target=upstream.serve_forever, daemon=True)
@@ -291,6 +333,104 @@ def test_gateway_forwards_anthropic_messages_without_openai_fields() -> None:
         # stream_options is an OpenAI-only field; it must not be injected
         # into an Anthropic request even when the client asked to stream.
         assert "stream_options" not in _AnthropicHandler.request_body
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_forwards_responses_sse_without_stream_usage_injection(
+    monkeypatch,
+) -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _ResponsesHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    samples = []
+    monkeypatch.setattr(gateway_module, "record_telemetry", samples.append)
+    _ResponsesHandler.request_body = {}
+    _ResponsesHandler.request_path = ""
+    _ResponsesHandler.request_count = 0
+    try:
+        model = ModelSpec("responses-model", "test", 500_000_000, 24, 16, 2, 64,
+                          1024, 4096, ["chat"], 80.0, "test",
+                          {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+        response = client.post("/v1/responses", json={
+            "model": "nmesh-auto", "input": "hello", "stream": True,
+        })
+
+        assert response.status_code == 200
+        assert "event: response.created" in response.text
+        assert '"model":"nmesh-auto"' in response.text
+        assert "upstream-model" not in response.text
+        assert _ResponsesHandler.request_path == "/v1/responses"
+        assert _ResponsesHandler.request_body["model"] == service.model_ref
+        assert "stream_options" not in _ResponsesHandler.request_body
+        assert samples == []
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_forwards_nonstream_responses_and_does_not_record_telemetry(
+    monkeypatch,
+) -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _ResponsesHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    samples = []
+    monkeypatch.setattr(gateway_module, "record_telemetry", samples.append)
+    _ResponsesHandler.request_body = {}
+    _ResponsesHandler.request_path = ""
+    _ResponsesHandler.request_count = 0
+    try:
+        model = ModelSpec("responses-model", "test", 500_000_000, 24, 16, 2, 64,
+                          1024, 4096, ["chat"], 80.0, "test",
+                          {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        client = TestClient(create_app(replace(plan, services=[service])))
+        response = client.post("/v1/responses", json={
+            "model": "nmesh-auto", "input": "hello",
+        })
+
+        assert response.status_code == 200
+        assert response.json()["model"] == "nmesh-auto"
+        assert _ResponsesHandler.request_path == "/v1/responses"
+        assert _ResponsesHandler.request_body["model"] == service.model_ref
+        assert samples == []
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_responses_rejects_unsupported_backend_before_upstream() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _ResponsesHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    _ResponsesHandler.request_body = {}
+    _ResponsesHandler.request_path = ""
+    _ResponsesHandler.request_count = 0
+    try:
+        model = ModelSpec("responses-model", "test", 500_000_000, 24, 16, 2, 64,
+                          1024, 4096, ["chat"], 80.0, "test",
+                          {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(
+            plan.services[0], backend="mlx", port=upstream.server_address[1]
+        )
+        client = TestClient(create_app(replace(plan, services=[service])))
+        response = client.post("/v1/responses", json={
+            "model": "nmesh-auto", "input": "hello",
+        })
+
+        assert response.status_code == 501
+        assert response.json()["error"]["message"] == (
+            "backend mlx does not serve /v1/responses; "
+            "use /v1/chat/completions"
+        )
+        assert _ResponsesHandler.request_count == 0
     finally:
         upstream.shutdown()
         upstream.server_close()

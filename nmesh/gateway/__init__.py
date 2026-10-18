@@ -115,6 +115,7 @@ def _swap_timeout(service: PlannedService) -> float:
 # completion_tokens instead of an approximation; mlx is excluded because its
 # server does not document the field and would reject the request.
 _STREAM_USAGE_BACKENDS = {"llamacpp", "vllm", "ollama"}
+_RESPONSES_BACKENDS = {"llamacpp", "vllm", "ollama"}
 
 if TYPE_CHECKING:
     import httpx
@@ -311,13 +312,18 @@ def _transform_sse_line(
         stats.first_line_time = stats.first_line_time or now
         stats.last_line_time = now
     nested_message = payload.get("message")
+    nested_response = payload.get("response")
     if "model" in payload or (
         isinstance(nested_message, dict) and "model" in nested_message
+    ) or (
+        isinstance(nested_response, dict) and "model" in nested_response
     ):
         if "model" in payload:
             payload["model"] = client_model
         if isinstance(nested_message, dict) and "model" in nested_message:
             nested_message["model"] = client_model
+        if isinstance(nested_response, dict) and "model" in nested_response:
+            nested_response["model"] = client_model
         content = (
             b"data: "
             + json.dumps(payload, separators=(",", ":")).encode()
@@ -1754,7 +1760,7 @@ def create_app(
             )
             if (
                 service.backend in _STREAM_USAGE_BACKENDS
-                and not path.startswith("/v1/messages")
+                and path in ("/v1/chat/completions", "/v1/completions")
             ):
                 upstream_stream_options = (
                     dict(stream_options) if isinstance(stream_options, Mapping) else {}
@@ -2498,6 +2504,25 @@ def create_app(
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/messages",
             limit_slots=True,
+        )
+
+    @app.post("/v1/responses")
+    async def responses(request: dict[str, object]) -> object:
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
+        token_hint = await _routing_token_hint(request, selected)
+        service = _service(selected, route(request, selected, token_hint=token_hint))
+        if service.backend not in _RESPONSES_BACKENDS:
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    f"backend {service.backend} does not serve /v1/responses; "
+                    "use /v1/chat/completions"
+                ),
+            )
+        return await proxy(
+            request, service, selected, telemetry_keys, "/v1/responses",
+            instrument=False, limit_slots=True,
         )
 
     @app.post("/v1/messages/count_tokens")

@@ -417,6 +417,11 @@ Claude Code can point at the gateway directly. Streaming Anthropic SSE frames
 (`event:`/`data:` pairs) pass through unmodified; OpenAI-only fields such as
 `stream_options` are not injected into Anthropic requests.
 
+The gateway also forwards the OpenAI Responses API at `POST /v1/responses` to
+llama.cpp, vLLM, and Ollama services (stateless; the upstream must support it,
+and older llama.cpp builds return their own 404). Other backends receive 501,
+and Responses requests are not recorded in decode telemetry.
+
 `GET /v1/models` returns the OpenAI-compatible model list — `nmesh-auto`
 (router-selected), one `nmesh-<service>` ID per planned service, and
 `nmesh-delegate` when the lead/worker gate allows it — so OpenAI client
