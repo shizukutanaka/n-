@@ -394,6 +394,52 @@ def _content(request: Mapping[str, object]) -> str:
     return ""
 
 
+def _responses_routing_view(
+    request: Mapping[str, object],
+) -> dict[str, object]:
+    messages: list[dict[str, object]] = []
+    instructions = request.get("instructions")
+    if isinstance(instructions, str):
+        messages.append({"role": "system", "content": instructions})
+
+    value = request.get("input")
+    if isinstance(value, str):
+        messages.append({"role": "user", "content": value})
+    elif isinstance(value, list):
+        for item in value:
+            if not isinstance(item, Mapping):
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                messages.append({
+                    "role": item.get("role", "user"),
+                    "content": content,
+                })
+            elif isinstance(content, list):
+                parts: list[dict[str, str]] = []
+                for part in content:
+                    if not isinstance(part, Mapping):
+                        continue
+                    text = part.get("text")
+                    if (
+                        part.get("type") in ("input_text", "output_text", "text")
+                        and isinstance(text, str)
+                    ):
+                        parts.append({"type": "text", "text": text})
+                messages.append({
+                    "role": item.get("role", "user"),
+                    "content": parts,
+                })
+
+    view: dict[str, object] = {**request, "messages": messages}
+    max_output_tokens = request.get("max_output_tokens")
+    if isinstance(max_output_tokens, int) and not isinstance(
+        max_output_tokens, bool
+    ):
+        view["max_tokens"] = max_output_tokens
+    return view
+
+
 def route(
     request: Mapping[str, object],
     plan: Plan,
@@ -756,7 +802,12 @@ def _reserved_tokens(request: Mapping[str, object]) -> int:
     return max(values)
 
 
-def _forward_timeout(request: Mapping[str, object], service: PlannedService) -> httpx.Timeout:
+def _forward_timeout(
+    request: Mapping[str, object],
+    service: PlannedService,
+    *,
+    generates: bool = False,
+) -> httpx.Timeout:
     # httpx applies the read bound per socket read, so it must cover the
     # longest legitimate silence — upstream prefill (or embed/rerank scoring)
     # before the first response bytes — not the whole generation. One second
@@ -794,7 +845,9 @@ def _forward_timeout(request: Mapping[str, object], service: PlannedService) -> 
     budget = service.context if service.context > 0 else max(tokens, 1)
     slots = max(1, service.memory.parallel_slots)
     read = FORWARD_TIMEOUT_BASE + min(tokens, budget) + (slots - 1) * budget
-    if not request.get("stream") and ("messages" in request or "prompt" in request):
+    if not request.get("stream") and (
+        generates or "messages" in request or "prompt" in request
+    ):
         read = max(read, GENERATION_TIMEOUT_FLOOR)
     return httpx.Timeout(read, connect=CONNECT_TIMEOUT)
 
@@ -1728,7 +1781,11 @@ def create_app(
                 else None
             )
             assert httpx is not None
-            client = local_async_client(timeout=_forward_timeout(request, service))
+            client = local_async_client(
+                timeout=_forward_timeout(
+                    request, service, generates=path == "/v1/responses"
+                )
+            )
             ticket = in_flight.enter(service.name)
         except BaseException as error:
             # A failed acquire/revive must not keep the slot (or a held swap
@@ -2510,8 +2567,12 @@ def create_app(
     async def responses(request: dict[str, object]) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
-        token_hint = await _routing_token_hint(request, selected)
-        service = _service(selected, route(request, selected, token_hint=token_hint))
+        routing_view = _responses_routing_view(request)
+        token_hint = await _routing_token_hint(routing_view, selected)
+        service = _service(
+            selected,
+            route(routing_view, selected, token_hint=token_hint),
+        )
         if service.backend not in _RESPONSES_BACKENDS:
             raise HTTPException(
                 status_code=501,
