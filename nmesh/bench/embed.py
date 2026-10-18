@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 
 from nmesh.paths import nmesh_home
+from nmesh.persist import int_at_least
 
 EMBED_HARNESS_VERSION = "embed-v1"
 EMBED_CAP_TRUNCATION_RATIO = 0.9
@@ -134,30 +135,14 @@ def _record(data: object) -> EmbedRecord | None:
             or not isinstance(backend, str)
             or not isinstance(gpu_name, str)
             or not isinstance(harness, str)
-            or isinstance(n_gpu_layers, bool)
-            or not isinstance(n_gpu_layers, int)
-            or n_gpu_layers < 0
-            or isinstance(requested_context, bool)
-            or not isinstance(requested_context, int)
-            or requested_context < 0
-            or isinstance(probe_tokens_small, bool)
-            or not isinstance(probe_tokens_small, int)
-            or probe_tokens_small < 0
-            or isinstance(served_small, bool)
-            or not isinstance(served_small, int)
-            or served_small < 0
-            or isinstance(probe_tokens_large, bool)
-            or not isinstance(probe_tokens_large, int)
-            or probe_tokens_large < 0
-            or isinstance(served_large, bool)
-            or not isinstance(served_large, int)
-            or served_large < 0
-            or isinstance(encode_input_tokens, bool)
-            or not isinstance(encode_input_tokens, int)
-            or encode_input_tokens < 0
-            or isinstance(runs, bool)
-            or not isinstance(runs, int)
-            or runs < 1
+            or not int_at_least(n_gpu_layers, 0)
+            or not int_at_least(requested_context, 0)
+            or not int_at_least(probe_tokens_small, 0)
+            or not int_at_least(served_small, 0)
+            or not int_at_least(probe_tokens_large, 0)
+            or not int_at_least(served_large, 0)
+            or not int_at_least(encode_input_tokens, 0)
+            or not int_at_least(runs, 1)
             or isinstance(encode_tps, bool)
             or not isinstance(encode_tps, (int, float))
             or not math.isfinite(encode_tps)
@@ -264,7 +249,7 @@ def _usage_tokens(response: httpx.Response) -> int:
         raise RuntimeError("embedding response was not valid JSON") from error
     usage = payload.get("usage") if isinstance(payload, dict) else None
     tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
-    if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+    if not int_at_least(tokens, 0):
         raise RuntimeError("embedding response did not report integer usage.prompt_tokens")
     return tokens
 

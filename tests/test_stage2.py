@@ -197,6 +197,21 @@ def test_supervisor_unload_adopts_live_state_process(
     assert terminated == [1234]
 
 
+def test_supervisor_persist_or_remove_state(tmp_path) -> None:
+    state_path = tmp_path / "state.json"
+    supervisor = Supervisor(state_path=state_path)
+    payload = {"services": [{"service": "chat"}]}
+
+    supervisor._persist_or_remove_state(payload, keep=True)
+    assert json.loads(state_path.read_text(encoding="utf-8")) == payload
+
+    supervisor._persist_or_remove_state(payload, keep=False)
+    assert not state_path.exists()
+
+    supervisor._persist_or_remove_state(payload, keep=False)
+    assert not state_path.exists()
+
+
 def test_supervisor_dry_run_contains_argv(tmp_path, catalog: list[object]) -> None:
     plan = build_plan(profile(8), catalog, Policy(roles=["chat"]))
     result = Supervisor(state_path=tmp_path / "state.json").up(plan, dry_run=True)
