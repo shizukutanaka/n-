@@ -343,6 +343,35 @@ def test_bench_http_failure_returns_error_without_saving(monkeypatch, capsys) ->
     assert saved == []
 
 
+def test_print_bench_http_error_formats_status_and_unknown(capsys) -> None:
+    url = "http://127.0.0.1:1/v1/embeddings"
+    request = httpx.Request("POST", url)
+    response = httpx.Response(503, request=request)
+    error = httpx.HTTPStatusError("server error", request=request, response=response)
+
+    cli._print_bench_http_error(error, service="embed", url=url)
+
+    expected = cli.i18n.t(
+        "err.bench_http",
+        cli.i18n.lang(),
+        service="embed",
+        url=url,
+        status=503,
+    )
+    assert capsys.readouterr().err == f"{expected}\n"
+
+    cli._print_bench_http_error(httpx.ConnectError("x"), service="embed", url=url)
+
+    expected = cli.i18n.t(
+        "err.bench_http",
+        cli.i18n.lang(),
+        service="embed",
+        url=url,
+        status="unknown",
+    )
+    assert capsys.readouterr().err == f"{expected}\n"
+
+
 def test_bench_json_reports_spread_and_warns(monkeypatch, capsys) -> None:
     plan = _plan()
     measurement = BenchResult(
