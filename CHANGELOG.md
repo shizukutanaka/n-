@@ -27,6 +27,7 @@
 
 ### Changed
 
+- runtime: supervisor の state.json「書込みか削除か」の重複（4箇所）を `_persist_or_remove_state` に統合（挙動不変）
 - bench: retrieval の整数フィールド検査（16箇所の重複）を `_int_at_least` に統合（挙動不変）
 - cli: bench 埋め込み計測の HTTP エラー表示（3箇所の重複）を `_print_bench_http_error` に統合（挙動不変）
 - gateway: ストリーミング応答の SSE 行変換を `_transform_sse_line` に分離（挙動不変）
