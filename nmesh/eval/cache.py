@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
+from nmesh.persist import finite_number
 
 from .runner import EvalRun
 
@@ -83,13 +83,9 @@ def _record(data: object) -> EvalRecord | None:
             or not isinstance(passed, int)
             or passed < 0
             or passed > n_tasks
-            or isinstance(pass_rate, bool)
-            or not isinstance(pass_rate, (int, float))
-            or not math.isfinite(pass_rate)
+            or not finite_number(pass_rate)
             or not 0.0 <= pass_rate <= 1.0
-            or isinstance(at, bool)
-            or not isinstance(at, (int, float))
-            or not math.isfinite(at)
+            or not finite_number(at)
             or not isinstance(task_results, dict)
             or not isinstance(artifact, str)
             or not isinstance(suite, str)
@@ -123,9 +119,7 @@ def _record(data: object) -> EvalRecord | None:
         for key, value in by_category.items():
             if (
                 not isinstance(key, str)
-                or isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(value)
+                or not finite_number(value)
                 or not 0.0 <= value <= 1.0
             ):
                 return None
