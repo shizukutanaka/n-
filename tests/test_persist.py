@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 from nmesh import persist
 from nmesh.artifacts import load_cache as load_artifact_cache
 
@@ -52,3 +54,22 @@ def test_deeply_nested_file_warns_instead_of_recursing(tmp_path: Path, capsys) -
     bad.write_text("[" * depth + "]" * depth, encoding="utf-8")
     assert persist.read_json_file(bad) is None
     assert "deep.json" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, False),
+        (False, False),
+        (0, True),
+        (1.5, True),
+        (-2.0, True),
+        (float("nan"), False),
+        (float("inf"), False),
+        (float("-inf"), False),
+        ("1", False),
+        (None, False),
+    ],
+)
+def test_finite_number(value: object, expected: bool) -> None:
+    assert persist.finite_number(value) is expected
