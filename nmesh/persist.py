@@ -9,12 +9,23 @@ with a default, so it warns once per path per process.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
+from typing import TypeGuard
 
 from nmesh import i18n
 
 _warned: set[str] = set()
+
+
+def int_at_least(value: object, minimum: int) -> TypeGuard[int]:
+    """True for a non-bool int that is at least *minimum*."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= minimum
+    )
 
 
 def read_json_file(target: Path) -> object | None:
@@ -41,4 +52,13 @@ def _warn(target: Path) -> None:
     print(
         i18n.t("warn.file_unreadable", i18n.lang(), file=target.name),
         file=sys.stderr,
+    )
+
+
+def finite_number(value: object) -> TypeGuard[float]:
+    """True for a non-bool int or float that is finite."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
     )
