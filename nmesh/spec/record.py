@@ -31,6 +31,7 @@ from .measure import (
     SPEC_HARNESS_VERSION,
     ArmRun,
     ClassComparison,
+    ControlCheck,
     SpecConfig,
     compare,
     control,
@@ -63,27 +64,8 @@ STALE = "stale"
 MIN_CONTROL_RATIO = 0.90
 
 
-@dataclass(frozen=True)
-class ClassEvidence:
-    """One workload class of a stored comparison."""
-
-    name: str
-    speedup: float
-    identical: bool
-    reference_tps: float
-    candidate_tps: float
-    acceptance: float
-    reference_spread: float = 0.0
-    candidate_spread: float = 0.0
-
-
-@dataclass(frozen=True)
-class ControlEvidence:
-    """One workload class of the stored A/A control."""
-
-    name: str
-    ratio: float
-    identical: bool
+ClassEvidence = ClassComparison
+ControlEvidence = ControlCheck
 
 
 @dataclass(frozen=True)
@@ -154,27 +136,8 @@ def from_arms(
         engine=engine,
         harness=candidate.harness,
         repeats=min(reference.repeats, candidate.repeats, control_arm.repeats),
-        classes=tuple(
-            ClassEvidence(
-                name=item.name,
-                speedup=item.speedup,
-                identical=item.identical,
-                reference_tps=item.reference_tps,
-                candidate_tps=item.candidate_tps,
-                acceptance=item.acceptance,
-                reference_spread=item.reference_spread,
-                candidate_spread=item.candidate_spread,
-            )
-            for item in comparisons
-        ),
-        control=tuple(
-            ControlEvidence(
-                name=item.name,
-                ratio=item.ratio,
-                identical=item.identical,
-            )
-            for item in control(reference, control_arm)
-        ),
+        classes=tuple(comparisons),
+        control=tuple(control(reference, control_arm)),
         reference_id=reference_id,
         reference_tps=reference_tps,
         epoch=epoch,

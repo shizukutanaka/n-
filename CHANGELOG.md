@@ -38,6 +38,7 @@
 - cli: eval の `eval_run` 呼出4箇所と文脈プローブの重複エラー処理を統合（挙動不変）
 - gateway: 埋め込み自動チャンク分割フェーズを `_autochunk_embeddings` に分離（挙動不変）
 - gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
+- spec: record の ClassEvidence/ControlEvidence（measure の ClassComparison/ControlCheck と同一フィールドの二重定義と全フィールド写し替え）を型共有に統合（挙動不変）
 
 ### Fixed
 - gateway: `/infill` を API キー保護対象に追加し、FIM フィールドをルーティングとタイムアウト見積もりに反映
