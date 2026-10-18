@@ -1579,3 +1579,135 @@ def test_gateway_too_large_response_keeps_cors_headers(
     assert response.status_code == 413
     assert response.headers["Access-Control-Allow-Origin"] == origin
     assert response.headers["Vary"] == "Origin"
+
+
+class _InfillHandler(BaseHTTPRequestHandler):
+    request_body: ClassVar[dict[str, object]] = {}
+    request_path: ClassVar[str] = ""
+    request_count: ClassVar[int] = 0
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        cls = self.__class__
+        cls.request_body = json.loads(self.rfile.read(length))
+        cls.request_path = self.path
+        cls.request_count += 1
+        self.send_response(200)
+        if cls.request_body.get("stream"):
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(b'data: {"content":"x"}\n\n')
+            self.wfile.write(b'data: {"content":"y"}\n\n')
+            self.wfile.flush()
+            return
+        body = json.dumps({"content": "complete", "stop": True}).encode()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def _infill_plan(port: int, backend: str = "llamacpp") -> Plan:
+    model = ModelSpec("infill-model", "test", 500_000_000, 24, 16, 2, 64,
+                      1024, 4096, ["chat"], 80.0, "test",
+                      {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0], backend=backend, port=port
+    )
+    return replace(plan, services=[service])
+
+
+def test_gateway_infill_stream_forwards_native_sse_without_telemetry(
+    monkeypatch,
+) -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _InfillHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    samples = []
+    monkeypatch.setattr(gateway_module, "record_telemetry", samples.append)
+    _InfillHandler.request_body = {}
+    _InfillHandler.request_path = ""
+    _InfillHandler.request_count = 0
+    try:
+        plan = _infill_plan(upstream.server_address[1])
+        service = plan.services[0]
+        client = TestClient(create_app(plan))
+        response = client.post("/infill", json={
+            "input_prefix": "prefix ",
+            "input_suffix": " suffix",
+            "input_extra": [],
+            "prompt": "prompt",
+            "stream": True,
+        })
+
+        assert response.status_code == 200
+        assert 'data: {"content":"x"}' in response.text
+        assert 'data: {"content":"y"}' in response.text
+        assert _InfillHandler.request_path == "/infill"
+        assert _InfillHandler.request_body["input_prefix"] == "prefix "
+        assert _InfillHandler.request_body["input_suffix"] == " suffix"
+        assert _InfillHandler.request_body["input_extra"] == []
+        assert "stream_options" not in _InfillHandler.request_body
+        assert service.backend == "llamacpp"
+        assert samples == []
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_infill_nonstream_forwards_request_body() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _InfillHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    _InfillHandler.request_body = {}
+    _InfillHandler.request_path = ""
+    _InfillHandler.request_count = 0
+    try:
+        plan = _infill_plan(upstream.server_address[1])
+        service = plan.services[0]
+        client = TestClient(create_app(plan))
+        body = {
+            "input_prefix": "before",
+            "input_suffix": "after",
+            "input_extra": [{"filename": "sample.py"}],
+            "prompt": "prompt",
+            "temperature": 0.2,
+        }
+        response = client.post("/infill", json=body)
+
+        assert response.status_code == 200
+        assert response.json()["content"] == "complete"
+        assert _InfillHandler.request_path == "/infill"
+        assert _InfillHandler.request_body == {
+            **body,
+            "model": service.model_ref,
+        }
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_gateway_infill_rejects_non_llamacpp_backend_before_upstream() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _InfillHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    _InfillHandler.request_body = {}
+    _InfillHandler.request_path = ""
+    _InfillHandler.request_count = 0
+    try:
+        plan = _infill_plan(upstream.server_address[1], backend="ollama")
+        client = TestClient(create_app(plan))
+        response = client.post("/infill", json={"input_prefix": "before"})
+
+        assert response.status_code == 501
+        assert response.json()["error"]["message"] == (
+            "backend ollama does not serve /infill; it is a llama.cpp endpoint"
+        )
+        assert _InfillHandler.request_count == 0
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
