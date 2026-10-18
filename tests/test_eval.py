@@ -2070,6 +2070,51 @@ def test_eval_cli_depth_runs_suite_and_context_probe_separately(
     assert "latent" in output["context_probe"]["uncontrolled_note"]
 
 
+def test_eval_cli_depth_run_order_and_probe_failure(monkeypatch, capsys) -> None:
+    service_plan = build_plan(profile(8), _quality_models()[:1], Policy(roles=["chat"]))
+    result = EvalRun("prior-high", "f16", "llamacpp", 16, 16, 1.0, {}, [], 3.0)
+    calls: list[tuple[tuple[str, ...], int]] = []
+    depth = 4096
+    control_ids = tuple(task.id for task in needle_tasks(0, seed="core"))
+    expected = [
+        (tuple(task.id for task in SUITES["core"]), depth),
+        (control_ids, 0),
+        (tuple(task.id for task in needle_tasks(depth, seed="core")), depth),
+        (control_ids, 0),
+    ]
+
+    monkeypatch.setattr(cli, "load_plan", lambda: service_plan)
+    monkeypatch.setattr(cli, "_service_running", lambda service, runtime: True)
+    monkeypatch.setattr(cli, "save_eval", lambda value: None)
+    monkeypatch.setattr(cli, "save_context", lambda value: "context.json")
+
+    def evaluate(tasks, base_url, model_ref, **kwargs):
+        calls.append((tuple(task.id for task in tasks), kwargs["depth"]))
+        return result
+
+    monkeypatch.setattr(cli, "eval_run", evaluate)
+    assert cli.main(["eval", "--json", "--depth", str(depth)]) == 0
+    capsys.readouterr()
+    assert calls == expected
+
+    calls.clear()
+
+    def fail_on_probe(tasks, base_url, model_ref, **kwargs):
+        calls.append((tuple(task.id for task in tasks), kwargs["depth"]))
+        if len(calls) == 3:
+            raise RuntimeError("probe failed")
+        return result
+
+    monkeypatch.setattr(cli, "eval_run", fail_on_probe)
+    assert cli.main(["eval", "--json", "--depth", str(depth)]) == 1
+    captured = capsys.readouterr()
+
+    assert calls == expected[:3]
+    assert captured.err.strip() == cli.i18n.t(
+        "err.eval_run", cli.i18n.lang(), error="probe failed"
+    )
+
+
 def test_eval_cli_context_probe_console_lists_all_families(
     monkeypatch, capsys,
 ) -> None:
