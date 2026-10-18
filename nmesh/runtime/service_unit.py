@@ -10,11 +10,23 @@ from pathlib import Path
 from nmesh.paths import nmesh_home
 
 
+def _is_windows(os_name: str | None) -> bool:
+    return os.name == "nt" if os_name is None else os_name == "nt"
+
+
+def _is_macos(os_name: str | None) -> bool:
+    return (
+        sys.platform.startswith("darwin")
+        if os_name is None
+        else os_name.startswith("darwin")
+    )
+
+
 def launcher_script(
     port: int = 18000, os_name: str | None = None
 ) -> tuple[str, str]:
     """Return a launcher filename and script that carries gateway.env."""
-    windows = os.name == "nt" if os_name is None else os_name == "nt"
+    windows = _is_windows(os_name)
     if windows:
         filename = "nmesh-gateway-launcher.cmd"
         executable = subprocess.list2cmdline((sys.executable,))
@@ -51,14 +63,10 @@ def unit_install_path(
     filename: str, os_name: str | None = None
 ) -> Path | None:
     """Where the generated unit must be saved for the install command."""
-    windows = os.name == "nt" if os_name is None else os_name == "nt"
+    windows = _is_windows(os_name)
     if windows:
         return None
-    macos = (
-        sys.platform.startswith("darwin")
-        if os_name is None
-        else os_name.startswith("darwin")
-    )
+    macos = _is_macos(os_name)
     if macos:
         return Path.home() / "Library" / "LaunchAgents" / filename
     config_home = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
@@ -70,12 +78,8 @@ def service_unit(
 ) -> tuple[str, str, str]:
     """Return the filename, unit text, and explicit install command."""
     current = os_name
-    windows = os.name == "nt" if current is None else current == "nt"
-    macos = (
-        sys.platform.startswith("darwin")
-        if current is None
-        else current.startswith("darwin")
-    )
+    windows = _is_windows(current)
+    macos = _is_macos(current)
     launcher, _ = launcher_script(port, current)
     launcher_path = str(nmesh_home() / launcher)
     if windows:
@@ -135,12 +139,8 @@ def watch_unit(
     if interval_hours < 1:
         raise ValueError("interval_hours must be at least 1")
     current = os_name
-    windows = os.name == "nt" if current is None else current == "nt"
-    macos = (
-        sys.platform.startswith("darwin")
-        if current is None
-        else current.startswith("darwin")
-    )
+    windows = _is_windows(current)
+    macos = _is_macos(current)
     executable = str(sys.executable)
     if windows:
         command_line = subprocess.list2cmdline(
