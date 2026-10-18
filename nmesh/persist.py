@@ -19,6 +19,15 @@ from nmesh import i18n
 _warned: set[str] = set()
 
 
+def int_at_least(value: object, minimum: int) -> TypeGuard[int]:
+    """True for a non-bool int that is at least *minimum*."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= minimum
+    )
+
+
 def read_json_file(target: Path) -> object | None:
     """Parse *target* as JSON, warning once when it exists but cannot be read."""
     try:
