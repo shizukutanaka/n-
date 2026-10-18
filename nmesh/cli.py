@@ -2214,6 +2214,23 @@ def _decode_capable(service: PlannedService) -> bool:
     return any(role not in _NONDECODE_ROLES for role in service.roles)
 
 
+def _print_bench_http_error(
+    error: httpx.HTTPError, *, service: str, url: str
+) -> None:
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", "unknown")
+    print(
+        i18n.t(
+            "err.bench_http",
+            i18n.lang(),
+            service=service,
+            url=url,
+            status=status,
+        ),
+        file=sys.stderr,
+    )
+
+
 def _bench_embed(
     args: argparse.Namespace,
     plan: Plan,
@@ -2230,17 +2247,10 @@ def _bench_embed(
                 runs=args.runs,
             )
     except httpx.HTTPError as error:
-        response = getattr(error, "response", None)
-        status = getattr(response, "status_code", "unknown")
-        print(
-            i18n.t(
-                "err.bench_http",
-                i18n.lang(),
-                service=service.name,
-                url=f"{base_url}/v1/embeddings",
-                status=status,
-            ),
-            file=sys.stderr,
+        _print_bench_http_error(
+            error,
+            service=service.name,
+            url=f"{base_url}/v1/embeddings",
         )
         return 1
     except (OSError, RuntimeError) as error:
@@ -2301,17 +2311,10 @@ def _bench_embed(
                     cap=embed_record.cap,
                 )
         except httpx.HTTPError as error:
-            response = getattr(error, "response", None)
-            status = getattr(response, "status_code", "unknown")
-            print(
-                i18n.t(
-                    "err.bench_http",
-                    i18n.lang(),
-                    service=service.name,
-                    url=f"{base_url}/v1/embeddings",
-                    status=status,
-                ),
-                file=sys.stderr,
+            _print_bench_http_error(
+                error,
+                service=service.name,
+                url=f"{base_url}/v1/embeddings",
             )
             return 1
         except (OSError, RuntimeError) as error:
@@ -2361,17 +2364,10 @@ def _bench_embed(
                             chunk_tokens=usable_rung.served_tokens,
                         )
                 except httpx.HTTPError as error:
-                    response = getattr(error, "response", None)
-                    status = getattr(response, "status_code", "unknown")
-                    print(
-                        i18n.t(
-                            "err.bench_http",
-                            i18n.lang(),
-                            service=service.name,
-                            url=f"{base_url}/v1/embeddings",
-                            status=status,
-                        ),
-                        file=sys.stderr,
+                    _print_bench_http_error(
+                        error,
+                        service=service.name,
+                        url=f"{base_url}/v1/embeddings",
                     )
                     return 1
                 except (OSError, RuntimeError) as error:
@@ -2500,6 +2496,41 @@ def _bench_embed(
                 )
     return 0
 
+
+def _record_epoch(
+    history: dict[str, tuple[EpochSample, ...]],
+    reference_key: str,
+    reference_tps: float | None,
+    reference_baseline: float | None,
+) -> tuple[str, int]:
+    epoch = (
+        classify(reference_tps, reference_baseline)
+        if reference_tps is not None else "unknown"
+    )
+    pruned = 0
+    if (
+        reference_tps is not None
+        and reference_key
+        and epoch in {"healthy", "unknown"}
+    ):
+        samples = history.get(reference_key, ())
+        retained = prune_degraded(samples, reference_tps)
+        pruned = len(samples) - len(retained)
+        history[reference_key] = (
+            EpochSample(
+                reference_id=reference_key,
+                tps=reference_tps,
+                measured_at=datetime.now(timezone.utc).isoformat(),
+            ),
+            *retained,
+        )[:EPOCH_HISTORY]
+        try:
+            save_history(history)
+        except OSError as error:
+            print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
+    return epoch, pruned
+
+
 def _bench(args: argparse.Namespace) -> int:
     plan = load_plan()
     if plan is None or not plan.services:
@@ -2572,31 +2603,9 @@ def _bench(args: argparse.Namespace) -> int:
         else None
     )
     reference_key = context[2] if context is not None else ""
-    epoch = (
-        classify(reference_tps, reference_baseline)
-        if reference_tps is not None else "unknown"
+    epoch, pruned = _record_epoch(
+        history, reference_key, reference_tps, reference_baseline,
     )
-    pruned = 0
-    if (
-        reference_tps is not None
-        and reference_key
-        and epoch in {"healthy", "unknown"}
-    ):
-        samples = history.get(reference_key, ())
-        retained = prune_degraded(samples, reference_tps)
-        pruned = len(samples) - len(retained)
-        history[reference_key] = (
-            EpochSample(
-                reference_id=reference_key,
-                tps=reference_tps,
-                measured_at=datetime.now(timezone.utc).isoformat(),
-            ),
-            *retained,
-        )[:EPOCH_HISTORY]
-        try:
-            save_history(history)
-        except OSError as error:
-            print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
     measurement = controlled.result
     key = benchmark_key(service.model_id, service.quant, service.backend,
                         plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
@@ -3459,34 +3468,9 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
             if before_reference is not None and after_reference is not None
             else None
         )
-        epoch = (
-            classify(reference_tps, reference_baseline)
-            if reference_tps is not None else "unknown"
+        epoch, pruned = _record_epoch(
+            history, reference_key, reference_tps, reference_baseline,
         )
-        pruned = 0
-        if (
-            reference_tps is not None
-            and reference_key
-            and epoch in {"healthy", "unknown"}
-        ):
-            samples = history.get(reference_key, ())
-            retained = prune_degraded(samples, reference_tps)
-            pruned = len(samples) - len(retained)
-            history[reference_key] = (
-                EpochSample(
-                    reference_id=reference_key,
-                    tps=reference_tps,
-                    measured_at=datetime.now(timezone.utc).isoformat(),
-                ),
-                *retained,
-            )[:EPOCH_HISTORY]
-            try:
-                save_history(history)
-            except OSError as error:
-                print(
-                    i18n.t("err.bench_save", language, error=error),
-                    file=sys.stderr,
-                )
         save_delegation(
             run,
             reference_id=reference_key,
@@ -3923,34 +3907,9 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                 if before_reference is not None and after_reference is not None
                 else None
             )
-            epoch = (
-                classify(reference_tps, reference_baseline)
-                if reference_tps is not None else "unknown"
+            epoch, pruned = _record_epoch(
+                history, reference_key, reference_tps, reference_baseline,
             )
-            pruned = 0
-            if (
-                reference_tps is not None
-                and reference_key
-                and epoch in {"healthy", "unknown"}
-            ):
-                samples = history.get(reference_key, ())
-                retained = prune_degraded(samples, reference_tps)
-                pruned = len(samples) - len(retained)
-                history[reference_key] = (
-                    EpochSample(
-                        reference_id=reference_key,
-                        tps=reference_tps,
-                        measured_at=datetime.now(timezone.utc).isoformat(),
-                    ),
-                    *retained,
-                )[:EPOCH_HISTORY]
-                try:
-                    save_history(history)
-                except OSError as error:
-                    print(
-                        i18n.t("err.bench_save", language, error=error),
-                        file=sys.stderr,
-                    )
             spec_records = load_spec_cache()
             demoted: tuple[str, ...] = ()
             if (

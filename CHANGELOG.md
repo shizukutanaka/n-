@@ -28,11 +28,14 @@
 ### Changed
 
 - runtime: supervisor の state.json「書込みか削除か」の重複（4箇所）を `_persist_or_remove_state` に統合（挙動不変）
+- cli: bench 埋め込み計測の HTTP エラー表示（3箇所の重複）を `_print_bench_http_error` に統合（挙動不変）
 - gateway: ストリーミング応答の SSE 行変換を `_transform_sse_line` に分離（挙動不変）
 - planner: build_plan の eval 証拠比較フェーズを `_eval_evidence_warnings` に分離（挙動不変）
+- planner: `_assign_slots` のスロット数メモリ再計算（2箇所の重複）を `_memory_with_slots` に統合（挙動不変）
 - gateway: proxy の上流リソース解放（7箇所の重複）を release_upstream に統合（挙動不変）
 - cli: main の autotune サブコマンド処理を `_autotune` に分離（挙動不変）
 - cli: bench の埋め込みサービス計測フェーズを `_bench_embed` に分離（挙動不変）
+- cli: bench/orchestrate measure/spec measure の epoch 記録処理（3箇所の重複）を `_record_epoch` に統合（挙動不変）
 - cli: eval の `eval_run` 呼出4箇所と文脈プローブの重複エラー処理を統合（挙動不変）
 - gateway: 埋め込み自動チャンク分割フェーズを `_autochunk_embeddings` に分離（挙動不変）
 - gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
