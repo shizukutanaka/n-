@@ -115,6 +115,7 @@ def _swap_timeout(service: PlannedService) -> float:
 # completion_tokens instead of an approximation; mlx is excluded because its
 # server does not document the field and would reject the request.
 _STREAM_USAGE_BACKENDS = {"llamacpp", "vllm", "ollama"}
+_RESPONSES_BACKENDS = {"llamacpp", "vllm", "ollama"}
 
 if TYPE_CHECKING:
     import httpx
@@ -311,13 +312,18 @@ def _transform_sse_line(
         stats.first_line_time = stats.first_line_time or now
         stats.last_line_time = now
     nested_message = payload.get("message")
+    nested_response = payload.get("response")
     if "model" in payload or (
         isinstance(nested_message, dict) and "model" in nested_message
+    ) or (
+        isinstance(nested_response, dict) and "model" in nested_response
     ):
         if "model" in payload:
             payload["model"] = client_model
         if isinstance(nested_message, dict) and "model" in nested_message:
             nested_message["model"] = client_model
+        if isinstance(nested_response, dict) and "model" in nested_response:
+            nested_response["model"] = client_model
         content = (
             b"data: "
             + json.dumps(payload, separators=(",", ":")).encode()
@@ -411,6 +417,52 @@ def _infill_routing_view(request: Mapping[str, object]) -> dict[str, object]:
         and n_predict > 0
     ):
         view["max_tokens"] = n_predict
+    return view
+
+
+def _responses_routing_view(
+    request: Mapping[str, object],
+) -> dict[str, object]:
+    messages: list[dict[str, object]] = []
+    instructions = request.get("instructions")
+    if isinstance(instructions, str):
+        messages.append({"role": "system", "content": instructions})
+
+    value = request.get("input")
+    if isinstance(value, str):
+        messages.append({"role": "user", "content": value})
+    elif isinstance(value, list):
+        for item in value:
+            if not isinstance(item, Mapping):
+                continue
+            content = item.get("content")
+            if isinstance(content, str):
+                messages.append({
+                    "role": item.get("role", "user"),
+                    "content": content,
+                })
+            elif isinstance(content, list):
+                parts: list[dict[str, str]] = []
+                for part in content:
+                    if not isinstance(part, Mapping):
+                        continue
+                    text = part.get("text")
+                    if (
+                        part.get("type") in ("input_text", "output_text", "text")
+                        and isinstance(text, str)
+                    ):
+                        parts.append({"type": "text", "text": text})
+                messages.append({
+                    "role": item.get("role", "user"),
+                    "content": parts,
+                })
+
+    view: dict[str, object] = {**request, "messages": messages}
+    max_output_tokens = request.get("max_output_tokens")
+    if isinstance(max_output_tokens, int) and not isinstance(
+        max_output_tokens, bool
+    ):
+        view["max_tokens"] = max_output_tokens
     return view
 
 
@@ -776,7 +828,12 @@ def _reserved_tokens(request: Mapping[str, object]) -> int:
     return max(values)
 
 
-def _forward_timeout(request: Mapping[str, object], service: PlannedService) -> httpx.Timeout:
+def _forward_timeout(
+    request: Mapping[str, object],
+    service: PlannedService,
+    *,
+    generates: bool = False,
+) -> httpx.Timeout:
     # httpx applies the read bound per socket read, so it must cover the
     # longest legitimate silence — upstream prefill (or embed/rerank scoring)
     # before the first response bytes — not the whole generation. One second
@@ -823,7 +880,8 @@ def _forward_timeout(request: Mapping[str, object], service: PlannedService) -> 
     slots = max(1, service.memory.parallel_slots)
     read = FORWARD_TIMEOUT_BASE + min(tokens, budget) + (slots - 1) * budget
     if not request.get("stream") and (
-        "messages" in request
+        generates
+        or "messages" in request
         or "prompt" in request
         or "input_prefix" in request
         or "input_suffix" in request
@@ -1761,7 +1819,11 @@ def create_app(
                 else None
             )
             assert httpx is not None
-            client = local_async_client(timeout=_forward_timeout(request, service))
+            client = local_async_client(
+                timeout=_forward_timeout(
+                    request, service, generates=path == "/v1/responses"
+                )
+            )
             ticket = in_flight.enter(service.name)
         except BaseException as error:
             # A failed acquire/revive must not keep the slot (or a held swap
@@ -1793,8 +1855,7 @@ def create_app(
             )
             if (
                 service.backend in _STREAM_USAGE_BACKENDS
-                and not path.startswith("/v1/messages")
-                and path != "/infill"
+                and path in ("/v1/chat/completions", "/v1/completions")
             ):
                 upstream_stream_options = (
                     dict(stream_options) if isinstance(stream_options, Mapping) else {}
@@ -2538,6 +2599,29 @@ def create_app(
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/messages",
             limit_slots=True,
+        )
+
+    @app.post("/v1/responses")
+    async def responses(request: dict[str, object]) -> object:
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
+        routing_view = _responses_routing_view(request)
+        token_hint = await _routing_token_hint(routing_view, selected)
+        service = _service(
+            selected,
+            route(routing_view, selected, token_hint=token_hint),
+        )
+        if service.backend not in _RESPONSES_BACKENDS:
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    f"backend {service.backend} does not serve /v1/responses; "
+                    "use /v1/chat/completions"
+                ),
+            )
+        return await proxy(
+            request, service, selected, telemetry_keys, "/v1/responses",
+            instrument=False, limit_slots=True,
         )
 
     @app.post("/v1/messages/count_tokens")
