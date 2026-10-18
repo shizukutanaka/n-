@@ -5,6 +5,7 @@
 ### Added
 
 - gateway: llama.cpp の FIM 補完用ネイティブ `POST /infill` パススルーを追加（他バックエンドは501）
+- gateway: llama.cpp/vLLM/Ollama の Responses API `POST /v1/responses` パススルーを追加（ステートレス。上流未対応時は上流エラー、他バックエンドは501。decode telemetry対象外）
 - GitHub Sponsors の `.github/FUNDING.yml` と README の「支援・商用利用」節を追加 — 開発支援と商用サポート相談の窓口を明示
 - Magnitude をユーザー定義 `sources` から選択できる共有デーモンバックエンドとして追加。モデルの取得は `magnitude catalog pull <id>` で行い、ポート 10100・単一モデル制約・推定メモリを明示。macOS では Desktop 同梱 CLI も検出
 - `deepseek-r1-distill-llama-8b` をモデルカタログに追加 — DeepSeek-R1 の推論
