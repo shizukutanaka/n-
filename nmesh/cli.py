@@ -2499,6 +2499,7 @@ def _bench_embed(
                 )
     return 0
 
+
 def _record_epoch(
     history: dict[str, tuple[EpochSample, ...]],
     reference_key: str,
