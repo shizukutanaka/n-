@@ -20,7 +20,7 @@ from pathlib import Path
 from nmesh.eval import SUITES, suite_digest
 from nmesh.evidence import refutes
 from nmesh.paths import nmesh_home
-from nmesh.persist import read_json_file
+from nmesh.persist import finite_number, read_json_file
 
 from .aggregate import MIN_REPEATS
 from .measure import DelegationRun, RoleIdentity
@@ -385,9 +385,7 @@ def _parse(data: object) -> DelegationRecord | None:
         or not isinstance(suite, str)
         or not isinstance(digest, str)
         or not isinstance(protocol, str)
-        or isinstance(at, bool)
-        or not isinstance(at, (int, float))
-        or not math.isfinite(at)
+        or not finite_number(at)
     ):
         return None
     n_tasks = _count(data.get("n_tasks"))
@@ -428,9 +426,7 @@ def _parse(data: object) -> DelegationRecord | None:
     for name in ("seconds_solo", "seconds_delegated"):
         elapsed = data.get(name)
         if (
-            isinstance(elapsed, bool)
-            or not isinstance(elapsed, (int, float))
-            or not math.isfinite(elapsed)
+            not finite_number(elapsed)
             or elapsed < 0
         ):
             return None
@@ -444,9 +440,7 @@ def _parse(data: object) -> DelegationRecord | None:
     unstable_tasks = data.get("unstable_tasks", 0)
     if (
         not isinstance(reference_id, str)
-        or isinstance(reference_tps, bool)
-        or not isinstance(reference_tps, (int, float))
-        or not math.isfinite(reference_tps)
+        or not finite_number(reference_tps)
         or reference_tps < 0
         or not isinstance(epoch, str)
         or epoch not in {"unknown", "healthy", "degraded"}
