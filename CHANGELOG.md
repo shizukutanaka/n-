@@ -38,6 +38,7 @@
 - cli: eval の `eval_run` 呼出4箇所と文脈プローブの重複エラー処理を統合（挙動不変）
 - gateway: 埋め込み自動チャンク分割フェーズを `_autochunk_embeddings` に分離（挙動不変）
 - gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
+- 未参照の import 時束縛パス定数4件（artifacts/bench.cache の CACHE_PATH、probe.caps の CAPS_PATH、supervisor の STATE_PATH）と、それを差し替えるだけの無効なテストフィクスチャを削除（既定パスは呼出時解決のため挙動不変）
 
 ### Fixed
 - gateway: `/infill` を API キー保護対象に追加し、FIM フィールドをルーティングとタイムアウト見積もりに反映

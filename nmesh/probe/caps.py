@@ -10,10 +10,6 @@ from pathlib import Path
 
 from nmesh.paths import nmesh_home
 
-# Retained for API compatibility; llamacpp_caps resolves nmesh_home() lazily so
-# a NMESH_HOME set after import is honored.
-CAPS_PATH = nmesh_home() / "caps.json"
-
 
 @dataclass(frozen=True)
 class BackendCaps:

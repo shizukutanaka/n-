@@ -12,11 +12,6 @@ from nmesh import artifacts
 from nmesh.runtime import acquisition
 
 
-@pytest.fixture(autouse=True)
-def _isolated_artifact_cache(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(artifacts, "CACHE_PATH", tmp_path / "artifacts.json")
-
-
 def _ollama_service() -> SimpleNamespace:
     return SimpleNamespace(
         backend="ollama",
