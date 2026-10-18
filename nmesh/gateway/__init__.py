@@ -959,6 +959,13 @@ async def _routing_token_hint(
     return count
 
 
+async def _routed_service(
+    request: Mapping[str, object], plan: Plan
+) -> PlannedService:
+    token_hint = await _routing_token_hint(request, plan)
+    return _service(plan, route(request, plan, token_hint=token_hint))
+
+
 async def _record_prompt_calibration(
     service: PlannedService,
     request: Mapping[str, object],
@@ -2572,8 +2579,7 @@ def create_app(
         selected, telemetry_keys = plan_state.snapshot()
         if request.get("model") == "nmesh-delegate":
             return await _delegated_completion(request, selected)
-        token_hint = await _routing_token_hint(request, selected)
-        service = _service(selected, route(request, selected, token_hint=token_hint))
+        service = await _routed_service(request, selected)
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/chat/completions",
             limit_slots=True,
@@ -2583,8 +2589,7 @@ def create_app(
     async def legacy_completions(request: dict[str, object]) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
-        token_hint = await _routing_token_hint(request, selected)
-        service = _service(selected, route(request, selected, token_hint=token_hint))
+        service = await _routed_service(request, selected)
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/completions",
             limit_slots=True,
@@ -2594,8 +2599,7 @@ def create_app(
     async def anthropic_messages(request: dict[str, object]) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
-        token_hint = await _routing_token_hint(request, selected)
-        service = _service(selected, route(request, selected, token_hint=token_hint))
+        service = await _routed_service(request, selected)
         return await proxy(
             request, service, selected, telemetry_keys, "/v1/messages",
             limit_slots=True,
@@ -2606,11 +2610,7 @@ def create_app(
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
         routing_view = _responses_routing_view(request)
-        token_hint = await _routing_token_hint(routing_view, selected)
-        service = _service(
-            selected,
-            route(routing_view, selected, token_hint=token_hint),
-        )
+        service = await _routed_service(routing_view, selected)
         if service.backend not in _RESPONSES_BACKENDS:
             raise HTTPException(
                 status_code=501,
@@ -2628,8 +2628,7 @@ def create_app(
     async def anthropic_count_tokens(request: dict[str, object]) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
-        token_hint = await _routing_token_hint(request, selected)
-        service = _service(selected, route(request, selected, token_hint=token_hint))
+        service = await _routed_service(request, selected)
         return await proxy(
             request, service, selected, telemetry_keys,
             "/v1/messages/count_tokens", instrument=False,
@@ -2669,11 +2668,7 @@ def create_app(
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
         view = _infill_routing_view(request)
-        token_hint = await _routing_token_hint(view, selected)
-        service = _service(
-            selected,
-            route(view, selected, token_hint=token_hint),
-        )
+        service = await _routed_service(view, selected)
         if service.backend != "llamacpp":
             raise HTTPException(
                 status_code=501,

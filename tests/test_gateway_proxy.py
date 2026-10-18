@@ -1598,6 +1598,44 @@ def _cors_plan() -> Plan:
     return build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
 
 
+def test_routed_service_preserves_chat_and_context_routing() -> None:
+    plan = _cors_plan()
+    small = replace(plan.services[0], name="small", context=100)
+    large = replace(plan.services[0], name="large", context=2000)
+    plan = replace(
+        plan,
+        services=[small, large],
+        routing=replace(plan.routing, role_to_service={"chat": "small"}),
+    )
+
+    async def assert_routed_service(
+        request: dict[str, object], expected_name: str
+    ) -> None:
+        expected = gateway_module._service(
+            plan,
+            route(
+                request,
+                plan,
+                token_hint=await gateway_module._routing_token_hint(request, plan),
+            ),
+        )
+        service = await gateway_module._routed_service(request, plan)
+        assert service == expected
+        assert service.name == expected_name
+
+    async def check_requests() -> None:
+        await assert_routed_service(
+            {"messages": [{"role": "user", "content": "hello"}]},
+            "small",
+        )
+        await assert_routed_service(
+            {"messages": [{"role": "user", "content": "word " * 1000}]},
+            "large",
+        )
+
+    asyncio.run(check_requests())
+
+
 def test_gateway_denies_non_loopback_origin() -> None:
     """A foreign website's script must not drive the local gateway: with no
     API key configured CORS reflection alone gave every page full access."""
