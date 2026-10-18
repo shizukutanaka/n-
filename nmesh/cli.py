@@ -4549,6 +4549,166 @@ def _evidence(args: argparse.Namespace) -> int:
     return 0
 
 
+def _autotune(args: argparse.Namespace) -> int:
+    saved_plan = load_plan()
+    if saved_plan is None or not saved_plan.services:
+        print(i18n.t("err.no_active_plan", i18n.lang()), file=sys.stderr)
+        return 1
+    service = saved_plan.services[0]
+    if not _decode_capable(service):
+        print(
+            i18n.t(
+                "err.bench_embedding",
+                i18n.lang(),
+                service=service.name,
+            ),
+            file=sys.stderr,
+        )
+        return 2
+    context_values = sorted({max(service.context // 2, 128), service.context})
+    layer_values = sorted({service.n_gpu_layers or 0, max((service.n_gpu_layers or 0) // 2, 0)})
+    if not _ensure_service_running(service, saved_plan):
+        print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
+        return 1
+    running = runtime_status()
+    gateway_port = next(
+        (
+            item.get("port") for item in running.services
+            if item.get("service") == "gateway" and item.get("running")
+        ),
+        None,
+    )
+    if not (
+        isinstance(gateway_port, int) and not isinstance(gateway_port, bool)
+    ):
+        gateway_port = None
+    if gateway_port is not None:
+        # A detached gateway's watchdog respawns services as we tear
+        # them down between cells, stealing the port mid-restart —
+        # pause it for the grid and bring it back afterwards.
+        stop_gateway(foreign=True)
+
+    def restart_gateway() -> None:
+        # Whatever the grid leaves running must survive process exit —
+        # the supervisor's atexit teardown would otherwise down it.
+        disarm_atexit()
+        if gateway_port is None:
+            return
+        try:
+            process, log_path = _launch_gateway(gateway_port, detach=True)
+        except OSError as error:
+            print(
+                i18n.t("err.gateway_start", i18n.lang(), error=error),
+                file=sys.stderr,
+            )
+            return
+        if not _wait_gateway(gateway_port, process):
+            clear_gateway(process.pid)
+            process.terminate()
+            print(
+                i18n.t(
+                    "err.gateway_not_ready",
+                    i18n.lang(),
+                    path=log_path,
+                ),
+                file=sys.stderr,
+            )
+
+    base_url = _service_base_url(service)
+    best: tuple[int, int, float] | None = None
+    best_plan = None
+    for context in context_values:
+        for layers in layer_values:
+            argv = list(service.launch.argv)
+            if "--max-model-len" in argv:
+                set_flag_value(argv, "--max-model-len", str(context))
+            if "-c" in argv:
+                # llama.cpp's -c is the shared KV pool total: the
+                # planner emits context * slots when --parallel is
+                # present, so the tuned context must be re-scaled.
+                slots = 1
+                if "--parallel" in argv:
+                    try:
+                        slots = max(
+                            1, int(argv[argv.index("--parallel") + 1])
+                        )
+                    except (IndexError, ValueError):
+                        slots = 1
+                set_flag_value(argv, "-c", str(context * slots))
+            if "-ngl" in argv:
+                set_flag_value(argv, "-ngl", str(layers))
+            tuned = replace(
+                service, context=context, n_gpu_layers=layers,
+                launch=replace(service.launch, argv=argv),
+            )
+            tuned_plan = replace(saved_plan, services=[
+                tuned if item.name == service.name else item for item in saved_plan.services
+            ])
+            runtime_down()
+            try:
+                # admit=False: artifact-replanning would rebuild the
+                # service from the policy and discard the tuned
+                # context/layers — the grid must launch them verbatim.
+                runtime_up(tuned_plan, no_download=True, admit=False)
+                if service.name in tuned_plan.swap_group:
+                    # up() leaves swap members lazy — the tuned
+                    # member must actually run for measure().
+                    ensure_running(service.name, tuned_plan)
+                tuned_result = measure(tuned, base_url)
+            except (OSError, RuntimeError, httpx.HTTPError) as error:
+                print(i18n.t("err.autotune_measure", i18n.lang(), error=error),
+                      file=sys.stderr)
+                runtime_down()
+                try:
+                    runtime_up(saved_plan, no_download=True)
+                except (OSError, RuntimeError) as restore_error:
+                    print(
+                        i18n.t("err.autotune_restore", i18n.lang(), error=restore_error),
+                        file=sys.stderr,
+                    )
+                restart_gateway()
+                return 1
+            save_plan(saved_plan)
+            if best is None or tuned_result.decode_tps > best[2]:
+                best = (context, layers, tuned_result.decode_tps)
+                best_plan = tuned_plan
+    if best is None:
+        runtime_down()
+        try:
+            runtime_up(saved_plan, no_download=True)
+        except (OSError, RuntimeError):
+            pass
+        restart_gateway()
+        return 1
+    runtime_down()
+    assert best_plan is not None
+    save_plan(best_plan)
+    try:
+        runtime_up(best_plan, no_download=True, admit=False)
+        if service.name in best_plan.swap_group:
+            ensure_running(service.name, best_plan)
+    except (OSError, RuntimeError) as error:
+        save_plan(saved_plan)
+        runtime_down()
+        try:
+            runtime_up(saved_plan, no_download=True)
+        except (OSError, RuntimeError) as restore_error:
+            print(
+                i18n.t("err.autotune_restore", i18n.lang(), error=restore_error),
+                file=sys.stderr,
+            )
+        print(
+            i18n.t("err.autotune_winning", i18n.lang(), error=error),
+            file=sys.stderr,
+        )
+        restart_gateway()
+        return 1
+    summary = {"service": service.name, "context": best[0], "n_gpu_layers": best[1],
+               "decode_tps": best[2]}
+    _print_json(summary) if args.json else _console().print(summary)
+    restart_gateway()
+    return 0
+
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_output()
     parser = argparse.ArgumentParser(prog="nmesh")
@@ -4823,164 +4983,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "watch":
         return _watch(args)
     if args.command == "autotune":
-        saved_plan = load_plan()
-        if saved_plan is None or not saved_plan.services:
-            print(i18n.t("err.no_active_plan", i18n.lang()), file=sys.stderr)
-            return 1
-        service = saved_plan.services[0]
-        if not _decode_capable(service):
-            print(
-                i18n.t(
-                    "err.bench_embedding",
-                    i18n.lang(),
-                    service=service.name,
-                ),
-                file=sys.stderr,
-            )
-            return 2
-        context_values = sorted({max(service.context // 2, 128), service.context})
-        layer_values = sorted({service.n_gpu_layers or 0, max((service.n_gpu_layers or 0) // 2, 0)})
-        if not _ensure_service_running(service, saved_plan):
-            print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
-            return 1
-        running = runtime_status()
-        gateway_port = next(
-            (
-                item.get("port") for item in running.services
-                if item.get("service") == "gateway" and item.get("running")
-            ),
-            None,
-        )
-        if not (
-            isinstance(gateway_port, int) and not isinstance(gateway_port, bool)
-        ):
-            gateway_port = None
-        if gateway_port is not None:
-            # A detached gateway's watchdog respawns services as we tear
-            # them down between cells, stealing the port mid-restart —
-            # pause it for the grid and bring it back afterwards.
-            stop_gateway(foreign=True)
-
-        def restart_gateway() -> None:
-            # Whatever the grid leaves running must survive process exit —
-            # the supervisor's atexit teardown would otherwise down it.
-            disarm_atexit()
-            if gateway_port is None:
-                return
-            try:
-                process, log_path = _launch_gateway(gateway_port, detach=True)
-            except OSError as error:
-                print(
-                    i18n.t("err.gateway_start", i18n.lang(), error=error),
-                    file=sys.stderr,
-                )
-                return
-            if not _wait_gateway(gateway_port, process):
-                clear_gateway(process.pid)
-                process.terminate()
-                print(
-                    i18n.t(
-                        "err.gateway_not_ready",
-                        i18n.lang(),
-                        path=log_path,
-                    ),
-                    file=sys.stderr,
-                )
-
-        base_url = _service_base_url(service)
-        best: tuple[int, int, float] | None = None
-        best_plan = None
-        for context in context_values:
-            for layers in layer_values:
-                argv = list(service.launch.argv)
-                if "--max-model-len" in argv:
-                    set_flag_value(argv, "--max-model-len", str(context))
-                if "-c" in argv:
-                    # llama.cpp's -c is the shared KV pool total: the
-                    # planner emits context * slots when --parallel is
-                    # present, so the tuned context must be re-scaled.
-                    slots = 1
-                    if "--parallel" in argv:
-                        try:
-                            slots = max(
-                                1, int(argv[argv.index("--parallel") + 1])
-                            )
-                        except (IndexError, ValueError):
-                            slots = 1
-                    set_flag_value(argv, "-c", str(context * slots))
-                if "-ngl" in argv:
-                    set_flag_value(argv, "-ngl", str(layers))
-                tuned = replace(
-                    service, context=context, n_gpu_layers=layers,
-                    launch=replace(service.launch, argv=argv),
-                )
-                tuned_plan = replace(saved_plan, services=[
-                    tuned if item.name == service.name else item for item in saved_plan.services
-                ])
-                runtime_down()
-                try:
-                    # admit=False: artifact-replanning would rebuild the
-                    # service from the policy and discard the tuned
-                    # context/layers — the grid must launch them verbatim.
-                    runtime_up(tuned_plan, no_download=True, admit=False)
-                    if service.name in tuned_plan.swap_group:
-                        # up() leaves swap members lazy — the tuned
-                        # member must actually run for measure().
-                        ensure_running(service.name, tuned_plan)
-                    tuned_result = measure(tuned, base_url)
-                except (OSError, RuntimeError, httpx.HTTPError) as error:
-                    print(i18n.t("err.autotune_measure", i18n.lang(), error=error),
-                          file=sys.stderr)
-                    runtime_down()
-                    try:
-                        runtime_up(saved_plan, no_download=True)
-                    except (OSError, RuntimeError) as restore_error:
-                        print(
-                            i18n.t("err.autotune_restore", i18n.lang(), error=restore_error),
-                            file=sys.stderr,
-                        )
-                    restart_gateway()
-                    return 1
-                save_plan(saved_plan)
-                if best is None or tuned_result.decode_tps > best[2]:
-                    best = (context, layers, tuned_result.decode_tps)
-                    best_plan = tuned_plan
-        if best is None:
-            runtime_down()
-            try:
-                runtime_up(saved_plan, no_download=True)
-            except (OSError, RuntimeError):
-                pass
-            restart_gateway()
-            return 1
-        runtime_down()
-        assert best_plan is not None
-        save_plan(best_plan)
-        try:
-            runtime_up(best_plan, no_download=True, admit=False)
-            if service.name in best_plan.swap_group:
-                ensure_running(service.name, best_plan)
-        except (OSError, RuntimeError) as error:
-            save_plan(saved_plan)
-            runtime_down()
-            try:
-                runtime_up(saved_plan, no_download=True)
-            except (OSError, RuntimeError) as restore_error:
-                print(
-                    i18n.t("err.autotune_restore", i18n.lang(), error=restore_error),
-                    file=sys.stderr,
-                )
-            print(
-                i18n.t("err.autotune_winning", i18n.lang(), error=error),
-                file=sys.stderr,
-            )
-            restart_gateway()
-            return 1
-        summary = {"service": service.name, "context": best[0], "n_gpu_layers": best[1],
-                   "decode_tps": best[2]}
-        _print_json(summary) if args.json else _console().print(summary)
-        restart_gateway()
-        return 0
+        return _autotune(args)
     if args.command == "autostart":
         if is_windows():
             os_name = "nt"
