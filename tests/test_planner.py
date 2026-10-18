@@ -2053,6 +2053,41 @@ def test_full_gpu_slots_expand_llamacpp_context_and_kv(catalog: list[ModelSpec])
     assert service.memory.gpu_bytes <= planner_core._gpu_budget(gpu) + 1
 
 
+def test_memory_with_slots_scales_recurrent_state_and_preserves_other_fields() -> None:
+    memory = planner_core.MemoryEstimate(
+        weight_bytes=100.0,
+        per_layer_bytes=10.0,
+        kv_bytes_per_tok=2.0,
+        kv_cache_bytes=16.0,
+        compute_overhead=5.0,
+        total_bytes=121.0,
+        vram_budget=1000.0,
+        ram_budget=2000.0,
+        disk_needed=3000.0,
+        cpu_bytes=17.0,
+        gpu_bytes=19.0,
+        n_gpu_layers=4,
+        parallel_slots=1,
+        n_cpu_moe=2,
+        moe_expert_bytes_per_layer=3.0,
+        moe_layers=5,
+        recurrent_state_bytes=3.0,
+    )
+
+    result = planner_core._memory_with_slots(memory, context=8, slots=4)
+
+    expected_kv_cache_bytes = (2.0 * 8 + 3.0) * 4
+    assert result.kv_cache_bytes == expected_kv_cache_bytes
+    assert result.total_bytes == 100.0 + expected_kv_cache_bytes + 5.0
+    assert result.parallel_slots == 4
+    assert replace(
+        result,
+        kv_cache_bytes=memory.kv_cache_bytes,
+        total_bytes=memory.total_bytes,
+        parallel_slots=memory.parallel_slots,
+    ) == memory
+
+
 def test_cpu_partial_offload_and_embedding_keep_one_slot(catalog: list[ModelSpec]) -> None:
     model = next(item for item in catalog if item.id == "qwen2.5-7b-instruct")
     cpu = build_plan(profile(8), [model])
