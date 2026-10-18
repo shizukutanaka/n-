@@ -2542,7 +2542,7 @@ def _bench(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     if not _ensure_service_running(service, plan):
-        print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
+        print(i18n.t("err.service_not_running", i18n.lang()), file=sys.stderr)
         return 1
     base_url = _service_base_url(service)
     if service.roles == ["embed"]:
@@ -2860,7 +2860,7 @@ def _eval(args: argparse.Namespace) -> int:
         )
         return 2
     if not _ensure_service_running(service, plan):
-        print(i18n.t("err.eval_up", i18n.lang()), file=sys.stderr)
+        print(i18n.t("err.service_not_running", i18n.lang()), file=sys.stderr)
         return 1
     requested = (
         None if args.categories is None
@@ -4505,7 +4505,7 @@ def _autotune(args: argparse.Namespace) -> int:
     context_values = sorted({max(service.context // 2, 128), service.context})
     layer_values = sorted({service.n_gpu_layers or 0, max((service.n_gpu_layers or 0) // 2, 0)})
     if not _ensure_service_running(service, saved_plan):
-        print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
+        print(i18n.t("err.service_not_running", i18n.lang()), file=sys.stderr)
         return 1
     running = runtime_status()
     gateway_port = next(
