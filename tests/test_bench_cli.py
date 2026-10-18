@@ -39,6 +39,49 @@ def _controlled(measurement: BenchResult) -> ControlledBenchResult:
     )
 
 
+def test_record_epoch_classifies_prunes_and_handles_save_failure(
+    monkeypatch, capsys,
+) -> None:
+    samples = (
+        EpochSample("ref", 20.0, "slow"),
+        EpochSample("ref", 45.0, "fast"),
+    )
+    history = {"ref": samples}
+    original = history.copy()
+    saved = []
+    monkeypatch.setattr(cli, "save_history", saved.append)
+
+    assert cli._record_epoch(history, "ref", None, 40.0) == ("unknown", 0)
+    assert history == original
+    assert saved == []
+
+    reference_tps = 50.0
+    expected_retained = cli.prune_degraded(samples, reference_tps)
+    expected_pruned = len(samples) - len(expected_retained)
+    epoch, pruned = cli._record_epoch(
+        history, "ref", reference_tps, 40.0,
+    )
+
+    assert epoch == cli.classify(reference_tps, 40.0)
+    assert pruned == expected_pruned
+    assert history["ref"][0].reference_id == "ref"
+    assert history["ref"][0].tps == reference_tps
+    assert history["ref"][1:] == expected_retained
+    assert saved == [history]
+    assert saved[0] is history
+
+    def fail_save(_history) -> None:
+        raise OSError("history locked")
+
+    monkeypatch.setattr(cli, "save_history", fail_save)
+    assert cli._record_epoch(
+        {"ref": samples}, "ref", reference_tps, 40.0,
+    ) == (epoch, expected_pruned)
+    assert capsys.readouterr().err.strip() == cli.i18n.t(
+        "err.bench_save", cli.i18n.lang(), error="history locked"
+    )
+
+
 def test_bench_runs_rejects_zero() -> None:
     with pytest.raises(SystemExit):
         cli.main(["bench", "--runs", "0"])
