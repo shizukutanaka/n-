@@ -407,6 +407,8 @@ embed model on a second llama.cpp process with `--reranking`). Without it,
 `/v1/rerank` returns 501 explaining how to enable it. The endpoint accepts
 a Cohere-style `{query, documents}` body and returns `results` with
 `relevance_score`s.
+The gateway also forwards llama.cpp's native `POST /infill` FIM endpoint,
+including its native SSE response; other backends receive 501.
 
 The gateway also passes through the Anthropic Messages API when the backend
 serves it (llama.cpp does): `POST /v1/messages` and
