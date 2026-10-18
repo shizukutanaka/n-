@@ -27,6 +27,7 @@
 
 - gateway: ストリーミング応答の SSE 行変換を `_transform_sse_line` に分離（挙動不変）
 - planner: build_plan の eval 証拠比較フェーズを `_eval_evidence_warnings` に分離（挙動不変）
+- gateway: proxy の上流リソース解放（7箇所の重複）を release_upstream に統合（挙動不変）
 
 ### Fixed
 - **spec measure がプローブ済み llama.cpp の未対応フラグを候補起動時に発行していた問題を修正**: 必須フラグが未検出の場合は対照測定前に拒否

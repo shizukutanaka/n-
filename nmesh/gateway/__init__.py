@@ -1635,6 +1635,17 @@ def create_app(
             if job is not None:
                 jobs.finish(job, ok=False, detail=str(error))
             raise
+
+        async def release_upstream() -> int:
+            await client.aclose()
+            peak = in_flight.leave(service.name, ticket)
+            last_use.touch(service.name)
+            if locked:
+                gate.release()
+            if limit_slots:
+                limiter.release(slot_token)
+            return peak
+
         if request.get("stream"):
             stream_options = request.get("stream_options")
             request_wants_usage = (
@@ -1664,24 +1675,12 @@ def create_app(
                     )
                     upstream = await client.send(upstream_request, stream=True)
             except HTTPException:
-                await client.aclose()
-                in_flight.leave(service.name, ticket)
-                last_use.touch(service.name)
-                if locked:
-                    gate.release()
-                if limit_slots:
-                    limiter.release(slot_token)
+                await release_upstream()
                 if job is not None:
                     jobs.finish(job, ok=False, detail="upstream_unreachable")
                 raise
             except UnicodeEncodeError as error:
-                await client.aclose()
-                in_flight.leave(service.name, ticket)
-                last_use.touch(service.name)
-                if locked:
-                    gate.release()
-                if limit_slots:
-                    limiter.release(slot_token)
+                await release_upstream()
                 if job is not None:
                     jobs.finish(job, ok=False, detail=str(error))
                 raise HTTPException(
@@ -1689,37 +1688,19 @@ def create_app(
                     detail="request contains unpaired surrogates",
                 ) from error
             except httpx.HTTPError as error:
-                await client.aclose()
-                in_flight.leave(service.name, ticket)
-                last_use.touch(service.name)
-                if locked:
-                    gate.release()
-                if limit_slots:
-                    limiter.release(slot_token)
+                await release_upstream()
                 if job is not None:
                     jobs.finish(job, ok=False, detail=str(error))
                 raise HTTPException(status_code=502, detail=str(error)) from error
             except BaseException as error:
-                await client.aclose()
-                in_flight.leave(service.name, ticket)
-                last_use.touch(service.name)
-                if locked:
-                    gate.release()
-                if limit_slots:
-                    limiter.release(slot_token)
+                await release_upstream()
                 if job is not None:
                     jobs.finish(job, ok=False, detail=str(error) or "aborted")
                 raise
             if upstream.status_code >= 400:
                 content = await upstream.aread()
                 await upstream.aclose()
-                await client.aclose()
-                in_flight.leave(service.name, ticket)
-                last_use.touch(service.name)
-                if locked:
-                    gate.release()
-                if limit_slots:
-                    limiter.release(slot_token)
+                await release_upstream()
                 unsupported = _completion_not_supported(
                     path, upstream.status_code, service.backend
                 )
@@ -1768,13 +1749,7 @@ def create_app(
                     raise HTTPException(status_code=502, detail=str(error)) from error
                 finally:
                     await upstream.aclose()
-                    await client.aclose()
-                    in_flight_peak = in_flight.leave(service.name, ticket)
-                    last_use.touch(service.name)
-                    if locked:
-                        gate.release()
-                    if limit_slots:
-                        limiter.release(slot_token)
+                    in_flight_peak = await release_upstream()
                     if job is not None:
                         jobs.finish(
                             job,
@@ -1997,13 +1972,7 @@ def create_app(
                 jobs.finish(job, ok=False, detail=str(error))
             raise HTTPException(status_code=502, detail=str(error)) from error
         finally:
-            await client.aclose()
-            in_flight_peak = in_flight.leave(service.name, ticket)
-            last_use.touch(service.name)
-            if locked:
-                gate.release()
-            if limit_slots:
-                limiter.release(slot_token)
+            in_flight_peak = await release_upstream()
             if job is not None and sys.exc_info()[1] is not None:
                 jobs.finish(job, ok=False, detail=str(sys.exc_info()[1]))
         if isinstance(data, dict) and "model" in data:
