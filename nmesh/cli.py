@@ -75,6 +75,7 @@ from nmesh.eval import (
     SUITES,
     EvalRun,
     EvalSummary,
+    Task,
     TaskOutcome,
     load_eval_cache,
     needle_tasks,
@@ -2883,17 +2884,21 @@ def _eval(args: argparse.Namespace) -> int:
     allowance = max(0, getattr(args, "reasoning_allowance", 0) or 0)
     timeout = getattr(args, "timeout", None)
     depth = max(0, getattr(args, "depth", 0) or 0)
-    try:
-        result = eval_run(
-            tasks,
+
+    def run(run_tasks: Sequence[Task], run_depth: int) -> EvalRun:
+        return eval_run(
+            run_tasks,
             base_url,
             service.model_ref,
             timeout=timeout,
             reasoning_allowance=allowance,
             cache_prompt=False if service.backend == "llamacpp" else None,
-            depth=depth,
-            on_outcome=_eval_progress(len(tasks)),
+            depth=run_depth,
+            on_outcome=_eval_progress(len(run_tasks)),
         )
+
+    try:
+        result = run(tasks, depth)
     except RuntimeError as error:
         print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
         return 1
@@ -2919,44 +2924,9 @@ def _eval(args: argparse.Namespace) -> int:
         probes = needle_tasks(depth, seed=args.suite)
         control_tasks = needle_tasks(0, seed=args.suite)
         try:
-            control_before = eval_run(
-                control_tasks,
-                base_url,
-                service.model_ref,
-                timeout=timeout,
-                reasoning_allowance=allowance,
-                cache_prompt=False if service.backend == "llamacpp" else None,
-                depth=0,
-                on_outcome=_eval_progress(len(control_tasks)),
-            )
-        except RuntimeError as error:
-            print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
-            return 1
-        try:
-            probe_result = eval_run(
-                probes,
-                base_url,
-                service.model_ref,
-                timeout=timeout,
-                reasoning_allowance=allowance,
-                cache_prompt=False if service.backend == "llamacpp" else None,
-                depth=depth,
-                on_outcome=_eval_progress(len(probes)),
-            )
-        except RuntimeError as error:
-            print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
-            return 1
-        try:
-            control_after = eval_run(
-                control_tasks,
-                base_url,
-                service.model_ref,
-                timeout=timeout,
-                reasoning_allowance=allowance,
-                cache_prompt=False if service.backend == "llamacpp" else None,
-                depth=0,
-                on_outcome=_eval_progress(len(control_tasks)),
-            )
+            control_before = run(control_tasks, 0)
+            probe_result = run(probes, depth)
+            control_after = run(control_tasks, 0)
         except RuntimeError as error:
             print(i18n.t("err.eval_run", i18n.lang(), error=error), file=sys.stderr)
             return 1
