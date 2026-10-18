@@ -34,6 +34,7 @@
 - gateway: 埋め込み自動チャンク分割フェーズを `_autochunk_embeddings` に分離（挙動不変）
 
 ### Fixed
+- gateway: `/infill` を API キー保護対象に追加し、FIM フィールドをルーティングとタイムアウト見積もりに反映
 - **spec measure がプローブ済み llama.cpp の未対応フラグを候補起動時に発行していた問題を修正**: 必須フラグが未検出の場合は対照測定前に拒否
 - **spec measure が llama.cpp 以外のサービスに投機フラグを付けていた問題を修正**: 自動選択は llama.cpp を優先し、他バックエンドを指定した場合は起動前に拒否
 - **supervisor: 破損 state.json の警告が2つの経路で抜けていた問題を修正**: (1) JSON は読めるが `services` が list でない（手編集・旧スキーマ・部分破損の）ファイルが無警告で受理され、`_adopt` が実行中エンジンを見落として `_persist` が記録を上書きしていました — 非 list `services` にも `warn.state_unreadable` を発行（`gateway` 等の正常フィールドは引き続き利用）。(2) 警告の一度だけ抑制がインスタンス単位で、NMESH_HOME 変更後の別パスの破損ファイルでは警告が出ませんでした — パス単位の抑制に変更（モジュール共有 `_default` supervisor がプロセス中存続するため）

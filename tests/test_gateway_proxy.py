@@ -1711,3 +1711,120 @@ def test_gateway_infill_rejects_non_llamacpp_backend_before_upstream() -> None:
     finally:
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_infill_routing_view_collects_fim_text_and_token_limit() -> None:
+    view = gateway_module._infill_routing_view({
+        "input_prefix": "prefix",
+        "prompt": "middle",
+        "input_suffix": "suffix",
+        "input_extra": [
+            {"text": "extra text"},
+            {"text": 5},
+            "ignored",
+        ],
+        "n_predict": 32,
+    })
+
+    assert view["prompt"] == "prefix middle suffix extra text"
+    assert view["max_tokens"] == 32
+
+    boolean_limit = gateway_module._infill_routing_view({
+        "input_prefix": "prefix",
+        "n_predict": True,
+    })
+    assert boolean_limit["prompt"] == "prefix"
+    assert "max_tokens" not in boolean_limit
+
+
+def test_infill_code_prefix_routes_to_code_service() -> None:
+    chat_model = ModelSpec(
+        "infill-chat-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"},
+    )
+    code_model = ModelSpec(
+        "infill-code-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["code"], 80.0, "test", {"hf_gguf": "test/repo"},
+    )
+    plan = build_plan(
+        profile(64, (24,)),
+        [chat_model, code_model],
+        Policy(roles=["chat", "code"]),
+    )
+    view = gateway_module._infill_routing_view({
+        "input_prefix": "def foo():\n",
+    })
+
+    assert route(view, plan) == plan.routing.role_to_service["code"]
+
+
+def test_infill_long_prefix_routes_to_larger_context_service() -> None:
+    model = ModelSpec(
+        "infill-routing-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+        4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"},
+    )
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    small = replace(plan.services[0], name="small", context=100)
+    large = replace(plan.services[0], name="large", context=1000)
+    plan = replace(
+        plan,
+        services=[small, large],
+        routing=replace(plan.routing, role_to_service={"chat": "small"}),
+    )
+    view = gateway_module._infill_routing_view({
+        "input_prefix": "x" * 1600,
+    })
+
+    assert route(view, plan) == "large"
+
+
+def test_gateway_infill_requires_api_key(monkeypatch) -> None:
+    monkeypatch.setenv("NMESH_API_KEY", "infill-secret")
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _InfillHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    _InfillHandler.request_body = {}
+    _InfillHandler.request_path = ""
+    _InfillHandler.request_count = 0
+    try:
+        plan = _infill_plan(upstream.server_address[1])
+        client = TestClient(create_app(plan))
+        body = {"input_prefix": "prefix"}
+
+        unauthorized = client.post("/infill", json=body)
+        assert unauthorized.status_code == 401
+        assert _InfillHandler.request_count == 0
+
+        authorized = client.post(
+            "/infill",
+            json=body,
+            headers={"Authorization": "Bearer infill-secret"},
+        )
+        assert authorized.status_code == 200
+        assert _InfillHandler.request_count == 1
+        assert _InfillHandler.request_path == "/infill"
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+def test_forward_timeout_accounts_for_infill_prefix_and_extra(monkeypatch) -> None:
+    service = _infill_plan(1).services[0]
+    monkeypatch.setattr(
+        gateway_module,
+        "estimate_tokens",
+        lambda text, calibration=None: len(text),
+    )
+
+    short = gateway_module._forward_timeout({"input_prefix": "x"}, service)
+    long = gateway_module._forward_timeout(
+        {"input_prefix": "x" * 1000}, service
+    )
+    extra = gateway_module._forward_timeout(
+        {"input_extra": [{"text": "x" * 1000}]}, service
+    )
+
+    assert short.read >= gateway_module.GENERATION_TIMEOUT_FLOOR
+    assert long.read > short.read
+    assert long.read > gateway_module.FORWARD_TIMEOUT_BASE
+    assert extra.read > gateway_module.FORWARD_TIMEOUT_BASE

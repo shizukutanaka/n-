@@ -388,6 +388,32 @@ def _content(request: Mapping[str, object]) -> str:
     return ""
 
 
+def _infill_routing_view(request: Mapping[str, object]) -> dict[str, object]:
+    parts: list[str] = []
+    for key in ("input_prefix", "prompt", "input_suffix"):
+        value = request.get(key)
+        if isinstance(value, str):
+            parts.append(value)
+    input_extra = request.get("input_extra")
+    if isinstance(input_extra, list):
+        for item in input_extra:
+            if not isinstance(item, Mapping):
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+
+    view: dict[str, object] = {**request, "prompt": " ".join(parts)}
+    n_predict = request.get("n_predict")
+    if (
+        isinstance(n_predict, int)
+        and not isinstance(n_predict, bool)
+        and n_predict > 0
+    ):
+        view["max_tokens"] = n_predict
+    return view
+
+
 def route(
     request: Mapping[str, object],
     plan: Plan,
@@ -773,12 +799,20 @@ def _forward_timeout(request: Mapping[str, object], service: PlannedService) -> 
                 texts.append(element)
             elif _is_token_list(element):
                 ids += len(element)
-    for key in ("query", "documents"):
+    for key in ("query", "documents", "input_prefix", "input_suffix"):
         extra = request.get(key)
         if isinstance(extra, str):
             texts.append(extra)
         elif isinstance(extra, list):
             texts.extend(item for item in extra if isinstance(item, str))
+    input_extra = request.get("input_extra")
+    if isinstance(input_extra, list):
+        for item in input_extra:
+            if not isinstance(item, Mapping):
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                texts.append(text)
     tokens = estimate_tokens(
         " ".join(texts),
         calibration_for(
@@ -788,7 +822,12 @@ def _forward_timeout(request: Mapping[str, object], service: PlannedService) -> 
     budget = service.context if service.context > 0 else max(tokens, 1)
     slots = max(1, service.memory.parallel_slots)
     read = FORWARD_TIMEOUT_BASE + min(tokens, budget) + (slots - 1) * budget
-    if not request.get("stream") and ("messages" in request or "prompt" in request):
+    if not request.get("stream") and (
+        "messages" in request
+        or "prompt" in request
+        or "input_prefix" in request
+        or "input_suffix" in request
+    ):
         read = max(read, GENERATION_TIMEOUT_FLOOR)
     return httpx.Timeout(read, connect=CONNECT_TIMEOUT)
 
@@ -1561,7 +1600,7 @@ def create_app(
                 },
             )
         if api_key_bytes is not None and path.startswith(
-            ("/v1/", "/metrics", "/admin/", "/logs", "/status")
+            ("/v1/", "/infill", "/metrics", "/admin/", "/logs", "/status")
         ):
             authorization = request.headers.get("authorization", "")
             prefix = "Bearer "
@@ -2545,7 +2584,12 @@ def create_app(
     async def infill(request: dict[str, object]) -> object:
         plan_state.maybe_reload()
         selected, telemetry_keys = plan_state.snapshot()
-        service = _service(selected, route(request, selected))
+        view = _infill_routing_view(request)
+        token_hint = await _routing_token_hint(view, selected)
+        service = _service(
+            selected,
+            route(view, selected, token_hint=token_hint),
+        )
         if service.backend != "llamacpp":
             raise HTTPException(
                 status_code=501,
