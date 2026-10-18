@@ -164,15 +164,17 @@ def run(
                 else bool(task.value_check(text))
             )
             outcome = TaskOutcome(
-                task.id,
-                task.category,
-                passed,
-                text[:200],
-                unscorable,
-                value_passed,
-                "transport"
-                if transport
-                else _failure_kind(task, passed, unscorable, value_passed),
+                id=task.id,
+                category=task.category,
+                passed=passed,
+                output=text[:200],
+                unscorable=unscorable,
+                value_passed=value_passed,
+                failure_kind=(
+                    "transport"
+                    if transport
+                    else _failure_kind(task, passed, unscorable, value_passed)
+                ),
             )
             outcomes.append(outcome)
             if on_outcome is not None:
@@ -187,15 +189,15 @@ def run(
             sum(outcome.passed for outcome in category_outcomes) / len(category_outcomes)
         )
     return EvalRun(
-        model_ref,
-        "",
-        "",
-        len(outcomes),
-        passed_count,
-        passed_count / len(outcomes) if outcomes else 0.0,
-        by_category,
-        outcomes,
-        time.time(),
+        model_id=model_ref,
+        quant="",
+        backend="",
+        n_tasks=len(outcomes),
+        passed=passed_count,
+        pass_rate=(passed_count / len(outcomes) if outcomes else 0.0),
+        by_category=by_category,
+        outcomes=outcomes,
+        at=time.time(),
         unscorable=sum(outcome.unscorable for outcome in outcomes),
         reasoning_allowance=max(0, reasoning_allowance),
         transport_errors=transport_errors,
