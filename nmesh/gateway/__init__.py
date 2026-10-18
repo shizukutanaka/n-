@@ -2565,6 +2565,24 @@ def create_app(
             request, service, selected, telemetry_keys, "/v1/rerank", instrument=False
         )
 
+    @app.post("/infill")
+    async def infill(request: dict[str, object]) -> object:
+        plan_state.maybe_reload()
+        selected, telemetry_keys = plan_state.snapshot()
+        service = _service(selected, route(request, selected))
+        if service.backend != "llamacpp":
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    f"backend {service.backend} does not serve /infill; "
+                    "it is a llama.cpp endpoint"
+                ),
+            )
+        return await proxy(
+            request, service, selected, telemetry_keys, "/infill",
+            instrument=False, limit_slots=True,
+        )
+
     return app
 
 
