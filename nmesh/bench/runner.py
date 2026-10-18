@@ -213,17 +213,17 @@ def _measure_once(
         or predicted_n is not None
     )
     return BenchResult(
-        prefill_tps,
-        decode_tps,
-        ttft,
-        approximate,
-        prompt_count,
-        prefill_source,
-        cached,
-        decode_tps,
-        decode_tps,
-        1,
-        decode_tokens_served,
+        prefill_tps=prefill_tps,
+        decode_tps=decode_tps,
+        ttft_s=ttft,
+        approximate=approximate,
+        prompt_tokens=prompt_count,
+        prefill_source=prefill_source,
+        cached_prompt_tokens=cached,
+        decode_tps_min=decode_tps,
+        decode_tps_max=decode_tps,
+        runs=1,
+        decode_tokens_served=decode_tokens_served,
     )
 
 
@@ -246,23 +246,25 @@ def measure(service: PlannedService, base_url: str, prefill_tokens: int = 512,
         else "timings"
     )
     return BenchResult(
-        statistics.median(item.prefill_tps for item in results),
-        statistics.median(item.decode_tps for item in results),
-        statistics.median(item.ttft_s for item in results),
-        any(item.approximate for item in results),
-        (
+        prefill_tps=statistics.median(item.prefill_tps for item in results),
+        decode_tps=statistics.median(item.decode_tps for item in results),
+        ttft_s=statistics.median(item.ttft_s for item in results),
+        approximate=any(item.approximate for item in results),
+        prompt_tokens=(
             int(statistics.median(
                 item.prompt_tokens for item in results
                 if item.prompt_tokens is not None
             ))
             if any(item.prompt_tokens is not None for item in results) else None
         ),
-        source,
-        max(item.cached_prompt_tokens for item in results),
-        min(item.decode_tps for item in results),
-        max(item.decode_tps for item in results),
-        len(results),
-        int(statistics.median(item.decode_tokens_served for item in results)),
+        prefill_source=source,
+        cached_prompt_tokens=max(item.cached_prompt_tokens for item in results),
+        decode_tps_min=min(item.decode_tps for item in results),
+        decode_tps_max=max(item.decode_tps for item in results),
+        runs=len(results),
+        decode_tokens_served=int(
+            statistics.median(item.decode_tokens_served for item in results)
+        ),
     )
 
 
@@ -298,23 +300,25 @@ def measure_controlled(
         else "timings"
     )
     merged = BenchResult(
-        statistics.median(item.prefill_tps for item in results),
-        statistics.median(pass_tps),
-        statistics.median(item.ttft_s for item in results),
-        any(item.approximate for item in results),
-        (
+        prefill_tps=statistics.median(item.prefill_tps for item in results),
+        decode_tps=statistics.median(pass_tps),
+        ttft_s=statistics.median(item.ttft_s for item in results),
+        approximate=any(item.approximate for item in results),
+        prompt_tokens=(
             int(statistics.median(
                 item.prompt_tokens for item in results
                 if item.prompt_tokens is not None
             ))
             if any(item.prompt_tokens is not None for item in results) else None
         ),
-        source,
-        max(item.cached_prompt_tokens for item in results),
-        min(item.decode_tps_min for item in results),
-        max(item.decode_tps_max for item in results),
-        sum(item.runs for item in results),
-        int(statistics.median(item.decode_tokens_served for item in results)),
+        prefill_source=source,
+        cached_prompt_tokens=max(item.cached_prompt_tokens for item in results),
+        decode_tps_min=min(item.decode_tps_min for item in results),
+        decode_tps_max=max(item.decode_tps_max for item in results),
+        runs=sum(item.runs for item in results),
+        decode_tokens_served=int(
+            statistics.median(item.decode_tokens_served for item in results)
+        ),
     )
     return ControlledBenchResult(
         result=merged,
