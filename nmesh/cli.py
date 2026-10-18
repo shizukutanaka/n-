@@ -2049,7 +2049,7 @@ def _engine(args: argparse.Namespace) -> int:
                 i18n.t("engine.variant", i18n.lang()),
                 i18n.t("label.version", i18n.lang()),
                 i18n.t("engine.active_column", i18n.lang()),
-                i18n.t("engine.path", i18n.lang()),
+                i18n.t("label.path", i18n.lang()),
             ):
                 table.add_column(column)
             for item in entries:
@@ -4263,7 +4263,7 @@ def _watch(args: argparse.Namespace) -> int:
         _console().print(table)
         catalog_table = Table(title=i18n.t("label.watch_catalog_title", language))
         catalog_table.add_column(i18n.t("label.watch_metric", language))
-        catalog_table.add_column(i18n.t("label.watch_value", language))
+        catalog_table.add_column(i18n.t("label.value", language))
         catalog_table.add_row(
             i18n.t("label.watch_catalog_entries", language),
             str(catalog_metrics["entries"]),
@@ -4291,7 +4291,7 @@ def _watch(args: argparse.Namespace) -> int:
         _console().print(catalog_table)
         candidate_table = Table(title=i18n.t("label.watch_candidates_title", language))
         candidate_table.add_column(i18n.t("label.watch_fit_class", language))
-        candidate_table.add_column(i18n.t("label.watch_value", language))
+        candidate_table.add_column(i18n.t("label.value", language))
         for fit, count in fit_counts.items():
             candidate_table.add_row(
                 i18n.t(f"label.watch_fit_{fit}", language),
