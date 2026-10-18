@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
+import httpx
 from fastapi.testclient import TestClient
 
 import nmesh.gateway as gateway_module
@@ -15,6 +17,7 @@ from nmesh.bench.retrieval import (
     RetrievalChunkArm,
     RetrievalRecord,
     RetrievalRung,
+    pool_embeddings,
     retrieval_digest,
     retrieval_key,
 )
@@ -670,3 +673,157 @@ def test_embedding_input_with_lone_surrogate_returns_400_not_500(
     finally:
         upstream.shutdown()
         upstream.server_close()
+
+
+def test_autochunk_embeddings_skips_short_inputs() -> None:
+    service = _plan(["embed"], 1234).services[0]
+    calls = []
+
+    async def post_upstream(payload):
+        calls.append(payload)
+        return httpx.Response(200, json={})
+
+    result = asyncio.run(
+        gateway_module._autochunk_embeddings(
+            {"model": "client-model"},
+            {"input": ["short", "under the limit"]},
+            service,
+            gateway_module.EmbedChunkPlan(chunk_words=8, chunk_tokens=64),
+            ["short", "under the limit"],
+            post_upstream,
+        )
+    )
+
+    assert result is None
+    assert calls == []
+
+
+def test_autochunk_embeddings_pools_vectors_and_sums_usage() -> None:
+    service = _plan(["embed"], 1234).services[0]
+    payloads = []
+    response_vectors = [
+        [[1.0, 0.0], [0.0, 1.0]],
+        [[1.0, 1.0], [1.0, 0.0], [0.0, 1.0]],
+    ]
+    prompt_tokens = [4, 7]
+
+    async def post_upstream(payload):
+        call_index = len(payloads)
+        payloads.append(payload)
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"embedding": vector}
+                    for vector in response_vectors[call_index]
+                ],
+                "usage": {"prompt_tokens": prompt_tokens[call_index]},
+            },
+        )
+
+    inputs = ["a b c d e", "f g h i j k l"]
+    result = asyncio.run(
+        gateway_module._autochunk_embeddings(
+            {"model": "client-model"},
+            {"model": "body-model", "input": inputs},
+            service,
+            gateway_module.EmbedChunkPlan(chunk_words=3, chunk_tokens=32),
+            inputs,
+            post_upstream,
+        )
+    )
+
+    assert result is not None
+    data, total_pieces = result
+    assert total_pieces == 5
+    assert [payload["input"] for payload in payloads] == [
+        ["a b c", "d e"],
+        ["f g h", "i j k", "l"],
+    ]
+    assert data["model"] == "client-model"
+    assert data["usage"] == {"prompt_tokens": 11, "total_tokens": 11}
+    embeddings = data["data"]
+    assert isinstance(embeddings, list)
+    assert [item["index"] for item in embeddings] == [0, 1]
+    assert [item["embedding"] for item in embeddings] == [
+        pool_embeddings(response_vectors[0]),
+        pool_embeddings(response_vectors[1]),
+    ]
+
+
+def test_autochunk_embeddings_returns_none_for_upstream_error() -> None:
+    service = _plan(["embed"], 1234).services[0]
+    calls = []
+
+    async def post_upstream(payload):
+        calls.append(payload)
+        return httpx.Response(503)
+
+    result = asyncio.run(
+        gateway_module._autochunk_embeddings(
+            {"model": "client-model"},
+            {"input": "a b c d e"},
+            service,
+            gateway_module.EmbedChunkPlan(chunk_words=3, chunk_tokens=32),
+            ["a b c d e"],
+            post_upstream,
+        )
+    )
+
+    assert result is None
+    assert len(calls) == 1
+
+
+def test_autochunk_embeddings_returns_none_for_piece_count_mismatch() -> None:
+    service = _plan(["embed"], 1234).services[0]
+
+    async def post_upstream(payload):
+        return httpx.Response(
+            200,
+            json={
+                "data": [{"embedding": [1.0, 0.0]}],
+                "usage": {"prompt_tokens": 4},
+            },
+        )
+
+    result = asyncio.run(
+        gateway_module._autochunk_embeddings(
+            {"model": "client-model"},
+            {"input": "a b c d e"},
+            service,
+            gateway_module.EmbedChunkPlan(chunk_words=3, chunk_tokens=32),
+            ["a b c d e"],
+            post_upstream,
+        )
+    )
+
+    assert result is None
+
+
+def test_autochunk_embeddings_returns_none_without_prompt_token_usage() -> None:
+    service = _plan(["embed"], 1234).services[0]
+
+    async def post_upstream(payload):
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"embedding": [1.0, 0.0]},
+                    {"embedding": [0.0, 1.0]},
+                ],
+                "usage": {},
+            },
+        )
+
+    result = asyncio.run(
+        gateway_module._autochunk_embeddings(
+            {"model": "client-model"},
+            {"input": "a b c d e"},
+            service,
+            gateway_module.EmbedChunkPlan(chunk_words=3, chunk_tokens=32),
+            ["a b c d e"],
+            post_upstream,
+        )
+    )
+
+    assert result is None

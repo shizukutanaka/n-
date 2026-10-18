@@ -534,6 +534,106 @@ def _embedding_chunks(
     ]
 
 
+async def _autochunk_embeddings(
+    request: Mapping[str, object],
+    body: Mapping[str, object],
+    service: PlannedService,
+    chunk_plan: EmbedChunkPlan,
+    input_values: Sequence[str],
+    post_upstream: Callable[[Mapping[str, object]], Awaitable[httpx.Response]],
+) -> tuple[dict[str, object], int] | None:
+    piece_groups = [
+        (
+            _embedding_chunks(
+                item,
+                chunk_plan.chunk_words,
+                chunk_plan.chunk_tokens,
+            )
+            if (
+                len(item.split()) > chunk_plan.chunk_words
+                or len(item) > chunk_plan.chunk_tokens
+            )
+            else [item]
+        )
+        for item in input_values
+    ]
+    if any(len(group) > 1 for group in piece_groups):
+        outputs: list[list[float]] = []
+        total_tokens = 0
+        total_pieces = 0
+        autochunk_data: dict[str, object] | None = {
+            "object": "list",
+            "model": request.get("model", service.model_id),
+            "data": [],
+            "usage": {},
+        }
+        try:
+            for pieces in piece_groups:
+                piece_body = dict(body)
+                piece_body["input"] = pieces[0] if len(pieces) == 1 else pieces
+                piece_response = await post_upstream(piece_body)
+                if piece_response.status_code >= 400:
+                    autochunk_data = None
+                    break
+                piece_payload = piece_response.json()
+                if not isinstance(piece_payload, Mapping):
+                    autochunk_data = None
+                    break
+                piece_data = piece_payload.get("data")
+                usage = piece_payload.get("usage")
+                prompt_tokens = (
+                    _upstream_int(usage.get("prompt_tokens"))
+                    if isinstance(usage, Mapping) else None
+                )
+                if (
+                    not isinstance(piece_data, list)
+                    or len(piece_data) != len(pieces)
+                    or prompt_tokens is None
+                    or prompt_tokens < 0
+                ):
+                    autochunk_data = None
+                    break
+                if not all(isinstance(item, Mapping) for item in piece_data):
+                    autochunk_data = None
+                    break
+                vectors = [item.get("embedding") for item in piece_data]
+                if not all(
+                    isinstance(vector, list)
+                    and all(
+                        isinstance(value, (int, float))
+                        and not isinstance(value, bool)
+                        for value in vector
+                    )
+                    for vector in vectors
+                ):
+                    autochunk_data = None
+                    break
+                outputs.append(
+                    vectors[0]
+                    if len(pieces) == 1
+                    else pool_embeddings(vectors)
+                )
+                total_tokens += prompt_tokens
+                total_pieces += len(pieces)
+        except (httpx.HTTPError, TypeError, ValueError, KeyError):
+            autochunk_data = None
+        if autochunk_data is not None:
+            autochunk_data["data"] = [
+                {
+                    "object": "embedding",
+                    "index": index,
+                    "embedding": vector,
+                }
+                for index, vector in enumerate(outputs)
+            ]
+            autochunk_data["usage"] = {
+                "prompt_tokens": total_tokens,
+                "total_tokens": total_tokens,
+            }
+            return autochunk_data, total_pieces
+    return None
+
+
 def _base_url(service: PlannedService) -> str:
     if service.backend == "magnitude":
         return "http://127.0.0.1:10100/inference"
@@ -1876,98 +1976,14 @@ def create_app(
             ):
                 input_values = list(input_value)
             if chunk_plan is not None and input_values:
-                piece_groups = [
-                    (
-                        _embedding_chunks(
-                            item,
-                            chunk_plan.chunk_words,
-                            chunk_plan.chunk_tokens,
-                        )
-                        if (
-                            len(item.split()) > chunk_plan.chunk_words
-                            or len(item) > chunk_plan.chunk_tokens
-                        )
-                        else [item]
-                    )
-                    for item in input_values
-                ]
-                if any(len(group) > 1 for group in piece_groups):
-                    outputs: list[list[float]] = []
-                    total_tokens = 0
-                    total_pieces = 0
-                    autochunk_data = {
-                        "object": "list",
-                        "model": request.get("model", service.model_id),
-                        "data": [],
-                        "usage": {},
-                    }
-                    try:
-                        for pieces in piece_groups:
-                            piece_body = dict(body)
-                            piece_body["input"] = pieces[0] if len(pieces) == 1 else pieces
-                            piece_response = await post_upstream(piece_body)
-                            if piece_response.status_code >= 400:
-                                autochunk_data = None
-                                break
-                            piece_payload = piece_response.json()
-                            if not isinstance(piece_payload, Mapping):
-                                autochunk_data = None
-                                break
-                            piece_data = piece_payload.get("data")
-                            usage = piece_payload.get("usage")
-                            prompt_tokens = (
-                                _upstream_int(usage.get("prompt_tokens"))
-                                if isinstance(usage, Mapping) else None
-                            )
-                            if (
-                                not isinstance(piece_data, list)
-                                or len(piece_data) != len(pieces)
-                                or prompt_tokens is None
-                                or prompt_tokens < 0
-                            ):
-                                autochunk_data = None
-                                break
-                            if not all(isinstance(item, Mapping) for item in piece_data):
-                                autochunk_data = None
-                                break
-                            vectors = [item.get("embedding") for item in piece_data]
-                            if not all(
-                                isinstance(vector, list)
-                                and all(
-                                    isinstance(value, (int, float))
-                                    and not isinstance(value, bool)
-                                    for value in vector
-                                )
-                                for vector in vectors
-                            ):
-                                autochunk_data = None
-                                break
-                            outputs.append(
-                                vectors[0]
-                                if len(pieces) == 1
-                                else pool_embeddings(vectors)
-                            )
-                            total_tokens += prompt_tokens
-                            total_pieces += len(pieces)
-                    except (httpx.HTTPError, TypeError, ValueError, KeyError):
-                        autochunk_data = None
-                    if autochunk_data is not None:
-                        autochunk_data["data"] = [
-                            {
-                                "object": "embedding",
-                                "index": index,
-                                "embedding": vector,
-                            }
-                            for index, vector in enumerate(outputs)
-                        ]
-                        autochunk_data["usage"] = {
-                            "prompt_tokens": total_tokens,
-                            "total_tokens": total_tokens,
-                        }
-                        autochunk_piece_count = total_pieces
-                        autochunk_chunk_words = chunk_plan.chunk_words
-                        autochunk_chunk_tokens = chunk_plan.chunk_tokens
-                        autochunk_used = True
+                chunked = await _autochunk_embeddings(
+                    request, body, service, chunk_plan, input_values, post_upstream
+                )
+                if chunked is not None:
+                    autochunk_data, autochunk_piece_count = chunked
+                    autochunk_chunk_words = chunk_plan.chunk_words
+                    autochunk_chunk_tokens = chunk_plan.chunk_tokens
+                    autochunk_used = True
             if autochunk_data is not None:
                 data = autochunk_data
             else:
