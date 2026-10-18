@@ -2213,29 +2213,91 @@ def _decode_capable(service: PlannedService) -> bool:
     return any(role not in _NONDECODE_ROLES for role in service.roles)
 
 
-def _bench(args: argparse.Namespace) -> int:
-    plan = load_plan()
-    if plan is None or not plan.services:
-        print(i18n.t("err.no_active_plan", i18n.lang()), file=sys.stderr)
+def _bench_embed(
+    args: argparse.Namespace,
+    plan: Plan,
+    service: PlannedService,
+    base_url: str,
+) -> int:
+    try:
+        with _unbounded_client() as client:
+            embed_measurement = measure_embedding(
+                client,
+                base_url,
+                service.model_ref,
+                requested_context=service.context,
+                runs=args.runs,
+            )
+    except httpx.HTTPError as error:
+        response = getattr(error, "response", None)
+        status = getattr(response, "status_code", "unknown")
+        print(
+            i18n.t(
+                "err.bench_http",
+                i18n.lang(),
+                service=service.name,
+                url=f"{base_url}/v1/embeddings",
+                status=status,
+            ),
+            file=sys.stderr,
+        )
         return 1
-    service = next((item for item in plan.services if item.name == args.service), None)
-    if service is None:
-        print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
-              file=sys.stderr)
+    except (OSError, RuntimeError) as error:
+        print(
+            i18n.t("err.bench_measure", i18n.lang(), error=error),
+            file=sys.stderr,
+        )
         return 1
-    if not _ensure_service_running(service, plan):
-        print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
+    gpu_name = plan.profile.gpus[0].name if plan.profile.gpus else "cpu"
+    embed_record = EmbedRecord(
+        model_id=service.model_id,
+        quant=service.quant,
+        backend=service.backend,
+        gpu_name=gpu_name,
+        n_gpu_layers=service.n_gpu_layers or 0,
+        requested_context=service.context,
+        probe_tokens_small=embed_measurement.probe_tokens_small,
+        served_small=embed_measurement.served_small,
+        probe_tokens_large=embed_measurement.probe_tokens_large,
+        served_large=embed_measurement.served_large,
+        encode_tps=embed_measurement.encode_tps,
+        encode_tps_min=embed_measurement.encode_tps_min,
+        encode_tps_max=embed_measurement.encode_tps_max,
+        encode_input_tokens=embed_measurement.encode_input_tokens,
+        runs=embed_measurement.runs,
+        harness=EMBED_HARNESS_VERSION,
+        at=time.time(),
+        refused_small=embed_measurement.refused_small,
+        refused_large=embed_measurement.refused_large,
+    )
+    try:
+        save_embed(embed_record)
+    except OSError as error:
+        print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
         return 1
-    base_url = _service_base_url(service)
-    if service.roles == ["embed"]:
+    retrieval_record: RetrievalRecord | None = None
+    if getattr(args, "retrieval", False):
         try:
             with _unbounded_client() as client:
-                embed_measurement = measure_embedding(
+                requests, seconds = measure_retrieval_estimate(
+                    client, base_url, service.model_ref,
+                    encode_tps=embed_record.encode_tps,
+                )
+                print(i18n.t(
+                    "label.retrieval_estimate",
+                    i18n.lang(),
+                    requests=requests,
+                    minutes=max(1, round(seconds / 60)),
+                ), file=(
+                    sys.stderr
+                    if getattr(args, "json", False)
+                    else sys.stdout
+                ), flush=True)
+                rungs = measure_retrieval(
                     client,
                     base_url,
                     service.model_ref,
-                    requested_context=service.context,
-                    runs=args.runs,
+                    cap=embed_record.cap,
                 )
         except httpx.HTTPError as error:
             response = getattr(error, "response", None)
@@ -2257,256 +2319,202 @@ def _bench(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        gpu_name = plan.profile.gpus[0].name if plan.profile.gpus else "cpu"
-        embed_record = EmbedRecord(
+        retrieval_record = RetrievalRecord(
             model_id=service.model_id,
             quant=service.quant,
             backend=service.backend,
             gpu_name=gpu_name,
             n_gpu_layers=service.n_gpu_layers or 0,
-            requested_context=service.context,
-            probe_tokens_small=embed_measurement.probe_tokens_small,
-            served_small=embed_measurement.served_small,
-            probe_tokens_large=embed_measurement.probe_tokens_large,
-            served_large=embed_measurement.served_large,
-            encode_tps=embed_measurement.encode_tps,
-            encode_tps_min=embed_measurement.encode_tps_min,
-            encode_tps_max=embed_measurement.encode_tps_max,
-            encode_input_tokens=embed_measurement.encode_input_tokens,
-            runs=embed_measurement.runs,
-            harness=EMBED_HARNESS_VERSION,
+            rungs=rungs,
+            digest=retrieval_digest(),
+            harness=RETRIEVAL_HARNESS_VERSION,
             at=time.time(),
-            refused_small=embed_measurement.refused_small,
-            refused_large=embed_measurement.refused_large,
         )
-        try:
-            save_embed(embed_record)
-        except OSError as error:
-            print(i18n.t("err.bench_save", i18n.lang(), error=error), file=sys.stderr)
-            return 1
-        retrieval_record: RetrievalRecord | None = None
-        if getattr(args, "retrieval", False):
-            try:
-                with _unbounded_client() as client:
-                    requests, seconds = measure_retrieval_estimate(
-                        client, base_url, service.model_ref,
-                        encode_tps=embed_record.encode_tps,
-                    )
-                    print(i18n.t(
-                        "label.retrieval_estimate",
-                        i18n.lang(),
-                        requests=requests,
-                        minutes=max(1, round(seconds / 60)),
-                    ), file=(
-                        sys.stderr
-                        if getattr(args, "json", False)
-                        else sys.stdout
-                    ), flush=True)
-                    rungs = measure_retrieval(
-                        client,
-                        base_url,
-                        service.model_ref,
-                        cap=embed_record.cap,
-                    )
-            except httpx.HTTPError as error:
-                response = getattr(error, "response", None)
-                status = getattr(response, "status_code", "unknown")
-                print(
-                    i18n.t(
-                        "err.bench_http",
-                        i18n.lang(),
-                        service=service.name,
-                        url=f"{base_url}/v1/embeddings",
-                        status=status,
-                    ),
-                    file=sys.stderr,
-                )
-                return 1
-            except (OSError, RuntimeError) as error:
-                print(
-                    i18n.t("err.bench_measure", i18n.lang(), error=error),
-                    file=sys.stderr,
-                )
-                return 1
-            retrieval_record = RetrievalRecord(
-                model_id=service.model_id,
-                quant=service.quant,
-                backend=service.backend,
-                gpu_name=gpu_name,
-                n_gpu_layers=service.n_gpu_layers or 0,
-                rungs=rungs,
-                digest=retrieval_digest(),
-                harness=RETRIEVAL_HARNESS_VERSION,
-                at=time.time(),
+        if (
+            retrieval_record.usable_tokens is not None
+            and retrieval_record.degraded_tokens is not None
+        ):
+            usable_rung = next(
+                (
+                    rung for rung in retrieval_record.rungs
+                    if rung.served_tokens == retrieval_record.usable_tokens
+                ),
+                None,
             )
-            if (
-                retrieval_record.usable_tokens is not None
-                and retrieval_record.degraded_tokens is not None
-            ):
-                usable_rung = next(
-                    (
-                        rung for rung in retrieval_record.rungs
-                        if rung.served_tokens == retrieval_record.usable_tokens
-                    ),
-                    None,
-                )
-                degraded_rung = next(
-                    (
-                        rung for rung in retrieval_record.rungs
-                        if rung.served_tokens == retrieval_record.degraded_tokens
-                    ),
-                    None,
-                )
-                if usable_rung is not None and degraded_rung is not None:
-                    try:
-                        with _unbounded_client() as client:
-                            chunk_arm = measure_retrieval_chunk_arm(
-                                client,
-                                base_url,
-                                service.model_ref,
-                                doc_words=degraded_rung.words,
-                                chunk_words=usable_rung.words,
-                                chunk_tokens=usable_rung.served_tokens,
-                            )
-                    except httpx.HTTPError as error:
-                        response = getattr(error, "response", None)
-                        status = getattr(response, "status_code", "unknown")
-                        print(
-                            i18n.t(
-                                "err.bench_http",
-                                i18n.lang(),
-                                service=service.name,
-                                url=f"{base_url}/v1/embeddings",
-                                status=status,
-                            ),
-                            file=sys.stderr,
+            degraded_rung = next(
+                (
+                    rung for rung in retrieval_record.rungs
+                    if rung.served_tokens == retrieval_record.degraded_tokens
+                ),
+                None,
+            )
+            if usable_rung is not None and degraded_rung is not None:
+                try:
+                    with _unbounded_client() as client:
+                        chunk_arm = measure_retrieval_chunk_arm(
+                            client,
+                            base_url,
+                            service.model_ref,
+                            doc_words=degraded_rung.words,
+                            chunk_words=usable_rung.words,
+                            chunk_tokens=usable_rung.served_tokens,
                         )
-                        return 1
-                    except (OSError, RuntimeError) as error:
-                        print(
-                            i18n.t("err.bench_measure", i18n.lang(), error=error),
-                            file=sys.stderr,
-                        )
-                        return 1
-                    retrieval_record = replace(retrieval_record, chunk=chunk_arm)
-            try:
-                save_retrieval(retrieval_record)
-            except OSError as error:
-                print(
-                    i18n.t("err.bench_save", i18n.lang(), error=error),
-                    file=sys.stderr,
+                except httpx.HTTPError as error:
+                    response = getattr(error, "response", None)
+                    status = getattr(response, "status_code", "unknown")
+                    print(
+                        i18n.t(
+                            "err.bench_http",
+                            i18n.lang(),
+                            service=service.name,
+                            url=f"{base_url}/v1/embeddings",
+                            status=status,
+                        ),
+                        file=sys.stderr,
+                    )
+                    return 1
+                except (OSError, RuntimeError) as error:
+                    print(
+                        i18n.t("err.bench_measure", i18n.lang(), error=error),
+                        file=sys.stderr,
+                    )
+                    return 1
+                retrieval_record = replace(retrieval_record, chunk=chunk_arm)
+        try:
+            save_retrieval(retrieval_record)
+        except OSError as error:
+            print(
+                i18n.t("err.bench_save", i18n.lang(), error=error),
+                file=sys.stderr,
+            )
+            return 1
+    if args.json:
+        output: dict[str, object] = {**asdict(embed_record), "cap": embed_record.cap}
+        if retrieval_record is not None:
+            output["retrieval"] = {
+                **asdict(retrieval_record),
+                "control_passed": retrieval_record.control_passed,
+                "usable_tokens": retrieval_record.usable_tokens,
+                "degraded_tokens": retrieval_record.degraded_tokens,
+                "chunk_recovers": retrieval_record.chunk_recovers,
+                "pool_recovers": retrieval_record.pool_recovers,
+                "pool_hits": (
+                    retrieval_record.chunk.pool_hits
+                    if retrieval_record.chunk is not None else None
+                ),
+                "pool_trials": (
+                    retrieval_record.chunk.pool_trials
+                    if retrieval_record.chunk is not None else None
+                ),
+            }
+        _print_json(output)
+    else:
+        language = i18n.lang()
+        cap = embed_record.cap if embed_record.cap is not None else "unproven"
+        _console().print(
+            i18n.t(
+                "label.embed_measurement",
+                language,
+                cap=cap,
+                tps=embed_record.encode_tps,
+            )
+        )
+        if embed_record.cap is not None and embed_record.cap < service.context:
+            _warn_console().print(i18n.t("warn.embed_truncated",
+                    language,
+                    cap=embed_record.cap,
                 )
-                return 1
-        if args.json:
-            output: dict[str, object] = {**asdict(embed_record), "cap": embed_record.cap}
-            if retrieval_record is not None:
-                output["retrieval"] = {
-                    **asdict(retrieval_record),
-                    "control_passed": retrieval_record.control_passed,
-                    "usable_tokens": retrieval_record.usable_tokens,
-                    "degraded_tokens": retrieval_record.degraded_tokens,
-                    "chunk_recovers": retrieval_record.chunk_recovers,
-                    "pool_recovers": retrieval_record.pool_recovers,
-                    "pool_hits": (
-                        retrieval_record.chunk.pool_hits
-                        if retrieval_record.chunk is not None else None
-                    ),
-                    "pool_trials": (
-                        retrieval_record.chunk.pool_trials
-                        if retrieval_record.chunk is not None else None
-                    ),
-                }
-            _print_json(output)
-        else:
-            language = i18n.lang()
-            cap = embed_record.cap if embed_record.cap is not None else "unproven"
+            )
+        refused_tokens = _embed_refused_tokens(embed_record)
+        if refused_tokens is not None:
             _console().print(
                 i18n.t(
-                    "label.embed_measurement",
+                    "label.embed_refused",
                     language,
-                    cap=cap,
-                    tps=embed_record.encode_tps,
+                    tokens=refused_tokens,
                 )
             )
-            if embed_record.cap is not None and embed_record.cap < service.context:
-                _warn_console().print(i18n.t("warn.embed_truncated",
+        if retrieval_record is not None:
+            usable = (
+                retrieval_record.usable_tokens
+                if retrieval_record.usable_tokens is not None
+                else "unproven"
+            )
+            degraded = (
+                retrieval_record.degraded_tokens
+                if retrieval_record.degraded_tokens is not None
+                else "unproven"
+            )
+            rung_lines = "\n".join(
+                f"{rung.words} words: served={rung.served_tokens} "
+                f"rank1={rung.hits}/{rung.trials}"
+                for rung in retrieval_record.rungs
+            )
+            chunk = "unmeasured"
+            if retrieval_record.chunk is not None:
+                outcome = (
+                    "recovered"
+                    if retrieval_record.chunk_recovers
+                    else "not recovered"
+                )
+                chunk = (
+                    f"{outcome} {retrieval_record.chunk.hits}/"
+                    f"{retrieval_record.chunk.trials} at ~"
+                    f"{retrieval_record.chunk.chunk_tokens} tokens"
+                )
+            pool = "unmeasured"
+            if retrieval_record.chunk is not None:
+                pool_outcome = (
+                    "recovered"
+                    if retrieval_record.pool_recovers
+                    else "not recovered"
+                )
+                pool = (
+                    f"{pool_outcome} {retrieval_record.chunk.pool_hits}/"
+                    f"{retrieval_record.chunk.pool_trials}"
+                )
+            _console().print(
+                i18n.t(
+                    "label.retrieval_measurement",
+                    language,
+                    usable=usable,
+                    degraded=degraded,
+                    rungs=rung_lines,
+                    chunk=chunk,
+                    pool=pool,
+                )
+            )
+            if not retrieval_record.control_passed:
+                _warn_console().print(i18n.t("warn.retrieval_control", language)
+                )
+            if (
+                retrieval_record.degraded_tokens is not None
+                and service.context > retrieval_record.degraded_tokens
+            ):
+                _warn_console().print(i18n.t("warn.retrieval_degraded",
                         language,
-                        cap=embed_record.cap,
+                        degraded=retrieval_record.degraded_tokens,
+                        context=service.context,
                     )
                 )
-            refused_tokens = _embed_refused_tokens(embed_record)
-            if refused_tokens is not None:
-                _console().print(
-                    i18n.t(
-                        "label.embed_refused",
-                        language,
-                        tokens=refused_tokens,
-                    )
-                )
-            if retrieval_record is not None:
-                usable = (
-                    retrieval_record.usable_tokens
-                    if retrieval_record.usable_tokens is not None
-                    else "unproven"
-                )
-                degraded = (
-                    retrieval_record.degraded_tokens
-                    if retrieval_record.degraded_tokens is not None
-                    else "unproven"
-                )
-                rung_lines = "\n".join(
-                    f"{rung.words} words: served={rung.served_tokens} "
-                    f"rank1={rung.hits}/{rung.trials}"
-                    for rung in retrieval_record.rungs
-                )
-                chunk = "unmeasured"
-                if retrieval_record.chunk is not None:
-                    outcome = (
-                        "recovered"
-                        if retrieval_record.chunk_recovers
-                        else "not recovered"
-                    )
-                    chunk = (
-                        f"{outcome} {retrieval_record.chunk.hits}/"
-                        f"{retrieval_record.chunk.trials} at ~"
-                        f"{retrieval_record.chunk.chunk_tokens} tokens"
-                    )
-                pool = "unmeasured"
-                if retrieval_record.chunk is not None:
-                    pool_outcome = (
-                        "recovered"
-                        if retrieval_record.pool_recovers
-                        else "not recovered"
-                    )
-                    pool = (
-                        f"{pool_outcome} {retrieval_record.chunk.pool_hits}/"
-                        f"{retrieval_record.chunk.pool_trials}"
-                    )
-                _console().print(
-                    i18n.t(
-                        "label.retrieval_measurement",
-                        language,
-                        usable=usable,
-                        degraded=degraded,
-                        rungs=rung_lines,
-                        chunk=chunk,
-                        pool=pool,
-                    )
-                )
-                if not retrieval_record.control_passed:
-                    _warn_console().print(i18n.t("warn.retrieval_control", language)
-                    )
-                if (
-                    retrieval_record.degraded_tokens is not None
-                    and service.context > retrieval_record.degraded_tokens
-                ):
-                    _warn_console().print(i18n.t("warn.retrieval_degraded",
-                            language,
-                            degraded=retrieval_record.degraded_tokens,
-                            context=service.context,
-                        )
-                    )
-        return 0
+    return 0
+
+def _bench(args: argparse.Namespace) -> int:
+    plan = load_plan()
+    if plan is None or not plan.services:
+        print(i18n.t("err.no_active_plan", i18n.lang()), file=sys.stderr)
+        return 1
+    service = next((item for item in plan.services if item.name == args.service), None)
+    if service is None:
+        print(i18n.t("err.unknown_service", i18n.lang(), service=args.service),
+              file=sys.stderr)
+        return 1
+    if not _ensure_service_running(service, plan):
+        print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
+        return 1
+    base_url = _service_base_url(service)
+    if service.roles == ["embed"]:
+        return _bench_embed(args, plan, service, base_url)
     if not _decode_capable(service):
         print(
             i18n.t("err.bench_embedding", i18n.lang(), service=service.name),
