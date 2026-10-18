@@ -32,6 +32,7 @@
 - gateway: proxy の上流リソース解放（7箇所の重複）を release_upstream に統合（挙動不変）
 - cli: main の autotune サブコマンド処理を `_autotune` に分離（挙動不変）
 - cli: bench の埋め込みサービス計測フェーズを `_bench_embed` に分離（挙動不変）
+- cli: bench/orchestrate measure/spec measure の epoch 記録処理（3箇所の重複）を `_record_epoch` に統合（挙動不変）
 - cli: eval の `eval_run` 呼出4箇所と文脈プローブの重複エラー処理を統合（挙動不変）
 - gateway: 埋め込み自動チャンク分割フェーズを `_autochunk_embeddings` に分離（挙動不変）
 - gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
