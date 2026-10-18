@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from itertools import pairwise
 from pathlib import Path
+from typing import TypeGuard
 
 import httpx
 
@@ -31,6 +32,14 @@ _TOPIC = (
 )
 _NEEDLE = "The Meridian archive access protocol uses code {code} ."
 _QUESTION = "What is the code for the Meridian archive access protocol?"
+
+
+def _int_at_least(value: object, minimum: int) -> TypeGuard[int]:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= minimum
+    )
 
 
 def measure_retrieval_estimate(
@@ -203,18 +212,10 @@ def _rung(data: object) -> RetrievalRung | None:
         trials = data["trials"]
         saturated = data["saturated"]
         if (
-            isinstance(words, bool)
-            or not isinstance(words, int)
-            or words < 0
-            or isinstance(served_tokens, bool)
-            or not isinstance(served_tokens, int)
-            or served_tokens < 0
-            or isinstance(hits, bool)
-            or not isinstance(hits, int)
-            or hits < 0
-            or isinstance(trials, bool)
-            or not isinstance(trials, int)
-            or trials < 1
+            not _int_at_least(words, 0)
+            or not _int_at_least(served_tokens, 0)
+            or not _int_at_least(hits, 0)
+            or not _int_at_least(trials, 1)
             or hits > trials
             or not isinstance(saturated, bool)
         ):
@@ -236,28 +237,14 @@ def _chunk(data: object) -> RetrievalChunkArm | None:
         pool_hits = data["pool_hits"]
         pool_trials = data["pool_trials"]
         if (
-            isinstance(doc_words, bool)
-            or not isinstance(doc_words, int)
-            or doc_words < 1
-            or isinstance(chunk_words, bool)
-            or not isinstance(chunk_words, int)
-            or chunk_words < 1
-            or isinstance(chunk_tokens, bool)
-            or not isinstance(chunk_tokens, int)
-            or chunk_tokens < 1
-            or isinstance(hits, bool)
-            or not isinstance(hits, int)
-            or hits < 0
-            or isinstance(trials, bool)
-            or not isinstance(trials, int)
-            or trials < 1
+            not _int_at_least(doc_words, 1)
+            or not _int_at_least(chunk_words, 1)
+            or not _int_at_least(chunk_tokens, 1)
+            or not _int_at_least(hits, 0)
+            or not _int_at_least(trials, 1)
             or hits > trials
-            or isinstance(pool_hits, bool)
-            or not isinstance(pool_hits, int)
-            or pool_hits < 0
-            or isinstance(pool_trials, bool)
-            or not isinstance(pool_trials, int)
-            or pool_trials < 1
+            or not _int_at_least(pool_hits, 0)
+            or not _int_at_least(pool_trials, 1)
             or pool_hits > pool_trials
         ):
             return None
@@ -288,9 +275,7 @@ def _record(data: object) -> RetrievalRecord | None:
             or not isinstance(quant, str)
             or not isinstance(backend, str)
             or not isinstance(gpu_name, str)
-            or isinstance(n_gpu_layers, bool)
-            or not isinstance(n_gpu_layers, int)
-            or n_gpu_layers < 0
+            or not _int_at_least(n_gpu_layers, 0)
             or not isinstance(rungs_data, list)
             or not isinstance(digest, str)
             or len(digest) != 16
@@ -406,7 +391,7 @@ def _embedding_payload(response: httpx.Response) -> tuple[list[list[float]], int
         raise RuntimeError("retrieval response was not valid JSON") from error
     usage = payload.get("usage") if isinstance(payload, dict) else None
     tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
-    if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+    if not _int_at_least(tokens, 0):
         raise RuntimeError(
             "retrieval response did not report integer usage.prompt_tokens"
         )
@@ -492,15 +477,9 @@ def measure_retrieval_chunk_arm(
     seeds: Sequence[int] = RETRIEVAL_SEEDS,
 ) -> RetrievalChunkArm:
     if (
-        isinstance(doc_words, bool)
-        or not isinstance(doc_words, int)
-        or doc_words < 1
-        or isinstance(chunk_words, bool)
-        or not isinstance(chunk_words, int)
-        or chunk_words < 1
-        or isinstance(chunk_tokens, bool)
-        or not isinstance(chunk_tokens, int)
-        or chunk_tokens < 1
+        not _int_at_least(doc_words, 1)
+        or not _int_at_least(chunk_words, 1)
+        or not _int_at_least(chunk_tokens, 1)
     ):
         raise RuntimeError(
             "retrieval document, chunk, and token counts must be positive"
