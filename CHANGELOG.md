@@ -42,6 +42,7 @@
 - gateway: 埋め込み自動チャンク分割フェーズを `_autochunk_embeddings` に分離（挙動不変）
 - gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
 - 有限数値フィールド検査（6箇所の重複）を `persist.finite_number` に統合（挙動不変）
+- cli: bench/orchestrate measure/spec measure の参照モデル計測（6箇所の重複）を `_measure_reference_or_none` に統合（挙動不変）
 - runtime: autostart ユニット生成の OS 判定（Windows 4箇所・macOS 3箇所の重複）を `_is_windows`/`_is_macos` に統合（挙動不変）
 - bench: cache の前回記録の全フィールド手写し（BenchRecord 再構築）を dataclasses.replace に置換（挙動不変）
 - eval: context の ContextRecord 生成（11個の位置引数）と FamilyResult 生成（5個の位置引数）をキーワード引数に置換（挙動不変）
