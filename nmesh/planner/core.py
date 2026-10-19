@@ -1583,6 +1583,7 @@ def _spec_for_service(
         return "none", "", memory
     draft_path: Path | None = None
     draft_kv_per_tok = 0.0
+    draft_bytes = 0
     if policy.spec == "draft":
         draft_path = _spec_draft_path(policy.spec_draft)
         if draft_path is None:
@@ -1673,14 +1674,6 @@ def _spec_for_service(
     if policy.ignore_spec_evidence:
         warnings.append(t("warn.spec_override", language, service=candidate.model.id))
     if draft_path is not None:
-        try:
-            draft_bytes = draft_path.stat().st_size
-        except OSError:
-            warnings.append(
-                t("warn.spec_draft_missing", language, service=candidate.model.id,
-                  draft=policy.spec_draft)
-            )
-            return "none", "", memory
         draft_kv = draft_kv_per_tok * candidate.context * memory.parallel_slots
         memory = replace(
             memory,

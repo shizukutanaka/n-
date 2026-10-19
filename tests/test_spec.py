@@ -785,6 +785,9 @@ def test_draft_kv_is_budgeted_from_gguf_layout(
     context = service.context
     draft_rate = 2 * 8 * 128 * 2 * 24
     base = baseline.services[0].memory
+    assert service.memory.weight_bytes == pytest.approx(
+        base.weight_bytes + draft_bytes
+    )
     assert service.memory.kv_bytes_per_tok == pytest.approx(
         base.kv_bytes_per_tok + draft_rate
     )
