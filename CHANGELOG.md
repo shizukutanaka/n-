@@ -42,6 +42,7 @@
 - gateway: 埋め込み自動チャンク分割フェーズを `_autochunk_embeddings` に分離（挙動不変）
 - gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
 - 有限数値フィールド検査（6箇所の重複）を `persist.finite_number` に統合（挙動不変）
+- 未参照の import 時束縛パス定数4件（artifacts/bench.cache の CACHE_PATH、probe.caps の CAPS_PATH、supervisor の STATE_PATH）と、それを差し替えるだけの無効なテストフィクスチャを削除（既定パスは呼出時解決のため挙動不変）
 - orchestrate: 加算されるだけで一度も読まれない Cost.calls（呼出回数カウンタ）を削除（挙動不変）
 - telemetry/gateway: Sample 生成3箇所（位置引数）をキーワード引数に置換（挙動不変）
 - i18n: 同文の重複ラベルキー `label.watch_value`/`engine.path` を削除し `label.value`/`label.path` に統合（表示不変）

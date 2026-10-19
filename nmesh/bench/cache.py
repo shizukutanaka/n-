@@ -14,9 +14,6 @@ from nmesh.paths import nmesh_home
 from nmesh.persist import read_json_file
 
 BenchCache = dict[str, float]
-# Retained for API compatibility; load_records/save_records resolve
-# nmesh_home() lazily so a NMESH_HOME set after import is honored.
-CACHE_PATH = nmesh_home() / "bench.json"
 BENCH_HARNESS_VERSION = "bench-v2"
 MIN_CONTROL_RATIO = 0.90
 

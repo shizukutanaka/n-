@@ -42,9 +42,6 @@ from nmesh.runtime import engine
 from .acquisition import Acquired, acquire
 from .logs import log_path, open_log, tail
 
-# Retained for API compatibility; Supervisor resolves nmesh_home() lazily so a
-# NMESH_HOME set after import is honored.
-STATE_PATH = nmesh_home() / "state.json"
 HEALTH_TIMEOUT = 120.0
 # A cold engine start must read the full weight bytes from storage;
 # a health bound shorter than that read would kill-and-restart a
