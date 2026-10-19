@@ -230,13 +230,26 @@ def profile_from_dict(data: Mapping[str, object]) -> HardwareProfile:
             "profile field 'available_ram_bytes' exceeds 'total_ram_bytes'"
         )
     return HardwareProfile(
-        os_name, str(_field(data, "cpu_name")),
-        _nonnegative_int(_field(data, "physical_cores"), "physical_cores"),
-        _nonnegative_int(_field(data, "logical_cores"), "logical_cores"),
-        total_ram, available_ram,
-        _nonnegative_int(_field(data, "free_disk_bytes"), "free_disk_bytes"),
-        _boolean_field(data, "unified_memory"), gpus,
-        _string_map(available, "available_backends", nullable=True),
-        tier, [], flags,
-        _required_string_map(paths_raw, "backend_paths"), devices, [],
+        os=os_name,
+        cpu_name=str(_field(data, "cpu_name")),
+        physical_cores=_nonnegative_int(
+            _field(data, "physical_cores"), "physical_cores"
+        ),
+        logical_cores=_nonnegative_int(
+            _field(data, "logical_cores"), "logical_cores"
+        ),
+        total_ram_bytes=total_ram,
+        available_ram_bytes=available_ram,
+        free_disk_bytes=_nonnegative_int(
+            _field(data, "free_disk_bytes"), "free_disk_bytes"
+        ),
+        unified_memory=_boolean_field(data, "unified_memory"),
+        gpus=gpus,
+        available_backends=_string_map(available, "available_backends", nullable=True),
+        tier=tier,
+        warnings=[],
+        backend_flags=flags,
+        backend_paths=_required_string_map(paths_raw, "backend_paths"),
+        backend_gpu_devices=devices,
+        warning_params=[],
     )

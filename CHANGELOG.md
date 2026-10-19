@@ -43,6 +43,9 @@
 - gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
 - 有限数値フィールド検査（6箇所の重複）を `persist.finite_number` に統合（挙動不変）
 - eval/証拠棚卸し/cli: 大小無視の (model, quant, backend) キー生成（8箇所の重複）を `evidence.identity_key` に統合（挙動不変）
+- probe: HardwareProfile 生成2箇所（16個の位置引数）をキーワード引数に置換（挙動不変）
+- cli: bench の埋め込み記録で EmbedMeasurement の11フィールドを手写ししていた箇所を asdict 展開に置換（挙動不変）
+- eval: runner の TaskOutcome/EvalRun 生成（位置引数）をキーワード引数に置換（挙動不変）
 
 ### Fixed
 - gateway: `/infill` を API キー保護対象に追加し、FIM フィールドをルーティングとタイムアウト見積もりに反映
