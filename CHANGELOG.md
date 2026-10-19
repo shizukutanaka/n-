@@ -42,6 +42,7 @@
 - gateway: 埋め込み自動チャンク分割フェーズを `_autochunk_embeddings` に分離（挙動不変）
 - gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
 - 有限数値フィールド検査（6箇所の重複）を `persist.finite_number` に統合（挙動不変）
+- bench: runner の BenchResult 生成3箇所（11個の位置引数）をキーワード引数に置換（挙動不変）
 - eval: save_eval の EvalRecord 生成（18個の位置引数）をキーワード引数に置換（挙動不変）
 - i18n: 同文の `err.bench_up`/`err.eval_up` を `err.service_not_running` に統合（日本語の「nmesh up」前後の空白の不統一を解消）
 - spec: record の ClassEvidence/ControlEvidence（measure の ClassComparison/ControlCheck と同一フィールドの二重定義と全フィールド写し替え）を型共有に統合（挙動不変）
