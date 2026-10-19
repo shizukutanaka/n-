@@ -2267,19 +2267,9 @@ def _bench_embed(
         gpu_name=gpu_name,
         n_gpu_layers=service.n_gpu_layers or 0,
         requested_context=service.context,
-        probe_tokens_small=embed_measurement.probe_tokens_small,
-        served_small=embed_measurement.served_small,
-        probe_tokens_large=embed_measurement.probe_tokens_large,
-        served_large=embed_measurement.served_large,
-        encode_tps=embed_measurement.encode_tps,
-        encode_tps_min=embed_measurement.encode_tps_min,
-        encode_tps_max=embed_measurement.encode_tps_max,
-        encode_input_tokens=embed_measurement.encode_input_tokens,
-        runs=embed_measurement.runs,
         harness=EMBED_HARNESS_VERSION,
         at=time.time(),
-        refused_small=embed_measurement.refused_small,
-        refused_large=embed_measurement.refused_large,
+        **asdict(embed_measurement),
     )
     try:
         save_embed(embed_record)
