@@ -41,7 +41,7 @@ nmesh is a user-facing CLI — the terminal IS its UI. Run commands in a visible
 
 ## i18n / misc
 - `NMESH_LANG=ja` or `LANG=ja_JP.UTF-8` switches messages; this box has NO CJK fonts → terminal shows boxes; capture `> file` and check UTF-8 content with python to prove real Japanese.
-- `nmesh bench` without services exercises the `err.bench_up` i18n path.
+- `nmesh bench` without services exercises the `err.service_not_running` i18n path.
 - Keep artifacts in /tmp/nmesh-test/; screenshots auto-save under /home/ubuntu/screenshots/; recordings /home/ubuntu/screencasts/.
 
 ## macOS session notes (Apple Silicon VM, repo `/Users/devin/repos/n-`)

@@ -8,6 +8,22 @@ import yaml
 
 from nmesh.paths import nmesh_home
 
+REQUIRED_KEYS: tuple[str, ...] = (
+    "id",
+    "family",
+    "params",
+    "n_layers",
+    "n_heads",
+    "n_kv_heads",
+    "head_dim",
+    "hidden_size",
+    "max_context",
+    "roles",
+    "quality",
+    "license",
+    "sources",
+)
+
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -59,22 +75,7 @@ def _model_from_mapping(
     if not isinstance(item, dict):
         reject("entry is not a mapping")
         return None
-    required = (
-        "id",
-        "family",
-        "params",
-        "n_layers",
-        "n_heads",
-        "n_kv_heads",
-        "head_dim",
-        "hidden_size",
-        "max_context",
-        "roles",
-        "quality",
-        "license",
-        "sources",
-    )
-    missing = [key for key in required if key not in item]
+    missing = [key for key in REQUIRED_KEYS if key not in item]
     if missing:
         reject(f"missing required keys: {', '.join(missing)}")
         return None

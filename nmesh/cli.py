@@ -102,6 +102,7 @@ from nmesh.eval.stats import (
     min_resolvable_difference,
     wilson_interval,
 )
+from nmesh.evidence import identity_key
 from nmesh.evidence_inventory import collect_evidence
 from nmesh.inventory import (
     FILE_TYPE_QUANT,
@@ -665,11 +666,7 @@ def _embed_refused_tokens(record: EmbedRecord) -> int | None:
 
 def _embed_measured_keys() -> set[tuple[str, str, str]]:
     return {
-        (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
+        identity_key(record)
         for record in load_embed_cache().values()
         if record.harness == EMBED_HARNESS_VERSION
     }
@@ -680,11 +677,7 @@ def _embed_context_caps() -> dict[tuple[str, str, str], int]:
     for record in load_embed_cache().values():
         if record.harness != EMBED_HARNESS_VERSION or record.cap is None:
             continue
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
+        key = identity_key(record)
         previous = latest.get(key)
         if previous is None or record.at > previous.at:
             latest[key] = record
@@ -705,11 +698,7 @@ def _embed_retrieval_limits() -> dict[tuple[str, str, str], RetrievalLimit]:
             or record.degraded_tokens is None
         ):
             continue
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
+        key = identity_key(record)
         previous = latest.get(key)
         if previous is None or record.at > previous.at:
             latest[key] = record
@@ -2049,7 +2038,7 @@ def _engine(args: argparse.Namespace) -> int:
                 i18n.t("engine.variant", i18n.lang()),
                 i18n.t("label.version", i18n.lang()),
                 i18n.t("engine.active_column", i18n.lang()),
-                i18n.t("engine.path", i18n.lang()),
+                i18n.t("label.path", i18n.lang()),
             ):
                 table.add_column(column)
             for item in entries:
@@ -2267,19 +2256,9 @@ def _bench_embed(
         gpu_name=gpu_name,
         n_gpu_layers=service.n_gpu_layers or 0,
         requested_context=service.context,
-        probe_tokens_small=embed_measurement.probe_tokens_small,
-        served_small=embed_measurement.served_small,
-        probe_tokens_large=embed_measurement.probe_tokens_large,
-        served_large=embed_measurement.served_large,
-        encode_tps=embed_measurement.encode_tps,
-        encode_tps_min=embed_measurement.encode_tps_min,
-        encode_tps_max=embed_measurement.encode_tps_max,
-        encode_input_tokens=embed_measurement.encode_input_tokens,
-        runs=embed_measurement.runs,
         harness=EMBED_HARNESS_VERSION,
         at=time.time(),
-        refused_small=embed_measurement.refused_small,
-        refused_large=embed_measurement.refused_large,
+        **asdict(embed_measurement),
     )
     try:
         save_embed(embed_record)
@@ -2542,7 +2521,7 @@ def _bench(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
     if not _ensure_service_running(service, plan):
-        print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
+        print(i18n.t("err.service_not_running", i18n.lang()), file=sys.stderr)
         return 1
     base_url = _service_base_url(service)
     if service.roles == ["embed"]:
@@ -2860,7 +2839,7 @@ def _eval(args: argparse.Namespace) -> int:
         )
         return 2
     if not _ensure_service_running(service, plan):
-        print(i18n.t("err.eval_up", i18n.lang()), file=sys.stderr)
+        print(i18n.t("err.service_not_running", i18n.lang()), file=sys.stderr)
         return 1
     requested = (
         None if args.categories is None
@@ -4263,7 +4242,7 @@ def _watch(args: argparse.Namespace) -> int:
         _console().print(table)
         catalog_table = Table(title=i18n.t("label.watch_catalog_title", language))
         catalog_table.add_column(i18n.t("label.watch_metric", language))
-        catalog_table.add_column(i18n.t("label.watch_value", language))
+        catalog_table.add_column(i18n.t("label.value", language))
         catalog_table.add_row(
             i18n.t("label.watch_catalog_entries", language),
             str(catalog_metrics["entries"]),
@@ -4291,7 +4270,7 @@ def _watch(args: argparse.Namespace) -> int:
         _console().print(catalog_table)
         candidate_table = Table(title=i18n.t("label.watch_candidates_title", language))
         candidate_table.add_column(i18n.t("label.watch_fit_class", language))
-        candidate_table.add_column(i18n.t("label.watch_value", language))
+        candidate_table.add_column(i18n.t("label.value", language))
         for fit, count in fit_counts.items():
             candidate_table.add_row(
                 i18n.t(f"label.watch_fit_{fit}", language),
@@ -4505,7 +4484,7 @@ def _autotune(args: argparse.Namespace) -> int:
     context_values = sorted({max(service.context // 2, 128), service.context})
     layer_values = sorted({service.n_gpu_layers or 0, max((service.n_gpu_layers or 0) // 2, 0)})
     if not _ensure_service_running(service, saved_plan):
-        print(i18n.t("err.bench_up", i18n.lang()), file=sys.stderr)
+        print(i18n.t("err.service_not_running", i18n.lang()), file=sys.stderr)
         return 1
     running = runtime_status()
     gateway_port = next(

@@ -1997,12 +1997,19 @@ def create_app(
                             exact = True
                         try:
                             await asyncio.to_thread(record_telemetry, Sample(
-                                service.name, telemetry_keys[service.name], decode,
-                                stats.first_line_time - started if stats.first_line_time is not None else None,
-                                time.perf_counter() - started, completion_tokens, time.time(),
-                                not exact,
-                                timing_prefill,
-                                in_flight_peak,
+                                service=service.name,
+                                key=telemetry_keys[service.name],
+                                decode_tps=decode,
+                                ttft_s=(
+                                    stats.first_line_time - started
+                                    if stats.first_line_time is not None else None
+                                ),
+                                total_s=time.perf_counter() - started,
+                                completion_tokens=completion_tokens,
+                                at=time.time(),
+                                approximate=not exact,
+                                prefill_tps=timing_prefill,
+                                in_flight=in_flight_peak,
                                 prompt_tokens=_prompt_depth(stats.usage, stats.timings),
                             ))
                         except Exception:  # noqa: BLE001, S110
@@ -2193,11 +2200,16 @@ def create_app(
                 exact = True
             try:
                 await asyncio.to_thread(record_telemetry, Sample(
-                    service.name, telemetry_keys[service.name], timing_decode, None,
-                    time.perf_counter() - started, completion_tokens, time.time(),
-                    not exact,
-                    timing_prefill,
-                    in_flight_peak,
+                    service=service.name,
+                    key=telemetry_keys[service.name],
+                    decode_tps=timing_decode,
+                    ttft_s=None,
+                    total_s=time.perf_counter() - started,
+                    completion_tokens=completion_tokens,
+                    at=time.time(),
+                    approximate=not exact,
+                    prefill_tps=timing_prefill,
+                    in_flight=in_flight_peak,
                     prompt_tokens=_prompt_depth(usage, timings),
                 ))
             except Exception:  # noqa: BLE001, S110
