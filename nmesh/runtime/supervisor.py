@@ -42,9 +42,6 @@ from nmesh.runtime import engine
 from .acquisition import Acquired, acquire
 from .logs import log_path, open_log, tail
 
-# Retained for API compatibility; Supervisor resolves nmesh_home() lazily so a
-# NMESH_HOME set after import is honored.
-STATE_PATH = nmesh_home() / "state.json"
 HEALTH_TIMEOUT = 120.0
 # A cold engine start must read the full weight bytes from storage;
 # a health bound shorter than that read would kill-and-restart a
@@ -1019,6 +1016,15 @@ class Supervisor:
             time.sleep(0.2)
         return False
 
+    def _wake(self, service_name: str, target: PlannedService, selected: Plan) -> bool:
+        """Wake a vLLM engine parked in sleep mode; True once it serves again."""
+        if not (self._sleep_post(target, "wake_up") and self._wait_health(target)):
+            return False
+        self.sleeping.discard(service_name)
+        self.failed.pop(service_name, None)
+        self._persist(selected)
+        return True
+
     def _persist(self, plan: Plan) -> None:
         existing = self._load_state() or {}
         previous_owner = existing.get("owner_pid")
@@ -1643,12 +1649,7 @@ class Supervisor:
             if service_name in self.sleeping:
                 # vLLM sleep mode parked this engine's weights — a wake
                 # restores them in seconds instead of a cold model load.
-                if self._sleep_post(
-                    target, "wake_up"
-                ) and self._wait_health(target):
-                    self.sleeping.discard(service_name)
-                    self.failed.pop(service_name, None)
-                    self._persist(selected)
+                if self._wake(service_name, target, selected):
                     return self.status()
                 self._stop_process(service_name)
             adopted = (
@@ -1657,12 +1658,7 @@ class Supervisor:
             if service_name in self.sleeping:
                 # The adopted engine was parked before this supervisor
                 # started — wake it the same way.
-                if self._sleep_post(
-                    target, "wake_up"
-                ) and self._wait_health(target):
-                    self.sleeping.discard(service_name)
-                    self.failed.pop(service_name, None)
-                    self._persist(selected)
+                if self._wake(service_name, target, selected):
                     return self.status()
                 record = self.adopted.pop(service_name, None)
                 if isinstance(record, dict):

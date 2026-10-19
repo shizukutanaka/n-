@@ -1396,6 +1396,21 @@ def test_service_units_are_pure_and_platform_specific(monkeypatch, tmp_path: Pat
     assert "nmesh-gateway-launcher.cmd" in text
 
 
+@pytest.mark.parametrize(
+    ("os_name", "windows", "macos"),
+    [
+        ("nt", True, False),
+        ("darwin", False, True),
+        ("linux", False, False),
+    ],
+)
+def test_service_unit_os_detection(
+    os_name: str, windows: bool, macos: bool
+) -> None:
+    assert service_unit_module._is_windows(os_name) is windows
+    assert service_unit_module._is_macos(os_name) is macos
+
+
 def test_watch_unit_names_both_systemd_files(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(service_unit_module, "nmesh_home", lambda: tmp_path)
     config_home = tmp_path / "xdg-config"

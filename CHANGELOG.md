@@ -43,6 +43,25 @@
 - gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
 - 有限数値フィールド検査（6箇所の重複）を `persist.finite_number` に統合（挙動不変）
 - planner: 投機デコードのドラフトファイルサイズの二重読み取り（同一パスへの stat 2回）を1回に削減（挙動不変）
+- cli: bench/orchestrate measure/spec measure の参照モデル計測（6箇所の重複）を `_measure_reference_or_none` に統合（挙動不変）
+- runtime: autostart ユニット生成の OS 判定（Windows 4箇所・macOS 3箇所の重複）を `_is_windows`/`_is_macos` に統合（挙動不変）
+- bench: cache の前回記録の全フィールド手写し（BenchRecord 再構築）を dataclasses.replace に置換（挙動不変）
+- eval: context の ContextRecord 生成（11個の位置引数）と FamilyResult 生成（5個の位置引数）をキーワード引数に置換（挙動不変）
+- 未参照の import 時束縛パス定数4件（artifacts/bench.cache の CACHE_PATH、probe.caps の CAPS_PATH、supervisor の STATE_PATH）と、それを差し替えるだけの無効なテストフィクスチャを削除（既定パスは呼出時解決のため挙動不変）
+- orchestrate: 加算されるだけで一度も読まれない Cost.calls（呼出回数カウンタ）を削除（挙動不変）
+- telemetry/gateway: Sample 生成3箇所（位置引数）をキーワード引数に置換（挙動不変）
+- i18n: 同文の重複ラベルキー `label.watch_value`/`engine.path` を削除し `label.value`/`label.path` に統合（表示不変）
+- runtime: supervisor の ensure_running で2回コピーされていた休止エンジンの起床処理を _wake に統合（挙動不変）
+- runtime: engine の InstalledEngine 生成2箇所（9個の位置引数）をキーワード引数に置換（挙動不変）
+- catalog/watch: カタログ必須キー13個の一覧（loader と watch ドラフトの2箇所の重複）を `catalog.loader.REQUIRED_KEYS` に統合（挙動不変）
+- bench: runner の BenchResult 生成3箇所（11個の位置引数）をキーワード引数に置換（挙動不変）
+- eval: save_eval の EvalRecord 生成（18個の位置引数）をキーワード引数に置換（挙動不変）
+- i18n: 同文の `err.bench_up`/`err.eval_up` を `err.service_not_running` に統合（日本語の「nmesh up」前後の空白の不統一を解消）
+- spec: record の ClassEvidence/ControlEvidence（measure の ClassComparison/ControlCheck と同一フィールドの二重定義と全フィールド写し替え）を型共有に統合（挙動不変）
+- eval/証拠棚卸し/cli: 大小無視の (model, quant, backend) キー生成（8箇所の重複）を `evidence.identity_key` に統合（挙動不変）
+- probe: HardwareProfile 生成2箇所（16個の位置引数）をキーワード引数に置換（挙動不変）
+- cli: bench の埋め込み記録で EmbedMeasurement の11フィールドを手写ししていた箇所を asdict 展開に置換（挙動不変）
+- eval: runner の TaskOutcome/EvalRun 生成（位置引数）をキーワード引数に置換（挙動不変）
 
 ### Fixed
 - gateway: `/infill` を API キー保護対象に追加し、FIM フィールドをルーティングとタイムアウト見積もりに反映
