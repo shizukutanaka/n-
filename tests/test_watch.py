@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx
 
+from nmesh.catalog import load_catalog
 from nmesh.cli import _candidate_fit, main
 from nmesh.watch.draft import write_draft
 from nmesh.watch.extract import Mention, extract
@@ -511,6 +512,35 @@ def test_draft_includes_verified_metadata_without_quality(tmp_path: Path) -> Non
     assert "# pipeline_tag: \"text-generation\"" in text
     assert "# gated: false" in text
     assert "# smallest_weight_bytes: 456" in text
+
+
+def test_complete_draft_loads_through_catalog_loader(tmp_path: Path) -> None:
+    finding = Finding(
+        "catalog_gap",
+        "acme/thing",
+        1,
+        ("u",),
+        {
+            "architectures": "ThingForCausalLM",
+            "params": 1_000_000,
+            "license": "apache-2.0",
+            "pipeline_tag": "text-generation",
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 8,
+            "hidden_size": 512,
+            "head_dim": 64,
+            "max_position_embeddings": 4096,
+            "config_repo": "acme/thing",
+        },
+    )
+    draft = write_draft(finding, tmp_path / "drafts")
+
+    model = next(
+        model for model in load_catalog(user_path=draft)
+        if model.id == "acme-thing"
+    )
+    assert model.family == "ThingForCausalLM"
 
 
 def test_candidate_fit_order_is_explicit() -> None:
