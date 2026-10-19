@@ -42,6 +42,7 @@
 - gateway: 埋め込み自動チャンク分割フェーズを `_autochunk_embeddings` に分離（挙動不変）
 - gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
 - 有限数値フィールド検査（6箇所の重複）を `persist.finite_number` に統合（挙動不変）
+- cli: bench の埋め込み記録で EmbedMeasurement の11フィールドを手写ししていた箇所を asdict 展開に置換（挙動不変）
 - eval: runner の TaskOutcome/EvalRun 生成（位置引数）をキーワード引数に置換（挙動不変）
 
 ### Fixed
