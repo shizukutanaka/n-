@@ -61,13 +61,11 @@ class Call:
 class Cost:
     """Accumulated upstream cost for one role in one arm."""
 
-    calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     seconds: float = 0.0
 
     def add(self, call: Call) -> None:
-        self.calls += 1
         self.prompt_tokens += call.prompt_tokens
         self.completion_tokens += call.completion_tokens
         self.seconds += call.seconds

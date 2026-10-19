@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from nmesh.eval import SUITES, needle_tasks, suite_digest
 from nmesh.eval.cache import EvalRecord
 from nmesh.eval.context import ContextRecord
+from nmesh.evidence import identity_key
 
 
 def valid_eval_records(
@@ -49,11 +50,7 @@ def planner_eval_records(
     for record in valid.values():
         if record.unscorable or record.transport_errors or record.depth > 0:
             continue
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
+        key = identity_key(record)
         previous = latest.get(key)
         if previous is None or record.at > previous.at:
             latest[key] = record
@@ -71,12 +68,7 @@ def effective_context_records(
             needle_tasks(record.requested_depth, record.seed)
         ):
             continue
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-            record.requested_depth,
-        )
+        key = (*identity_key(record), record.requested_depth)
         previous = latest.get(key)
         if previous is None or record.at > previous.at:
             latest[key] = record
@@ -94,11 +86,7 @@ def context_depth_evidence(
 ) -> dict[tuple[str, str, str], DepthEvidence]:
     evidence: dict[tuple[str, str, str], DepthEvidence] = {}
     for record in effective_context_records(records):
-        key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
+        key = identity_key(record)
         served = record.served_depth or record.requested_depth
         current = evidence.get(key, DepthEvidence(0, 0))
         if any(family.lost for family in record.families):

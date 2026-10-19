@@ -92,7 +92,13 @@ def _family(data: object) -> FamilyResult | None:
             or control_passed > control_of
         ):
             return None
-        return FamilyResult(name, passed, of, control_passed, control_of)
+        return FamilyResult(
+            name=name,
+            passed=passed,
+            of=of,
+            control_passed=control_passed,
+            control_of=control_of,
+        )
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -146,17 +152,17 @@ def _record(data: object) -> ContextRecord | None:
         if any(family is None for family in families):
             return None
         return ContextRecord(
-            model_id,
-            quant,
-            backend,
-            seed,
-            requested_depth,
-            served_depth,
-            probe_digest,
-            tuple(family for family in families if family is not None),
-            float(at),
-            artifact,
-            cache_prompt,
+            model_id=model_id,
+            quant=quant,
+            backend=backend,
+            seed=seed,
+            requested_depth=requested_depth,
+            served_depth=served_depth,
+            probe_digest=probe_digest,
+            families=tuple(family for family in families if family is not None),
+            at=float(at),
+            artifact=artifact,
+            cache_prompt=cache_prompt,
         )
     except (KeyError, TypeError, ValueError):
         return None
