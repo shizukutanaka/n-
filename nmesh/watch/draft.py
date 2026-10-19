@@ -6,23 +6,9 @@ import json
 import re
 from pathlib import Path
 
-from .verify import Finding
+from nmesh.catalog.loader import REQUIRED_KEYS
 
-_REQUIRED = (
-    "id",
-    "family",
-    "params",
-    "n_layers",
-    "n_heads",
-    "n_kv_heads",
-    "head_dim",
-    "hidden_size",
-    "max_context",
-    "roles",
-    "quality",
-    "license",
-    "sources",
-)
+from .verify import Finding
 
 
 def _yaml(value: object) -> str:
@@ -68,7 +54,7 @@ def _draft_text(finding: Finding) -> str:
     for source, target in config_map.items():
         if source in verified:
             fields[target] = verified[source]
-    missing = [field for field in _REQUIRED if field not in fields]
+    missing = [field for field in REQUIRED_KEYS if field not in fields]
     if "head_dim" not in fields:
         hidden = verified.get("hidden_size")
         heads = verified.get("num_attention_heads")
@@ -93,7 +79,7 @@ def _draft_text(finding: Finding) -> str:
     if missing:
         lines.append("# incomplete; missing fields: " + ", ".join(missing))
     lines.append("-")
-    for field in _REQUIRED:
+    for field in REQUIRED_KEYS:
         value = fields.get(field)
         if field == "quality":
             lines.append("  quality: null")

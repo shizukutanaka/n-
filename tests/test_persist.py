@@ -11,6 +11,24 @@ from nmesh import persist
 from nmesh.artifacts import load_cache as load_artifact_cache
 
 
+@pytest.mark.parametrize(
+    ("value", "minimum", "expected"),
+    [
+        (True, 0, False),
+        (False, 0, False),
+        (1.0, 1, False),
+        ("1", 1, False),
+        (None, 0, False),
+        (0, 1, False),
+        (1, 1, True),
+        (5, 0, True),
+        (-1, 0, False),
+    ],
+)
+def test_int_at_least(value: object, minimum: int, expected: bool) -> None:
+    assert persist.int_at_least(value, minimum) is expected
+
+
 def test_unreadable_file_warns_once(tmp_path: Path, capsys) -> None:
     persist._warned.clear()
     bad = tmp_path / "broken.json"

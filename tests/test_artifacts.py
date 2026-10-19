@@ -29,7 +29,7 @@ def test_artifact_cache_default_path_follows_nmesh_home(monkeypatch, tmp_path) -
         '{"org/model|q4_k_m": 42}', encoding="utf-8"
     )
     monkeypatch.setenv("NMESH_HOME", str(home))
-    # The module-level CACHE_PATH was bound at import time; load/save must
-    # resolve nmesh_home() lazily rather than touching the real ~/.nmesh.
+    # Paths must resolve nmesh_home() lazily so a NMESH_HOME set after import
+    # is honored rather than touching the real ~/.nmesh.
     assert load_cache() == {"org/model|q4_k_m": 42}
     assert save_cache({"k": 1}).parent == home
