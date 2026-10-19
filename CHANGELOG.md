@@ -42,6 +42,7 @@
 - gateway: 埋め込み自動チャンク分割フェーズを `_autochunk_embeddings` に分離（挙動不変）
 - gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
 - 有限数値フィールド検査（6箇所の重複）を `persist.finite_number` に統合（挙動不変）
+- runtime: engine の InstalledEngine 生成2箇所（9個の位置引数）をキーワード引数に置換（挙動不変）
 - catalog/watch: カタログ必須キー13個の一覧（loader と watch ドラフトの2箇所の重複）を `catalog.loader.REQUIRED_KEYS` に統合（挙動不変）
 - bench: runner の BenchResult 生成3箇所（11個の位置引数）をキーワード引数に置換（挙動不変）
 - eval: save_eval の EvalRecord 生成（18個の位置引数）をキーワード引数に置換（挙動不変）
