@@ -101,17 +101,17 @@ def _parse_sample(item: object) -> Sample | None:
         ):
             return None
         sample = Sample(
-            service,
-            key,
-            _optional_float(item.get("decode_tps")),
-            _optional_float(item.get("ttft_s")),
-            total_s,
-            completion_tokens,
-            at,
-            bool(item.get("approximate", True)),
-            _optional_float(item.get("prefill_tps")),
-            _optional_int(item.get("in_flight")),
-            _optional_int(item.get("prompt_tokens")),
+            service=service,
+            key=key,
+            decode_tps=_optional_float(item.get("decode_tps")),
+            ttft_s=_optional_float(item.get("ttft_s")),
+            total_s=total_s,
+            completion_tokens=completion_tokens,
+            at=at,
+            approximate=bool(item.get("approximate", True)),
+            prefill_tps=_optional_float(item.get("prefill_tps")),
+            in_flight=_optional_int(item.get("in_flight")),
+            prompt_tokens=_optional_int(item.get("prompt_tokens")),
         )
     except (KeyError, TypeError, ValueError, OverflowError):
         return None

@@ -8,9 +8,6 @@ from nmesh.paths import nmesh_home
 from nmesh.persist import read_json_file
 
 ArtifactCache = dict[str, int]
-# Retained for API compatibility; functions resolve nmesh_home() lazily so a
-# NMESH_HOME set after import is honored.
-CACHE_PATH = nmesh_home() / "artifacts.json"
 
 
 def artifact_key(repo_id: str, label: str) -> str:

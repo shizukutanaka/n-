@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 
 from rich.console import Console
 
@@ -16,7 +16,23 @@ from nmesh.bench.cache import (
 from nmesh.eval import SUITES, needle_tasks, suite_digest
 from nmesh.eval.cache import EvalRecord
 from nmesh.eval.context import ContextRecord, FamilyResult
+from nmesh.evidence import identity_key
 from nmesh.evidence_inventory import collect_evidence
+
+
+@dataclass(frozen=True)
+class _IdentityRecord:
+    model_id: str
+    quant: str
+    backend: str
+
+
+def test_identity_key_is_case_insensitive() -> None:
+    record = _IdentityRecord("Qwen3-8B", "Q4_K_M", "LlamaCpp")
+    differently_cased = _IdentityRecord("qwen3-8b", "q4_k_m", "llamacpp")
+
+    assert identity_key(record) == ("qwen3-8b", "q4_k_m", "llamacpp")
+    assert identity_key(record) == identity_key(differently_cased)
 
 
 def _bench(
