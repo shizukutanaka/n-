@@ -25,6 +25,7 @@ from nmesh.eval.select import (
     effective_context_records,
     planner_eval_records,
 )
+from nmesh.evidence import identity_key
 from nmesh.spec.measure import SPEC_HARNESS_VERSION
 from nmesh.spec.record import (
     ALLOW,
@@ -90,11 +91,7 @@ def _eval_rows(records: Mapping[str, EvalRecord]) -> list[dict[str, object]]:
             reasons.append("transport_errors")
         if record.depth > 0:
             reasons.append("depth_scoped")
-        planner_key = (
-            record.model_id.casefold(),
-            record.quant.casefold(),
-            record.backend.casefold(),
-        )
+        planner_key = identity_key(record)
         selected = planner_records.get(planner_key)
         usable = selected is record
         if not usable and not reasons and selected is not None:
@@ -151,11 +148,7 @@ def _depth_verdict(
     if not effective:
         return ""
     served = record.served_depth or record.requested_depth
-    key = (
-        record.model_id.casefold(),
-        record.quant.casefold(),
-        record.backend.casefold(),
-    )
+    key = identity_key(record)
     depth_evidence = evidence.get(key)
     if depth_evidence is None:
         return ""

@@ -43,6 +43,17 @@
 - gateway: ルーティング済みサービス解決の重複6箇所を `_routed_service` に統合（挙動不変）
 - 有限数値フィールド検査（6箇所の重複）を `persist.finite_number` に統合（挙動不変）
 - i18n: 同文の重複ラベルキー `label.watch_value`/`engine.path` を削除し `label.value`/`label.path` に統合（表示不変）
+- runtime: supervisor の ensure_running で2回コピーされていた休止エンジンの起床処理を _wake に統合（挙動不変）
+- runtime: engine の InstalledEngine 生成2箇所（9個の位置引数）をキーワード引数に置換（挙動不変）
+- catalog/watch: カタログ必須キー13個の一覧（loader と watch ドラフトの2箇所の重複）を `catalog.loader.REQUIRED_KEYS` に統合（挙動不変）
+- bench: runner の BenchResult 生成3箇所（11個の位置引数）をキーワード引数に置換（挙動不変）
+- eval: save_eval の EvalRecord 生成（18個の位置引数）をキーワード引数に置換（挙動不変）
+- i18n: 同文の `err.bench_up`/`err.eval_up` を `err.service_not_running` に統合（日本語の「nmesh up」前後の空白の不統一を解消）
+- spec: record の ClassEvidence/ControlEvidence（measure の ClassComparison/ControlCheck と同一フィールドの二重定義と全フィールド写し替え）を型共有に統合（挙動不変）
+- eval/証拠棚卸し/cli: 大小無視の (model, quant, backend) キー生成（8箇所の重複）を `evidence.identity_key` に統合（挙動不変）
+- probe: HardwareProfile 生成2箇所（16個の位置引数）をキーワード引数に置換（挙動不変）
+- cli: bench の埋め込み記録で EmbedMeasurement の11フィールドを手写ししていた箇所を asdict 展開に置換（挙動不変）
+- eval: runner の TaskOutcome/EvalRun 生成（位置引数）をキーワード引数に置換（挙動不変）
 
 ### Fixed
 - gateway: `/infill` を API キー保護対象に追加し、FIM フィールドをルーティングとタイムアウト見積もりに反映
