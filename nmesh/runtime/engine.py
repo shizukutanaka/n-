@@ -433,15 +433,17 @@ def _from_manifest(payload: dict[str, object]) -> InstalledEngine:
     if not isinstance(flags, list):
         raise TypeError("invalid engine manifest flags")
     return InstalledEngine(
-        str(payload.get("backend", "llamacpp")),
-        str(payload["tag"]),
-        str(payload["variant"]),
-        Path(str(payload["exe"])),
-        str(payload["version_line"]) if payload.get("version_line") else None,
-        str(payload["sha256"]),
-        str(payload["asset"]),
-        _manifest_number(payload["installed_at"]),
-        tuple(str(flag) for flag in flags),
+        backend=str(payload.get("backend", "llamacpp")),
+        tag=str(payload["tag"]),
+        variant=str(payload["variant"]),
+        exe=Path(str(payload["exe"])),
+        version_line=(
+            str(payload["version_line"]) if payload.get("version_line") else None
+        ),
+        sha256=str(payload["sha256"]),
+        asset=str(payload["asset"]),
+        installed_at=_manifest_number(payload["installed_at"]),
+        flags=tuple(str(flag) for flag in flags),
     )
 
 
@@ -595,15 +597,15 @@ def install(
         if caps is None:
             warnings.append("llama.cpp capabilities could not be detected; installed with no flags")
         installed = InstalledEngine(
-            "llamacpp",
-            selected_tag,
-            asset.variant,
-            exe,
-            version_line,
-            digest.hexdigest(),
-            asset.asset,
-            time.time(),
-            flags,
+            backend="llamacpp",
+            tag=selected_tag,
+            variant=asset.variant,
+            exe=exe,
+            version_line=version_line,
+            sha256=digest.hexdigest(),
+            asset=asset.asset,
+            installed_at=time.time(),
+            flags=flags,
         )
         manifest = _manifest_path(target)
         temporary = manifest.with_name(
