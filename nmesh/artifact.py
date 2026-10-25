@@ -58,6 +58,23 @@ def _meta_max(value: object) -> int:
     return _meta_int(value)
 
 
+# GGUF scalar metadata type tags → little-endian struct formats.
+# Tags 8 (string) and 9 (array) are variable-length and handled explicitly.
+_SCALAR_FORMATS = {
+    0: "<B",
+    1: "<b",
+    2: "<H",
+    3: "<h",
+    4: "<I",
+    5: "<i",
+    6: "<f",
+    7: "<?",
+    10: "<Q",
+    11: "<q",
+    12: "<d",
+}
+
+
 class _HeaderReader:
     def __init__(self, handle: BinaryIO, size: int) -> None:
         self.handle = handle
@@ -85,60 +102,36 @@ class _HeaderReader:
         length = self.u64()
         return self.read(length).decode("utf-8", errors="replace")
 
+    def array_header(self) -> tuple[int, int]:
+        """Read an array's item type and length; nested arrays are invalid."""
+        item_kind = self.u32()
+        count = self.u64()
+        if item_kind == 9:
+            # The spec forbids arrays of arrays; rejecting them also
+            # bounds recursion to one level on hostile headers.
+            raise ValueError("nested GGUF arrays are invalid")
+        return item_kind, count
+
     def value(self, kind: int) -> object:
-        formats = {
-            0: "<B",
-            1: "<b",
-            2: "<H",
-            3: "<h",
-            4: "<I",
-            5: "<i",
-            6: "<f",
-            7: "<?",
-            10: "<Q",
-            11: "<q",
-            12: "<d",
-        }
         if kind == 8:
             return self.string()
         if kind == 9:
-            item_kind = self.u32()
-            count = self.u64()
-            if item_kind == 9:
-                # The spec forbids arrays of arrays; rejecting them also
-                # bounds recursion to one level on hostile headers.
-                raise ValueError("nested GGUF arrays are invalid")
+            item_kind, count = self.array_header()
             return [self.value(item_kind) for _ in range(count)]
-        if kind not in formats:
+        if kind not in _SCALAR_FORMATS:
             raise ValueError("unexpected GGUF type tag")
-        format_string = formats[kind]
+        format_string = _SCALAR_FORMATS[kind]
         return struct.unpack(format_string, self.read(struct.calcsize(format_string)))[0]
 
     def skip_value(self, kind: int) -> None:
-        sizes = {
-            0: 1,
-            1: 1,
-            2: 2,
-            3: 2,
-            4: 4,
-            5: 4,
-            6: 4,
-            7: 1,
-            10: 8,
-            11: 8,
-            12: 8,
-        }
         if kind == 8:
             self.read(self.u64())
         elif kind == 9:
-            item_kind = self.u32()
-            count = self.u64()
-            if item_kind == 9:
-                raise ValueError("nested GGUF arrays are invalid")
+            item_kind, count = self.array_header()
             for _ in range(count):
                 self.skip_value(item_kind)
-        elif kind in sizes:
-            self.read(sizes[kind])
+        elif kind in _SCALAR_FORMATS:
+            self.read(struct.calcsize(_SCALAR_FORMATS[kind]))
         else:
             raise ValueError("unexpected GGUF type tag")
 
