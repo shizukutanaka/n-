@@ -175,7 +175,7 @@ class Telemetry:
                 by_key.setdefault(item.key, []).append(item)
             samples = [item for values in by_key.values() for item in values[-self.max_samples:]]
             payload = json.dumps({"samples": [asdict(item) for item in samples]},
-                                 indent=2, ensure_ascii=False)
+                                 ensure_ascii=False)
             temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
