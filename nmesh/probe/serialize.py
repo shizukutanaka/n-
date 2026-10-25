@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import cast, get_args
 
 from .models import (
     GPUInfo,
@@ -13,40 +14,20 @@ from .models import (
 
 
 def _operating_system(value: str) -> OperatingSystem:
-    if value == "windows":
-        return "windows"
-    if value == "linux":
-        return "linux"
-    if value == "macos":
-        return "macos"
+    if value in get_args(OperatingSystem):
+        return cast(OperatingSystem, value)
     raise ValueError("profile field 'os' must be windows, linux, or macos")
 
 
 def _vendor(value: str) -> Vendor:
-    if value == "nvidia":
-        return "nvidia"
-    if value == "amd":
-        return "amd"
-    if value == "intel":
-        return "intel"
-    if value == "apple":
-        return "apple"
-    if value == "unknown":
-        return "unknown"
+    if value in get_args(Vendor):
+        return cast(Vendor, value)
     raise ValueError("profile field 'vendor' is invalid")
 
 
 def _vram_source(value: str) -> VramSource:
-    if value == "nvml":
-        return "nvml"
-    if value == "smi":
-        return "smi"
-    if value == "registry":
-        return "registry"
-    if value == "sysfs":
-        return "sysfs"
-    if value == "unknown":
-        return "unknown"
+    if value in get_args(VramSource):
+        return cast(VramSource, value)
     raise ValueError("profile field 'vram_source' is invalid")
 
 
