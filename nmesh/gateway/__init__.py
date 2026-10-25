@@ -1741,6 +1741,21 @@ def create_app(
         last_use.touch(service.name)
         slot_token: object | None = None
         job = jobs.submit(service.name, path)
+
+        def upstream_error(
+            status_code: int, content: bytes, content_type: str | None,
+        ) -> Response:
+            """Settle the job for an upstream 4xx/5xx and relay or translate it."""
+            unsupported = _completion_not_supported(
+                path, status_code, service.backend
+            )
+            if job is not None:
+                jobs.finish(job, ok=False, detail=f"upstream_{status_code}")
+            if unsupported is not None:
+                raise unsupported
+            return Response(
+                content=content, status_code=status_code, media_type=content_type
+            )
         if limit_slots:
             deadline = time.monotonic() + QUEUE_TIMEOUT
             try:
@@ -1909,19 +1924,10 @@ def create_app(
                 content = await upstream.aread()
                 await upstream.aclose()
                 await release_upstream()
-                unsupported = _completion_not_supported(
-                    path, upstream.status_code, service.backend
+                return upstream_error(
+                    upstream.status_code, content,
+                    upstream.headers.get("content-type"),
                 )
-                if unsupported is not None:
-                    if job is not None:
-                        jobs.finish(job, ok=False,
-                                    detail=f"upstream_{upstream.status_code}")
-                    raise unsupported
-                if job is not None:
-                    jobs.finish(job, ok=False,
-                                detail=f"upstream_{upstream.status_code}")
-                return Response(content=content, status_code=upstream.status_code,
-                                media_type=upstream.headers.get("content-type"))
 
             stream_completed = False
 
@@ -2080,23 +2086,10 @@ def create_app(
                 response = await post_upstream(body)
                 content = response.content
                 if response.status_code >= 400:
-                    unsupported = _completion_not_supported(
-                        path, response.status_code, service.backend
+                    return upstream_error(
+                        response.status_code, content,
+                        response.headers.get("content-type"),
                     )
-                    if unsupported is not None:
-                        if job is not None:
-                            jobs.finish(
-                                job, ok=False,
-                                detail=f"upstream_{response.status_code}",
-                            )
-                        raise unsupported
-                    if job is not None:
-                        jobs.finish(
-                            job, ok=False,
-                            detail=f"upstream_{response.status_code}",
-                        )
-                    return Response(content=content, status_code=response.status_code,
-                                    media_type=response.headers.get("content-type"))
                 data = json.loads(content)
         except (httpx.HTTPError, json.JSONDecodeError) as error:
             if job is not None:
