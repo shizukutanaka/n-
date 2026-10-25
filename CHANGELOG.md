@@ -27,6 +27,7 @@
 
 ### Changed
 
+- planner: 候補生成で「見積→GPU層数→バックエンド→メモリ分割」を2回書いていた処理を局所関数 `fit` の1つに統合（挙動不変、テスト中の計画 552 件が変更前と一致）
 - bench/eval: retrieval のローカル `_int_at_least` と eval cache の整数フィールド検査（7箇所の手書き）を共有の `persist.int_at_least` に統合（挙動不変）
 - runtime: supervisor の state.json「書込みか削除か」の重複（4箇所）を `_persist_or_remove_state` に統合（挙動不変）
 - bench: retrieval の整数フィールド検査（16箇所の重複）を `_int_at_least` に統合（挙動不変）
