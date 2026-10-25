@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
-from nmesh.persist import finite_number
+from nmesh.persist import finite_number, int_at_least
 
 from .runner import EvalRun
 
@@ -76,12 +76,8 @@ def _record(data: object) -> EvalRecord | None:
         depth = data.get("depth", 0)
         prompt_tokens_max = data.get("prompt_tokens_max", 0)
         if (
-            isinstance(n_tasks, bool)
-            or not isinstance(n_tasks, int)
-            or n_tasks < 0
-            or isinstance(passed, bool)
-            or not isinstance(passed, int)
-            or passed < 0
+            not int_at_least(n_tasks, 0)
+            or not int_at_least(passed, 0)
             or passed > n_tasks
             or not finite_number(pass_rate)
             or not 0.0 <= pass_rate <= 1.0
@@ -90,25 +86,17 @@ def _record(data: object) -> EvalRecord | None:
             or not isinstance(artifact, str)
             or not isinstance(suite, str)
             or not isinstance(digest, str)
-            or isinstance(unscorable, bool)
-            or not isinstance(unscorable, int)
-            or not 0 <= unscorable <= n_tasks
-            or isinstance(allowance, bool)
-            or not isinstance(allowance, int)
-            or allowance < 0
-            or isinstance(transport_errors, bool)
-            or not isinstance(transport_errors, int)
-            or not 0 <= transport_errors <= n_tasks
+            or not int_at_least(unscorable, 0)
+            or unscorable > n_tasks
+            or not int_at_least(allowance, 0)
+            or not int_at_least(transport_errors, 0)
+            or transport_errors > n_tasks
             or (
                 cache_prompt is not None
                 and not isinstance(cache_prompt, bool)
             )
-            or isinstance(depth, bool)
-            or not isinstance(depth, int)
-            or depth < 0
-            or isinstance(prompt_tokens_max, bool)
-            or not isinstance(prompt_tokens_max, int)
-            or prompt_tokens_max < 0
+            or not int_at_least(depth, 0)
+            or not int_at_least(prompt_tokens_max, 0)
             or any(
                 not isinstance(key, str) or not isinstance(value, bool)
                 for key, value in task_results.items()
