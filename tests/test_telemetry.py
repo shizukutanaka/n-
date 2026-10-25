@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
@@ -320,6 +322,33 @@ class _ConcurrentHandler(BaseHTTPRequestHandler):
         return
 
 
+_HANDLER_STATE = {
+    handler: {name: getattr(handler, name) for name in handler.__annotations__}
+    for handler in (_TelemetryHandler, _ConcurrentHandler)
+}
+
+
+@pytest.fixture(autouse=True)
+def _reset_handler_state() -> Iterator[None]:
+    """Tests tune the loopback handlers through class attributes; put the
+    defaults back so no test depends on the order it ran in."""
+    yield
+    for handler, defaults in _HANDLER_STATE.items():
+        for name, value in defaults.items():
+            setattr(handler, name, value)
+
+
+@contextlib.contextmanager
+def _upstream(handler: type[BaseHTTPRequestHandler]) -> Iterator[ThreadingHTTPServer]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def _gateway_plan(port: int):
     model = ModelSpec("telemetry-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
                       4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
@@ -330,10 +359,7 @@ def _gateway_plan(port: int):
 def test_gateway_records_stream_and_nonstream_telemetry(tmp_path, monkeypatch) -> None:
     store = Telemetry(tmp_path / "telemetry.json")
     monkeypatch.setattr(telemetry, "_default", store)
-    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
-    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _upstream(_TelemetryHandler) as upstream:
         _TelemetryHandler.include_usage = False
         plan = _gateway_plan(upstream.server_address[1])
         client = TestClient(create_app(plan))
@@ -357,10 +383,6 @@ def test_gateway_records_stream_and_nonstream_telemetry(tmp_path, monkeypatch) -
         assert nonstream_sample.completion_tokens == 7
         assert client.get("/metrics").json()["services"]["chat"]["samples"] == 2
         assert not (tmp_path / "bench.json").exists()
-    finally:
-        _TelemetryHandler.timings = None
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_gateway_records_peak_in_flight_for_overlapping_nonstream_requests(
@@ -368,10 +390,7 @@ def test_gateway_records_peak_in_flight_for_overlapping_nonstream_requests(
 ) -> None:
     store = Telemetry(tmp_path / "telemetry.json")
     monkeypatch.setattr(telemetry, "_default", store)
-    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _ConcurrentHandler)
-    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _upstream(_ConcurrentHandler) as upstream:
         _ConcurrentHandler.wait_for_pair = False
         client = TestClient(create_app(_gateway_plan(upstream.server_address[1])))
         response = client.post("/v1/chat/completions", json={
@@ -401,20 +420,12 @@ def test_gateway_records_peak_in_flight_for_overlapping_nonstream_requests(
         assert len(responses) == 2
         assert all(response.status_code == 200 for response in responses)
         assert [sample.in_flight for sample in store.samples()[-2:]] == [2, 2]
-    finally:
-        _ConcurrentHandler.wait_for_pair = False
-        _ConcurrentHandler.barrier = None
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_gateway_records_upstream_stream_timings(tmp_path, monkeypatch) -> None:
     store = Telemetry(tmp_path / "telemetry.json")
     monkeypatch.setattr(telemetry, "_default", store)
-    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
-    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _upstream(_TelemetryHandler) as upstream:
         _TelemetryHandler.stream = True
         _TelemetryHandler.include_usage = True
         _TelemetryHandler.timings = {
@@ -439,20 +450,12 @@ def test_gateway_records_upstream_stream_timings(tmp_path, monkeypatch) -> None:
         assert "nmesh_telemetry_prefill_tokens_per_second_median" in (
             client.get("/metrics/prometheus").text
         )
-    finally:
-        _TelemetryHandler.timings = None
-        _TelemetryHandler.include_usage = False
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_gateway_keeps_partially_cached_prefill_timing(tmp_path, monkeypatch) -> None:
     store = Telemetry(tmp_path / "telemetry.json")
     monkeypatch.setattr(telemetry, "_default", store)
-    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
-    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _upstream(_TelemetryHandler) as upstream:
         _TelemetryHandler.stream = True
         _TelemetryHandler.include_usage = True
         _TelemetryHandler.timings = {
@@ -470,20 +473,12 @@ def test_gateway_keeps_partially_cached_prefill_timing(tmp_path, monkeypatch) ->
         })
         assert response.status_code == 200
         assert store.samples()[-1].prefill_tps == pytest.approx(384.9, rel=1e-3)
-    finally:
-        _TelemetryHandler.timings = None
-        _TelemetryHandler.include_usage = False
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_gateway_omits_cached_prefill_timing(tmp_path, monkeypatch) -> None:
     store = Telemetry(tmp_path / "telemetry.json")
     monkeypatch.setattr(telemetry, "_default", store)
-    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
-    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _upstream(_TelemetryHandler) as upstream:
         _TelemetryHandler.stream = True
         _TelemetryHandler.include_usage = True
         _TelemetryHandler.timings = {
@@ -501,20 +496,12 @@ def test_gateway_omits_cached_prefill_timing(tmp_path, monkeypatch) -> None:
         })
         assert response.status_code == 200
         assert store.samples()[-1].prefill_tps is None
-    finally:
-        _TelemetryHandler.timings = None
-        _TelemetryHandler.include_usage = False
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_gateway_records_upstream_nonstream_timings(tmp_path, monkeypatch) -> None:
     store = Telemetry(tmp_path / "telemetry.json")
     monkeypatch.setattr(telemetry, "_default", store)
-    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
-    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _upstream(_TelemetryHandler) as upstream:
         _TelemetryHandler.stream = False
         _TelemetryHandler.timings = {
             "cache_n": 0,
@@ -534,11 +521,6 @@ def test_gateway_records_upstream_nonstream_timings(tmp_path, monkeypatch) -> No
         assert sample.decode_tps == pytest.approx(41.92, rel=1e-3)
         assert sample.prefill_tps == pytest.approx(404.29, rel=1e-3)
         assert sample.ttft_s is None
-    finally:
-        _TelemetryHandler.stream = True
-        _TelemetryHandler.timings = None
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_gateway_uses_client_requested_usage_without_mutating_request(
@@ -546,10 +528,7 @@ def test_gateway_uses_client_requested_usage_without_mutating_request(
 ) -> None:
     store = Telemetry(tmp_path / "telemetry.json")
     monkeypatch.setattr(telemetry, "_default", store)
-    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
-    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _upstream(_TelemetryHandler) as upstream:
         _TelemetryHandler.stream = True
         _TelemetryHandler.include_usage = True
         plan = _gateway_plan(upstream.server_address[1])
@@ -568,22 +547,12 @@ def test_gateway_uses_client_requested_usage_without_mutating_request(
         sample = store.samples()[-1]
         assert sample.approximate is False
         assert sample.completion_tokens == 17
-    finally:
-        _TelemetryHandler.chunks = 20
-        _TelemetryHandler.completion_tokens = 17
-        _TelemetryHandler.include_usage = False
-        _TelemetryHandler.usage_on_every_chunk = False
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_gateway_keeps_usage_bearing_token_chunks(tmp_path, monkeypatch) -> None:
     store = Telemetry(tmp_path / "telemetry.json")
     monkeypatch.setattr(telemetry, "_default", store)
-    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
-    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _upstream(_TelemetryHandler) as upstream:
         _TelemetryHandler.stream = True
         _TelemetryHandler.include_usage = True
         _TelemetryHandler.usage_on_every_chunk = True
@@ -601,20 +570,12 @@ def test_gateway_keeps_usage_bearing_token_chunks(tmp_path, monkeypatch) -> None
         assert sample.completion_tokens == 17
         assert sample.ttft_s is not None
         assert sample.decode_tps is not None
-    finally:
-        _TelemetryHandler.include_usage = False
-        _TelemetryHandler.usage_on_every_chunk = False
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_gateway_short_stream_records_no_decode_rate(tmp_path, monkeypatch) -> None:
     store = Telemetry(tmp_path / "telemetry.json")
     monkeypatch.setattr(telemetry, "_default", store)
-    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _TelemetryHandler)
-    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with _upstream(_TelemetryHandler) as upstream:
         _TelemetryHandler.stream = True
         _TelemetryHandler.include_usage = True
         _TelemetryHandler.chunks = 5
@@ -631,9 +592,3 @@ def test_gateway_short_stream_records_no_decode_rate(tmp_path, monkeypatch) -> N
         sample = store.samples()[-1]
         assert sample.decode_tps is None
         assert sample.ttft_s is not None
-    finally:
-        _TelemetryHandler.chunks = 20
-        _TelemetryHandler.completion_tokens = 17
-        _TelemetryHandler.include_usage = False
-        upstream.shutdown()
-        upstream.server_close()
