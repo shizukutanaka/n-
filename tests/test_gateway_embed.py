@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
+from collections.abc import Iterator
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 import nmesh.gateway as gateway_module
@@ -62,11 +65,28 @@ class _EmbeddingHandler(BaseHTTPRequestHandler):
         return
 
 
-def _start_upstream() -> ThreadingHTTPServer:
-    _EmbeddingHandler.request_bodies = []
-    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _EmbeddingHandler)
+@contextlib.contextmanager
+def _serve(handler: type[BaseHTTPRequestHandler]) -> Iterator[ThreadingHTTPServer]:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=upstream.serve_forever, daemon=True).start()
-    return upstream
+    try:
+        yield upstream
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+
+
+@contextlib.contextmanager
+def _upstream() -> Iterator[ThreadingHTTPServer]:
+    _EmbeddingHandler.request_bodies = []
+    with _serve(_EmbeddingHandler) as upstream:
+        yield upstream
+
+
+@pytest.fixture(autouse=True)
+def _reset_confirmation_tokens() -> Iterator[None]:
+    yield
+    _EmbeddingHandler.confirmation_tokens = 3000
 
 
 def _plan(roles: list[str], port: int) -> Plan:
@@ -173,15 +193,15 @@ class _AutoChunkHandler(BaseHTTPRequestHandler):
         return
 
 
-def _start_autochunk_upstream() -> ThreadingHTTPServer:
+@contextlib.contextmanager
+def _autochunk_upstream() -> Iterator[ThreadingHTTPServer]:
     _AutoChunkHandler.request_bodies = []
     _AutoChunkHandler.dimensions = 2
     _AutoChunkHandler.varying_dimensions = False
     _AutoChunkHandler.short_response = False
     _AutoChunkHandler.prompt_tokens_override = None
-    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _AutoChunkHandler)
-    threading.Thread(target=upstream.serve_forever, daemon=True).start()
-    return upstream
+    with _serve(_AutoChunkHandler) as upstream:
+        yield upstream
 
 
 def _retrieval_record() -> RetrievalRecord:
@@ -224,8 +244,7 @@ def _autochunk_client(
 
 
 def test_embedding_autochunk_disabled_preserves_body(monkeypatch) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         monkeypatch.delenv("NMESH_EMBED_AUTOCHUNK", raising=False)
         with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
             monkeypatch.delenv("NMESH_EMBED_AUTOCHUNK", raising=False)
@@ -235,14 +254,10 @@ def test_embedding_autochunk_disabled_preserves_body(monkeypatch) -> None:
             )
         assert response.status_code == 200
         assert _AutoChunkHandler.request_bodies[0]["input"] == value
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_autochunk_pools_vectors_and_sets_headers(monkeypatch) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
             value = " ".join(["word"] * 7) + " needle"
             response = client.post(
@@ -259,14 +274,10 @@ def test_embedding_autochunk_pools_vectors_and_sets_headers(monkeypatch) -> None
             "word word word word",
             "word word word needle",
         ]
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_autochunk_without_evidence_preserves_body(monkeypatch) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         with _autochunk_client(monkeypatch, upstream, None) as client:
             value = " ".join(["word"] * 10)
             response = client.post(
@@ -275,14 +286,10 @@ def test_embedding_autochunk_without_evidence_preserves_body(monkeypatch) -> Non
         assert response.status_code == 200
         assert _AutoChunkHandler.request_bodies[0]["input"] == value
         assert "X-Nmesh-Embedding-Chunked" not in response.headers
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_autochunk_short_input_is_untouched(monkeypatch) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
             response = client.post(
                 "/v1/embeddings",
@@ -291,14 +298,10 @@ def test_embedding_autochunk_short_input_is_untouched(monkeypatch) -> None:
         assert response.status_code == 200
         assert _AutoChunkHandler.request_bodies[0]["input"] == "short"
         assert "X-Nmesh-Embedding-Chunked" not in response.headers
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_autochunk_long_japanese_uses_character_chunks(monkeypatch) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         value = "\u65e5\u672c\u8a9e\u306e\u691c\u7d22\u5bfe\u8c61\u3092\u9577\u304f\u3057\u305f\u30c6\u30b9\u30c8\u3067\u3059"
         with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
             response = client.post(
@@ -314,14 +317,10 @@ def test_embedding_autochunk_long_japanese_uses_character_chunks(monkeypatch) ->
         assert pieces == [value[index:index + 8] for index in range(0, len(value), 8)]
         assert response.headers["X-Nmesh-Embedding-Chunked"] == str(len(pieces))
         assert response.headers["X-Nmesh-Embedding-Chunk-Chars"] == "8"
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_autochunk_short_japanese_is_untouched(monkeypatch) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         value = "\u65e5\u672c\u8a9e\u30c6\u30b9\u30c8"
         with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
             response = client.post(
@@ -333,16 +332,12 @@ def test_embedding_autochunk_short_japanese_is_untouched(monkeypatch) -> None:
         assert _AutoChunkHandler.request_bodies[0]["input"] == value
         assert "X-Nmesh-Embedding-Chunked" not in response.headers
         assert "X-Nmesh-Embedding-Chunk-Chars" not in response.headers
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_autochunk_mixed_english_japanese_inputs_sum_usage(
     monkeypatch,
 ) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         japanese = "\u65e5\u672c\u8a9e\u306e\u691c\u7d22\u5bfe\u8c61\u3092\u9577\u304f\u3057\u305f\u30c6\u30b9\u30c8\u3067\u3059"
         english = "word word word word needle"
         with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
@@ -363,14 +358,10 @@ def test_embedding_autochunk_mixed_english_japanese_inputs_sum_usage(
             [japanese[:8], japanese[8:16], japanese[16:]],
             ["word word word word", "needle"],
         ]
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_autochunk_character_response_failure_falls_back(monkeypatch) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         _AutoChunkHandler.short_response = True
         value = "\u65e5\u672c\u8a9e\u306e\u691c\u7d22\u5bfe\u8c61\u3092\u9577\u304f\u3057\u305f\u30c6\u30b9\u30c8\u3067\u3059"
         with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
@@ -384,14 +375,10 @@ def test_embedding_autochunk_character_response_failure_falls_back(monkeypatch) 
         assert "X-Nmesh-Embedding-Chunk-Chars" not in response.headers
         assert len(_AutoChunkHandler.request_bodies) == 2
         assert _AutoChunkHandler.request_bodies[-1]["input"] == value
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_autochunk_mixed_inputs_preserve_order(monkeypatch) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
             response = client.post(
                 "/v1/embeddings",
@@ -406,14 +393,10 @@ def test_embedding_autochunk_mixed_inputs_preserve_order(monkeypatch) -> None:
         assert len(_AutoChunkHandler.request_bodies) == 2
         assert isinstance(_AutoChunkHandler.request_bodies[0]["input"], list)
         assert _AutoChunkHandler.request_bodies[1]["input"] == "short"
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_autochunk_dimension_failure_falls_back(monkeypatch) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         _AutoChunkHandler.varying_dimensions = True
         with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
             value = " ".join(["word"] * 7) + " needle"
@@ -425,14 +408,10 @@ def test_embedding_autochunk_dimension_failure_falls_back(monkeypatch) -> None:
         assert "X-Nmesh-Embedding-Chunked" not in response.headers
         assert len(_AutoChunkHandler.request_bodies) == 2
         assert _AutoChunkHandler.request_bodies[-1]["input"] == value
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_autochunk_mixed_inputs_skip_cap_guard(monkeypatch) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         _AutoChunkHandler.prompt_tokens_override = 3000
         with _autochunk_client(monkeypatch, upstream, _retrieval_record()) as client:
             response = client.post(
@@ -446,14 +425,10 @@ def test_embedding_autochunk_mixed_inputs_skip_cap_guard(monkeypatch) -> None:
         assert response.headers["X-Nmesh-Embedding-Chunked"] == "3"
         assert response.headers["X-Nmesh-Embedding-Chunk-Words"] == "4"
         assert response.headers["X-Nmesh-Embedding-Chunk-Chars"] == "8"
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_truncation_returns_context_error(monkeypatch) -> None:
-    upstream = _start_upstream()
-    try:
+    with _upstream() as upstream:
         with _client(monkeypatch, upstream) as client:
             response = client.post(
                 "/v1/embeddings",
@@ -466,17 +441,13 @@ def test_embedding_truncation_returns_context_error(monkeypatch) -> None:
         assert "2048" in error["message"]
         assert "3000" in error["message"]
         assert len(_EmbeddingHandler.request_bodies) == 2
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_saturation_within_tolerance_returns_original_body(
     monkeypatch,
 ) -> None:
     _EmbeddingHandler.confirmation_tokens = 2050
-    upstream = _start_upstream()
-    try:
+    with _upstream() as upstream:
         with _client(monkeypatch, upstream) as client:
             response = client.post(
                 "/v1/embeddings",
@@ -486,15 +457,10 @@ def test_embedding_saturation_within_tolerance_returns_original_body(
         assert response.json()["usage"]["prompt_tokens"] == 2048
         assert "X-Nmesh-Embedding-Truncation" not in response.headers
         assert len(_EmbeddingHandler.request_bodies) == 2
-    finally:
-        _EmbeddingHandler.confirmation_tokens = 3000
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_without_proven_cap_makes_one_upstream_request(monkeypatch) -> None:
-    upstream = _start_upstream()
-    try:
+    with _upstream() as upstream:
         monkeypatch.setattr(gateway_module, "idle_services", list)
         monkeypatch.setattr(gateway_module, "load_embed_cache", dict)
         with TestClient(
@@ -506,14 +472,10 @@ def test_embedding_without_proven_cap_makes_one_upstream_request(monkeypatch) ->
             )
         assert response.status_code == 200
         assert len(_EmbeddingHandler.request_bodies) == 1
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_multi_input_is_marked_unverified(monkeypatch) -> None:
-    upstream = _start_upstream()
-    try:
+    with _upstream() as upstream:
         with _client(monkeypatch, upstream) as client:
             response = client.post(
                 "/v1/embeddings",
@@ -522,14 +484,10 @@ def test_embedding_multi_input_is_marked_unverified(monkeypatch) -> None:
         assert response.status_code == 200
         assert response.headers["X-Nmesh-Embedding-Truncation"] == "unverified"
         assert len(_EmbeddingHandler.request_bodies) == 1
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_multi_input_clean_elements_pass_unflagged(monkeypatch) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         with _client(monkeypatch, upstream) as client:
             response = client.post(
                 "/v1/embeddings",
@@ -541,16 +499,12 @@ def test_embedding_multi_input_clean_elements_pass_unflagged(monkeypatch) -> Non
         assert "X-Nmesh-Embedding-Truncation" not in response.headers
         # Original request plus one probe per over-cap-bytes element.
         assert len(_AutoChunkHandler.request_bodies) == 3
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_multi_input_truncating_element_returns_error(
     monkeypatch,
 ) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         with _client(monkeypatch, upstream) as client:
             response = client.post(
                 "/v1/embeddings",
@@ -566,16 +520,12 @@ def test_embedding_multi_input_truncating_element_returns_error(
         assert "3000" in error["message"]
         assert "[1]" in error["message"]
         assert len(_AutoChunkHandler.request_bodies) == 2
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_multi_input_many_suspects_is_marked_unverified(
     monkeypatch,
 ) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         with _client(monkeypatch, upstream) as client:
             response = client.post(
                 "/v1/embeddings",
@@ -586,14 +536,10 @@ def test_embedding_multi_input_many_suspects_is_marked_unverified(
         assert response.status_code == 200
         assert response.headers["X-Nmesh-Embedding-Truncation"] == "unverified"
         assert len(_AutoChunkHandler.request_bodies) == 1
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_token_array_over_cap_returns_error(monkeypatch) -> None:
-    upstream = _start_upstream()
-    try:
+    with _upstream() as upstream:
         with _client(monkeypatch, upstream) as client:
             response = client.post(
                 "/v1/embeddings",
@@ -604,14 +550,10 @@ def test_embedding_token_array_over_cap_returns_error(monkeypatch) -> None:
         assert error["code"] == "context_length_exceeded"
         assert "3000" in error["message"]
         assert len(_EmbeddingHandler.request_bodies) == 1
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_token_array_batch_over_cap_returns_error(monkeypatch) -> None:
-    upstream = _start_upstream()
-    try:
+    with _upstream() as upstream:
         with _client(monkeypatch, upstream) as client:
             response = client.post(
                 "/v1/embeddings",
@@ -622,14 +564,10 @@ def test_embedding_token_array_batch_over_cap_returns_error(monkeypatch) -> None
         assert error["code"] == "context_length_exceeded"
         assert "[0]" in error["message"]
         assert len(_EmbeddingHandler.request_bodies) == 1
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_non_embed_route_is_unchanged(monkeypatch) -> None:
-    upstream = _start_upstream()
-    try:
+    with _upstream() as upstream:
         monkeypatch.setattr(gateway_module, "idle_services", list)
         monkeypatch.setattr(
             gateway_module,
@@ -649,16 +587,12 @@ def test_non_embed_route_is_unchanged(monkeypatch) -> None:
         assert response.status_code == 200
         assert "X-Nmesh-Embedding-Truncation" not in response.headers
         assert len(_EmbeddingHandler.request_bodies) == 1
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_embedding_input_with_lone_surrogate_returns_400_not_500(
     monkeypatch,
 ) -> None:
-    upstream = _start_autochunk_upstream()
-    try:
+    with _autochunk_upstream() as upstream:
         with _client(monkeypatch, upstream) as client:
             response = client.post(
                 "/v1/embeddings",
@@ -670,9 +604,6 @@ def test_embedding_input_with_lone_surrogate_returns_400_not_500(
         assert error["type"] == "invalid_request_error"
         assert "surrogate" in error["message"]
         assert len(_AutoChunkHandler.request_bodies) == 0
-    finally:
-        upstream.shutdown()
-        upstream.server_close()
 
 
 def test_autochunk_embeddings_skips_short_inputs() -> None:
