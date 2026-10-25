@@ -175,9 +175,14 @@ def _json_keys(expected: dict[str, str]) -> Callable[[str], bool]:
     return check
 
 
-def _three_items(text: str) -> bool:
-    items = [item.strip() for item in normalize(text).split(",")]
-    return len(items) == 3 and all(item and item.replace(" ", "").isalpha() for item in items)
+def _comma_items(count: int) -> Callable[[str], bool]:
+    def check(text: str) -> bool:
+        items = [item.strip() for item in normalize(text).split(",")]
+        return (
+            len(items) == count
+            and all(item and item.replace(" ", "").isalpha() for item in items)
+        )
+    return check
 
 
 def _japanese_only(required: str) -> Callable[[str], bool]:
@@ -221,7 +226,7 @@ TASKS: tuple[Task, ...] = (
         "instruction",
         "List exactly three fruits, comma-separated, with no other text.",
         32,
-        _three_items,
+        _comma_items(3),
         value_check=_items_value(3),
     ),
     Task(
