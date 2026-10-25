@@ -9,6 +9,7 @@ from nmesh import evidence_inventory
 from nmesh.catalog.loader import _model_from_mapping
 from nmesh.i18n import MESSAGES, lang, t
 from nmesh.planner import Policy, build_plan
+from nmesh.spec import record as spec_record
 
 from .test_planner import profile
 
@@ -149,6 +150,13 @@ def test_i18n_source_has_no_duplicate_keys() -> None:
 def test_every_evidence_reason_has_both_translations() -> None:
     source = Path(evidence_inventory.__file__).read_text(encoding="utf-8")
     reasons = set(re.findall(r'reasons\.append\("([a-z_]+)"\)', source))
+    reasons.update(
+        f"spec_{decision}"
+        for decision in (
+            spec_record.NO_EVIDENCE, spec_record.NOT_IDENTICAL, spec_record.NOT_FASTER,
+            spec_record.MIXED, spec_record.UNSTABLE, spec_record.STALE,
+        )
+    )
     assert reasons
     for reason in sorted(reasons):
         key = f"evidence.reason.{reason}"
