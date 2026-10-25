@@ -16,16 +16,15 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from nmesh.evidence import refutes
 from nmesh.orchestrate.measure import RoleIdentity
 from nmesh.orchestrate.record import role_key
 from nmesh.paths import nmesh_home
-from nmesh.persist import int_at_least
+from nmesh.persist import int_at_least, write_results_cache
 
 from .measure import (
     KIND_NONE,
@@ -227,28 +226,7 @@ def save_all(
 ) -> Path:
     """Atomically persist the complete speculation cache."""
     target = cache_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_text(
-            json.dumps(
-                {
-                    "results": {
-                        key: asdict(value) for key, value in records.items()
-                    }
-                },
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-        os.replace(temporary, target)
-    except OSError:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
-        raise
+    write_results_cache(target, records)
     return target
 
 
