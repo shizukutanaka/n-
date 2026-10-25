@@ -28,6 +28,7 @@
 ### Changed
 
 - probe: `profile_from_dict` の検証分岐 31 件（型違い・欠落・範囲外・不正な列挙値）を表形式の 1 テストで固定（カバレッジ 71%→95%）。`Tier(value)` は型違いでも `ValueError` を返すため到達しない `except TypeError` 分岐を削除
+- gateway: proxy で上流が 4xx/5xx を返したときの処理（非対応エンドポイントへの変換・ジョブの終了・レスポンス中継）がストリーミングと非ストリーミングの2箇所に同じまま書かれていたのを局所関数 `upstream_error` の1つに統合（挙動不変）
 - persist: `{"results": {...}}` 形式のキャッシュを一時ファイル経由で原子的に書き出す処理が bench/embed・bench/retrieval・eval/cache・eval/context・orchestrate/record・spec/record の6箇所に同じまま書かれていたのを `persist.write_results_cache` の1つに統合（挙動不変、−79行）
 - watch: 量子化ラベル（Q4_K_M・IQ2_XS・fp16 など）を拾う正規表現 `_QUANT_RE` が extract と verify に同じまま 2 つ定義されていたのを extract の 1 つに統合（挙動不変。片方だけ直して抽出と照合でラベルの範囲がずれる余地をなくす）
 - planner: 候補生成で「見積→GPU層数→バックエンド→メモリ分割」を2回書いていた処理を局所関数 `fit` の1つに統合（挙動不変、テスト中の計画 552 件が変更前と一致）
