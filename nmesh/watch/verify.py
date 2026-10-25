@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from nmesh.planner import Plan
 from nmesh.runtime.acquisition import parse_label
 
-from .extract import Mention
+from .extract import _QUANT_RE, Mention
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,6 @@ class Finding:
     verified: dict[str, object]
 
 
-_QUANT_RE = re.compile(r"\b(?:[I]?Q\d(?:_[A-Z0-9]+)+|fp16|bf16)\b")
 _WEIGHT_QUANT_RE = re.compile(
     r"(?:UD-Q[A-Z0-9._-]+|IQ\d(?:_[A-Z0-9]+)*|Q\d(?:_[A-Z0-9]+)*|BF16|F16|F32|fp16)",
     re.IGNORECASE,
