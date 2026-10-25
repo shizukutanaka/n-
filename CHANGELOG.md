@@ -28,6 +28,7 @@
 ### Changed
 
 - tests: `nmesh.net.bounded_get` のテスト 4 件が `tests/test_watch.py` にも重複して置かれ、うち 3 件は `tests/test_net.py` と本体が同一だったため、`test_net.py` 側に集約（`test_watch.py` にしかなかった展開後サイズ上限のテスト 1 件は `test_net.py` へ移動。検証内容は変えていません）
+- watch: qiita・zenn・x の各ソースで「応答の行を辞書として読み、必須キーが空なら飛ばす」前処理が同じまま3回書かれていたのを `_keyed_rows` の1つに統合（挙動不変）
 - artifact: GGUF ヘッダ読み取りで、型タグ→struct 書式の表と型タグ→バイト数の表を別々に持ち、配列ヘッダの読み取りも `value`/`skip_value` に 2 回書いていたのを、`_SCALAR_FORMATS` の 1 表（バイト数は `struct.calcsize` で導出）と `array_header` の 1 つに統合（挙動不変。型タグを片方の表にだけ足して読み飛ばし位置がずれる余地をなくす）
 - gateway: llama.cpp の FIM 用 `input_extra` から各チャンクの `text` を集める処理が infill のルーティング用ビューとトークン見積の 2 箇所に同じまま書かれていたのを `_input_extra_texts` の 1 つに統合（挙動不変）
 - probe: プロファイル読み込みの `os`・`vendor`・`vram_source` の検証を、許容値を1つずつ if で列挙する形から `Literal` 型（`OperatingSystem`/`Vendor`/`VramSource`）の定義そのものと照合する形に統合（挙動不変、−15行。型に値を足したのに検証側に足し忘れて正しいプロファイルが拒否される余地をなくす）
