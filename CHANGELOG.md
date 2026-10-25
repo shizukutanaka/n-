@@ -68,6 +68,7 @@
 - eval: runner の TaskOutcome/EvalRun 生成（位置引数）をキーワード引数に置換（挙動不変）
 
 ### Fixed
+- evidence: `nmesh evidence` の理由凡例で、検索証拠の `stale_digest`（古いラダー規則）と `unmeasured`（劣化段なし）に翻訳がなく `evidence.reason.stale_digest` のようなキー名がそのまま表示されていた問題を修正（英日を追加し、棚卸しが出す全理由に両言語の訳があることをテストで固定）
 - gateway: `/infill` を API キー保護対象に追加し、FIM フィールドをルーティングとタイムアウト見積もりに反映
 - **spec measure がプローブ済み llama.cpp の未対応フラグを候補起動時に発行していた問題を修正**: 必須フラグが未検出の場合は対照測定前に拒否
 - **spec measure が llama.cpp 以外のサービスに投機フラグを付けていた問題を修正**: 自動選択は llama.cpp を優先し、他バックエンドを指定した場合は起動前に拒否
