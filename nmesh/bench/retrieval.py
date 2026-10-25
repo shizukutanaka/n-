@@ -3,18 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import random
 import statistics
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 
 import httpx
 
 from nmesh.paths import nmesh_home
-from nmesh.persist import int_at_least
+from nmesh.persist import int_at_least, write_results_cache
 
 RETRIEVAL_HARNESS_VERSION = "retrieval-v3"
 RETRIEVAL_DOCS = 8
@@ -338,24 +337,7 @@ def save_retrieval(
         record.n_gpu_layers,
     )
     records[key] = record
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_text(
-            json.dumps(
-                {"results": {key: asdict(value) for key, value in records.items()}},
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-        os.replace(temporary, target)
-    except OSError:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
-        raise
+    write_results_cache(target, records)
     return target
 
 
