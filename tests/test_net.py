@@ -137,3 +137,28 @@ def test_bounded_get_decodes_compressed_body_once():
     client = httpx.Client(transport=httpx.MockTransport(handler))
     response = bounded_get(client, "http://example/feed")
     assert response.json() == {"ok": True}
+
+
+def test_bounded_get_caps_decompressed_body() -> None:
+    import gzip
+
+    from nmesh.net import _MAX_BODY_BYTES, bounded_get
+
+    # A small gzip bomb expands past the cap during decoding — the limit
+    # applies to the decompressed size, not the wire size.
+    payload = b"x" * (_MAX_BODY_BYTES + 1024)
+
+    def handler(_request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=gzip.compress(payload),
+            headers={"Content-Encoding": "gzip"},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        bounded_get(client, "http://example/bomb")
+    except ValueError as error:
+        assert "body limit" in str(error)
+    else:
+        raise AssertionError("expected ValueError")
