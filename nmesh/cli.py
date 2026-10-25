@@ -4590,6 +4590,23 @@ def _autotune(args: argparse.Namespace) -> int:
     restart_gateway()
     return 0
 
+def _add_planning_flags(parser: argparse.ArgumentParser) -> None:
+    """Planner flags shared by ``plan`` and ``up`` (``up`` rebuilds the plan)."""
+    parser.add_argument("--model", help="comma-separated model IDs")
+    parser.add_argument("--ignore-eval-evidence", action="store_true")
+    parser.add_argument("--spec", choices=("none", "ngram", "draft"), default="none")
+    parser.add_argument("--spec-draft", default="")
+    parser.add_argument("--spec-n-max", type=int, default=3)
+    parser.add_argument("--sleep-idle-seconds", type=int, default=0)
+    parser.add_argument("--cache-reuse", type=int, default=0)
+    parser.add_argument("--context-shift", action="store_true")
+    parser.add_argument("--ignore-spec-evidence", action="store_true")
+    parser.add_argument("--allow-download-gb", type=float, default=60.0,
+                        help="warn when planned downloads exceed this many GiB")
+    parser.add_argument("--min-decode-tps", type=float, default=8.0,
+                        help="minimum decode throughput (tok/s) a service must sustain")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_output()
     parser = argparse.ArgumentParser(prog="nmesh")
@@ -4617,19 +4634,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan.add_argument("--budget", choices=("total", "free"), default="total")
     plan.add_argument("--kv-quant", choices=("f16", "q8_0"), default="f16")
     plan.add_argument("--parallel-slots", type=int)
-    plan.add_argument("--model", help="comma-separated model IDs")
-    plan.add_argument("--ignore-eval-evidence", action="store_true")
-    plan.add_argument("--spec", choices=("none", "ngram", "draft"), default="none")
-    plan.add_argument("--spec-draft", default="")
-    plan.add_argument("--spec-n-max", type=int, default=3)
-    plan.add_argument("--sleep-idle-seconds", type=int, default=0)
-    plan.add_argument("--cache-reuse", type=int, default=0)
-    plan.add_argument("--context-shift", action="store_true")
-    plan.add_argument("--ignore-spec-evidence", action="store_true")
-    plan.add_argument("--allow-download-gb", type=float, default=60.0,
-                      help="warn when planned downloads exceed this many GiB")
-    plan.add_argument("--min-decode-tps", type=float, default=8.0,
-                      help="minimum decode throughput (tok/s) a service must sustain")
+    _add_planning_flags(plan)
     plan.add_argument("--lang")
     plan.add_argument("--profile")
     up_parser = sub.add_parser("up")
@@ -4642,19 +4647,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     up_parser.add_argument("--ignore-free-memory", action="store_true")
     up_parser.add_argument("--lang")
     up_parser.add_argument("--roles", default=None)
-    up_parser.add_argument("--model", help="comma-separated model IDs")
-    up_parser.add_argument("--ignore-eval-evidence", action="store_true")
-    up_parser.add_argument("--spec", choices=("none", "ngram", "draft"), default="none")
-    up_parser.add_argument("--spec-draft", default="")
-    up_parser.add_argument("--spec-n-max", type=int, default=3)
-    up_parser.add_argument("--sleep-idle-seconds", type=int, default=0)
-    up_parser.add_argument("--cache-reuse", type=int, default=0)
-    up_parser.add_argument("--context-shift", action="store_true")
-    up_parser.add_argument("--ignore-spec-evidence", action="store_true")
-    up_parser.add_argument("--allow-download-gb", type=float, default=60.0,
-                           help="warn when planned downloads exceed this many GiB")
-    up_parser.add_argument("--min-decode-tps", type=float, default=8.0,
-                           help="minimum decode throughput (tok/s) a service must sustain")
+    _add_planning_flags(up_parser)
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=_port_int, default=18000)
     serve_parser.add_argument("--roles", default=None)

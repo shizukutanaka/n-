@@ -27,6 +27,7 @@
 
 ### Changed
 
+- cli: `plan` と `up` に同じまま2回書かれていた planner 用フラグ 11 個（`--model`〜`--min-decode-tps`）の定義を `_add_planning_flags` の1つに統合（挙動不変、`--help` の並びも同じ）
 - spec: measure の応答解析にあった整数検査（3箇所）の手書きを共有の `persist.int_at_least` に統合（挙動不変）
 - eval/spec: context の整数・有限数検査（7箇所）と spec record の整数検査（2箇所）の手書きを共有の `persist.int_at_least` / `persist.finite_number` に統合（挙動不変）
 - bench/eval: retrieval のローカル `_int_at_least` と eval cache の整数フィールド検査（7箇所の手書き）を共有の `persist.int_at_least` に統合（挙動不変）
