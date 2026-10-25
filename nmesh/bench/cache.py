@@ -106,6 +106,11 @@ def _legacy(value: object) -> BenchRecord | None:
     )
 
 
+def _optional_float(value: object) -> float | None:
+    """``None`` stays ``None``; anything else must convert with ``float``."""
+    return None if value is None else float(value)  # type: ignore[arg-type]
+
+
 def _record(value: object) -> BenchRecord | None:
     legacy = _legacy(value)
     if legacy is not None:
@@ -120,23 +125,13 @@ def _record(value: object) -> BenchRecord | None:
         maximum = float(value["decode_tps_max"])
         runs = int(value["runs"])
         passes = int(value["passes"])
-        ratio = value.get("control_ratio")
-        last_ratio = value.get("last_control_ratio")
-        ratio = None if ratio is None else float(ratio)
-        last_ratio = None if last_ratio is None else float(last_ratio)
-        last_min = value.get("last_rejected_min")
-        last_max = value.get("last_rejected_max")
-        last_min = None if last_min is None else float(last_min)
-        last_max = None if last_max is None else float(last_max)
-        reference_value = value.get("reference_tps")
-        reference_tps = (
-            None if reference_value is None else float(reference_value)
-        )
-        rejected_reference_value = value.get("last_rejected_reference_tps")
-        last_rejected_reference_tps = (
-            None
-            if rejected_reference_value is None
-            else float(rejected_reference_value)
+        ratio = _optional_float(value.get("control_ratio"))
+        last_ratio = _optional_float(value.get("last_control_ratio"))
+        last_min = _optional_float(value.get("last_rejected_min"))
+        last_max = _optional_float(value.get("last_rejected_max"))
+        reference_tps = _optional_float(value.get("reference_tps"))
+        last_rejected_reference_tps = _optional_float(
+            value.get("last_rejected_reference_tps")
         )
         stable = value["stable"]
         measured_at = value["measured_at"]

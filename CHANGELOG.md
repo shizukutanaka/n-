@@ -27,6 +27,7 @@
 
 ### Changed
 
+- bench: cache 記録の読み込みで「None ならそのまま、それ以外は float に変換」が6項目ぶん手書きされていたのを `_optional_float` の1つに統合（挙動不変）
 - spec: measure の応答解析にあった整数検査（3箇所）の手書きを共有の `persist.int_at_least` に統合（挙動不変）
 - eval/spec: context の整数・有限数検査（7箇所）と spec record の整数検査（2箇所）の手書きを共有の `persist.int_at_least` / `persist.finite_number` に統合（挙動不変）
 - bench/eval: retrieval のローカル `_int_at_least` と eval cache の整数フィールド検査（7箇所の手書き）を共有の `persist.int_at_least` に統合（挙動不変）
