@@ -25,6 +25,7 @@ from nmesh.evidence import refutes
 from nmesh.orchestrate.measure import RoleIdentity
 from nmesh.orchestrate.record import role_key
 from nmesh.paths import nmesh_home
+from nmesh.persist import int_at_least
 
 from .measure import (
     KIND_NONE,
@@ -296,9 +297,7 @@ def _spec(data: object) -> SpecConfig | None:
         return None
     kind = data.get("kind")
     n_max = data.get("n_max", 0)
-    if not isinstance(kind, str) or isinstance(n_max, bool):
-        return None
-    if not isinstance(n_max, int) or n_max < 0:
+    if not isinstance(kind, str) or not int_at_least(n_max, 0):
         return None
     draft_data = data.get("draft")
     draft = _identity(draft_data) if draft_data is not None else None
@@ -379,9 +378,7 @@ def _parse(data: object) -> SpecRecord | None:
         or spec is None
         or not isinstance(engine, str)
         or not isinstance(harness, str)
-        or isinstance(repeats, bool)
-        or not isinstance(repeats, int)
-        or repeats < 3
+        or not int_at_least(repeats, 3)
         or at is None
         or not isinstance(rows, Sequence)
         or isinstance(rows, (str, bytes))
