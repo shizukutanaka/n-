@@ -11,7 +11,6 @@ configuration it was not measured on.
 from __future__ import annotations
 
 import json
-import math
 import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
@@ -20,7 +19,7 @@ from pathlib import Path
 from nmesh.eval import SUITES, suite_digest
 from nmesh.evidence import refutes
 from nmesh.paths import nmesh_home
-from nmesh.persist import finite_number, read_json_file
+from nmesh.persist import finite_number, int_at_least, read_json_file
 
 from .aggregate import MIN_REPEATS
 from .measure import DelegationRun, RoleIdentity
@@ -355,7 +354,7 @@ def _role(data: object) -> RoleIdentity | None:
 
 
 def _count(value: object, limit: int | None = None) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+    if not int_at_least(value, 0):
         return None
     if limit is not None and value > limit:
         return None
@@ -363,9 +362,7 @@ def _count(value: object, limit: int | None = None) -> int | None:
 
 
 def _ratio(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+    if not finite_number(value) or not 0.0 <= value <= 1.0:
         return None
     return float(value)
 
@@ -444,12 +441,8 @@ def _parse(data: object) -> DelegationRecord | None:
         or reference_tps < 0
         or not isinstance(epoch, str)
         or epoch not in {"unknown", "healthy", "degraded"}
-        or isinstance(repeats, bool)
-        or not isinstance(repeats, int)
-        or repeats < 1
-        or isinstance(unstable_tasks, bool)
-        or not isinstance(unstable_tasks, int)
-        or unstable_tasks < 0
+        or not int_at_least(repeats, 1)
+        or not int_at_least(unstable_tasks, 0)
     ):
         return None
     return DelegationRecord(

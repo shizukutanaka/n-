@@ -27,6 +27,7 @@
 
 ### Changed
 
+- bench/orchestrate: embed 記録の有限数検査（4箇所）と orchestrate record の整数・比率検査（4箇所）の手書きを共有の `persist.finite_number` / `persist.int_at_least` に統合（挙動不変）
 - bench/eval: retrieval のローカル `_int_at_least` と eval cache の整数フィールド検査（7箇所の手書き）を共有の `persist.int_at_least` に統合（挙動不変）
 - runtime: supervisor の state.json「書込みか削除か」の重複（4箇所）を `_persist_or_remove_state` に統合（挙動不変）
 - bench: retrieval の整数フィールド検査（16箇所の重複）を `_int_at_least` に統合（挙動不変）

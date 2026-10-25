@@ -12,7 +12,7 @@ from pathlib import Path
 import httpx
 
 from nmesh.paths import nmesh_home
-from nmesh.persist import int_at_least
+from nmesh.persist import finite_number, int_at_least
 
 EMBED_HARNESS_VERSION = "embed-v1"
 EMBED_CAP_TRUNCATION_RATIO = 0.9
@@ -143,21 +143,13 @@ def _record(data: object) -> EmbedRecord | None:
             or not int_at_least(served_large, 0)
             or not int_at_least(encode_input_tokens, 0)
             or not int_at_least(runs, 1)
-            or isinstance(encode_tps, bool)
-            or not isinstance(encode_tps, (int, float))
-            or not math.isfinite(encode_tps)
+            or not finite_number(encode_tps)
             or encode_tps < 0
-            or isinstance(encode_tps_min, bool)
-            or not isinstance(encode_tps_min, (int, float))
-            or not math.isfinite(encode_tps_min)
+            or not finite_number(encode_tps_min)
             or encode_tps_min < 0
-            or isinstance(encode_tps_max, bool)
-            or not isinstance(encode_tps_max, (int, float))
-            or not math.isfinite(encode_tps_max)
+            or not finite_number(encode_tps_max)
             or encode_tps_max < 0
-            or isinstance(at, bool)
-            or not isinstance(at, (int, float))
-            or not math.isfinite(at)
+            or not finite_number(at)
             or at < 0
         ):
             return None
