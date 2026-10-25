@@ -27,6 +27,7 @@
 
 ### Changed
 
+- gateway: llama.cpp の FIM 用 `input_extra` から各チャンクの `text` を集める処理が infill のルーティング用ビューとトークン見積の 2 箇所に同じまま書かれていたのを `_input_extra_texts` の 1 つに統合（挙動不変）
 - planner: 候補生成で「見積→GPU層数→バックエンド→メモリ分割」を2回書いていた処理を局所関数 `fit` の1つに統合（挙動不変、テスト中の計画 552 件が変更前と一致）
 - spec: measure の応答解析にあった整数検査（3箇所）の手書きを共有の `persist.int_at_least` に統合（挙動不変）
 - eval/spec: context の整数・有限数検査（7箇所）と spec record の整数検査（2箇所）の手書きを共有の `persist.int_at_least` / `persist.finite_number` に統合（挙動不変）

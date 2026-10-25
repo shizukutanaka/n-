@@ -394,20 +394,25 @@ def _content(request: Mapping[str, object]) -> str:
     return ""
 
 
+def _input_extra_texts(request: Mapping[str, object]) -> list[str]:
+    """``text`` of each chunk in llama.cpp's FIM ``input_extra`` list."""
+    input_extra = request.get("input_extra")
+    if not isinstance(input_extra, list):
+        return []
+    return [
+        text
+        for item in input_extra
+        if isinstance(item, Mapping) and isinstance(text := item.get("text"), str)
+    ]
+
+
 def _infill_routing_view(request: Mapping[str, object]) -> dict[str, object]:
     parts: list[str] = []
     for key in ("input_prefix", "prompt", "input_suffix"):
         value = request.get(key)
         if isinstance(value, str):
             parts.append(value)
-    input_extra = request.get("input_extra")
-    if isinstance(input_extra, list):
-        for item in input_extra:
-            if not isinstance(item, Mapping):
-                continue
-            text = item.get("text")
-            if isinstance(text, str):
-                parts.append(text)
+    parts.extend(_input_extra_texts(request))
 
     view: dict[str, object] = {**request, "prompt": " ".join(parts)}
     n_predict = request.get("n_predict")
@@ -862,14 +867,7 @@ def _forward_timeout(
             texts.append(extra)
         elif isinstance(extra, list):
             texts.extend(item for item in extra if isinstance(item, str))
-    input_extra = request.get("input_extra")
-    if isinstance(input_extra, list):
-        for item in input_extra:
-            if not isinstance(item, Mapping):
-                continue
-            text = item.get("text")
-            if isinstance(text, str):
-                texts.append(text)
+    texts.extend(_input_extra_texts(request))
     tokens = estimate_tokens(
         " ".join(texts),
         calibration_for(
