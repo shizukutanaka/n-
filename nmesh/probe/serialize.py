@@ -217,8 +217,6 @@ def profile_from_dict(data: Mapping[str, object]) -> HardwareProfile:
     tier_value = _field(data, "tier")
     try:
         tier = Tier(tier_value)
-    except TypeError as error:
-        raise TypeError("profile field 'tier' must be a string") from error
     except ValueError as error:
         raise ValueError("profile field 'tier' is invalid") from error
     total_ram = _nonnegative_int(_field(data, "total_ram_bytes"), "total_ram_bytes")

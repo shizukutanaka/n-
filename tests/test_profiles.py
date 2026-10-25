@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -88,6 +89,86 @@ def test_profile_rejects_free_vram_above_total() -> None:
     data["gpus"][0]["free_vram_bytes"] = data["gpus"][0]["total_vram_bytes"] + 1
     with pytest.raises(ValueError, match="exceeds"):
         profile_from_dict(data)
+
+
+def _set(path: tuple[str | int, ...], value: object):
+    def mutate(data: dict) -> dict:
+        target = data
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+        return data
+    return mutate
+
+
+@pytest.mark.parametrize(("mutate", "error", "message"), [
+    pytest.param(lambda data: [], TypeError, "profile must be an object", id="root"),
+    pytest.param(lambda data: {k: v for k, v in data.items() if k != "os"},
+                 ValueError, "'os' is missing", id="missing"),
+    pytest.param(_set(("os",), 1), TypeError, "'os' must be a string", id="os-type"),
+    pytest.param(_set(("os",), "beos"), ValueError, "'os' must be windows", id="os"),
+    pytest.param(_set(("gpus",), {}), TypeError, "'gpus' must be a list", id="gpus"),
+    pytest.param(_set(("gpus",), [1]), TypeError, "'gpus[0]' must be an object",
+                 id="gpu"),
+    pytest.param(_set(("gpus", 0, "vendor"), 1), TypeError,
+                 "'gpus[0].vendor' must be a string", id="vendor-type"),
+    pytest.param(_set(("gpus", 0, "vendor"), "sgi"), ValueError,
+                 "'vendor' is invalid", id="vendor"),
+    pytest.param(_set(("gpus", 0, "compute_capability"), "8.9"), TypeError,
+                 "compute_capability' must be a list", id="cc-type"),
+    pytest.param(_set(("gpus", 0, "compute_capability"), [8]), ValueError,
+                 "compute_capability' is invalid", id="cc-len"),
+    pytest.param(_set(("gpus", 0, "compute_capability"), [8, "9"]), TypeError,
+                 "must contain integers", id="cc-item"),
+    pytest.param(_set(("gpus", 0, "compute_capability"), [8, -1]), ValueError,
+                 "compute_capability' must be non-negative", id="cc-negative"),
+    pytest.param(_set(("gpus", 0, "driving_display"), "yes"), TypeError,
+                 "driving_display' must be a boolean", id="display"),
+    pytest.param(_set(("gpus", 0, "vram_source"), 1), TypeError,
+                 "vram_source' must be a string", id="vram-source-type"),
+    pytest.param(_set(("gpus", 0, "vram_source"), "dmi"), ValueError,
+                 "'vram_source' is invalid", id="vram-source"),
+    pytest.param(_set(("gpus", 0, "name"), 5), TypeError,
+                 "'gpus[0].name' must be a string", id="name"),
+    pytest.param(_set(("gpus", 0, "index"), True), TypeError,
+                 "'gpus[0].index' must be an integer", id="index-type"),
+    pytest.param(_set(("gpus", 0, "index"), -1), ValueError,
+                 "'gpus[0].index' must be non-negative", id="index-negative"),
+    pytest.param(_set(("backend_flags",), []), TypeError,
+                 "'backend_flags' must be an object", id="flags-type"),
+    pytest.param(_set(("backend_flags",), {"llamacpp": "x"}), TypeError,
+                 "'backend_flags.llamacpp' must be a list", id="flags-value"),
+    pytest.param(_set(("backend_flags",), {"llamacpp": [1]}), TypeError,
+                 "'backend_flags.llamacpp' must contain strings", id="flags-item"),
+    pytest.param(_set(("backend_gpu_devices",), {"llamacpp": "x"}), TypeError,
+                 "'backend_gpu_devices.llamacpp' must be a list", id="devices-value"),
+    pytest.param(_set(("backend_gpu_devices",), {"llamacpp": [1]}), TypeError,
+                 "'backend_gpu_devices.llamacpp' must contain strings",
+                 id="devices-item"),
+    pytest.param(_set(("available_backends",), {1: "x"}), TypeError,
+                 "available_backends keys must be strings", id="backends-key"),
+    pytest.param(_set(("available_backends",), {"llamacpp": 1}), TypeError,
+                 "available_backends.llamacpp must be a string", id="backends-value"),
+    pytest.param(_set(("backend_paths",), {1: "x"}), TypeError,
+                 "backend_paths keys must be strings", id="paths-key"),
+    pytest.param(_set(("backend_paths",), {"llamacpp": None}), TypeError,
+                 "backend_paths.llamacpp must be a string", id="paths-value"),
+    pytest.param(_set(("tier",), "t9"), ValueError, "'tier' is invalid", id="tier"),
+    pytest.param(_set(("unified_memory",), "no"), TypeError,
+                 "'unified_memory' must be a boolean", id="unified"),
+    pytest.param(_set(("total_ram_bytes",), True), TypeError,
+                 "'total_ram_bytes' must be an integer", id="ram-type"),
+    pytest.param(_set(("total_ram_bytes",), -1), ValueError,
+                 "'total_ram_bytes' must be non-negative", id="ram-negative"),
+])
+def test_profile_rejects_each_malformed_field(mutate, error, message) -> None:
+    """Every validation branch of profile_from_dict names the field and the
+    expected shape, so a hand-edited profile fails with a usable message."""
+    data = json.loads(
+        (PROFILE_DIR / "t3-rtx4090-24gb.json").read_text(encoding="utf-8")
+    )
+    with pytest.raises(error, match=re.escape(message)):
+        profile_from_dict(mutate(data))
 
 
 def test_profile_rejects_available_ram_above_total() -> None:
