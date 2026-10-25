@@ -28,6 +28,7 @@
 ### Changed
 
 - artifact: GGUF ヘッダ読み取りで、型タグ→struct 書式の表と型タグ→バイト数の表を別々に持ち、配列ヘッダの読み取りも `value`/`skip_value` に 2 回書いていたのを、`_SCALAR_FORMATS` の 1 表（バイト数は `struct.calcsize` で導出）と `array_header` の 1 つに統合（挙動不変。型タグを片方の表にだけ足して読み飛ばし位置がずれる余地をなくす）
+- persist: `{"results": {...}}` 形式のキャッシュを一時ファイル経由で原子的に書き出す処理が bench/embed・bench/retrieval・eval/cache・eval/context・orchestrate/record・spec/record の6箇所に同じまま書かれていたのを `persist.write_results_cache` の1つに統合（挙動不変、−79行）
 - planner: 候補生成で「見積→GPU層数→バックエンド→メモリ分割」を2回書いていた処理を局所関数 `fit` の1つに統合（挙動不変、テスト中の計画 552 件が変更前と一致）
 - spec: measure の応答解析にあった整数検査（3箇所）の手書きを共有の `persist.int_at_least` に統合（挙動不変）
 - eval/spec: context の整数・有限数検査（7箇所）と spec record の整数検査（2箇所）の手書きを共有の `persist.int_at_least` / `persist.finite_number` に統合（挙動不変）
