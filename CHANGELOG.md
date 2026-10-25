@@ -28,6 +28,7 @@
 ### Changed
 
 - artifacts: 分割 GGUF の shard 列挙（正規表現と全 shard 展開）が bench/epoch と runtime/acquisition に同じまま2つあったのを `artifacts.SPLIT_GGUF_RE` / `artifacts.gguf_parts` の1つに統合（挙動不変）
+- planner: 候補生成で「見積→GPU層数→バックエンド→メモリ分割」を2回書いていた処理を局所関数 `fit` の1つに統合（挙動不変、テスト中の計画 552 件が変更前と一致）
 - spec: measure の応答解析にあった整数検査（3箇所）の手書きを共有の `persist.int_at_least` に統合（挙動不変）
 - eval/spec: context の整数・有限数検査（7箇所）と spec record の整数検査（2箇所）の手書きを共有の `persist.int_at_least` / `persist.finite_number` に統合（挙動不変）
 - bench/eval: retrieval のローカル `_int_at_least` と eval cache の整数フィールド検査（7箇所の手書き）を共有の `persist.int_at_least` に統合（挙動不変）

@@ -1125,19 +1125,27 @@ def _candidate_for(
                     ram_budget=max(estimate.ram_budget - reserved_ram_bytes, 0.0),
                 )
 
+            def fit(
+                kv_quant: str, context_value: int,
+            ) -> tuple[MemoryEstimate, int, str, bool, float, float]:
+                base = estimate_candidate(kv_quant, context_value)
+                layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
+                if profile.tier == Tier.T0_CPU:
+                    layers = 0
+                backend, installed = _backend(profile, model, layers)
+                if backend == "mlx" and 0 < layers < model.n_layers:
+                    # mlx_lm.server loads the whole model; there is no partial
+                    # -ngl knob to emit, so the split must be all-or-nothing —
+                    # budgeting a fraction would commit VRAM the service never
+                    # actually leaves free.
+                    layers = model.n_layers
+                gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
+                return base, layers, backend, installed, gpu_bytes, cpu_bytes
+
             accounted_kv_quant = policy.kv_quant
-            base = estimate_candidate(accounted_kv_quant, context)
-            layers = solve_gpu_layers(base, model.n_layers) if profile.gpus else 0
-            if profile.tier == Tier.T0_CPU:
-                layers = 0
-            backend, installed = _backend(profile, model, layers)
-            if backend == "mlx" and 0 < layers < model.n_layers:
-                # mlx_lm.server loads the whole model; there is no partial
-                # -ngl knob to emit, so the split must be all-or-nothing —
-                # budgeting a fraction would commit VRAM the service never
-                # actually leaves free.
-                layers = model.n_layers
-            gpu_bytes, cpu_bytes = _split_memory(base, model.n_layers, layers)
+            base, layers, backend, installed, gpu_bytes, cpu_bytes = fit(
+                accounted_kv_quant, context,
+            )
             context_before_embed_cap = None
             embed_context_cap = None
             embed_retrieval_limit = None
@@ -1150,18 +1158,8 @@ def _candidate_for(
                 if embed_context_cap is not None and embed_context_cap < context:
                     context_before_embed_cap = context
                     context = embed_context_cap
-                    base = estimate_candidate(accounted_kv_quant, context)
-                    layers = (
-                        solve_gpu_layers(base, model.n_layers)
-                        if profile.gpus else 0
-                    )
-                    if profile.tier == Tier.T0_CPU:
-                        layers = 0
-                    backend, installed = _backend(profile, model, layers)
-                    if backend == "mlx" and 0 < layers < model.n_layers:
-                        layers = model.n_layers
-                    gpu_bytes, cpu_bytes = _split_memory(
-                        base, model.n_layers, layers,
+                    base, layers, backend, installed, gpu_bytes, cpu_bytes = fit(
+                        accounted_kv_quant, context,
                     )
             if _is_embed_only(model) and embed_retrieval_limits is not None:
                 embed_retrieval_limit = embed_retrieval_limits.get((
