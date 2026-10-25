@@ -769,6 +769,31 @@ def test_engine_install_accepts_backend_positional(
     assert seen == {"tag": None, "variant": "auto"}
 
 
+def test_engine_use_and_remove_report_json_and_errors(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    item = engine.InstalledEngine(
+        "llamacpp", "b10830", "cpu", tmp_path / "llama-server.exe",
+        None, "sha", "asset.zip", 0.0, (),
+    )
+    monkeypatch.setattr(engine, "use", lambda tag: item)
+    monkeypatch.setattr(engine, "remove", lambda tag: True)
+
+    assert cli.main(["engine", "use", "b10830", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["active"]["tag"] == "b10830"
+    assert cli.main(["engine", "remove", "b10830", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "removed": "b10830", "active_cleared": True,
+    }
+
+    def missing(tag: str) -> engine.InstalledEngine:
+        raise FileNotFoundError(f"llama.cpp engine is not installed: {tag}")
+
+    monkeypatch.setattr(engine, "use", missing)
+    assert cli.main(["engine", "use", "b0"]) == 1
+    assert capsys.readouterr().err.strip() == "llama.cpp engine is not installed: b0"
+
+
 def test_engine_install_rejects_unknown_backend(capsys) -> None:
     with pytest.raises(SystemExit) as error:
         cli.main(["engine", "install", "vllm"])
