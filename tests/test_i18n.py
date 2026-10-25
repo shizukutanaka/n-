@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import locale
+import re
 from dataclasses import replace
+from pathlib import Path
 
+from nmesh import i18n
 from nmesh.catalog.loader import _model_from_mapping
 from nmesh.i18n import MESSAGES, lang, t
 from nmesh.planner import Policy, build_plan
 
 from .test_planner import profile
+
+_LITERAL_KEY = re.compile(r'\bt\(\s*"([a-z_]+\.[a-z0-9_.]+)"')
 
 
 def _model(model_id: str, quality: float, languages: list[str]) -> dict[str, object]:
@@ -46,15 +51,19 @@ def test_translation_is_failure_tolerant() -> None:
     assert t("warn.language_coverage", "ja") != ""
 
 
-def test_context_probe_messages_exist_in_both_languages() -> None:
-    for key in (
-        "warn.context_depth_lost",
-        "warn.context_depth_broken",
-        "note.context_probe_uncontrolled",
-        "label.eval_context_control",
-    ):
-        assert t(key, "en")
-        assert t(key, "ja")
+def test_every_literal_message_key_exists_in_both_languages() -> None:
+    """A key passed to t() that is missing from a table is shown raw to the user."""
+    package = Path(i18n.__file__).parent
+    keys = {
+        key
+        for source in package.rglob("*.py")
+        if source.name != "i18n.py"
+        for key in _LITERAL_KEY.findall(source.read_text(encoding="utf-8"))
+    }
+    assert len(keys) > 300
+    for lang_code in ("en", "ja"):
+        missing = sorted(keys - set(MESSAGES[lang_code]))
+        assert not missing, f"{lang_code} is missing {missing}"
 
 
 def test_language_resolution_precedence_and_fallback(monkeypatch) -> None:
