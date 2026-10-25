@@ -27,6 +27,7 @@
 
 ### Changed
 
+- gateway: llama.cpp の FIM 用 `input_extra` から各チャンクの `text` を集める処理が infill のルーティング用ビューとトークン見積の 2 箇所に同じまま書かれていたのを `_input_extra_texts` の 1 つに統合（挙動不変）
 - artifacts: 分割 GGUF の shard 列挙（正規表現と全 shard 展開）が bench/epoch と runtime/acquisition に同じまま2つあったのを `artifacts.SPLIT_GGUF_RE` / `artifacts.gguf_parts` の1つに統合（挙動不変）
 - eval: 「カンマ区切りで N 個の英単語か」を採点する関数が suite（`_three_items`、3 個固定）と generated（`_items(count)`）に同じ本体で 2 つあったのを suite の `_comma_items(count)` の 1 つに統合（採点結果と suite digest は不変）
 - supervisor: エンジン子プロセスの停止手順（プロセスグループへ SIGTERM → 10 秒待って SIGKILL、Windows は terminate/kill）が `down` と `_stop_process` に同じまま 2 回書かれていたのを `_terminate` の 1 つに統合（挙動不変）
