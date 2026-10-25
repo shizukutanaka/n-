@@ -1,4 +1,4 @@
-"""Shared reader for nmesh-owned JSON state files.
+"""Shared reader and cache writer for nmesh-owned JSON state files.
 
 A missing state file is a normal first-run condition and stays silent. A
 file that exists but cannot be parsed — corrupt, hand-edited into invalid
@@ -10,11 +10,17 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
+from collections.abc import Mapping
+from dataclasses import asdict
 from pathlib import Path
-from typing import TypeGuard
+from typing import TYPE_CHECKING, TypeGuard
 
 from nmesh import i18n
+
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
 
 _warned: set[str] = set()
 
@@ -62,3 +68,32 @@ def finite_number(value: object) -> TypeGuard[float]:
         and not isinstance(value, bool)
         and math.isfinite(value)
     )
+
+
+def write_results_cache(
+    target: Path, records: Mapping[str, DataclassInstance],
+) -> None:
+    """Atomically replace *target* with ``{"results": {key: record}}``.
+
+    The payload is staged in a per-process temporary file beside *target*
+    so a crash mid-write never leaves a truncated cache; a failed write
+    removes its own staging file and re-raises.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(
+                {"results": {key: asdict(value) for key, value in records.items()}},
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        os.replace(temporary, target)
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        raise
