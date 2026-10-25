@@ -173,6 +173,81 @@ def test_explicit_cuda_version_selects_matching_asset() -> None:
     assert asset.extra_assets == ("cudart-llama-bin-win-cuda-12.4-x64.zip",)
 
 
+_WIN = {"system": "windows", "machine": "AMD64"}
+_LINUX = {"system": "linux", "machine": "x86_64"}
+_CPU_WIN = "llama-b1-bin-win-cpu-x64.zip"
+_CPU_LINUX = "llama-b1-bin-ubuntu-x64.tar.gz"
+
+
+@pytest.mark.parametrize(
+    ("platform", "accelerator", "variant", "assets", "chosen", "extra", "warning"),
+    [
+        pytest.param(_WIN, "nvidia", "auto", [
+            "llama-b1-bin-win-cuda-11.7-x64.zip", "llama-b1-bin-win-cuda-12.4-x64.zip",
+            "cudart-llama-bin-win-cuda-12.4-x64.zip", _CPU_WIN,
+        ], "llama-b1-bin-win-cuda-12.4-x64.zip",
+            ("cudart-llama-bin-win-cuda-12.4-x64.zip",), None, id="win-auto-nvidia"),
+        pytest.param(_WIN, "nvidia", "auto", [_CPU_WIN], _CPU_WIN, (),
+                     "no published CUDA asset", id="win-auto-nvidia-no-cuda"),
+        pytest.param(_WIN, "amd", "auto", ["llama-b1-bin-win-rocm-6.1-x64.zip", _CPU_WIN],
+                     "llama-b1-bin-win-rocm-6.1-x64.zip", (), None, id="win-auto-amd"),
+        pytest.param(_WIN, "intel", "auto", ["llama-b1-bin-win-sycl-x64.zip", _CPU_WIN],
+                     "llama-b1-bin-win-sycl-x64.zip", (), None, id="win-auto-intel"),
+        pytest.param(_WIN, None, "auto", [_CPU_WIN], _CPU_WIN, (), None, id="win-auto-cpu"),
+        pytest.param(_WIN, "nvidia", "cpu", [_CPU_WIN], _CPU_WIN, (), None, id="win-cpu"),
+        pytest.param(_WIN, None, "cuda", [
+            "llama-b1-bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip",
+        ], "llama-b1-bin-win-cuda-12.4-x64.zip",
+            ("cudart-llama-bin-win-cuda-12.4-x64.zip",), None, id="win-cuda-bare"),
+        pytest.param(_WIN, None, "cuda-12.4", ["llama-b1-bin-win-cuda-12.4-x64.zip"],
+                     "llama-b1-bin-win-cuda-12.4-x64.zip", (), None,
+                     id="win-cuda-without-cudart"),
+        pytest.param(_WIN, None, "vulkan", ["llama-b1-bin-win-vulkan-x64.zip"],
+                     "llama-b1-bin-win-vulkan-x64.zip", (), None, id="win-vulkan"),
+        pytest.param(_WIN, None, "rocm-6.1", ["llama-b1-bin-win-rocm-6.1-x64.zip"],
+                     "llama-b1-bin-win-rocm-6.1-x64.zip", (), None, id="win-rocm-version"),
+        pytest.param(_WIN, None, "sycl", ["llama-b1-bin-win-sycl-x64.zip"],
+                     "llama-b1-bin-win-sycl-x64.zip", (), None, id="win-sycl"),
+        pytest.param(_WIN, None, "opencl", ["llama-b1-bin-win-opencl-x64.zip"],
+                     "llama-b1-bin-win-opencl-x64.zip", (), None, id="win-other"),
+        pytest.param({"system": "windows", "machine": "ARM64"}, "nvidia", "auto",
+                     ["llama-b1-bin-win-cpu-arm64.zip"], "llama-b1-bin-win-cpu-arm64.zip",
+                     (), None, id="win-arm-auto"),
+        pytest.param(_LINUX, "amd", "auto", ["llama-b1-bin-ubuntu-rocm-6.1-x64.tar.gz", _CPU_LINUX],
+                     "llama-b1-bin-ubuntu-rocm-6.1-x64.tar.gz", (), None, id="linux-auto-amd"),
+        pytest.param(_LINUX, "intel", "auto", ["llama-b1-bin-ubuntu-sycl-fp16-x64.tar.gz", _CPU_LINUX],
+                     "llama-b1-bin-ubuntu-sycl-fp16-x64.tar.gz", (), None, id="linux-auto-intel"),
+        pytest.param(_LINUX, "intel", "auto", [_CPU_LINUX], _CPU_LINUX, (),
+                     "falling back to", id="linux-auto-unpublished"),
+        pytest.param(_LINUX, None, "auto", [_CPU_LINUX], _CPU_LINUX, (), None, id="linux-auto-cpu"),
+        pytest.param(_LINUX, "nvidia", "cpu", [_CPU_LINUX], _CPU_LINUX, (), None, id="linux-cpu"),
+        pytest.param(_LINUX, None, "rocm", [
+            "llama-b1-bin-ubuntu-rocm-6.1-x64.tar.gz", "llama-b1-bin-ubuntu-rocm-6.3-x64.tar.gz",
+        ], "llama-b1-bin-ubuntu-rocm-6.3-x64.tar.gz", (), None, id="linux-rocm-bare"),
+        pytest.param(_LINUX, None, "rocm-6.1", ["llama-b1-bin-ubuntu-rocm-6.1-x64.tar.gz"],
+                     "llama-b1-bin-ubuntu-rocm-6.1-x64.tar.gz", (), None, id="linux-rocm-version"),
+        pytest.param(_LINUX, None, "vulkan", ["llama-b1-bin-ubuntu-vulkan-x64.tar.gz"],
+                     "llama-b1-bin-ubuntu-vulkan-x64.tar.gz", (), None, id="linux-vulkan"),
+        pytest.param(_LINUX, None, "sycl", ["llama-b1-bin-ubuntu-sycl-fp16-x64.tar.gz"],
+                     "llama-b1-bin-ubuntu-sycl-fp16-x64.tar.gz", (), None, id="linux-sycl"),
+        pytest.param(_LINUX, None, "opencl", ["llama-b1-bin-ubuntu-opencl-x64.tar.gz"],
+                     "llama-b1-bin-ubuntu-opencl-x64.tar.gz", (), None, id="linux-other"),
+        pytest.param({"system": "linux", "machine": "aarch64"}, "nvidia", "auto",
+                     ["llama-b1-bin-ubuntu-arm64.tar.gz"], "llama-b1-bin-ubuntu-arm64.tar.gz",
+                     (), None, id="linux-arm-auto"),
+    ],
+)
+def test_select_asset_per_platform_and_variant(
+    platform, accelerator, variant, assets, chosen, extra, warning
+) -> None:
+    asset, actual_warning = engine.select_asset(
+        "b1", assets, accelerator=accelerator, variant=variant, **platform
+    )
+    assert asset.asset == chosen
+    assert asset.extra_assets == extra
+    assert (actual_warning or "").find(warning or "") >= 0 if warning else actual_warning is None
+
+
 def test_install_selects_shallowest_executable(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(engine, "engines_dir", lambda: tmp_path)
     archive = io.BytesIO()

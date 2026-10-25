@@ -187,15 +187,7 @@ def select_asset(
                     assets,
                     rf"{re.escape(_asset_name(tag, 'win-cuda'))}-\d+\.\d+-x64\.zip",
                 )
-                if chosen is not None:
-                    version = re.search(r"-cuda-(\d+\.\d+)-", chosen, re.IGNORECASE)
-                    if version:
-                        cudart = (
-                            f"cudart-llama-bin-win-cuda-{version.group(1)}-x64.zip"
-                        )
-                        if cudart in published:
-                            extra = (cudart,)
-                else:
+                if chosen is None:
                     warning = "no published CUDA asset; falling back to the CPU asset"
             elif accelerator == "amd":
                 chosen = _asset_for(
@@ -214,20 +206,9 @@ def select_asset(
                 assets,
                 rf"{re.escape(_asset_name(tag, f'win-{family}'))}-\d+\.\d+-x64\.zip",
             )
-            if chosen is not None and family == "cuda":
-                version = re.search(r"-cuda-(\d+\.\d+)-", chosen, re.IGNORECASE)
-                if version:
-                    cudart = (
-                        f"cudart-llama-bin-win-cuda-{version.group(1)}-x64.zip"
-                    )
-                    if cudart in published:
-                        extra = (cudart,)
         elif requested_variant.startswith("cuda"):
             suffix = requested_variant.removeprefix("cuda-")
             chosen = _asset_name(tag, f"win-cuda-{suffix}-x64.zip")
-            extra_name = f"cudart-llama-bin-win-cuda-{suffix}-x64.zip"
-            if extra_name in published:
-                extra = (extra_name,)
         elif requested_variant == "vulkan":
             chosen = _asset_name(tag, "win-vulkan-x64.zip")
         elif requested_variant.startswith("rocm"):
@@ -298,7 +279,14 @@ def select_asset(
         else:
             chosen = _asset_name(tag, f"ubuntu-{requested_variant}-x64.tar.gz")
 
-    if chosen is not None and chosen.startswith(
+    win_cuda = _asset_name(tag, "win-cuda-").lower()
+    if chosen is not None and chosen.lower().startswith(win_cuda):
+        # The CUDA runtime ships as a separate, tag-less zip on Windows.
+        cuda_suffix = chosen[len(win_cuda):-len("-x64.zip")]
+        cudart = f"cudart-llama-bin-win-cuda-{cuda_suffix}-x64.zip"
+        if cudart in published:
+            extra = (cudart,)
+    elif chosen is not None and chosen.startswith(
         _asset_name(tag, "ubuntu-cuda")
     ):
         cuda_version = re.search(r"-cuda-(\d+\.\d+)-", chosen, re.IGNORECASE)
