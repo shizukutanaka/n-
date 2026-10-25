@@ -28,6 +28,7 @@
 ### Changed
 
 - probe: `profile_from_dict` の検証分岐 31 件（型違い・欠落・範囲外・不正な列挙値）を表形式の 1 テストで固定（カバレッジ 71%→95%）。`Tier(value)` は型違いでも `ValueError` を返すため到達しない `except TypeError` 分岐を削除
+- watch: qiita・zenn・x の各ソースで「応答の行を辞書として読み、必須キーが空なら飛ばす」前処理が同じまま3回書かれていたのを `_keyed_rows` の1つに統合（挙動不変）
 - artifact: GGUF ヘッダ読み取りで、型タグ→struct 書式の表と型タグ→バイト数の表を別々に持ち、配列ヘッダの読み取りも `value`/`skip_value` に 2 回書いていたのを、`_SCALAR_FORMATS` の 1 表（バイト数は `struct.calcsize` で導出）と `array_header` の 1 つに統合（挙動不変。型タグを片方の表にだけ足して読み飛ばし位置がずれる余地をなくす）
 - gateway: llama.cpp の FIM 用 `input_extra` から各チャンクの `text` を集める処理が infill のルーティング用ビューとトークン見積の 2 箇所に同じまま書かれていたのを `_input_extra_texts` の 1 つに統合（挙動不変）
 - probe: プロファイル読み込みの `os`・`vendor`・`vram_source` の検証を、許容値を1つずつ if で列挙する形から `Literal` 型（`OperatingSystem`/`Vendor`/`VramSource`）の定義そのものと照合する形に統合（挙動不変、−15行。型に値を足したのに検証側に足し忘れて正しいプロファイルが拒否される余地をなくす）
