@@ -29,6 +29,7 @@
 
 - supervisor: エンジン子プロセスの停止手順（プロセスグループへ SIGTERM → 10 秒待って SIGKILL、Windows は terminate/kill）が `down` と `_stop_process` に同じまま 2 回書かれていたのを `_terminate` の 1 つに統合（挙動不変）
 - persist: `{"results": {...}}` 形式のキャッシュを一時ファイル経由で原子的に書き出す処理が bench/embed・bench/retrieval・eval/cache・eval/context・orchestrate/record・spec/record の6箇所に同じまま書かれていたのを `persist.write_results_cache` の1つに統合（挙動不変、−79行）
+- watch: 量子化ラベル（Q4_K_M・IQ2_XS・fp16 など）を拾う正規表現 `_QUANT_RE` が extract と verify に同じまま 2 つ定義されていたのを extract の 1 つに統合（挙動不変。片方だけ直して抽出と照合でラベルの範囲がずれる余地をなくす）
 - planner: 候補生成で「見積→GPU層数→バックエンド→メモリ分割」を2回書いていた処理を局所関数 `fit` の1つに統合（挙動不変、テスト中の計画 552 件が変更前と一致）
 - spec: measure の応答解析にあった整数検査（3箇所）の手書きを共有の `persist.int_at_least` に統合（挙動不変）
 - eval/spec: context の整数・有限数検査（7箇所）と spec record の整数検査（2箇所）の手書きを共有の `persist.int_at_least` / `persist.finite_number` に統合（挙動不変）
