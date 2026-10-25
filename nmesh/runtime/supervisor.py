@@ -210,6 +210,27 @@ class RuntimeStatus:
     warnings: list[str] = field(default_factory=list)
 
 
+def _terminate(process: ProcessLike) -> None:
+    """SIGTERM the process group (plain terminate on Windows), SIGKILL after 10 s."""
+    if is_windows():
+        process.terminate()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except OSError:
+            process.terminate()
+    try:
+        process.wait(timeout=10)
+    except (subprocess.TimeoutExpired, TimeoutError):
+        if not is_windows():
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                process.kill()
+        else:
+            process.kill()
+
+
 class Supervisor:
     def __init__(self, launcher: Launcher | None = None, state_path: Path | None = None,
                  health_timeout: float = HEALTH_TIMEOUT,
@@ -1497,23 +1518,7 @@ class Supervisor:
                 if process.poll() is not None:
                     report(name, report_fields)
                     continue
-                if is_windows():
-                    process.terminate()
-                else:
-                    try:
-                        os.killpg(process.pid, signal.SIGTERM)
-                    except OSError:
-                        process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except (subprocess.TimeoutExpired, TimeoutError):
-                    if not is_windows():
-                        try:
-                            os.killpg(process.pid, signal.SIGKILL)
-                        except OSError:
-                            process.kill()
-                    else:
-                        process.kill()
+                _terminate(process)
                 report(name, report_fields)
             if state is not None:
                 gateway_retained = False
@@ -1798,23 +1803,7 @@ class Supervisor:
         if process is None:
             return
         if process.poll() is None:
-            if is_windows():
-                process.terminate()
-            else:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except OSError:
-                    process.terminate()
-            try:
-                process.wait(timeout=10)
-            except (subprocess.TimeoutExpired, TimeoutError):
-                if not is_windows():
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except OSError:
-                        process.kill()
-                else:
-                    process.kill()
+            _terminate(process)
 
     def status(self) -> RuntimeStatus:
         def planned(name: str) -> PlannedService | None:
