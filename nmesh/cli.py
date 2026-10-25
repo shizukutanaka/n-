@@ -2179,6 +2179,38 @@ def _reference_context(
     return binary, model, rid, threads
 
 
+class _ReferenceRun:
+    """Bracket a measurement with the CPU reference probe.
+
+    The reference runs once before and once after the measured command; the
+    mean of the two is this epoch's reference tok/s, and either probe failing
+    leaves the epoch ``unknown`` rather than inventing a value.
+    """
+
+    def __init__(self, service: PlannedService, *, skip: bool) -> None:
+        self.context = None if skip else _reference_context(service)
+        self.history = load_history()
+        self.key = self.context[2] if self.context is not None else ""
+        self.baseline = (
+            baseline(self.history, self.key)
+            if self.context is not None else None
+        )
+        self.before = _measure_reference_or_none(self.context)
+
+    def finish(self) -> tuple[float | None, str, int]:
+        """Measure the trailing reference; return (reference_tps, epoch, pruned)."""
+        after = _measure_reference_or_none(self.context)
+        reference_tps = (
+            statistics.mean((self.before, after))
+            if self.before is not None and after is not None
+            else None
+        )
+        epoch, pruned = _record_epoch(
+            self.history, self.key, reference_tps, self.baseline,
+        )
+        return reference_tps, epoch, pruned
+
+
 def _measure_reference_or_none(
     context: tuple[Path, Path, str, int] | None,
 ) -> float | None:
@@ -2543,13 +2575,8 @@ def _bench(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    context = None if args.no_reference else _reference_context(service)
-    history = load_history()
-    reference_baseline = (
-        baseline(history, context[2])
-        if context is not None else None
-    )
-    before_reference = _measure_reference_or_none(context)
+    reference_run = _ReferenceRun(service, skip=args.no_reference)
+    reference_baseline = reference_run.baseline
     try:
         controlled = measure_controlled(
             service,
@@ -2576,16 +2603,8 @@ def _bench(args: argparse.Namespace) -> int:
     except (OSError, RuntimeError) as error:
         print(i18n.t("err.bench_measure", i18n.lang(), error=error), file=sys.stderr)
         return 1
-    after_reference = _measure_reference_or_none(context)
-    reference_tps = (
-        statistics.mean((before_reference, after_reference))
-        if before_reference is not None and after_reference is not None
-        else None
-    )
-    reference_key = context[2] if context is not None else ""
-    epoch, pruned = _record_epoch(
-        history, reference_key, reference_tps, reference_baseline,
-    )
+    reference_tps, epoch, pruned = reference_run.finish()
+    reference_key = reference_run.key
     measurement = controlled.result
     key = benchmark_key(service.model_id, service.quant, service.backend,
                         plan.profile.gpus[0].name if plan.profile.gpus else "cpu",
@@ -3386,18 +3405,8 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
             model_id="external", quant="", backend="external",
         )
     )
-    reference_context = (
-        None if args.no_reference else _reference_context(lead)
-    )
-    history = load_history()
-    reference_key = (
-        reference_context[2] if reference_context is not None else ""
-    )
-    reference_baseline = (
-        baseline(history, reference_key)
-        if reference_context is not None else None
-    )
-    before_reference = _measure_reference_or_none(reference_context)
+    reference_run = _ReferenceRun(lead, skip=args.no_reference)
+    reference_key = reference_run.key
     try:
         runs = [
             orchestrate_measure(
@@ -3424,15 +3433,7 @@ def _orchestrate_measure_command(args: argparse.Namespace) -> int:
             for _ in range(args.repeats)
         ]
         run = combine(runs)
-        after_reference = _measure_reference_or_none(reference_context)
-        reference_tps = (
-            statistics.mean((before_reference, after_reference))
-            if before_reference is not None and after_reference is not None
-            else None
-        )
-        epoch, pruned = _record_epoch(
-            history, reference_key, reference_tps, reference_baseline,
-        )
+        reference_tps, epoch, pruned = reference_run.finish()
         save_delegation(
             run,
             reference_id=reference_key,
@@ -3769,18 +3770,8 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
                      service_fingerprint("llamacpp", draft) or "")
         if draft else None
     )
-    reference_context = (
-        None if args.no_reference else _reference_context(service)
-    )
-    history = load_history()
-    reference_key = (
-        reference_context[2] if reference_context is not None else ""
-    )
-    reference_baseline = (
-        baseline(history, reference_key)
-        if reference_context is not None else None
-    )
-    before_reference = _measure_reference_or_none(reference_context)
+    reference_run = _ReferenceRun(service, skip=args.no_reference)
+    reference_key = reference_run.key
     engine_id = engine_identity(plan.profile)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -3845,15 +3836,7 @@ def _spec_measure_command(args: argparse.Namespace) -> int:
             candidate = arm(True)
             supervisor.down()
             control_arm = arm(False)
-            after_reference = _measure_reference_or_none(reference_context)
-            reference_tps = (
-                statistics.mean((before_reference, after_reference))
-                if before_reference is not None and after_reference is not None
-                else None
-            )
-            epoch, pruned = _record_epoch(
-                history, reference_key, reference_tps, reference_baseline,
-            )
+            reference_tps, epoch, pruned = reference_run.finish()
             spec_records = load_spec_cache()
             demoted: tuple[str, ...] = ()
             if (

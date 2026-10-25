@@ -27,6 +27,7 @@
 
 ### Changed
 
+- cli: bench・spec measure・orchestrate measure の3コマンドで同じまま書かれていた参照計測の前後処理（参照コンテキスト→履歴→基準値→事前計測、事後計測→平均→epoch 判定）を `_ReferenceRun` の1つに統合（挙動不変、−17行）
 - spec: measure の応答解析にあった整数検査（3箇所）の手書きを共有の `persist.int_at_least` に統合（挙動不変）
 - eval/spec: context の整数・有限数検査（7箇所）と spec record の整数検査（2箇所）の手書きを共有の `persist.int_at_least` / `persist.finite_number` に統合（挙動不変）
 - bench/eval: retrieval のローカル `_int_at_least` と eval cache の整数フィールド検査（7箇所の手書き）を共有の `persist.int_at_least` に統合（挙動不変）
