@@ -230,11 +230,18 @@ def test_gateway_rerank_501_without_rerank_service() -> None:
 
 class _AnthropicHandler(BaseHTTPRequestHandler):
     request_body: ClassVar[dict[str, object]] = {}
+    request_path: ClassVar[str] = ""
 
     def do_POST(self) -> None:
         length = int(self.headers["Content-Length"])
         self.__class__.request_body = json.loads(self.rfile.read(length))
+        self.__class__.request_path = self.path
         self.send_response(200)
+        if self.path.endswith("/count_tokens"):
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"input_tokens": 9}).encode())
+            return
         if self.__class__.request_body.get("stream"):
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
@@ -304,6 +311,31 @@ class _ResponsesHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         return
+
+
+def test_gateway_forwards_anthropic_count_tokens_to_the_routed_service() -> None:
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _AnthropicHandler)
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        model = ModelSpec("proxy-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                          4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+        plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+        service = replace(plan.services[0], port=upstream.server_address[1])
+        plan = replace(plan, services=[service])
+        client = TestClient(create_app(plan))
+        response = client.post("/v1/messages/count_tokens", json={
+            "model": "nmesh-auto",
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        assert response.status_code == 200
+        assert response.json() == {"input_tokens": 9}
+        assert _AnthropicHandler.request_path == "/v1/messages/count_tokens"
+        assert _AnthropicHandler.request_body["model"] == service.model_ref
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join(timeout=5)
 
 
 def test_gateway_forwards_anthropic_messages_without_openai_fields() -> None:
