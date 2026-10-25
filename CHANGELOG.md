@@ -27,6 +27,7 @@
 
 ### Changed
 
+- watch: qiita・zenn・x の各ソースで「応答の行を辞書として読み、必須キーが空なら飛ばす」前処理が同じまま3回書かれていたのを `_keyed_rows` の1つに統合（挙動不変）
 - spec: measure の応答解析にあった整数検査（3箇所）の手書きを共有の `persist.int_at_least` に統合（挙動不変）
 - eval/spec: context の整数・有限数検査（7箇所）と spec record の整数検査（2箇所）の手書きを共有の `persist.int_at_least` / `persist.finite_number` に統合（挙動不変）
 - bench/eval: retrieval のローカル `_int_at_least` と eval cache の整数フィールド検査（7箇所の手書き）を共有の `persist.int_at_least` に統合（挙動不変）
