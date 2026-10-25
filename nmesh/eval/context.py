@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
+from nmesh.persist import finite_number, int_at_least
 
 
 @dataclass(frozen=True)
@@ -76,19 +76,11 @@ def _family(data: object) -> FamilyResult | None:
         control_of = data["control_of"]
         if (
             not isinstance(name, str)
-            or isinstance(passed, bool)
-            or not isinstance(passed, int)
-            or passed < 0
-            or isinstance(of, bool)
-            or not isinstance(of, int)
-            or of < 0
+            or not int_at_least(passed, 0)
+            or not int_at_least(of, 0)
             or passed > of
-            or isinstance(control_passed, bool)
-            or not isinstance(control_passed, int)
-            or control_passed < 0
-            or isinstance(control_of, bool)
-            or not isinstance(control_of, int)
-            or control_of < 0
+            or not int_at_least(control_passed, 0)
+            or not int_at_least(control_of, 0)
             or control_passed > control_of
         ):
             return None
@@ -123,16 +115,10 @@ def _record(data: object) -> ContextRecord | None:
             or not isinstance(quant, str)
             or not isinstance(backend, str)
             or not isinstance(seed, str)
-            or isinstance(requested_depth, bool)
-            or not isinstance(requested_depth, int)
-            or requested_depth < 0
-            or isinstance(served_depth, bool)
-            or not isinstance(served_depth, int)
-            or served_depth < 0
+            or not int_at_least(requested_depth, 0)
+            or not int_at_least(served_depth, 0)
             or not isinstance(probe_digest, str)
-            or not isinstance(at, (int, float))
-            or isinstance(at, bool)
-            or not math.isfinite(at)
+            or not finite_number(at)
             or not isinstance(artifact, str)
             or (
                 cache_prompt is not None
