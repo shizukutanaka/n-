@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import statistics
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 
 from nmesh.paths import nmesh_home
-from nmesh.persist import int_at_least
+from nmesh.persist import int_at_least, write_results_cache
 
 EMBED_HARNESS_VERSION = "embed-v1"
 EMBED_CAP_TRUNCATION_RATIO = 0.9
@@ -213,24 +212,7 @@ def save_embed(record: EmbedRecord, path: Path | None = None) -> Path:
         record.n_gpu_layers,
     )
     records[key] = record
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_text(
-            json.dumps(
-                {"results": {key: asdict(value) for key, value in records.items()}},
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-        os.replace(temporary, target)
-    except OSError:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
-        raise
+    write_results_cache(target, records)
     return target
 
 

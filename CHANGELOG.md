@@ -28,6 +28,7 @@
 ### Changed
 
 - telemetry: リクエストごとの `telemetry.json` 書き出しから `indent=2` を外す（`indent` 指定は json の C エンコーダを無効にし純 Python 経路になるため）。上限 10 キー×200 サンプル時の 1 記録あたり 24 ms→5.7 ms、ファイル 580 KB→428 KB。読み戻す内容は不変
+- persist: `{"results": {...}}` 形式のキャッシュを一時ファイル経由で原子的に書き出す処理が bench/embed・bench/retrieval・eval/cache・eval/context・orchestrate/record・spec/record の6箇所に同じまま書かれていたのを `persist.write_results_cache` の1つに統合（挙動不変、−79行）
 - planner: 候補生成で「見積→GPU層数→バックエンド→メモリ分割」を2回書いていた処理を局所関数 `fit` の1つに統合（挙動不変、テスト中の計画 552 件が変更前と一致）
 - spec: measure の応答解析にあった整数検査（3箇所）の手書きを共有の `persist.int_at_least` に統合（挙動不変）
 - eval/spec: context の整数・有限数検査（7箇所）と spec record の整数検査（2箇所）の手書きを共有の `persist.int_at_least` / `persist.finite_number` に統合（挙動不変）
