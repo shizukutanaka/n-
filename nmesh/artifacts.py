@@ -2,10 +2,32 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
 from nmesh.persist import read_json_file
+
+# Split GGUFs name every shard ``<prefix>-000NN-of-000MM.gguf``; the engine
+# opens part 1 and the library reads the rest, so anything that sizes or
+# verifies a model must account for all shards, not just the named file.
+SPLIT_GGUF_RE = re.compile(
+    r"^(?P<prefix>.+?)[-_.](?P<part>\d{5})-of-(?P<total>\d{5})\.gguf$",
+    re.IGNORECASE,
+)
+
+
+def gguf_parts(model: Path) -> list[Path]:
+    """Every numbered shard of a split GGUF, or just *model* itself."""
+    match = SPLIT_GGUF_RE.match(model.name)
+    if match is None:
+        return [model]
+    total = int(match.group("total"))
+    head = model.name[: match.start("part")]
+    return [
+        model.parent / f"{head}{part:05d}-of-{total:05d}.gguf"
+        for part in range(1, total + 1)
+    ]
 
 ArtifactCache = dict[str, int]
 
