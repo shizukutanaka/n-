@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
-from nmesh.persist import finite_number, int_at_least
+from nmesh.persist import finite_number, int_at_least, write_results_cache
 
 
 @dataclass(frozen=True)
@@ -183,22 +182,5 @@ def save_context(record: ContextRecord, path: Path | None = None) -> Path:
         record.cache_prompt,
     )
     records[key] = record
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_text(
-            json.dumps(
-                {"results": {key: asdict(value) for key, value in records.items()}},
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-        os.replace(temporary, target)
-    except OSError:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
-        raise
+    write_results_cache(target, records)
     return target
