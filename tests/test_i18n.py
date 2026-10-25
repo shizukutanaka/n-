@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import locale
+import string
 from dataclasses import replace
 
 from nmesh.catalog.loader import _model_from_mapping
@@ -141,3 +142,18 @@ def test_i18n_source_has_no_duplicate_keys() -> None:
     ]
     dupes = sorted(k for k, c in Counter(keys).items() if c > 2)
     assert not dupes, f"same-language duplicate i18n keys: {dupes}"
+
+
+def test_translations_use_the_same_placeholders() -> None:
+    """t() formats both tables with one kwargs set; a placeholder present in
+    only one language raises KeyError or leaks `{name}` to the user."""
+    formatter = string.Formatter()
+
+    def fields(text: str) -> set[str]:
+        return {name for _, name, _, _ in formatter.parse(text) if name}
+
+    mismatched = sorted(
+        key for key, english in MESSAGES["en"].items()
+        if fields(english) != fields(MESSAGES["ja"][key])
+    )
+    assert mismatched == []
