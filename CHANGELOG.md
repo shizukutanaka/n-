@@ -28,6 +28,7 @@
 ### Changed
 
 - artifacts: 分割 GGUF の shard 列挙（正規表現と全 shard 展開）が bench/epoch と runtime/acquisition に同じまま2つあったのを `artifacts.SPLIT_GGUF_RE` / `artifacts.gguf_parts` の1つに統合（挙動不変）
+- spec: measure の応答解析にあった整数検査（3箇所）の手書きを共有の `persist.int_at_least` に統合（挙動不変）
 - eval/spec: context の整数・有限数検査（7箇所）と spec record の整数検査（2箇所）の手書きを共有の `persist.int_at_least` / `persist.finite_number` に統合（挙動不変）
 - bench/eval: retrieval のローカル `_int_at_least` と eval cache の整数フィールド検査（7箇所の手書き）を共有の `persist.int_at_least` に統合（挙動不変）
 - runtime: supervisor の state.json「書込みか削除か」の重複（4箇所）を `_persist_or_remove_state` に統合（挙動不変）

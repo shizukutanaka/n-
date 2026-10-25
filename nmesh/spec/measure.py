@@ -33,6 +33,7 @@ from statistics import median
 import httpx
 
 from nmesh.orchestrate.measure import RoleIdentity
+from nmesh.persist import int_at_least
 
 #: Bumped when the workloads or the sampling settings change, so a record
 #: never justifies a configuration measured under different conditions.
@@ -238,7 +239,7 @@ def _ask(
     reported = timings.get("predicted_per_second")
     completion = (
         int(tokens)
-        if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0
+        if int_at_least(tokens, 0)
         else 0
     )
     tps = (
@@ -256,10 +257,10 @@ def _ask(
         tps,
         elapsed,
         int(drafted)
-        if isinstance(drafted, int) and not isinstance(drafted, bool) and drafted >= 0
+        if int_at_least(drafted, 0)
         else 0,
         int(accepted)
-        if isinstance(accepted, int) and not isinstance(accepted, bool) and accepted >= 0
+        if int_at_least(accepted, 0)
         else 0,
     )
 
