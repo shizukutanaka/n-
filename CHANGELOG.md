@@ -27,6 +27,7 @@
 
 ### Changed
 
+- tests: テスト内の loopback HTTP サーバー（43 箇所）の `shutdown()` が `serve_forever` の既定ポーリング間隔 0.5 秒ぶん待っていたため、conftest の autouse フィクスチャ 1 つで間隔を 10 ms に短縮（検証内容は不変、全テスト 84 秒→41 秒）
 - tests: `nmesh.net.bounded_get` のテスト 4 件が `tests/test_watch.py` にも重複して置かれ、うち 3 件は `tests/test_net.py` と本体が同一だったため、`test_net.py` 側に集約（`test_watch.py` にしかなかった展開後サイズ上限のテスト 1 件は `test_net.py` へ移動。検証内容は変えていません）
 - watch: qiita・zenn・x の各ソースで「応答の行を辞書として読み、必須キーが空なら飛ばす」前処理が同じまま3回書かれていたのを `_keyed_rows` の1つに統合（挙動不変）
 - artifact: GGUF ヘッダ読み取りで、型タグ→struct 書式の表と型タグ→バイト数の表を別々に持ち、配列ヘッダの読み取りも `value`/`skip_value` に 2 回書いていたのを、`_SCALAR_FORMATS` の 1 表（バイト数は `struct.calcsize` で導出）と `array_header` の 1 つに統合（挙動不変。型タグを片方の表にだけ足して読み飛ばし位置がずれる余地をなくす）

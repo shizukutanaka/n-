@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import functools
 import socket
+import socketserver
 
 import pytest
 
@@ -25,3 +27,17 @@ def _no_reverse_dns(monkeypatch) -> None:
     tens of seconds on hosts with broken/slow DNS — test HTTP servers never
     use server_name, so skip the lookup entirely."""
     monkeypatch.setattr(socket, "getfqdn", lambda _name="": "localhost")
+
+
+@pytest.fixture(autouse=True)
+def _fast_server_shutdown(monkeypatch) -> None:
+    """BaseServer.shutdown() returns only once serve_forever notices the
+    flag, up to one poll interval (0.5 s by default) later. Tests start
+    dozens of loopback upstreams, so poll every 10 ms instead."""
+    monkeypatch.setattr(
+        socketserver.BaseServer,
+        "serve_forever",
+        functools.partialmethod(
+            socketserver.BaseServer.serve_forever, poll_interval=0.01
+        ),
+    )
