@@ -694,6 +694,57 @@ def _has_source(backend: str, model: ModelSpec) -> bool:
     }.get(backend, "") in model.sources
 
 
+def _ollama_launch(
+    binary: str | None,
+    kv_quant: str,
+    requested_kv_quant: str,
+    warnings: list[str] | None,
+    language: str,
+) -> LaunchSpec:
+    """Launch spec for the shared Ollama daemon: env knobs stand in for the
+    argv Ollama lacks (parallel slots, quantized KV)."""
+    env = {}
+    num_parallel = os.environ.get("OLLAMA_NUM_PARALLEL")
+    if num_parallel is None:
+        # The daemon auto-selects up to 4 parallel slots per model when
+        # memory allows, committing num_ctx * parallel KV — well beyond
+        # the single-slot context the plan accounts for.
+        env["OLLAMA_NUM_PARALLEL"] = "1"
+    else:
+        try:
+            parsed_parallel = int(num_parallel)
+        except ValueError:
+            parsed_parallel = -1
+        if parsed_parallel != 1 and warnings is not None:
+            warnings.append(
+                t(
+                    "warn.ollama_num_parallel_env",
+                    language,
+                    parallel=num_parallel,
+                )
+            )
+    # Quantized KV on Ollama is a daemon-level env knob — there is no
+    # argv equivalent, so without these the daemon always keeps the KV
+    # at f16 and the requested precision is silently dropped. Whether
+    # the daemon honors them cannot be verified at plan time (env
+    # knobs are not probe-able), so accounting stays at f16 and the
+    # plan warns instead of claiming the savings.
+    kv_request = requested_kv_quant or kv_quant
+    if kv_request != "f16":
+        if os.environ.get("OLLAMA_KV_CACHE_TYPE") is None:
+            env["OLLAMA_KV_CACHE_TYPE"] = kv_request
+        if os.environ.get("OLLAMA_FLASH_ATTENTION") is None:
+            # A quantized V cache requires flash attention — the same
+            # restriction llama.cpp applies; Ollama leaves FA opt-in.
+            env["OLLAMA_FLASH_ATTENTION"] = "1"
+    return LaunchSpec(
+        [binary or "ollama", "serve"],
+        env,
+        "http://127.0.0.1:11434/api/tags",
+        True,
+    )
+
+
 def _launch(
     backend: str,
     model: ModelSpec,
@@ -732,45 +783,8 @@ def _launch(
             True,
         )
     if backend == "ollama":
-        env = {}
-        num_parallel = os.environ.get("OLLAMA_NUM_PARALLEL")
-        if num_parallel is None:
-            # The daemon auto-selects up to 4 parallel slots per model when
-            # memory allows, committing num_ctx * parallel KV — well beyond
-            # the single-slot context the plan accounts for.
-            env["OLLAMA_NUM_PARALLEL"] = "1"
-        else:
-            try:
-                parsed_parallel = int(num_parallel)
-            except ValueError:
-                parsed_parallel = -1
-            if parsed_parallel != 1 and warnings is not None:
-                warnings.append(
-                    t(
-                        "warn.ollama_num_parallel_env",
-                        language,
-                        parallel=num_parallel,
-                    )
-                )
-        # Quantized KV on Ollama is a daemon-level env knob — there is no
-        # argv equivalent, so without these the daemon always keeps the KV
-        # at f16 and the requested precision is silently dropped. Whether
-        # the daemon honors them cannot be verified at plan time (env
-        # knobs are not probe-able), so accounting stays at f16 and the
-        # plan warns instead of claiming the savings.
-        kv_request = requested_kv_quant or kv_quant
-        if kv_request != "f16":
-            if os.environ.get("OLLAMA_KV_CACHE_TYPE") is None:
-                env["OLLAMA_KV_CACHE_TYPE"] = kv_request
-            if os.environ.get("OLLAMA_FLASH_ATTENTION") is None:
-                # A quantized V cache requires flash attention — the same
-                # restriction llama.cpp applies; Ollama leaves FA opt-in.
-                env["OLLAMA_FLASH_ATTENTION"] = "1"
-        return LaunchSpec(
-            [binary or "ollama", "serve"],
-            env,
-            "http://127.0.0.1:11434/api/tags",
-            True,
+        return _ollama_launch(
+            binary, kv_quant, requested_kv_quant, warnings, language,
         )
     env = {}
     if backend == "vllm":
