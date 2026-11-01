@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import statistics
 import subprocess
 from dataclasses import asdict, dataclass
@@ -18,7 +17,7 @@ from pathlib import Path
 from nmesh import evidence
 from nmesh.artifacts import gguf_parts
 from nmesh.paths import nmesh_home
-from nmesh.persist import read_json_file
+from nmesh.persist import read_json_file, write_json_atomic
 
 EPOCH_MIN_RATIO = evidence.EPOCH_MIN_RATIO
 refutes = evidence.refutes
@@ -179,9 +178,7 @@ def save_history(
         key: [asdict(sample) for sample in samples[:EPOCH_HISTORY]]
         for key, samples in history.items()
     }
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(temporary, target)
+    write_json_atomic(target, payload)
     return target
 
 
