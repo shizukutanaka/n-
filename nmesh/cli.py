@@ -93,7 +93,6 @@ from nmesh.eval.context import (
 )
 from nmesh.eval.select import (
     context_depth_evidence,
-    effective_context_records,
     planner_eval_records,
     valid_eval_records,
 )
@@ -601,7 +600,6 @@ def _make_plan(args: argparse.Namespace) -> Plan:
 
 
 _eval_records = valid_eval_records
-_context_records = effective_context_records
 _context_evidence = context_depth_evidence
 DepthEvidence = eval_select.DepthEvidence
 
