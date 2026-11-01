@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -91,3 +93,29 @@ def test_deeply_nested_file_warns_instead_of_recursing(tmp_path: Path, capsys) -
 )
 def test_finite_number(value: object, expected: bool) -> None:
     assert persist.finite_number(value) is expected
+
+
+@dataclass(frozen=True)
+class _Row:
+    value: int
+
+
+def test_write_results_cache_writes_results_atomically(tmp_path):
+    target = tmp_path / "nested" / "cache.json"
+    persist.write_results_cache(target, {"a": _Row(1), "b": _Row(2)})
+    assert json.loads(target.read_text(encoding="utf-8")) == {
+        "results": {"a": {"value": 1}, "b": {"value": 2}}
+    }
+    assert [p.name for p in target.parent.iterdir()] == ["cache.json"]
+
+
+def test_write_results_cache_removes_staging_file_on_failure(tmp_path, monkeypatch):
+    target = tmp_path / "cache.json"
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("nmesh.persist.os.replace", fail)
+    with pytest.raises(OSError):
+        persist.write_results_cache(target, {"a": _Row(1)})
+    assert list(tmp_path.iterdir()) == []

@@ -12,7 +12,13 @@ from pathlib import Path
 import httpx
 
 from nmesh import i18n
-from nmesh.artifacts import artifact_key, load_cache, record
+from nmesh.artifacts import (
+    SPLIT_GGUF_RE,
+    artifact_key,
+    gguf_parts,
+    load_cache,
+    record,
+)
 from nmesh.net import bounded_read, local_urlopen
 from nmesh.paths import nmesh_home
 from nmesh.planner import PlannedService
@@ -85,10 +91,6 @@ _LABEL_RE = re.compile(
     rf"(?<![a-z0-9])(?:{'|'.join(map(re.escape, _LABEL_TOKENS))})(?![a-z0-9])",
     re.IGNORECASE,
 )
-_SPLIT_RE = re.compile(
-    r"^(?P<prefix>.+?)[-_.](?P<part>\d{5})-of-(?P<total>\d{5})\.gguf$",
-    re.IGNORECASE,
-)
 # Auxiliary weights published next to the main model — speculative-decoding
 # draft heads (e.g. eagle3-*-BF16.gguf in the gpt-oss repos), vision
 # projection tensors (mmproj-*.gguf in multimodal repos), and LoRA adapter
@@ -140,31 +142,15 @@ def _gguf_files(repo_id: str) -> dict[str, int | None]:
     return result
 
 
-def _split_gguf_parts(target: Path) -> list[Path]:
-    """Every numbered part of a split GGUF — or just *target* for a
-    single-file model. An interrupted download leaves only the first parts
-    on disk; treating part 1 alone as complete would skip the resume and
-    leave llama-server unable to open the model."""
-    match = _SPLIT_RE.match(target.name)
-    if match is None:
-        return [target]
-    total = int(match.group("total"))
-    head = target.name[: match.start("part")]
-    return [
-        target.parent / f"{head}{part:05d}-of-{total:05d}.gguf"
-        for part in range(1, total + 1)
-    ]
-
-
 def _split_files(files: list[str], selected: str) -> list[str] | None:
-    match = _SPLIT_RE.match(Path(selected).name)
+    match = SPLIT_GGUF_RE.match(Path(selected).name)
     if match is None:
         return [selected]
     prefix = match.group("prefix").lower()
     total = int(match.group("total"))
     siblings: dict[int, str] = {}
     for filename in files:
-        item = _SPLIT_RE.match(Path(filename).name)
+        item = SPLIT_GGUF_RE.match(Path(filename).name)
         if (
             item is not None
             and item.group("prefix").lower() == prefix
@@ -279,12 +265,12 @@ def _local_gguf(
             or _COMPANION_RE.search(path.stem)
         ):
             continue
-        match = _SPLIT_RE.match(path.name)
+        match = SPLIT_GGUF_RE.match(path.name)
         if match is not None and int(match.group("part")) != 1:
             continue
         if model_token and model_token not in path.name.casefold().replace("_", "-"):
             continue
-        parts = _split_gguf_parts(path)
+        parts = gguf_parts(path)
         try:
             size = sum(part.stat().st_size for part in parts)
         except OSError:
@@ -503,7 +489,7 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
         return Acquired(snapshot, None, False)
     if service.backend == "llamacpp":
         target = Path(service.model_ref)
-        parts = _split_gguf_parts(target)
+        parts = gguf_parts(target)
         corrupt_note: str | None = None
         try:
             artifact_bytes = sum(part.stat().st_size for part in parts)

@@ -394,20 +394,25 @@ def _content(request: Mapping[str, object]) -> str:
     return ""
 
 
+def _input_extra_texts(request: Mapping[str, object]) -> list[str]:
+    """``text`` of each chunk in llama.cpp's FIM ``input_extra`` list."""
+    input_extra = request.get("input_extra")
+    if not isinstance(input_extra, list):
+        return []
+    return [
+        text
+        for item in input_extra
+        if isinstance(item, Mapping) and isinstance(text := item.get("text"), str)
+    ]
+
+
 def _infill_routing_view(request: Mapping[str, object]) -> dict[str, object]:
     parts: list[str] = []
     for key in ("input_prefix", "prompt", "input_suffix"):
         value = request.get(key)
         if isinstance(value, str):
             parts.append(value)
-    input_extra = request.get("input_extra")
-    if isinstance(input_extra, list):
-        for item in input_extra:
-            if not isinstance(item, Mapping):
-                continue
-            text = item.get("text")
-            if isinstance(text, str):
-                parts.append(text)
+    parts.extend(_input_extra_texts(request))
 
     view: dict[str, object] = {**request, "prompt": " ".join(parts)}
     n_predict = request.get("n_predict")
@@ -862,14 +867,7 @@ def _forward_timeout(
             texts.append(extra)
         elif isinstance(extra, list):
             texts.extend(item for item in extra if isinstance(item, str))
-    input_extra = request.get("input_extra")
-    if isinstance(input_extra, list):
-        for item in input_extra:
-            if not isinstance(item, Mapping):
-                continue
-            text = item.get("text")
-            if isinstance(text, str):
-                texts.append(text)
+    texts.extend(_input_extra_texts(request))
     tokens = estimate_tokens(
         " ".join(texts),
         calibration_for(
@@ -1741,6 +1739,21 @@ def create_app(
         last_use.touch(service.name)
         slot_token: object | None = None
         job = jobs.submit(service.name, path)
+
+        def upstream_error(
+            status_code: int, content: bytes, content_type: str | None,
+        ) -> Response:
+            """Settle the job for an upstream 4xx/5xx and relay or translate it."""
+            unsupported = _completion_not_supported(
+                path, status_code, service.backend
+            )
+            if job is not None:
+                jobs.finish(job, ok=False, detail=f"upstream_{status_code}")
+            if unsupported is not None:
+                raise unsupported
+            return Response(
+                content=content, status_code=status_code, media_type=content_type
+            )
         if limit_slots:
             deadline = time.monotonic() + QUEUE_TIMEOUT
             try:
@@ -1909,19 +1922,10 @@ def create_app(
                 content = await upstream.aread()
                 await upstream.aclose()
                 await release_upstream()
-                unsupported = _completion_not_supported(
-                    path, upstream.status_code, service.backend
+                return upstream_error(
+                    upstream.status_code, content,
+                    upstream.headers.get("content-type"),
                 )
-                if unsupported is not None:
-                    if job is not None:
-                        jobs.finish(job, ok=False,
-                                    detail=f"upstream_{upstream.status_code}")
-                    raise unsupported
-                if job is not None:
-                    jobs.finish(job, ok=False,
-                                detail=f"upstream_{upstream.status_code}")
-                return Response(content=content, status_code=upstream.status_code,
-                                media_type=upstream.headers.get("content-type"))
 
             stream_completed = False
 
@@ -2080,23 +2084,10 @@ def create_app(
                 response = await post_upstream(body)
                 content = response.content
                 if response.status_code >= 400:
-                    unsupported = _completion_not_supported(
-                        path, response.status_code, service.backend
+                    return upstream_error(
+                        response.status_code, content,
+                        response.headers.get("content-type"),
                     )
-                    if unsupported is not None:
-                        if job is not None:
-                            jobs.finish(
-                                job, ok=False,
-                                detail=f"upstream_{response.status_code}",
-                            )
-                        raise unsupported
-                    if job is not None:
-                        jobs.finish(
-                            job, ok=False,
-                            detail=f"upstream_{response.status_code}",
-                        )
-                    return Response(content=content, status_code=response.status_code,
-                                    media_type=response.headers.get("content-type"))
                 data = json.loads(content)
         except (httpx.HTTPError, json.JSONDecodeError) as error:
             if job is not None:

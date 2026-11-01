@@ -24,6 +24,7 @@ from .suite import (
     TASKS,
     Task,
     _bool_value,
+    _comma_items,
     _contains_cased,
     _contains_ci,
     _contains_standalone,
@@ -126,16 +127,6 @@ _JAPANESE = (
 )
 
 
-def _items(count: int):
-    def check(text: str) -> bool:
-        items = [item.strip() for item in normalize(text).split(",")]
-        return (
-            len(items) == count
-            and all(item and item.replace(" ", "").isalpha() for item in items)
-        )
-    return check
-
-
 def _json_person(name: str, age: str):
     """Grade a two-key JSON object, accepting the age as a string or a number."""
     def check(text: str) -> bool:
@@ -221,7 +212,7 @@ def _build() -> tuple[Task, ...]:
         tasks.append(Task(
             f"instruction.items.{count}", "instruction",
             f"List exactly {count} animals, comma-separated, with no other text.",
-            48, _items(count),
+            48, _comma_items(count),
             value_check=_items_value(count),
         ))
     for name, age in _PEOPLE:

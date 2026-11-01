@@ -12,7 +12,7 @@ import os
 import re
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
@@ -91,6 +91,19 @@ def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _keyed_rows(
+    rows: Iterable[object], key: str,
+) -> Iterator[tuple[Mapping[str, object], str]]:
+    """Yield each row that is a mapping with a non-empty string at *key*."""
+    for raw in rows:
+        row = _mapping(raw)
+        if row is None:
+            continue
+        value = _text(row.get(key))
+        if value:
+            yield row, value
+
+
 def _unique_items(items: Sequence[SourceItem]) -> tuple[SourceItem, ...]:
     unique: dict[str, SourceItem] = {}
     for item in items:
@@ -127,13 +140,7 @@ def fetch_qiita(
             except (httpx.HTTPError, ValueError, TypeError, RecursionError):
                 failed_tags.append(tag)
                 continue
-            for raw in payload:
-                item = _mapping(raw)
-                if item is None:
-                    continue
-                url = _text(item.get("url"))
-                if not url:
-                    continue
+            for item, url in _keyed_rows(payload, "url"):
                 items.append(SourceItem(
                     "qiita",
                     url,
@@ -191,13 +198,7 @@ def fetch_zenn(
                 continue
             articles = raw_articles[:limit]
             yields.append(f"{topic}={len(articles)}")
-            for raw in articles:
-                article = _mapping(raw)
-                if article is None:
-                    continue
-                path = _text(article.get("path"))
-                if not path:
-                    continue
+            for article, path in _keyed_rows(articles, "path"):
                 url = f"https://zenn.dev{path}"
                 try:
                     page = _get(session, url)
@@ -486,13 +487,7 @@ def fetch_x(
         if not isinstance(rows, list):
             rows = []
         items = []
-        for raw in rows[:limit]:
-            tweet = _mapping(raw)
-            if tweet is None:
-                continue
-            tweet_id = _text(tweet.get("id"))
-            if not tweet_id:
-                continue
+        for tweet, tweet_id in _keyed_rows(rows[:limit], "id"):
             items.append(SourceItem(
                 "x",
                 f"https://x.com/i/web/status/{tweet_id}",
