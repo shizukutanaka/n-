@@ -40,6 +40,7 @@
 - evidence: 「より速い参照計測に反証された記録を degraded にする」`demote_stale` が spec record と orchestrate record に同じ本体で 2 つあったのを、共有の `evidence.demote_refuted` に統合（公開名・結果・並び順は不変）
 - gateway: proxy 内で常に Job を持つ `job` に対する `if job is not None` の守り 13 箇所と到達しない `return data` を削除（mypy --warn-unreachable で検出、応答・ジョブの終了記録は不変）
 ||||||| 8e1487e
+- gateway: リクエストの数値項目を int として読む判定（max_tokens／max_completion_tokens の予約量と usage.prompt_tokens の較正の 2 箇所の重複）を `_as_int` に統合（受理・無視する値は不変）
 - gateway: `/v1/` 応答に許可済み Origin を反映する CORS ヘッダ付与（`Access-Control-Allow-Origin` と `Vary`）が 500 ハンドラ・本文超過 413・ミドルウェア本体の 3 箇所に書かれていたのを `_reflect_origin` の 1 つに統合（付与条件・ヘッダは不変）
 - gateway: idle で停止中のサービスを転送前に再起動する処理（idle 確認→サービス別ロック→再確認→ensure_running→失敗時 503）が proxy と委譲経路に同じまま 2 回書かれていたのを `revive_if_idle` の 1 つに統合（順序・例外・ジョブ終了の扱いは不変）
 - gateway: OpenAI 形式のエラー封筒（`{"error": {message, type, code}}`）を組み立てる処理が HTTPException ハンドラ・未処理例外・Origin 拒否 403・API キー 401・本文超過 413 の 5 箇所に同じまま書かれていたのを `_error_response` の 1 つに統合（応答本文・ステータス・ヘッダは不変）
