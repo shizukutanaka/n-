@@ -27,6 +27,7 @@
 
 ### Changed
 
+- evidence: 「より速い参照計測に反証された記録を degraded にする」`demote_stale` が spec record と orchestrate record に同じ本体で 2 つあったのを、共有の `evidence.demote_refuted` に統合（公開名・結果・並び順は不変）
 - tests: i18n の英日 431 キーで差し込み項目（`{service}` など）の集合が一致することをテストで固定（片方にだけ項目があると実行時に KeyError か未置換文字列になる）
 - bench: cache 記録の読み込みで「None ならそのまま、それ以外は float に変換」が6項目ぶん手書きされていたのを `_optional_float` の1つに統合（挙動不変）
 - gateway/tokens: トークン見積もりの CJK 文字数カウントを 1 文字ずつの Python ループから正規表現 1 回に置き換え（全コードポイントで結果一致、約 150 倍高速）。2 MB の入力で 0.6 秒かかっていた見積もりが 4 ms になり、gateway のイベントループ占有と `nmesh eval depth` のプロンプト生成（深さ 15000 で 5.6 秒→0.6 秒）、全テストの実行時間（84 秒→61 秒）を短縮
