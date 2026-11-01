@@ -27,9 +27,11 @@
 
 ### Changed
 - cli: どこからも参照されていない別名 `_context_records`（`effective_context_records` の再束縛）とその import を削除
+- planner: `build_plan` から、配置後のサービスに対する文脈深度・embed 入力上限の証拠警告（68 行）を純粋関数 `_evidence_warnings` に切り出し（警告の内容と順序、計画結果は不変）
 - planner: plan.json の更新時刻を読む `_plan_stamp`（gateway と supervisor に同じ本体で 2 つ）を、`load_plan` と同じモジュールの `plan_stamp` 1 つに統合（判定は不変）
 - bench: `_measure_once` から、ストリーミング応答の時刻・usage・timings から prefill／decode 速度と BenchResult を導く純粋な段階（78 行）を `_bench_result` に切り出し（計測値・例外は不変）
 
+- tests: テスト内の loopback HTTP サーバー（43 箇所）の `shutdown()` が `serve_forever` の既定ポーリング間隔 0.5 秒ぶん待っていたため、conftest の autouse フィクスチャ 1 つで間隔を 10 ms に短縮（検証内容は不変、全テスト 84 秒→41 秒）
 - watch: Zenn の同じ記事が複数トピックの一覧に載っている場合、記事ページの取得を最初の 1 回だけにし重複した HTTP リクエストを省略（結果の記事一覧は不変）
 - tests: 4 キーだけを個別に確かめていた i18n の存在テストを、コード中に文字どおり書かれた全キー（343 件）が英日とも存在することを確かめる 1 件に置き換え（訳の欠落でキー名がそのまま表示される再発を防止）
 - tests: i18n の英日 431 キーで差し込み項目（`{service}` など）の集合が一致することをテストで固定（片方にだけ項目があると実行時に KeyError か未置換文字列になる）
