@@ -764,7 +764,7 @@ def test_engine_install_accepts_backend_positional(
 
     monkeypatch.setattr(engine, "install", fake_install)
 
-    assert cli.main(["engine", "install", "llamacpp", "--json"]) == 0
+    assert cli.main(["engine", "install", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["installed"]["tag"] == "b10830"
     assert seen == {"tag": None, "variant": "auto"}
 
