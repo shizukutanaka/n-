@@ -33,6 +33,7 @@
 - bench: `_measure_once` から、ストリーミング応答の時刻・usage・timings から prefill／decode 速度と BenchResult を導く純粋な段階（78 行）を `_bench_result` に切り出し（計測値・例外は不変）
 
 - gateway: `/v1/` 応答に許可済み Origin を反映する CORS ヘッダ付与（`Access-Control-Allow-Origin` と `Vary`）が 500 ハンドラ・本文超過 413・ミドルウェア本体の 3 箇所に書かれていたのを `_reflect_origin` の 1 つに統合（付与条件・ヘッダは不変）
+- gateway: idle で停止中のサービスを転送前に再起動する処理（idle 確認→サービス別ロック→再確認→ensure_running→失敗時 503）が proxy と委譲経路に同じまま 2 回書かれていたのを `revive_if_idle` の 1 つに統合（順序・例外・ジョブ終了の扱いは不変）
 - tests: テスト内の loopback HTTP サーバー（43 箇所）の `shutdown()` が `serve_forever` の既定ポーリング間隔 0.5 秒ぶん待っていたため、conftest の autouse フィクスチャ 1 つで間隔を 10 ms に短縮（検証内容は不変、全テスト 84 秒→41 秒）
 - watch: Zenn の同じ記事が複数トピックの一覧に載っている場合、記事ページの取得を最初の 1 回だけにし重複した HTTP リクエストを省略（結果の記事一覧は不変）
 - tests: 4 キーだけを個別に確かめていた i18n の存在テストを、コード中に文字どおり書かれた全キー（343 件）が英日とも存在することを確かめる 1 件に置き換え（訳の欠落でキー名がそのまま表示される再発を防止）
