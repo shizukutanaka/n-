@@ -47,6 +47,12 @@ packages = ["nmesh"]
 [tool.ruff]
 line-length = 100
 
+[tool.ruff.lint]
+# E/F defaults plus groups the code already satisfies: W (trailing whitespace, previously only
+# caught by a local `git diff --check`), I (import order), UP (3.10+ syntax), PIE, T10 (debugger
+# calls), FLY, PGH (blanket noqa / type: ignore).
+extend-select = ["W", "I", "UP", "PIE", "T10", "FLY", "PGH"]
+
 [tool.mypy]
 python_version = "3.10"
 ignore_missing_imports = true
