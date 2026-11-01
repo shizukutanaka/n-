@@ -1721,8 +1721,7 @@ def _spec_for_service(
 def _add_service(group: list[str], candidate: _Candidate, profile: HardwareProfile,
                  services: list[PlannedService], swap_group: list[str],
                  role_to_service: dict[str, str], hints: list[str],
-                 missing_backends: list[str],
-                 budget_source: str, warnings: list[str],
+                 missing_backends: list[str], warnings: list[str],
                  language: str = "en",
                  resident_override: bool | None = None,
                  spec_policy: Policy | None = None) -> None:
@@ -3389,9 +3388,8 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                 )
                 _add_service(
                     group, candidate, profile, services, swap_group,
-                    role_to_service, hints, missing_backends,
-                    selected.budget_source, warnings, selected.lang,
-                    resident_override=True,
+                    role_to_service, hints, missing_backends, warnings,
+                    selected.lang, resident_override=True,
                     spec_policy=selected,
                 )
                 worker = services[-1]
@@ -3440,8 +3438,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                     warn_capacity_tradeoff(role, role_candidate, empty_candidate)
                     _add_service(
                         [role], role_candidate, profile, services, swap_group,
-                        role_to_service, hints, missing_backends,
-                        selected.budget_source, warnings,
+                        role_to_service, hints, missing_backends, warnings,
                         selected.lang, spec_policy=selected,
                     )
                     exclude_used_magnitude()
@@ -3467,8 +3464,7 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
         warn_capacity_tradeoff(group[0], group_candidate, empty_candidate)
         _add_service(
             group, group_candidate, profile, services, swap_group, role_to_service,
-            hints, missing_backends, selected.budget_source, warnings,
-            selected.lang, spec_policy=selected,
+            hints, missing_backends, warnings, selected.lang, spec_policy=selected,
         )
         download_key = f"{group_candidate.model.id}|{group_candidate.quant}"
         if download_key not in seen_downloads:
