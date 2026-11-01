@@ -27,9 +27,11 @@
 
 ### Changed
 - planner: `build_plan` から、配置後のサービスに対する文脈深度・embed 入力上限の証拠警告（68 行）を純粋関数 `_evidence_warnings` に切り出し（警告の内容と順序、計画結果は不変）
+- persist: JSON の原子的な書き出し（一時ファイル→`os.replace`）が artifacts・bench cache・bench epoch・results cache の 4 箇所で手書きされていたのを `write_json_atomic` 1 つに統合（保存内容・ファイル名は不変）
 - planner: plan.json の更新時刻を読む `_plan_stamp`（gateway と supervisor に同じ本体で 2 つ）を、`load_plan` と同じモジュールの `plan_stamp` 1 つに統合（判定は不変）
 - bench: `_measure_once` から、ストリーミング応答の時刻・usage・timings から prefill／decode 速度と BenchResult を導く純粋な段階（78 行）を `_bench_result` に切り出し（計測値・例外は不変）
 
+- gateway: `/v1/` 応答に許可済み Origin を反映する CORS ヘッダ付与（`Access-Control-Allow-Origin` と `Vary`）が 500 ハンドラ・本文超過 413・ミドルウェア本体の 3 箇所に書かれていたのを `_reflect_origin` の 1 つに統合（付与条件・ヘッダは不変）
 - gateway: idle で停止中のサービスを転送前に再起動する処理（idle 確認→サービス別ロック→再確認→ensure_running→失敗時 503）が proxy と委譲経路に同じまま 2 回書かれていたのを `revive_if_idle` の 1 つに統合（順序・例外・ジョブ終了の扱いは不変）
 - tests: テスト内の loopback HTTP サーバー（43 箇所）の `shutdown()` が `serve_forever` の既定ポーリング間隔 0.5 秒ぶん待っていたため、conftest の autouse フィクスチャ 1 つで間隔を 10 ms に短縮（検証内容は不変、全テスト 84 秒→41 秒）
 - watch: Zenn の同じ記事が複数トピックの一覧に載っている場合、記事ページの取得を最初の 1 回だけにし重複した HTTP リクエストを省略（結果の記事一覧は不変）

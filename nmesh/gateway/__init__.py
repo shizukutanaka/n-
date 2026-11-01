@@ -1478,6 +1478,14 @@ def _origin_allowed(origin: str) -> bool:
     return origin in {item.strip() for item in extra.split(",") if item.strip()}
 
 
+def _reflect_origin(response: Response, origin: str | None, path: str) -> None:
+    """Browser clients can only read a /v1/ reply when its allowed Origin is
+    echoed back; the middleware has already refused any other origin."""
+    if origin and _origin_allowed(origin) and path.startswith("/v1/"):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+
+
 def create_app(
     plan: Plan | None = None,
     watchdog: bool = False,
@@ -1571,14 +1579,7 @@ def create_app(
         )
         # This handler runs above the http middleware, so the middleware's
         # post-block CORS headers never reach its response — attach them here.
-        origin = _request.headers.get("origin")
-        if (
-            origin
-            and _origin_allowed(origin)
-            and _request.url.path.startswith("/v1/")
-        ):
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Vary"] = "Origin"
+        _reflect_origin(response, _request.headers.get("origin"), _request.url.path)
         return response
 
     gate = SwapGate()
@@ -1688,9 +1689,7 @@ def create_app(
                 status_code=413,
                 media_type="application/json",
             )
-            if origin and path.startswith("/v1/"):
-                response.headers["Access-Control-Allow-Origin"] = origin
-                response.headers["Vary"] = "Origin"
+            _reflect_origin(response, origin, path)
             return response
 
         declared = request.headers.get("content-length")
@@ -1721,9 +1720,7 @@ def create_app(
                 parts.append(chunk)
             request._body = b"".join(parts)
         response = await call_next(request)
-        if origin and path.startswith("/v1/"):
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Vary"] = "Origin"
+        _reflect_origin(response, origin, path)
         return response
 
     async def revive_if_idle(service: PlannedService, plan_snapshot: Plan) -> None:
