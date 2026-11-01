@@ -27,6 +27,7 @@
 
 ### Changed
 - cli: どこからも参照されていない別名 `_context_records`（`effective_context_records` の再束縛）とその import を削除
+- cli: `plan`／`up` の計画作成で bench.json と embed.json をそれぞれ 2 回読み直していたのを 1 回に（同一実行内で異なるスナップショットが混ざる余地も解消、計画結果は不変）
 - ci: ruff に W（行末の空白、手元の `git diff --check` でだけ検出していた、watch/sources.py の 5 行を修正）と違反 0 件の I・UP・PIE・T10・FLY・PGH 規則群を追加し、CI で検出するように
 - planner: `_launch` の Ollama 分岐（環境変数 OLLAMA_NUM_PARALLEL／KV 量子化の組み立て、41 行）を純粋関数 `_ollama_launch` に切り出し（起動仕様・警告は不変）
 - planner: サービスの接続先 URL の組み立て（cli の `_service_base_url` と gateway の `_base_url` に同じ本体で 2 つ、ollama 11434／magnitude 10100/inference の対応表）を `planner.service_base_url` 1 つに統合（URL は不変）
