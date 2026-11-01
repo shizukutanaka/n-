@@ -16,6 +16,7 @@ response bodies.
 
 from __future__ import annotations
 
+import argparse
 import urllib.request
 import urllib.response
 from typing import TYPE_CHECKING, Any
@@ -114,3 +115,14 @@ def bounded_read(
     if len(body) > max_bytes:
         raise ValueError("upstream response exceeds the fetch body limit")
     return body
+
+
+def port_arg(text: str) -> int:
+    """argparse ``type`` for ``--port``: an integer in 1..65535."""
+    try:
+        parsed = int(text)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer") from error
+    if not 1 <= parsed <= 65535:
+        raise argparse.ArgumentTypeError("must be between 1 and 65535")
+    return parsed

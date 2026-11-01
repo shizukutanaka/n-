@@ -91,10 +91,10 @@ def test_port_flag_rejects_out_of_range(
 def test_gateway_server_module_port_flag_bounds(
     port: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from nmesh.gateway import server as gateway_server
+    from nmesh.net import port_arg
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=gateway_server._port, default=18000)
+    parser.add_argument("--port", type=port_arg, default=18000)
     with pytest.raises(SystemExit) as error:
         parser.parse_args(["--port", port])
     assert error.value.code == 2

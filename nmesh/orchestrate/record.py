@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 from nmesh.eval import SUITES, suite_digest
-from nmesh.evidence import refutes
+from nmesh.evidence import demote_refuted
 from nmesh.paths import nmesh_home
 from nmesh.persist import finite_number, read_json_file, write_results_cache
 
@@ -220,17 +220,7 @@ def demote_stale(
     reference_tps: float,
 ) -> tuple[str, ...]:
     """Invalidate cost claims disproved by a faster shared reference."""
-    demoted: list[str] = []
-    for key, record in records.items():
-        if (
-            not reference_id
-            or record.reference_id != reference_id
-            or not refutes(record.reference_tps, reference_tps)
-        ):
-            continue
-        records[key] = replace(record, epoch="degraded")
-        demoted.append(key)
-    return tuple(sorted(demoted))
+    return demote_refuted(records, reference_id, reference_tps)
 
 
 def _servable(item: DelegationRecord) -> bool:
