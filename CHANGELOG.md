@@ -27,6 +27,7 @@
 
 ### Changed
 - ci: ruff に W（行末の空白、手元の `git diff --check` でだけ検出していた、watch/sources.py の 5 行を修正）と違反 0 件の I・UP・PIE・T10・FLY・PGH 規則群を追加し、CI で検出するように
+- planner: `_launch` の Ollama 分岐（環境変数 OLLAMA_NUM_PARALLEL／KV 量子化の組み立て、41 行）を純粋関数 `_ollama_launch` に切り出し（起動仕様・警告は不変）
 - planner: サービスの接続先 URL の組み立て（cli の `_service_base_url` と gateway の `_base_url` に同じ本体で 2 つ、ollama 11434／magnitude 10100/inference の対応表）を `planner.service_base_url` 1 つに統合（URL は不変）
 - net: `--port` の検証（cli の `_port_int` と gateway/server の `_port` に同じ本体で 2 つ）を `net.port_arg` 1 つに統合（受理範囲・エラー文は不変）
 - planner: 候補のスコア計算（品質事前値×重み＋速度項、言語カバー割引）が `_candidate_for` の通常候補と MoE オフロード候補に同じ式で 2 回あったのを純粋関数 `_candidate_score` 1 つに統合（スコア・順位は不変）
