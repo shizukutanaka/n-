@@ -28,6 +28,8 @@
 ### Changed
 
 - tests: 4 キーだけを個別に確かめていた i18n の存在テストを、コード中に文字どおり書かれた全キー（343 件）が英日とも存在することを確かめる 1 件に置き換え（訳の欠落でキー名がそのまま表示される再発を防止）
+- tests: i18n の英日 431 キーで差し込み項目（`{service}` など）の集合が一致することをテストで固定（片方にだけ項目があると実行時に KeyError か未置換文字列になる）
+- bench: cache 記録の読み込みで「None ならそのまま、それ以外は float に変換」が6項目ぶん手書きされていたのを `_optional_float` の1つに統合（挙動不変）
 - tests: `nmesh.net.bounded_get` のテスト 4 件が `tests/test_watch.py` にも重複して置かれ、うち 3 件は `tests/test_net.py` と本体が同一だったため、`test_net.py` 側に集約（`test_watch.py` にしかなかった展開後サイズ上限のテスト 1 件は `test_net.py` へ移動。検証内容は変えていません）
 - watch: qiita・zenn・x の各ソースで「応答の行を辞書として読み、必須キーが空なら飛ばす」前処理が同じまま3回書かれていたのを `_keyed_rows` の1つに統合（挙動不変）
 - artifact: GGUF ヘッダ読み取りで、型タグ→struct 書式の表と型タグ→バイト数の表を別々に持ち、配列ヘッダの読み取りも `value`/`skip_value` に 2 回書いていたのを、`_SCALAR_FORMATS` の 1 表（バイト数は `struct.calcsize` で導出）と `array_header` の 1 つに統合（挙動不変。型タグを片方の表にだけ足して読み飛ばし位置がずれる余地をなくす）
@@ -80,6 +82,7 @@
 - eval: runner の TaskOutcome/EvalRun 生成（位置引数）をキーワード引数に置換（挙動不変）
 
 ### Fixed
+- evidence: `nmesh evidence` の理由凡例で、検索証拠の `stale_digest`（古いラダー規則）と `unmeasured`（劣化段なし）に翻訳がなく `evidence.reason.stale_digest` のようなキー名がそのまま表示されていた問題を修正（英日を追加し、棚卸しが出す全理由に両言語の訳があることをテストで固定）
 - gateway: `/infill` を API キー保護対象に追加し、FIM フィールドをルーティングとタイムアウト見積もりに反映
 - **spec measure がプローブ済み llama.cpp の未対応フラグを候補起動時に発行していた問題を修正**: 必須フラグが未検出の場合は対照測定前に拒否
 - **spec measure が llama.cpp 以外のサービスに投機フラグを付けていた問題を修正**: 自動選択は llama.cpp を優先し、他バックエンドを指定した場合は起動前に拒否
