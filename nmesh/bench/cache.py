@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,9 +73,14 @@ def benchmark_key(model_id: str, quant: str, backend: str, gpu_name: str,
 
 
 def load_cache(path: Path | None = None) -> BenchCache:
+    return usable_cache(load_records(path))
+
+
+def usable_cache(records: Mapping[str, BenchRecord]) -> BenchCache:
+    """Stable, current-harness records as ``{key: tps}``."""
     return {
         key: record.tps
-        for key, record in load_records(path).items()
+        for key, record in records.items()
         if (
             record.stable
             and record.epoch != "degraded"
