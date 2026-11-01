@@ -158,12 +158,12 @@ def _endpoint_client(endpoint: Endpoint, timeout: float) -> httpx.Client:
     )
 
 
-def _comparison(rows: Sequence[TaskRow], candidate: str) -> Comparison:
+def _comparison(rows: Sequence[TaskRow]) -> Comparison:
     gained = sum(
-        1 for row in rows if getattr(row, candidate) and not row.lead_passed
+        1 for row in rows if row.delegated_passed and not row.lead_passed
     )
     lost = sum(
-        1 for row in rows if row.lead_passed and not getattr(row, candidate)
+        1 for row in rows if row.lead_passed and not row.delegated_passed
     )
     return Comparison(gained, lost, mcnemar_two_sided(gained, lost))
 
@@ -258,8 +258,8 @@ def measure(
         lead_passed=sum(row.lead_passed for row in rows),
         delegated_passed=sum(row.delegated_passed for row in rows),
         ceiling_passed=sum(ceiling_flags),
-        delegated_vs_lead=_comparison(rows, "delegated_passed"),
-        ceiling_vs_lead=_comparison(ceiling_rows, "delegated_passed"),
+        delegated_vs_lead=_comparison(rows),
+        ceiling_vs_lead=_comparison(ceiling_rows),
         verifier=VerifierReport(
             accepted=sum(row.accepted for row in rows),
             accepted_but_wrong=sum(

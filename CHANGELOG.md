@@ -28,6 +28,7 @@
 ### Changed
 - planner: `build_plan` から、配置後のサービスに対する文脈深度・embed 入力上限の証拠警告（68 行）を純粋関数 `_evidence_warnings` に切り出し（警告の内容と順序、計画結果は不変）
 - persist: JSON の原子的な書き出し（一時ファイル→`os.replace`）が artifacts・bench cache・bench epoch・results cache の 4 箇所で手書きされていたのを `write_json_atomic` 1 つに統合（保存内容・ファイル名は不変）
+- orchestrate: `_comparison` の `candidate` 引数（全呼び出しが `"delegated_passed"` 固定）を外し、文字列による `getattr` を属性の直接参照に（結果は不変）
 - planner: plan.json の更新時刻を読む `_plan_stamp`（gateway と supervisor に同じ本体で 2 つ）を、`load_plan` と同じモジュールの `plan_stamp` 1 つに統合（判定は不変）
 - bench: `_measure_once` から、ストリーミング応答の時刻・usage・timings から prefill／decode 速度と BenchResult を導く純粋な段階（78 行）を `_bench_result` に切り出し（計測値・例外は不変）
 
