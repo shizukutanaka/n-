@@ -39,6 +39,7 @@
 - bench: `_measure_once` から、ストリーミング応答の時刻・usage・timings から prefill／decode 速度と BenchResult を導く純粋な段階（78 行）を `_bench_result` に切り出し（計測値・例外は不変）
 
 - planner: 単一 GPU への配置（対象 GPU の選択→割当→予算→残量の更新）が、RAM 常駐バックエンドが RAM に収まらない分岐と通常分岐に同じまま 2 回書かれていたのを 1 箇所に統合（配置結果・警告の内容と順序は不変）
+- planner: 内部関数 `_add_service` が受け取るだけで一度も使っていなかった引数 `budget_source` を本体と呼び出し 3 箇所から削除（ruff ARG で検出、計画結果は不変）
 - telemetry: リクエストごとの `telemetry.json` 書き出しから `indent=2` を外し（`indent` 指定は json の C エンコーダを無効にし純 Python 経路になるため）、平らな dataclass の辞書化を `asdict`（再帰コピー）から `vars` に置き換え。上限 10 キー×200 サンプル時の 1 記録あたり 24 ms→2.5 ms、ファイル 580 KB→428 KB。読み戻す内容は不変
 - probe: llama.cpp バイナリへの `--help`／`--version`／`--list-devices` 呼び出し（同じ subprocess.run 引数と例外処理の 3 回の重複）を `_invoke` の 1 つに統合（検出結果・失敗時の扱いは不変）
 - evidence: 「より速い参照計測に反証された記録を degraded にする」`demote_stale` が spec record と orchestrate record に同じ本体で 2 つあったのを、共有の `evidence.demote_refuted` に統合（公開名・結果・並び順は不変）
