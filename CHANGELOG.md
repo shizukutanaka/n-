@@ -27,10 +27,13 @@
 
 ### Changed
 - planner: `build_plan` から、配置後のサービスに対する文脈深度・embed 入力上限の証拠警告（68 行）を純粋関数 `_evidence_warnings` に切り出し（警告の内容と順序、計画結果は不変）
+- persist: JSON の原子的な書き出し（一時ファイル→`os.replace`）が artifacts・bench cache・bench epoch・results cache の 4 箇所で手書きされていたのを `write_json_atomic` 1 つに統合（保存内容・ファイル名は不変）
+- orchestrate: `_comparison` の `candidate` 引数（全呼び出しが `"delegated_passed"` 固定）を外し、文字列による `getattr` を属性の直接参照に（結果は不変）
 - planner: plan.json の更新時刻を読む `_plan_stamp`（gateway と supervisor に同じ本体で 2 つ）を、`load_plan` と同じモジュールの `plan_stamp` 1 つに統合（判定は不変）
 - bench: `_measure_once` から、ストリーミング応答の時刻・usage・timings から prefill／decode 速度と BenchResult を導く純粋な段階（78 行）を `_bench_result` に切り出し（計測値・例外は不変）
 
 - evidence: 「より速い参照計測に反証された記録を degraded にする」`demote_stale` が spec record と orchestrate record に同じ本体で 2 つあったのを、共有の `evidence.demote_refuted` に統合（公開名・結果・並び順は不変）
+- gateway: `/v1/` 応答に許可済み Origin を反映する CORS ヘッダ付与（`Access-Control-Allow-Origin` と `Vary`）が 500 ハンドラ・本文超過 413・ミドルウェア本体の 3 箇所に書かれていたのを `_reflect_origin` の 1 つに統合（付与条件・ヘッダは不変）
 - tests: テスト内の loopback HTTP サーバー（43 箇所）の `shutdown()` が `serve_forever` の既定ポーリング間隔 0.5 秒ぶん待っていたため、conftest の autouse フィクスチャ 1 つで間隔を 10 ms に短縮（検証内容は不変、全テスト 84 秒→41 秒）
 - watch: Zenn の同じ記事が複数トピックの一覧に載っている場合、記事ページの取得を最初の 1 回だけにし重複した HTTP リクエストを省略（結果の記事一覧は不変）
 - tests: 4 キーだけを個別に確かめていた i18n の存在テストを、コード中に文字どおり書かれた全キー（343 件）が英日とも存在することを確かめる 1 件に置き換え（訳の欠落でキー名がそのまま表示される再発を防止）
