@@ -2905,6 +2905,88 @@ def _eval_evidence_warnings(
                         ))
     return warnings
 
+def _evidence_warnings(
+    services: Sequence[PlannedService],
+    eval_depth_coverage: Mapping[tuple[str, str, str], int] | None,
+    eval_depth_lost: Mapping[tuple[str, str, str], int] | None,
+    embed_input_caps: Mapping[tuple[str, str, str], int] | None,
+    embed_measured: Collection[tuple[str, str, str]] | None,
+    lang: str,
+) -> list[str]:
+    """Warnings about measured context depth and embed input caps for the
+    placed services; order matches the previous inline loops."""
+    out: list[str] = []
+    if eval_depth_coverage is not None or eval_depth_lost is not None:
+        for service in services:
+            key = (
+                service.model_id.casefold(),
+                service.quant.casefold(),
+                service.backend.casefold(),
+            )
+            lost_depth = (
+                eval_depth_lost.get(key)
+                if eval_depth_lost is not None
+                else None
+            )
+            if lost_depth is not None and service.context >= lost_depth:
+                out.append(t(
+                    "warn.context_depth_broken",
+                    lang,
+                    model=service.model_id,
+                    quant=service.quant,
+                    backend=service.backend,
+                    context=service.context,
+                    depth=lost_depth,
+                ))
+                continue
+            measured_depth = (
+                eval_depth_coverage.get(key)
+                if eval_depth_coverage is not None
+                else None
+            )
+            if measured_depth is not None and service.context > measured_depth:
+                out.append(t(
+                    "warn.context_unmeasured",
+                    lang,
+                    model=service.model_id,
+                    quant=service.quant,
+                    backend=service.backend,
+                    context=service.context,
+                    depth=measured_depth,
+                ))
+    if embed_input_caps is not None:
+        for service in services:
+            if not _is_embed_only(service):
+                continue
+            key = (  # embed caps stay embed-only; rerankers have no embed cap
+                service.model_id.casefold(),
+                service.quant.casefold(),
+                service.backend.casefold(),
+            )
+            cap = embed_input_caps.get(key)
+            if cap is not None:
+                continue
+            if embed_measured is not None and key in embed_measured:
+                out.append(t(
+                    "note.embed_context_untruncated",
+                    lang,
+                    model=service.model_id,
+                    quant=service.quant,
+                    backend=service.backend,
+                    context=service.context,
+                ))
+            else:
+                out.append(t(
+                    "warn.embed_context_unverified",
+                    lang,
+                    model=service.model_id,
+                    quant=service.quant,
+                    backend=service.backend,
+                    command=f"nmesh bench --service {service.name}",
+                ))
+    return out
+
+
 def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
                policy: Policy | None = None,
                bench_cache: Mapping[object, float] | None = None,
@@ -3419,74 +3501,10 @@ def build_plan(profile: HardwareProfile, catalog: Sequence[ModelSpec],
             )
             if catalog_model is not None and catalog_model.quality is None:
                 selected_unmeasured.add(catalog_model.id)
-    if eval_depth_coverage is not None or eval_depth_lost is not None:
-        for service in services:
-            key = (
-                service.model_id.casefold(),
-                service.quant.casefold(),
-                service.backend.casefold(),
-            )
-            lost_depth = (
-                eval_depth_lost.get(key)
-                if eval_depth_lost is not None
-                else None
-            )
-            if lost_depth is not None and service.context >= lost_depth:
-                warnings.append(t(
-                    "warn.context_depth_broken",
-                    selected.lang,
-                    model=service.model_id,
-                    quant=service.quant,
-                    backend=service.backend,
-                    context=service.context,
-                    depth=lost_depth,
-                ))
-                continue
-            measured_depth = (
-                eval_depth_coverage.get(key)
-                if eval_depth_coverage is not None
-                else None
-            )
-            if measured_depth is not None and service.context > measured_depth:
-                warnings.append(t(
-                    "warn.context_unmeasured",
-                    selected.lang,
-                    model=service.model_id,
-                    quant=service.quant,
-                    backend=service.backend,
-                    context=service.context,
-                    depth=measured_depth,
-                ))
-    if embed_input_caps is not None:
-        for service in services:
-            if not _is_embed_only(service):
-                continue
-            key = (  # embed caps stay embed-only; rerankers have no embed cap
-                service.model_id.casefold(),
-                service.quant.casefold(),
-                service.backend.casefold(),
-            )
-            cap = embed_input_caps.get(key)
-            if cap is not None:
-                continue
-            if embed_measured is not None and key in embed_measured:
-                warnings.append(t(
-                    "note.embed_context_untruncated",
-                    selected.lang,
-                    model=service.model_id,
-                    quant=service.quant,
-                    backend=service.backend,
-                    context=service.context,
-                ))
-            else:
-                warnings.append(t(
-                    "warn.embed_context_unverified",
-                    selected.lang,
-                    model=service.model_id,
-                    quant=service.quant,
-                    backend=service.backend,
-                    command=f"nmesh bench --service {service.name}",
-                ))
+    warnings.extend(_evidence_warnings(
+        services, eval_depth_coverage, eval_depth_lost,
+        embed_input_caps, embed_measured, selected.lang,
+    ))
     decode_services = [
         service for service in services if not _is_non_generative(service)
     ]
