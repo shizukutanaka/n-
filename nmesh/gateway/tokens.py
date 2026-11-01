@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -64,11 +65,13 @@ def _defaults(samples: int = 0) -> Calibration:
     )
 
 
+_CJK_CHAR = re.compile(
+    "[" + "".join(f"{chr(start)}-{chr(end)}" for start, end in CJK_RANGES) + "]"
+)
+
+
 def split_chars(text: str) -> tuple[int, int]:
-    cjk = sum(
-        any(start <= ord(char) <= end for start, end in CJK_RANGES)
-        for char in text
-    )
+    cjk = len(_CJK_CHAR.findall(text))
     return cjk, len(text) - cjk
 
 
