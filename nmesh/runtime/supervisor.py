@@ -32,6 +32,7 @@ from nmesh.planner import (
     estimate_memory,
     free_budgets,
     load_plan,
+    plan_stamp,
     save_plan,
     set_flag_value,
     split_memory,
@@ -275,11 +276,7 @@ class Supervisor:
     def _plan_stamp() -> tuple[float, int] | None:
         # Same path load_plan() uses by default — plan_path is only the
         # supervisor's *save* target, so reads must match the read side.
-        try:
-            stat = (nmesh_home() / "plan.json").stat()
-            return stat.st_mtime, stat.st_mtime_ns
-        except OSError:
-            return None
+        return plan_stamp()
 
     def _arm_atexit(self) -> None:
         if not self._atexit_armed:
