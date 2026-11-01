@@ -1747,8 +1747,7 @@ def create_app(
             unsupported = _completion_not_supported(
                 path, status_code, service.backend
             )
-            if job is not None:
-                jobs.finish(job, ok=False, detail=f"upstream_{status_code}")
+            jobs.finish(job, ok=False, detail=f"upstream_{status_code}")
             if unsupported is not None:
                 raise unsupported
             return Response(
@@ -1853,8 +1852,7 @@ def create_app(
                 gate.release()
             if limit_slots:
                 limiter.release(slot_token)
-            if job is not None:
-                jobs.finish(job, ok=False, detail=str(error))
+            jobs.finish(job, ok=False, detail=str(error))
             raise
 
         async def release_upstream() -> int:
@@ -1897,26 +1895,22 @@ def create_app(
                     upstream = await client.send(upstream_request, stream=True)
             except HTTPException:
                 await release_upstream()
-                if job is not None:
-                    jobs.finish(job, ok=False, detail="upstream_unreachable")
+                jobs.finish(job, ok=False, detail="upstream_unreachable")
                 raise
             except UnicodeEncodeError as error:
                 await release_upstream()
-                if job is not None:
-                    jobs.finish(job, ok=False, detail=str(error))
+                jobs.finish(job, ok=False, detail=str(error))
                 raise HTTPException(
                     status_code=400,
                     detail="request contains unpaired surrogates",
                 ) from error
             except httpx.HTTPError as error:
                 await release_upstream()
-                if job is not None:
-                    jobs.finish(job, ok=False, detail=str(error))
+                jobs.finish(job, ok=False, detail=str(error))
                 raise HTTPException(status_code=502, detail=str(error)) from error
             except BaseException as error:
                 await release_upstream()
-                if job is not None:
-                    jobs.finish(job, ok=False, detail=str(error) or "aborted")
+                jobs.finish(job, ok=False, detail=str(error) or "aborted")
                 raise
             if upstream.status_code >= 400:
                 content = await upstream.aread()
@@ -1962,12 +1956,11 @@ def create_app(
                 finally:
                     await upstream.aclose()
                     in_flight_peak = await release_upstream()
-                    if job is not None:
-                        jobs.finish(
-                            job,
-                            ok=stream_completed,
-                            detail=None if stream_completed else "stream_interrupted",
-                        )
+                    jobs.finish(
+                        job,
+                        ok=stream_completed,
+                        detail=None if stream_completed else "stream_interrupted",
+                    )
                     if instrument:
                         span = (stats.last_line_time - stats.first_line_time
                                 if stats.first_line_time is not None and stats.last_line_time is not None
@@ -2021,9 +2014,7 @@ def create_app(
                     await _record_prompt_calibration(service, request, stats.usage)
             return StreamingResponse(
                 stream(), media_type="text/event-stream",
-                headers=(
-                    {"X-Nmesh-Job-Id": job.id} if job is not None else {}
-                ),
+                headers={"X-Nmesh-Job-Id": job.id},
             )
         try:
             async def post_upstream(payload: Mapping[str, object]) -> httpx.Response:
@@ -2090,12 +2081,11 @@ def create_app(
                     )
                 data = json.loads(content)
         except (httpx.HTTPError, json.JSONDecodeError) as error:
-            if job is not None:
-                jobs.finish(job, ok=False, detail=str(error))
+            jobs.finish(job, ok=False, detail=str(error))
             raise HTTPException(status_code=502, detail=str(error)) from error
         finally:
             in_flight_peak = await release_upstream()
-            if job is not None and sys.exc_info()[1] is not None:
+            if sys.exc_info()[1] is not None:
                 jobs.finish(job, ok=False, detail=str(sys.exc_info()[1]))
         if isinstance(data, dict) and "model" in data:
             data["model"] = request.get("model", service.model_id)
@@ -2136,11 +2126,10 @@ def create_app(
                         ] = "unverified"
                     elif verdict is not None:
                         index, measured = verdict
-                        if job is not None:
-                            jobs.finish(
-                                job, ok=False,
-                                detail=f"truncation_guard_{embedding_cap}",
-                            )
+                        jobs.finish(
+                            job, ok=False,
+                            detail=f"truncation_guard_{embedding_cap}",
+                        )
                         return _embedding_truncation_error(
                             embedding_cap, measured, index
                         )
@@ -2149,11 +2138,10 @@ def create_app(
                         body, url, input_text, embedding_cap
                     )
                     if lower_bound is not None:
-                        if job is not None:
-                            jobs.finish(
-                                job, ok=False,
-                                detail=f"truncation_guard_{embedding_cap}",
-                            )
+                        jobs.finish(
+                            job, ok=False,
+                            detail=f"truncation_guard_{embedding_cap}",
+                        )
                         return _embedding_truncation_error(
                             embedding_cap, lower_bound
                         )
@@ -2163,11 +2151,10 @@ def create_app(
                     and _is_token_list(elements[0])
                     and len(elements[0]) > embedding_cap
                 ):
-                    if job is not None:
-                        jobs.finish(
-                            job, ok=False,
-                            detail=f"truncation_guard_{embedding_cap}",
-                        )
+                    jobs.finish(
+                        job, ok=False,
+                        detail=f"truncation_guard_{embedding_cap}",
+                    )
                     return _embedding_truncation_error(
                         embedding_cap, len(elements[0])
                     )
@@ -2212,22 +2199,19 @@ def create_app(
         )
         embedding_headers.update(embedding_chunk_headers)
         if embedding_headers:
-            if job is not None:
-                embedding_headers["X-Nmesh-Job-Id"] = job.id
-                jobs.finish(job, ok=True)
+            embedding_headers["X-Nmesh-Job-Id"] = job.id
+            jobs.finish(job, ok=True)
             return Response(
                 content=json.dumps(data),
                 media_type="application/json",
                 headers=embedding_headers,
             )
-        if job is not None:
-            jobs.finish(job, ok=True)
-            return Response(
-                content=json.dumps(data),
-                media_type="application/json",
-                headers={"X-Nmesh-Job-Id": job.id},
-            )
-        return data
+        jobs.finish(job, ok=True)
+        return Response(
+            content=json.dumps(data),
+            media_type="application/json",
+            headers={"X-Nmesh-Job-Id": job.id},
+        )
 
     async def _delegated_completion(
         request: Mapping[str, object], plan_snapshot: Plan
