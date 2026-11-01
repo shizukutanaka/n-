@@ -397,6 +397,47 @@ def _download_failed(repo_id: str, error: Exception) -> OSError:
     return OSError(f"Download from {repo_id} failed: {error}")
 
 
+def _acquire_ollama(service: PlannedService, local_only: bool) -> Acquired:
+    """Pull the Ollama model (unless *local_only*) and materialize the
+    plan's context as a derived model via a Modelfile."""
+    if not local_only:
+        try:
+            subprocess.run(
+                ["ollama", "pull", service.model_ref], check=True
+            )
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError(
+                f"ollama pull failed for {service.model_ref}: {error}"
+            ) from error
+    name = f"nmesh-{service.model_id}-c{service.context}"
+    modelfile = nmesh_home() / "ollama" / f"{name}.Modelfile"
+    modelfile.parent.mkdir(parents=True, exist_ok=True)
+    modelfile.write_text(
+        f"FROM {service.model_ref}\n"
+        f"PARAMETER num_ctx {service.context}\n",
+        encoding="utf-8",
+    )
+    try:
+        subprocess.run(
+            ["ollama", "create", name, "-f", str(modelfile)],
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return Acquired(
+            None,
+            None,
+            False,
+            model_ref=service.model_ref,
+            warning=i18n.t(
+                "warn.ollama_context_default",
+                i18n.lang(),
+                service=service.name,
+                context=service.context,
+            ),
+        )
+    return Acquired(None, None, False, model_ref=name)
+
+
 def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
     """Resolve *service*'s artifact to a real path.
 
@@ -436,42 +477,7 @@ def acquire(service: PlannedService, local_only: bool = False) -> Acquired:
             warning=warning,
         )
     if service.backend == "ollama":
-        if not local_only:
-            try:
-                subprocess.run(
-                    ["ollama", "pull", service.model_ref], check=True
-                )
-            except subprocess.CalledProcessError as error:
-                raise RuntimeError(
-                    f"ollama pull failed for {service.model_ref}: {error}"
-                ) from error
-        name = f"nmesh-{service.model_id}-c{service.context}"
-        modelfile = nmesh_home() / "ollama" / f"{name}.Modelfile"
-        modelfile.parent.mkdir(parents=True, exist_ok=True)
-        modelfile.write_text(
-            f"FROM {service.model_ref}\n"
-            f"PARAMETER num_ctx {service.context}\n",
-            encoding="utf-8",
-        )
-        try:
-            subprocess.run(
-                ["ollama", "create", name, "-f", str(modelfile)],
-                check=True,
-            )
-        except (OSError, subprocess.CalledProcessError):
-            return Acquired(
-                None,
-                None,
-                False,
-                model_ref=service.model_ref,
-                warning=i18n.t(
-                    "warn.ollama_context_default",
-                    i18n.lang(),
-                    service=service.name,
-                    context=service.context,
-                ),
-            )
-        return Acquired(None, None, False, model_ref=name)
+        return _acquire_ollama(service, local_only)
     if service.backend in {"vllm", "mlx"}:
         _enable_fast_download()
         from huggingface_hub import snapshot_download
