@@ -128,7 +128,7 @@ def fetch_qiita(
         failed_tags: list[str] = []
         for tag in tags:
             try:
-                response = _get(session, 
+                response = _get(session,
                     "https://qiita.com/api/v2/items",
                     params={"per_page": limit, "query": f"tag:{tag}"},
                     headers=headers,
@@ -179,7 +179,7 @@ def fetch_zenn(
         yields: list[str] = []
         for topic in topics:
             try:
-                response = _get(session, 
+                response = _get(session,
                     "https://zenn.dev/api/articles",
                     params={
                         "topicname": topic,
@@ -257,7 +257,7 @@ def fetch_github(
         ok_repos = 0
         for repo in repos:
             try:
-                response = _get(session, 
+                response = _get(session,
                     f"https://api.github.com/repos/{repo}/releases",
                     params={"per_page": min(max(limit, 1), 100)},
                     headers=headers,
@@ -403,7 +403,7 @@ def fetch_hf(
         )
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        response = _get(session, 
+        response = _get(session,
             "https://huggingface.co/api/models",
             params={
                 "filter": tag,
@@ -474,7 +474,7 @@ def fetch_x(
     own_client = client is None
     session = client or httpx.Client(timeout=10.0, follow_redirects=True)
     try:
-        response = _get(session, 
+        response = _get(session,
             "https://api.x.com/2/tweets/search/recent",
             params={"query": query, "max_results": min(max(limit, 10), 100)},
             headers={"Authorization": f"Bearer {token}"},
