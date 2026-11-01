@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import statistics
 import time
@@ -11,7 +10,7 @@ from pathlib import Path
 import httpx
 
 from nmesh.paths import nmesh_home
-from nmesh.persist import int_at_least, write_results_cache
+from nmesh.persist import int_at_least, read_results_cache, write_results_cache
 
 EMBED_HARNESS_VERSION = "embed-v1"
 EMBED_CAP_TRUNCATION_RATIO = 0.9
@@ -187,18 +186,7 @@ def _record(data: object) -> EmbedRecord | None:
 
 def load_embed_cache(path: Path | None = None) -> dict[str, EmbedRecord]:
     target = path or (nmesh_home() / "embed.json")
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-        results = payload.get("results", {}) if isinstance(payload, dict) else {}
-        if not isinstance(results, dict):
-            return {}
-        return {
-            str(key): record
-            for key, value in results.items()
-            if (record := _record(value)) is not None
-        }
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return {}
+    return read_results_cache(target, _record)
 
 
 def save_embed(record: EmbedRecord, path: Path | None = None) -> Path:

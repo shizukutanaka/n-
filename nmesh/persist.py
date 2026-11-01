@@ -12,10 +12,10 @@ import json
 import math
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeGuard
+from typing import TYPE_CHECKING, TypeGuard, TypeVar
 
 from nmesh import i18n
 
@@ -68,6 +68,28 @@ def finite_number(value: object) -> TypeGuard[float]:
         and not isinstance(value, bool)
         and math.isfinite(value)
     )
+
+
+_RecordT = TypeVar("_RecordT")
+
+
+def read_results_cache(
+    target: Path, parse: Callable[[object], _RecordT | None]
+) -> dict[str, _RecordT]:
+    """Read a ``{"results": {key: record}}`` cache, skipping entries ``parse``
+    rejects; an unreadable or malformed file is an empty cache."""
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        results = payload.get("results", {}) if isinstance(payload, dict) else {}
+        if not isinstance(results, dict):
+            return {}
+        return {
+            str(key): record
+            for key, value in results.items()
+            if (record := parse(value)) is not None
+        }
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
 
 
 def write_results_cache(

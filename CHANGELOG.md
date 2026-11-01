@@ -27,6 +27,7 @@
 
 ### Changed
 
+- persist: `{"results": {...}}` キャッシュの読み込み（JSON 読取→results 取り出し→1 件ずつ検証、壊れていれば空）が bench/embed・bench/retrieval・eval/cache・eval/context の 4 箇所に同じまま書かれていたのを `persist.read_results_cache` に統合（#780 の書き出し側と対）。受理する形・無視する条件は不変
 - tests: i18n の英日 431 キーで差し込み項目（`{service}` など）の集合が一致することをテストで固定（片方にだけ項目があると実行時に KeyError か未置換文字列になる）
 - bench: cache 記録の読み込みで「None ならそのまま、それ以外は float に変換」が6項目ぶん手書きされていたのを `_optional_float` の1つに統合（挙動不変）
 - gateway/tokens: トークン見積もりの CJK 文字数カウントを 1 文字ずつの Python ループから正規表現 1 回に置き換え（全コードポイントで結果一致、約 150 倍高速）。2 MB の入力で 0.6 秒かかっていた見積もりが 4 ms になり、gateway のイベントループ占有と `nmesh eval depth` のプロンプト生成（深さ 15000 で 5.6 秒→0.6 秒）、全テストの実行時間（84 秒→61 秒）を短縮
