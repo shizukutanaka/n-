@@ -2162,37 +2162,26 @@ def _place_services(
                         split=",".join(str(part) for part in ratios),
                     )
                 )
-        elif service.backend in {"ollama", "vllm", "mlx", "magnitude"}:
-            total_bytes = service.memory.cpu_bytes + service.memory.gpu_bytes
-            if ram_used + total_bytes <= ram_budget + 1:
-                placed[service.name] = replace(
-                    service,
-                    gpu_indices=[],
-                    memory=replace(
-                        service.memory,
-                        gpu_bytes=0.0,
-                        cpu_bytes=total_bytes,
-                    ),
-                )
-                ram_used += total_bytes
-                warnings.append(
-                    t("warn.backend_placement_estimate", policy.lang,
-                      service=service.name, backend=service.backend)
-                )
-                continue
-            target = max(indices, key=lambda index: (remaining[index], -index))
-            assigned = [target]
-            tensor_parallel = 1
-            placement_budget = remaining[target] + (
-                swap_reserved[target] if is_swap else 0.0
-            )
-            committed = service.memory.gpu_bytes
-            remaining[target] -= committed
-            warnings.append(
-                t("warn.gpu_over_budget", policy.lang, service=service.name,
-                  committed=committed, budget=budgets[target])
-            )
         else:
+            ram_resident = service.backend in {"ollama", "vllm", "mlx", "magnitude"}
+            if ram_resident:
+                total_bytes = service.memory.cpu_bytes + service.memory.gpu_bytes
+                if ram_used + total_bytes <= ram_budget + 1:
+                    placed[service.name] = replace(
+                        service,
+                        gpu_indices=[],
+                        memory=replace(
+                            service.memory,
+                            gpu_bytes=0.0,
+                            cpu_bytes=total_bytes,
+                        ),
+                    )
+                    ram_used += total_bytes
+                    warnings.append(
+                        t("warn.backend_placement_estimate", policy.lang,
+                          service=service.name, backend=service.backend)
+                    )
+                    continue
             target = max(indices, key=lambda index: (remaining[index], -index))
             assigned = [target]
             tensor_parallel = 1
@@ -2201,6 +2190,12 @@ def _place_services(
             )
             committed = service.memory.gpu_bytes
             remaining[target] -= committed
+            if ram_resident:
+                # RAM-resident backends only land on one GPU when RAM is full.
+                warnings.append(
+                    t("warn.gpu_over_budget", policy.lang, service=service.name,
+                      committed=committed, budget=budgets[target])
+                )
 
         current = replace(service, gpu_indices=assigned)
         if (
