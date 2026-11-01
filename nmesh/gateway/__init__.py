@@ -1478,6 +1478,14 @@ def _origin_allowed(origin: str) -> bool:
     return origin in {item.strip() for item in extra.split(",") if item.strip()}
 
 
+def _reflect_origin(response: Response, origin: str | None, path: str) -> None:
+    """Browser clients can only read a /v1/ reply when its allowed Origin is
+    echoed back; the middleware has already refused any other origin."""
+    if origin and _origin_allowed(origin) and path.startswith("/v1/"):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+
+
 def _error_response(
     status_code: int, message: str, headers: Mapping[str, str] | None = None
 ) -> Response:
@@ -1566,14 +1574,7 @@ def create_app(
         response = _error_response(500, "Internal server error")
         # This handler runs above the http middleware, so the middleware's
         # post-block CORS headers never reach its response — attach them here.
-        origin = _request.headers.get("origin")
-        if (
-            origin
-            and _origin_allowed(origin)
-            and _request.url.path.startswith("/v1/")
-        ):
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Vary"] = "Origin"
+        _reflect_origin(response, _request.headers.get("origin"), _request.url.path)
         return response
 
     gate = SwapGate()
@@ -1657,9 +1658,7 @@ def create_app(
                 )
         def body_too_large() -> Response:
             response = _error_response(413, "Request body too large")
-            if origin and path.startswith("/v1/"):
-                response.headers["Access-Control-Allow-Origin"] = origin
-                response.headers["Vary"] = "Origin"
+            _reflect_origin(response, origin, path)
             return response
 
         declared = request.headers.get("content-length")
@@ -1690,10 +1689,22 @@ def create_app(
                 parts.append(chunk)
             request._body = b"".join(parts)
         response = await call_next(request)
-        if origin and path.startswith("/v1/"):
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Vary"] = "Origin"
+        _reflect_origin(response, origin, path)
         return response
+
+    async def revive_if_idle(service: PlannedService, plan_snapshot: Plan) -> None:
+        """Bring an idle-unloaded service back before forwarding to it. The
+        per-service lock keeps concurrent requests from launching it twice;
+        a launch failure surfaces as 503 with the engine's own message."""
+        if service.name not in await asyncio.to_thread(idle_services):
+            return
+        revive_lock = revive_locks.setdefault(service.name, asyncio.Lock())
+        async with revive_lock:
+            if service.name in await asyncio.to_thread(idle_services):
+                try:
+                    await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
+                except Exception as error:
+                    raise HTTPException(status_code=503, detail=str(error)) from error
 
     async def proxy(request: dict[str, object], service: PlannedService,
                     plan_snapshot: Plan, telemetry_keys: Mapping[str, str],
@@ -1782,15 +1793,12 @@ def create_app(
                     jobs.finish(job, ok=False, detail="ensure_failed")
                     raise HTTPException(status_code=503, detail=str(error)) from error
                 gate_held = True
-            if not locked and service.name in await asyncio.to_thread(idle_services):
-                revive_lock = revive_locks.setdefault(service.name, asyncio.Lock())
-                async with revive_lock:
-                    if service.name in await asyncio.to_thread(idle_services):
-                        try:
-                            await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
-                        except Exception as error:
-                            jobs.finish(job, ok=False, detail="ensure_failed")
-                            raise HTTPException(status_code=503, detail=str(error)) from error
+            if not locked:
+                try:
+                    await revive_if_idle(service, plan_snapshot)
+                except HTTPException:
+                    jobs.finish(job, ok=False, detail="ensure_failed")
+                    raise
             body = _upstream_body(request, service)
             url = f"{_base_url(service)}{path}"
             embedding_cap = (
@@ -2243,20 +2251,7 @@ def create_app(
         try:
             for service in (lead, worker):
                 last_use.touch(service.name)
-                if service.name in await asyncio.to_thread(idle_services):
-                    revive_lock = revive_locks.setdefault(
-                        service.name, asyncio.Lock()
-                    )
-                    async with revive_lock:
-                        if service.name in await asyncio.to_thread(idle_services):
-                            try:
-                                await asyncio.to_thread(
-                                    ensure_running, service.name, plan_snapshot
-                                )
-                            except Exception as error:
-                                raise HTTPException(
-                                    status_code=503, detail=str(error)
-                                ) from error
+                await revive_if_idle(service, plan_snapshot)
                 slot = await limiter.acquire(service, QUEUE_TIMEOUT)
                 if slot is None:
                     raise concurrency_error(service)
