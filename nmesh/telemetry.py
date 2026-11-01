@@ -5,7 +5,7 @@ import math
 import os
 import statistics
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 from nmesh.paths import nmesh_home
@@ -174,8 +174,8 @@ class Telemetry:
             for item in samples:
                 by_key.setdefault(item.key, []).append(item)
             samples = [item for values in by_key.values() for item in values[-self.max_samples:]]
-            payload = json.dumps({"samples": [asdict(item) for item in samples]},
-                                 indent=2, ensure_ascii=False)
+            payload = json.dumps({"samples": [vars(item) for item in samples]},
+                                 ensure_ascii=False)
             temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -1059,6 +1059,34 @@ def _bench_value(cache: Mapping[object, float] | None, model: ModelSpec, quant: 
     return None
 
 
+def _candidate_score(
+    model: ModelSpec,
+    quant: str,
+    policy: Policy,
+    tps: float,
+    decode_applicable: bool,
+) -> float:
+    """Ranking score of one candidate: quality prior weighted by the policy's
+    preference, plus a decode-speed term for generative roles, discounted
+    when the model does not cover every requested language."""
+    wq, ws = {"quality": (1.0, 0.1), "speed": (0.5, 1.0),
+              "balanced": (1.0, 0.25)}.get(policy.prefer, (1.0, 0.25))
+    prior = _effective_prior(model, quant)
+    if not decode_applicable:
+        score = 0.0 if prior is None else prior * wq
+    else:
+        speed_score = min(tps, SPEED_REFERENCE_TPS) / SPEED_REFERENCE_TPS * 100 * ws
+        score = (
+            speed_score
+            if prior is None
+            else prior * wq + speed_score
+        )
+    if policy.languages:
+        covers = set(policy.languages).issubset(model.languages)
+        score *= 1.0 if covers else 0.7
+    return score
+
+
 def _candidate_for(
     model: ModelSpec, profile: HardwareProfile, policy: Policy,
     cache: Mapping[object, float] | None,
@@ -1285,21 +1313,7 @@ def _candidate_for(
                             "threshold": f"{policy.min_decode_tps:.2f}",
                         })
                 continue
-            wq, ws = {"quality": (1.0, 0.1), "speed": (0.5, 1.0),
-                      "balanced": (1.0, 0.25)}.get(policy.prefer, (1.0, 0.25))
-            prior = _effective_prior(model, quant)
-            if not decode_applicable:
-                score = 0.0 if prior is None else prior * wq
-            else:
-                speed_score = min(tps, SPEED_REFERENCE_TPS) / SPEED_REFERENCE_TPS * 100 * ws
-                score = (
-                    speed_score
-                    if prior is None
-                    else prior * wq + speed_score
-                )
-            if policy.languages:
-                covers = set(policy.languages).issubset(model.languages)
-                score *= 1.0 if covers else 0.7
+            score = _candidate_score(model, quant, policy, tps, decode_applicable)
             candidates.append(_Candidate(
                 model, quant, context, memory, layers,
                 tps if decode_applicable else 0.0,
@@ -1355,17 +1369,9 @@ def _candidate_for(
                         )
                     )
                     if moe_tps >= policy.min_decode_tps:
-                        moe_speed = (
-                            min(moe_tps, SPEED_REFERENCE_TPS)
-                            / SPEED_REFERENCE_TPS * 100 * ws
+                        moe_score = _candidate_score(
+                            model, quant, policy, moe_tps, decode_applicable,
                         )
-                        moe_score = (
-                            moe_speed
-                            if prior is None
-                            else prior * wq + moe_speed
-                        )
-                        if policy.languages:
-                            moe_score *= 1.0 if covers else 0.7
                         candidates.append(_Candidate(
                             model, quant, context, moe_memory,
                             model.n_layers, moe_tps, backend, installed,

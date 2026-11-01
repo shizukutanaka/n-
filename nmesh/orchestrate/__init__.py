@@ -1,6 +1,6 @@
 """Evidence-gated lead/worker delegation for local models."""
 
-from .aggregate import MIN_REPEATS, combine
+from .aggregate import combine
 from .measure import (
     Comparison,
     DelegationRun,
@@ -11,7 +11,6 @@ from .measure import (
 )
 from .protocol import (
     PROTOCOL_VERSION,
-    VERIFY_PROMPT,
     Delegation,
     Endpoint,
     Ledger,
@@ -21,7 +20,6 @@ from .protocol import (
 )
 from .record import (
     ALLOW,
-    ALPHA,
     CHEAPER,
     COSTLIER,
     NO_EVIDENCE,
@@ -34,7 +32,6 @@ from .record import (
     best_for,
     decide,
     decide_cost,
-    delegation_key,
     demote_stale,
     from_run,
     load_cache,
@@ -45,10 +42,8 @@ from .record import (
 
 __all__ = [
     "ALLOW",
-    "ALPHA",
     "CHEAPER",
     "COSTLIER",
-    "MIN_REPEATS",
     "NOT_SUPERIOR",
     "NO_EVIDENCE",
     "PROTOCOL_VERSION",
@@ -56,7 +51,6 @@ __all__ = [
     "UNCONFIRMED",
     "UNSTABLE",
     "UNVERIFIED",
-    "VERIFY_PROMPT",
     "Comparison",
     "Delegation",
     "DelegationRecord",
@@ -72,7 +66,6 @@ __all__ = [
     "decide",
     "decide_cost",
     "delegate",
-    "delegation_key",
     "demote_stale",
     "from_run",
     "load_cache",
