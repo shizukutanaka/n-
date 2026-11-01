@@ -820,16 +820,23 @@ def _upstream_body(request: Mapping[str, object], service: PlannedService) -> di
     return body
 
 
+def _as_int(value: object) -> int | None:
+    """Read a JSON number-ish field as ``int``; bools and anything that does
+    not convert cleanly count as absent rather than as a value."""
+    if not isinstance(value, (int, float, str)) or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _reserved_tokens(request: Mapping[str, object]) -> int:
     values = [0]
     for key in ("max_tokens", "max_completion_tokens"):
-        value = request.get(key)
-        if not isinstance(value, (int, float, str)) or isinstance(value, bool):
-            continue
-        try:
-            values.append(int(value))
-        except (TypeError, ValueError, OverflowError):
-            continue
+        value = _as_int(request.get(key))
+        if value is not None:
+            values.append(value)
     return max(values)
 
 
@@ -973,14 +980,8 @@ async def _record_prompt_calibration(
         return
     if not isinstance(usage, Mapping):
         return
-    value = usage.get("prompt_tokens")
-    if not isinstance(value, (int, float, str)) or isinstance(value, bool):
-        return
-    try:
-        prompt_tokens = int(value)
-    except (TypeError, ValueError, OverflowError):
-        return
-    if prompt_tokens < 0:
+    prompt_tokens = _as_int(usage.get("prompt_tokens"))
+    if prompt_tokens is None or prompt_tokens < 0:
         return
     try:
         await asyncio.to_thread(
