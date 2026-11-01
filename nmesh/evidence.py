@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from typing import Protocol
+from dataclasses import replace
+from typing import Any, ClassVar, Protocol, TypeVar
 
 EPOCH_MIN_RATIO = 0.80
 
@@ -37,3 +38,36 @@ def refutes(recorded_tps: float, reference_tps: float) -> bool:
         and reference_tps > 0
         and reference_tps >= recorded_tps / EPOCH_MIN_RATIO
     )
+
+
+class _ReferencedRecord(Protocol):
+    __dataclass_fields__: ClassVar[dict[str, Any]]
+
+    @property
+    def reference_id(self) -> str: ...
+
+    @property
+    def reference_tps(self) -> float: ...
+
+
+_ReferencedT = TypeVar("_ReferencedT", bound=_ReferencedRecord)
+
+
+def demote_refuted(
+    records: dict[str, _ReferencedT],
+    reference_id: str,
+    reference_tps: float,
+) -> tuple[str, ...]:
+    """Mark every record measured against ``reference_id`` whose reference
+    throughput a faster ``reference_tps`` disproves as ``epoch="degraded"``."""
+    demoted: list[str] = []
+    for key, record in records.items():
+        if (
+            not reference_id
+            or record.reference_id != reference_id
+            or not refutes(record.reference_tps, reference_tps)
+        ):
+            continue
+        records[key] = replace(record, epoch="degraded")
+        demoted.append(key)
+    return tuple(sorted(demoted))

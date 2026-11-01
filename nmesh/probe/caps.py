@@ -93,6 +93,21 @@ def _write_cache(path: Path, payload: dict[str, object]) -> None:
         raise
 
 
+def _invoke(binary: Path, flag: str) -> subprocess.CompletedProcess[str] | None:
+    """Run ``binary flag`` for its text output; a binary that cannot be
+    started, times out, or prints undecodable bytes yields ``None``."""
+    try:
+        return subprocess.run(
+            [str(binary), flag],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        return None
+
+
 def llamacpp_caps(
     binary: str = "llama-server", cache_path: Path | None = None
 ) -> BackendCaps | None:
@@ -118,15 +133,8 @@ def llamacpp_caps(
             )
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         pass
-    try:
-        result = subprocess.run(
-            [str(resolved), "--help"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+    result = _invoke(resolved, "--help")
+    if result is None:
         return None
     flags, help_version = parse_help(
         (result.stdout or "") + "\n" + (result.stderr or "")
@@ -135,32 +143,16 @@ def llamacpp_caps(
         return None
     version: str | None = help_version
     gpu_devices: tuple[str, ...] | None = None
-    try:
-        version_result = subprocess.run(
-            [str(resolved), "--version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
+    version_result = _invoke(resolved, "--version")
+    if version_result is not None:
         version_text = (version_result.stdout or version_result.stderr or "").strip()
         if version_text:
             version = version_text.splitlines()[0]
-    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
-        pass
-    try:
-        devices_result = subprocess.run(
-            [str(resolved), "--list-devices"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
+    devices_result = _invoke(resolved, "--list-devices")
+    if devices_result is not None and devices_result.returncode == 0:
+        gpu_devices = parse_devices(
+            (devices_result.stdout or "") + "\n" + (devices_result.stderr or "")
         )
-        devices_text = (devices_result.stdout or "") + "\n" + (devices_result.stderr or "")
-        if devices_result.returncode == 0:
-            gpu_devices = parse_devices(devices_text)
-    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
-        gpu_devices = None
     caps = BackendCaps(str(resolved), version, flags, gpu_devices)
     try:
         payload = json.loads(target.read_text(encoding="utf-8"))
