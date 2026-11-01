@@ -37,6 +37,8 @@
 - telemetry: リクエストごとの `telemetry.json` 書き出しから `indent=2` を外し（`indent` 指定は json の C エンコーダを無効にし純 Python 経路になるため）、平らな dataclass の辞書化を `asdict`（再帰コピー）から `vars` に置き換え。上限 10 キー×200 サンプル時の 1 記録あたり 24 ms→2.5 ms、ファイル 580 KB→428 KB。読み戻す内容は不変
 - probe: llama.cpp バイナリへの `--help`／`--version`／`--list-devices` 呼び出し（同じ subprocess.run 引数と例外処理の 3 回の重複）を `_invoke` の 1 つに統合（検出結果・失敗時の扱いは不変）
 - evidence: 「より速い参照計測に反証された記録を degraded にする」`demote_stale` が spec record と orchestrate record に同じ本体で 2 つあったのを、共有の `evidence.demote_refuted` に統合（公開名・結果・並び順は不変）
+- gateway: proxy 内で常に Job を持つ `job` に対する `if job is not None` の守り 13 箇所と到達しない `return data` を削除（mypy --warn-unreachable で検出、応答・ジョブの終了記録は不変）
+||||||| 8e1487e
 - gateway: `/v1/` 応答に許可済み Origin を反映する CORS ヘッダ付与（`Access-Control-Allow-Origin` と `Vary`）が 500 ハンドラ・本文超過 413・ミドルウェア本体の 3 箇所に書かれていたのを `_reflect_origin` の 1 つに統合（付与条件・ヘッダは不変）
 - gateway: idle で停止中のサービスを転送前に再起動する処理（idle 確認→サービス別ロック→再確認→ensure_running→失敗時 503）が proxy と委譲経路に同じまま 2 回書かれていたのを `revive_if_idle` の 1 つに統合（順序・例外・ジョブ終了の扱いは不変）
 - tests: テスト内の loopback HTTP サーバー（43 箇所）の `shutdown()` が `serve_forever` の既定ポーリング間隔 0.5 秒ぶん待っていたため、conftest の autouse フィクスチャ 1 つで間隔を 10 ms に短縮（検証内容は不変、全テスト 84 秒→41 秒）
