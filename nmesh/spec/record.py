@@ -17,10 +17,10 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
-from nmesh.evidence import refutes
+from nmesh.evidence import demote_refuted
 from nmesh.orchestrate.measure import RoleIdentity
 from nmesh.orchestrate.record import role_key
 from nmesh.paths import nmesh_home
@@ -236,17 +236,7 @@ def demote_stale(
     reference_tps: float,
 ) -> tuple[str, ...]:
     """Invalidate positive speed claims disproved by a faster epoch."""
-    demoted: list[str] = []
-    for key, record in records.items():
-        if (
-            not reference_id
-            or record.reference_id != reference_id
-            or not refutes(record.reference_tps, reference_tps)
-        ):
-            continue
-        records[key] = replace(record, epoch="degraded")
-        demoted.append(key)
-    return tuple(sorted(demoted))
+    return demote_refuted(records, reference_id, reference_tps)
 
 
 def _identity(data: object) -> RoleIdentity | None:
