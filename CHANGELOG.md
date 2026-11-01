@@ -26,10 +26,12 @@
 - **vLLM スリープモードによるスワップ切替の高速化**: スワップグループの非 resident メンバーは切替のたびにプロセスを kill→モデル再ロードで復帰に数分かかっていましたが、vLLM ≥0.9 の sleep mode（vLLM docs features/sleep_mode:`--enable-sleep-mode` + `VLLM_SERVER_DEV_MODE=1`）を使い、切替時に `POST /sleep?level=1` で重みを CPU RAM へ退避（VRAM を開放・KV キャッシュは破棄）、次のリクエストで `POST /wake_up` により秒速復帰するようになりました。退避する重みは CPU RAM を消費するため、空きメモリがプランの `weight_bytes` を下回る場合はスリープを拒否して従来どおり kill にフォールバック（予算を静かに超過させません）。vLLM が古い・バージョン検出不可の場合は警告を出して従来の再起動パスを維持し、プランナが常駐サービスにはこの機能を発行しないため dev-mode エンドポイントの露出面は最小です。supervisor 再起動後は `/is_sleeping` でパーク状態を検出し、adopted/orphan エンジンも同じ wake 経路で復帰します。`nmesh status` はスリープ中のサービスを `sleeping` で表示します。LAUNCH_REVISION 5
 
 ### Changed
+- planner: `build_plan` から、配置後のサービスに対する文脈深度・embed 入力上限の証拠警告（68 行）を純粋関数 `_evidence_warnings` に切り出し（警告の内容と順序、計画結果は不変）
 - planner: plan.json の更新時刻を読む `_plan_stamp`（gateway と supervisor に同じ本体で 2 つ）を、`load_plan` と同じモジュールの `plan_stamp` 1 つに統合（判定は不変）
 - bench: `_measure_once` から、ストリーミング応答の時刻・usage・timings から prefill／decode 速度と BenchResult を導く純粋な段階（78 行）を `_bench_result` に切り出し（計測値・例外は不変）
 
 - gateway: リクエストの数値項目を int として読む判定（max_tokens／max_completion_tokens の予約量と usage.prompt_tokens の較正の 2 箇所の重複）を `_as_int` に統合（受理・無視する値は不変）
+- tests: テスト内の loopback HTTP サーバー（43 箇所）の `shutdown()` が `serve_forever` の既定ポーリング間隔 0.5 秒ぶん待っていたため、conftest の autouse フィクスチャ 1 つで間隔を 10 ms に短縮（検証内容は不変、全テスト 84 秒→41 秒）
 - watch: Zenn の同じ記事が複数トピックの一覧に載っている場合、記事ページの取得を最初の 1 回だけにし重複した HTTP リクエストを省略（結果の記事一覧は不変）
 - tests: 4 キーだけを個別に確かめていた i18n の存在テストを、コード中に文字どおり書かれた全キー（343 件）が英日とも存在することを確かめる 1 件に置き換え（訳の欠落でキー名がそのまま表示される再発を防止）
 - tests: i18n の英日 431 キーで差し込み項目（`{service}` など）の集合が一致することをテストで固定（片方にだけ項目があると実行時に KeyError か未置換文字列になる）
