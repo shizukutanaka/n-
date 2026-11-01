@@ -176,6 +176,7 @@ def fetch_zenn(
     session = client or httpx.Client(timeout=10.0, follow_redirects=True)
     try:
         items: list[SourceItem] = []
+        fetched: set[str] = set()
         yields: list[str] = []
         for topic in topics:
             try:
@@ -200,6 +201,10 @@ def fetch_zenn(
             yields.append(f"{topic}={len(articles)}")
             for article, path in _keyed_rows(articles, "path"):
                 url = f"https://zenn.dev{path}"
+                if url in fetched:
+                    # The same article is listed under several topics; the
+                    # first page fetch already produced its item.
+                    continue
                 try:
                     page = _get(session, url)
                     page.raise_for_status()
@@ -207,6 +212,7 @@ def fetch_zenn(
                     # A removed or members-only article must not take down the
                     # whole source; the list endpoint already succeeded.
                     continue
+                fetched.add(url)
                 items.append(SourceItem(
                     "zenn",
                     url,
