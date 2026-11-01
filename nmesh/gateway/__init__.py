@@ -40,6 +40,7 @@ from nmesh.orchestrate import (
 )
 from nmesh.paths import nmesh_home
 from nmesh.planner import Plan, PlannedService, load_plan
+from nmesh.planner import service_base_url as _base_url
 from nmesh.runtime import ensure_running, heartbeat, idle_services, unload
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime.logs import log_path
@@ -715,14 +716,6 @@ async def _autochunk_embeddings(
             }
             return autochunk_data, total_pieces
     return None
-
-
-def _base_url(service: PlannedService) -> str:
-    if service.backend == "magnitude":
-        return "http://127.0.0.1:10100/inference"
-    return "http://127.0.0.1:11434" if service.backend == "ollama" else (
-        f"http://127.0.0.1:{service.port}"
-    )
 
 
 def _delegation_identity(service: PlannedService) -> RoleIdentity:

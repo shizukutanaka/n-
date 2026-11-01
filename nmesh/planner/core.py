@@ -684,6 +684,18 @@ def _service_port_base() -> int:
     return value
 
 
+def service_base_url(service: PlannedService) -> str:
+    """Loopback base URL of a planned service's OpenAI-compatible API.
+
+    Ollama and Magnitude are shared daemons on fixed ports; Magnitude serves
+    its OpenAI surface under ``/inference``."""
+    if service.backend == "magnitude":
+        return "http://127.0.0.1:10100/inference"
+    return "http://127.0.0.1:11434" if service.backend == "ollama" else (
+        f"http://127.0.0.1:{service.port}"
+    )
+
+
 def _has_source(backend: str, model: ModelSpec) -> bool:
     return {
         "vllm": "hf",
