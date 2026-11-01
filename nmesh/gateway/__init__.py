@@ -1487,6 +1487,26 @@ def _reflect_origin(response: Response, origin: str | None, path: str) -> None:
         response.headers["Vary"] = "Origin"
 
 
+def _error_response(
+    status_code: int, message: str, headers: Mapping[str, str] | None = None
+) -> Response:
+    """The OpenAI-style error envelope every gateway failure path answers
+    with, so API clients can parse any failure the same way."""
+    payload = {
+        "error": {
+            "message": message,
+            "type": "invalid_request_error" if status_code < 500 else "server_error",
+            "code": status_code,
+        }
+    }
+    return Response(
+        content=json.dumps(payload),
+        status_code=status_code,
+        media_type="application/json",
+        headers=headers,
+    )
+
+
 def create_app(
     plan: Plan | None = None,
     watchdog: bool = False,
@@ -1538,22 +1558,8 @@ def create_app(
     async def http_exception_handler(
         _request: Request, error: HTTPException
     ) -> Response:
-        status_code = error.status_code
-        error_type = (
-            "invalid_request_error" if status_code < 500 else "server_error"
-        )
-        payload = {
-            "error": {
-                "message": str(error.detail),
-                "type": error_type,
-                "code": status_code,
-            }
-        }
-        return Response(
-            content=json.dumps(payload),
-            status_code=status_code,
-            media_type="application/json",
-            headers=dict(error.headers or {}),
+        return _error_response(
+            error.status_code, str(error.detail), headers=error.headers
         )
 
     @app.exception_handler(Exception)
@@ -1566,18 +1572,7 @@ def create_app(
         # traceback on stderr (the handler consumes the exception) but the
         # body generic.
         traceback.print_exc()
-        payload = {
-            "error": {
-                "message": "Internal server error",
-                "type": "server_error",
-                "code": 500,
-            }
-        }
-        response = Response(
-            content=json.dumps(payload),
-            status_code=500,
-            media_type="application/json",
-        )
+        response = _error_response(500, "Internal server error")
         # This handler runs above the http middleware, so the middleware's
         # post-block CORS headers never reach its response — attach them here.
         _reflect_origin(response, _request.headers.get("origin"), _request.url.path)
@@ -1626,16 +1621,8 @@ def create_app(
         # page could still drive it and read the replies, so refuse it
         # outright (CORS headers alone would not stop simple requests).
         if origin and not _origin_allowed(origin):
-            return Response(
-                content=json.dumps({
-                    "error": {
-                        "message": "Origin not allowed; set NMESH_GATEWAY_ORIGINS to opt in",
-                        "type": "invalid_request_error",
-                        "code": 403,
-                    }
-                }),
-                status_code=403,
-                media_type="application/json",
+            return _error_response(
+                403, "Origin not allowed; set NMESH_GATEWAY_ORIGINS to opt in"
             )
         # Browser frontends (Open WebUI-style) preflight with OPTIONS before
         # sending Authorization; answer CORS before the key check, which would
@@ -1666,30 +1653,12 @@ def create_app(
             prefix = "Bearer "
             presented = authorization[len(prefix):] if authorization.startswith(prefix) else ""
             if not secrets.compare_digest(presented.encode("latin-1"), api_key_bytes):
-                return Response(
-                    content=json.dumps({
-                        "error": {
-                            "message": "Invalid or missing API key",
-                            "type": "invalid_request_error",
-                            "code": 401,
-                        }
-                    }),
-                    status_code=401,
-                    media_type="application/json",
+                return _error_response(
+                    401, "Invalid or missing API key",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
         def body_too_large() -> Response:
-            response = Response(
-                content=json.dumps({
-                    "error": {
-                        "message": "Request body too large",
-                        "type": "invalid_request_error",
-                        "code": 413,
-                    }
-                }),
-                status_code=413,
-                media_type="application/json",
-            )
+            response = _error_response(413, "Request body too large")
             _reflect_origin(response, origin, path)
             return response
 
@@ -1724,6 +1693,20 @@ def create_app(
         _reflect_origin(response, origin, path)
         return response
 
+    async def revive_if_idle(service: PlannedService, plan_snapshot: Plan) -> None:
+        """Bring an idle-unloaded service back before forwarding to it. The
+        per-service lock keeps concurrent requests from launching it twice;
+        a launch failure surfaces as 503 with the engine's own message."""
+        if service.name not in await asyncio.to_thread(idle_services):
+            return
+        revive_lock = revive_locks.setdefault(service.name, asyncio.Lock())
+        async with revive_lock:
+            if service.name in await asyncio.to_thread(idle_services):
+                try:
+                    await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
+                except Exception as error:
+                    raise HTTPException(status_code=503, detail=str(error)) from error
+
     async def proxy(request: dict[str, object], service: PlannedService,
                     plan_snapshot: Plan, telemetry_keys: Mapping[str, str],
                     path: str, instrument: bool = True,
@@ -1740,8 +1723,7 @@ def create_app(
             unsupported = _completion_not_supported(
                 path, status_code, service.backend
             )
-            if job is not None:
-                jobs.finish(job, ok=False, detail=f"upstream_{status_code}")
+            jobs.finish(job, ok=False, detail=f"upstream_{status_code}")
             if unsupported is not None:
                 raise unsupported
             return Response(
@@ -1811,15 +1793,12 @@ def create_app(
                     jobs.finish(job, ok=False, detail="ensure_failed")
                     raise HTTPException(status_code=503, detail=str(error)) from error
                 gate_held = True
-            if not locked and service.name in await asyncio.to_thread(idle_services):
-                revive_lock = revive_locks.setdefault(service.name, asyncio.Lock())
-                async with revive_lock:
-                    if service.name in await asyncio.to_thread(idle_services):
-                        try:
-                            await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
-                        except Exception as error:
-                            jobs.finish(job, ok=False, detail="ensure_failed")
-                            raise HTTPException(status_code=503, detail=str(error)) from error
+            if not locked:
+                try:
+                    await revive_if_idle(service, plan_snapshot)
+                except HTTPException:
+                    jobs.finish(job, ok=False, detail="ensure_failed")
+                    raise
             body = _upstream_body(request, service)
             url = f"{_base_url(service)}{path}"
             embedding_cap = (
@@ -1846,8 +1825,7 @@ def create_app(
                 gate.release()
             if limit_slots:
                 limiter.release(slot_token)
-            if job is not None:
-                jobs.finish(job, ok=False, detail=str(error))
+            jobs.finish(job, ok=False, detail=str(error))
             raise
 
         async def release_upstream() -> int:
@@ -1890,26 +1868,22 @@ def create_app(
                     upstream = await client.send(upstream_request, stream=True)
             except HTTPException:
                 await release_upstream()
-                if job is not None:
-                    jobs.finish(job, ok=False, detail="upstream_unreachable")
+                jobs.finish(job, ok=False, detail="upstream_unreachable")
                 raise
             except UnicodeEncodeError as error:
                 await release_upstream()
-                if job is not None:
-                    jobs.finish(job, ok=False, detail=str(error))
+                jobs.finish(job, ok=False, detail=str(error))
                 raise HTTPException(
                     status_code=400,
                     detail="request contains unpaired surrogates",
                 ) from error
             except httpx.HTTPError as error:
                 await release_upstream()
-                if job is not None:
-                    jobs.finish(job, ok=False, detail=str(error))
+                jobs.finish(job, ok=False, detail=str(error))
                 raise HTTPException(status_code=502, detail=str(error)) from error
             except BaseException as error:
                 await release_upstream()
-                if job is not None:
-                    jobs.finish(job, ok=False, detail=str(error) or "aborted")
+                jobs.finish(job, ok=False, detail=str(error) or "aborted")
                 raise
             if upstream.status_code >= 400:
                 content = await upstream.aread()
@@ -1955,12 +1929,11 @@ def create_app(
                 finally:
                     await upstream.aclose()
                     in_flight_peak = await release_upstream()
-                    if job is not None:
-                        jobs.finish(
-                            job,
-                            ok=stream_completed,
-                            detail=None if stream_completed else "stream_interrupted",
-                        )
+                    jobs.finish(
+                        job,
+                        ok=stream_completed,
+                        detail=None if stream_completed else "stream_interrupted",
+                    )
                     if instrument:
                         span = (stats.last_line_time - stats.first_line_time
                                 if stats.first_line_time is not None and stats.last_line_time is not None
@@ -2014,9 +1987,7 @@ def create_app(
                     await _record_prompt_calibration(service, request, stats.usage)
             return StreamingResponse(
                 stream(), media_type="text/event-stream",
-                headers=(
-                    {"X-Nmesh-Job-Id": job.id} if job is not None else {}
-                ),
+                headers={"X-Nmesh-Job-Id": job.id},
             )
         try:
             async def post_upstream(payload: Mapping[str, object]) -> httpx.Response:
@@ -2083,12 +2054,11 @@ def create_app(
                     )
                 data = json.loads(content)
         except (httpx.HTTPError, json.JSONDecodeError) as error:
-            if job is not None:
-                jobs.finish(job, ok=False, detail=str(error))
+            jobs.finish(job, ok=False, detail=str(error))
             raise HTTPException(status_code=502, detail=str(error)) from error
         finally:
             in_flight_peak = await release_upstream()
-            if job is not None and sys.exc_info()[1] is not None:
+            if sys.exc_info()[1] is not None:
                 jobs.finish(job, ok=False, detail=str(sys.exc_info()[1]))
         if isinstance(data, dict) and "model" in data:
             data["model"] = request.get("model", service.model_id)
@@ -2129,11 +2099,10 @@ def create_app(
                         ] = "unverified"
                     elif verdict is not None:
                         index, measured = verdict
-                        if job is not None:
-                            jobs.finish(
-                                job, ok=False,
-                                detail=f"truncation_guard_{embedding_cap}",
-                            )
+                        jobs.finish(
+                            job, ok=False,
+                            detail=f"truncation_guard_{embedding_cap}",
+                        )
                         return _embedding_truncation_error(
                             embedding_cap, measured, index
                         )
@@ -2142,11 +2111,10 @@ def create_app(
                         body, url, input_text, embedding_cap
                     )
                     if lower_bound is not None:
-                        if job is not None:
-                            jobs.finish(
-                                job, ok=False,
-                                detail=f"truncation_guard_{embedding_cap}",
-                            )
+                        jobs.finish(
+                            job, ok=False,
+                            detail=f"truncation_guard_{embedding_cap}",
+                        )
                         return _embedding_truncation_error(
                             embedding_cap, lower_bound
                         )
@@ -2156,11 +2124,10 @@ def create_app(
                     and _is_token_list(elements[0])
                     and len(elements[0]) > embedding_cap
                 ):
-                    if job is not None:
-                        jobs.finish(
-                            job, ok=False,
-                            detail=f"truncation_guard_{embedding_cap}",
-                        )
+                    jobs.finish(
+                        job, ok=False,
+                        detail=f"truncation_guard_{embedding_cap}",
+                    )
                     return _embedding_truncation_error(
                         embedding_cap, len(elements[0])
                     )
@@ -2205,22 +2172,19 @@ def create_app(
         )
         embedding_headers.update(embedding_chunk_headers)
         if embedding_headers:
-            if job is not None:
-                embedding_headers["X-Nmesh-Job-Id"] = job.id
-                jobs.finish(job, ok=True)
+            embedding_headers["X-Nmesh-Job-Id"] = job.id
+            jobs.finish(job, ok=True)
             return Response(
                 content=json.dumps(data),
                 media_type="application/json",
                 headers=embedding_headers,
             )
-        if job is not None:
-            jobs.finish(job, ok=True)
-            return Response(
-                content=json.dumps(data),
-                media_type="application/json",
-                headers={"X-Nmesh-Job-Id": job.id},
-            )
-        return data
+        jobs.finish(job, ok=True)
+        return Response(
+            content=json.dumps(data),
+            media_type="application/json",
+            headers={"X-Nmesh-Job-Id": job.id},
+        )
 
     async def _delegated_completion(
         request: Mapping[str, object], plan_snapshot: Plan
@@ -2272,20 +2236,7 @@ def create_app(
         try:
             for service in (lead, worker):
                 last_use.touch(service.name)
-                if service.name in await asyncio.to_thread(idle_services):
-                    revive_lock = revive_locks.setdefault(
-                        service.name, asyncio.Lock()
-                    )
-                    async with revive_lock:
-                        if service.name in await asyncio.to_thread(idle_services):
-                            try:
-                                await asyncio.to_thread(
-                                    ensure_running, service.name, plan_snapshot
-                                )
-                            except Exception as error:
-                                raise HTTPException(
-                                    status_code=503, detail=str(error)
-                                ) from error
+                await revive_if_idle(service, plan_snapshot)
                 slot = await limiter.acquire(service, QUEUE_TIMEOUT)
                 if slot is None:
                     raise concurrency_error(service)
