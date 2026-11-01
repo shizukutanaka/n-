@@ -26,6 +26,7 @@
 - **vLLM スリープモードによるスワップ切替の高速化**: スワップグループの非 resident メンバーは切替のたびにプロセスを kill→モデル再ロードで復帰に数分かかっていましたが、vLLM ≥0.9 の sleep mode（vLLM docs features/sleep_mode:`--enable-sleep-mode` + `VLLM_SERVER_DEV_MODE=1`）を使い、切替時に `POST /sleep?level=1` で重みを CPU RAM へ退避（VRAM を開放・KV キャッシュは破棄）、次のリクエストで `POST /wake_up` により秒速復帰するようになりました。退避する重みは CPU RAM を消費するため、空きメモリがプランの `weight_bytes` を下回る場合はスリープを拒否して従来どおり kill にフォールバック（予算を静かに超過させません）。vLLM が古い・バージョン検出不可の場合は警告を出して従来の再起動パスを維持し、プランナが常駐サービスにはこの機能を発行しないため dev-mode エンドポイントの露出面は最小です。supervisor 再起動後は `/is_sleeping` でパーク状態を検出し、adopted/orphan エンジンも同じ wake 経路で復帰します。`nmesh status` はスリープ中のサービスを `sleeping` で表示します。LAUNCH_REVISION 5
 
 ### Changed
+- net: `--port` の検証（cli の `_port_int` と gateway/server の `_port` に同じ本体で 2 つ）を `net.port_arg` 1 つに統合（受理範囲・エラー文は不変）
 - planner: `build_plan` から、配置後のサービスに対する文脈深度・embed 入力上限の証拠警告（68 行）を純粋関数 `_evidence_warnings` に切り出し（警告の内容と順序、計画結果は不変）
 - persist: JSON の原子的な書き出し（一時ファイル→`os.replace`）が artifacts・bench cache・bench epoch・results cache の 4 箇所で手書きされていたのを `write_json_atomic` 1 つに統合（保存内容・ファイル名は不変）
 - orchestrate: `_comparison` の `candidate` 引数（全呼び出しが `"delegated_passed"` 固定）を外し、文字列による `getattr` を属性の直接参照に（結果は不変）
