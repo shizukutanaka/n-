@@ -28,6 +28,7 @@
 ### Changed
 - net: `--port` の検証（cli の `_port_int` と gateway/server の `_port` に同じ本体で 2 つ）を `net.port_arg` 1 つに統合（受理範囲・エラー文は不変）
 - planner: 候補のスコア計算（品質事前値×重み＋速度項、言語カバー割引）が `_candidate_for` の通常候補と MoE オフロード候補に同じ式で 2 回あったのを純粋関数 `_candidate_score` 1 つに統合（スコア・順位は不変）
+- bench／spec／eval／orchestrate／probe の各パッケージ `__init__` で、パッケージ外のどこからも参照されていない再公開名 20 件（`__all__` と再 import）を削除（各モジュールからの直接 import は不変）
 - planner: `build_plan` から、配置後のサービスに対する文脈深度・embed 入力上限の証拠警告（68 行）を純粋関数 `_evidence_warnings` に切り出し（警告の内容と順序、計画結果は不変）
 - persist: JSON の原子的な書き出し（一時ファイル→`os.replace`）が artifacts・bench cache・bench epoch・results cache の 4 箇所で手書きされていたのを `write_json_atomic` 1 つに統合（保存内容・ファイル名は不変）
 - orchestrate: `_comparison` の `candidate` 引数（全呼び出しが `"delegated_passed"` 固定）を外し、文字列による `getattr` を属性の直接参照に（結果は不変）
