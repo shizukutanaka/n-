@@ -26,6 +26,7 @@
 - **vLLM スリープモードによるスワップ切替の高速化**: スワップグループの非 resident メンバーは切替のたびにプロセスを kill→モデル再ロードで復帰に数分かかっていましたが、vLLM ≥0.9 の sleep mode（vLLM docs features/sleep_mode:`--enable-sleep-mode` + `VLLM_SERVER_DEV_MODE=1`）を使い、切替時に `POST /sleep?level=1` で重みを CPU RAM へ退避（VRAM を開放・KV キャッシュは破棄）、次のリクエストで `POST /wake_up` により秒速復帰するようになりました。退避する重みは CPU RAM を消費するため、空きメモリがプランの `weight_bytes` を下回る場合はスリープを拒否して従来どおり kill にフォールバック（予算を静かに超過させません）。vLLM が古い・バージョン検出不可の場合は警告を出して従来の再起動パスを維持し、プランナが常駐サービスにはこの機能を発行しないため dev-mode エンドポイントの露出面は最小です。supervisor 再起動後は `/is_sleeping` でパーク状態を検出し、adopted/orphan エンジンも同じ wake 経路で復帰します。`nmesh status` はスリープ中のサービスを `sleeping` で表示します。LAUNCH_REVISION 5
 
 ### Changed
+- planner: サービスの接続先 URL の組み立て（cli の `_service_base_url` と gateway の `_base_url` に同じ本体で 2 つ、ollama 11434／magnitude 10100/inference の対応表）を `planner.service_base_url` 1 つに統合（URL は不変）
 - net: `--port` の検証（cli の `_port_int` と gateway/server の `_port` に同じ本体で 2 つ）を `net.port_arg` 1 つに統合（受理範囲・エラー文は不変）
 - planner: 候補のスコア計算（品質事前値×重み＋速度項、言語カバー割引）が `_candidate_for` の通常候補と MoE オフロード候補に同じ式で 2 回あったのを純粋関数 `_candidate_score` 1 つに統合（スコア・順位は不変）
 - bench／spec／eval／orchestrate／probe の各パッケージ `__init__` で、パッケージ外のどこからも参照されていない再公開名 20 件（`__all__` と再 import）を削除（各モジュールからの直接 import は不変）
