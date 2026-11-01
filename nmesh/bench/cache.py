@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 import math
-import os
 import statistics
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
@@ -11,7 +9,7 @@ from pathlib import Path
 
 from nmesh.bench.epoch import refutes
 from nmesh.paths import nmesh_home
-from nmesh.persist import read_json_file
+from nmesh.persist import read_json_file, write_json_atomic
 
 BenchCache = dict[str, float]
 BENCH_HARNESS_VERSION = "bench-v2"
@@ -207,13 +205,9 @@ def load_records(path: Path | None = None) -> dict[str, BenchRecord]:
 
 def save_records(records: dict[str, BenchRecord], path: Path | None = None) -> Path:
     target = path or (nmesh_home() / "bench.json")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    temporary.write_text(
-        json.dumps({key: asdict(value) for key, value in records.items()}, indent=2),
-        encoding="utf-8",
+    write_json_atomic(
+        target, {key: asdict(value) for key, value in records.items()},
     )
-    os.replace(temporary, target)
     return target
 
 
