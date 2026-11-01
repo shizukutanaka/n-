@@ -27,7 +27,9 @@
 
 ### Changed
 - planner: `_launch` の Ollama 分岐（環境変数 OLLAMA_NUM_PARALLEL／KV 量子化の組み立て、41 行）を純粋関数 `_ollama_launch` に切り出し（起動仕様・警告は不変）
+- planner: plan.json の更新時刻を読む `_plan_stamp`（gateway と supervisor に同じ本体で 2 つ）を、`load_plan` と同じモジュールの `plan_stamp` 1 つに統合（判定は不変）
 
+- watch: Zenn の同じ記事が複数トピックの一覧に載っている場合、記事ページの取得を最初の 1 回だけにし重複した HTTP リクエストを省略（結果の記事一覧は不変）
 - tests: i18n の英日 431 キーで差し込み項目（`{service}` など）の集合が一致することをテストで固定（片方にだけ項目があると実行時に KeyError か未置換文字列になる）
 - bench: cache 記録の読み込みで「None ならそのまま、それ以外は float に変換」が6項目ぶん手書きされていたのを `_optional_float` の1つに統合（挙動不変）
 - gateway/tokens: トークン見積もりの CJK 文字数カウントを 1 文字ずつの Python ループから正規表現 1 回に置き換え（全コードポイントで結果一致、約 150 倍高速）。2 MB の入力で 0.6 秒かかっていた見積もりが 4 ms になり、gateway のイベントループ占有と `nmesh eval depth` のプロンプト生成（深さ 15000 で 5.6 秒→0.6 秒）、全テストの実行時間（84 秒→61 秒）を短縮
