@@ -70,26 +70,6 @@ def finite_number(value: object) -> TypeGuard[float]:
     )
 
 
-def staging_path(target: Path) -> Path:
-    """Per-process temporary file beside *target* used for atomic replaces."""
-    return target.with_name(f".{target.name}.{os.getpid()}.tmp")
-
-
-def write_json_atomic(
-    target: Path, payload: object, *, ensure_ascii: bool = True,
-) -> None:
-    """Write *payload* as indented JSON to *target* via a staged temporary
-    file and ``os.replace`` so a crash mid-write never leaves a truncated
-    file. Errors propagate; the staging file is left for the caller."""
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = staging_path(target)
-    temporary.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=ensure_ascii),
-        encoding="utf-8",
-    )
-    os.replace(temporary, target)
-
-
 def write_results_cache(
     target: Path, records: Mapping[str, DataclassInstance],
 ) -> None:
@@ -111,3 +91,23 @@ def write_results_cache(
         except OSError:
             pass
         raise
+
+
+def staging_path(target: Path) -> Path:
+    """Per-process temporary file beside *target* used for atomic replaces."""
+    return target.with_name(f".{target.name}.{os.getpid()}.tmp")
+
+
+def write_json_atomic(
+    target: Path, payload: object, *, ensure_ascii: bool = True,
+) -> None:
+    """Write *payload* as indented JSON to *target* via a staged temporary
+    file and ``os.replace`` so a crash mid-write never leaves a truncated
+    file. Errors propagate; the staging file is left for the caller."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = staging_path(target)
+    temporary.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=ensure_ascii),
+        encoding="utf-8",
+    )
+    os.replace(temporary, target)
