@@ -11,6 +11,7 @@ from .cache import (
     load_records,
     merge_measurement,
     save_records,
+    usable_cache,
 )
 from .embed import (
     EMBED_ENCODE_WORDS,
@@ -128,4 +129,5 @@ __all__ = [
     "save_history",
     "save_records",
     "save_retrieval",
+    "usable_cache",
 ]

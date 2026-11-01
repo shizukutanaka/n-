@@ -47,7 +47,6 @@ from nmesh.bench import (
     classify,
     demote_stale,
     find_reference_binary,
-    load_cache,
     load_embed_cache,
     load_history,
     load_records,
@@ -67,6 +66,7 @@ from nmesh.bench import (
     save_history,
     save_records,
     save_retrieval,
+    usable_cache,
 )
 from nmesh.catalog import ModelSpec, load_catalog
 from nmesh.eval import (
@@ -510,10 +510,12 @@ def _catalog() -> list[ModelSpec]:
     return models
 
 
-def _bench_cache(live: Mapping[str, float]) -> dict[object, float]:
+def _bench_cache(
+    live: Mapping[str, float], records: Mapping[str, BenchRecord],
+) -> dict[object, float]:
     """Stored measurements with live telemetry taking precedence."""
     merged: dict[object, float] = {}
-    merged.update(load_cache())
+    merged.update(usable_cache(records))
     merged.update(live)
     return merged
 
@@ -574,14 +576,16 @@ def _make_plan(args: argparse.Namespace) -> Plan:
         args._telemetry_under_load = telemetry_report.under_load
         args._telemetry_off_reference = telemetry_report.off_reference
         args._telemetry_unknown_depth = telemetry_report.unknown_depth
-        cache = _bench_cache(live)
+        stored = load_records()
+        cache = _bench_cache(live, stored)
         records = {
-            key: value for key, value in load_records().items()
+            key: value for key, value in stored.items()
             if key not in live
         }
-        embed_input_caps = _embed_context_caps()
+        embed_records = load_embed_cache()
+        embed_input_caps = _embed_context_caps(embed_records)
         embed_retrieval_limits = _embed_retrieval_limits()
-        embed_measured = _embed_measured_keys()
+        embed_measured = _embed_measured_keys(embed_records)
     eval_records = load_eval_cache()
     eval_depth_coverage, eval_depth_lost = _context_depth_maps()
     return build_plan(
@@ -664,17 +668,21 @@ def _embed_refused_tokens(record: EmbedRecord) -> int | None:
     return min(refused) if refused else None
 
 
-def _embed_measured_keys() -> set[tuple[str, str, str]]:
+def _embed_measured_keys(
+    records: Mapping[str, EmbedRecord],
+) -> set[tuple[str, str, str]]:
     return {
         identity_key(record)
-        for record in load_embed_cache().values()
+        for record in records.values()
         if record.harness == EMBED_HARNESS_VERSION
     }
 
 
-def _embed_context_caps() -> dict[tuple[str, str, str], int]:
+def _embed_context_caps(
+    records: Mapping[str, EmbedRecord],
+) -> dict[tuple[str, str, str], int]:
     latest: dict[tuple[str, str, str], EmbedRecord] = {}
-    for record in load_embed_cache().values():
+    for record in records.values():
         if record.harness != EMBED_HARNESS_VERSION or record.cap is None:
             continue
         key = identity_key(record)
@@ -1114,18 +1122,20 @@ def _runtime(args: argparse.Namespace) -> int:
             if ignore_eval_evidence:
                 policy = replace(policy, eval_evidence=False)
             live = bench_overlay()
+            stored = load_records()
             records = {
-                key: value for key, value in load_records().items()
+                key: value for key, value in stored.items()
                 if key not in live
             }
             eval_records = load_eval_cache()
             eval_depth_coverage, eval_depth_lost = _context_depth_maps()
-            embed_input_caps = _embed_context_caps()
+            embed_records = load_embed_cache()
+            embed_input_caps = _embed_context_caps(embed_records)
             embed_retrieval_limits = _embed_retrieval_limits()
             plan = build_plan(
                 detect_hardware(), _catalog(),
                 policy,
-                _bench_cache(live),
+                _bench_cache(live, stored),
                 _eval_rates(eval_records),
                 load_artifact_cache(),
                 records,
@@ -1133,10 +1143,10 @@ def _runtime(args: argparse.Namespace) -> int:
                 eval_depth_lost=eval_depth_lost,
                 embed_input_caps=embed_input_caps,
                 embed_retrieval_limits=embed_retrieval_limits,
-                embed_measured=_embed_measured_keys(),
+                embed_measured=_embed_measured_keys(embed_records),
             )
             save_plan(plan)
-        cache = _bench_cache(bench_overlay())
+        cache = _bench_cache(bench_overlay(), load_records())
         try:
             result = runtime_up(
                 plan, no_download=args.no_download, dry_run=args.dry_run,

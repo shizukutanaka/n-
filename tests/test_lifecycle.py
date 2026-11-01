@@ -1304,7 +1304,7 @@ def test_detached_gateway_timeout_only_stops_owned_runtime(monkeypatch, tmp_path
     down_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     monkeypatch.setattr(cli, "load_plan", lambda: plan)
-    monkeypatch.setattr(cli, "load_cache", dict)
+    monkeypatch.setattr(cli, "load_records", dict)
     monkeypatch.setattr(cli, "bench_overlay", dict)
     monkeypatch.setattr(cli, "runtime_up", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli, "runtime_down", lambda *args, **kwargs: down_calls.append((args, kwargs)))
