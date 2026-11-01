@@ -158,6 +158,7 @@ from nmesh.planner import (
     free_budgets,
     load_plan,
     save_plan,
+    service_base_url,
     set_flag_value,
 )
 from nmesh.planner.core import SPEC_DRAFT_FLAGS, SPEC_TYPE_FLAGS, _honors_spec
@@ -2534,7 +2535,7 @@ def _bench(args: argparse.Namespace) -> int:
     if not _ensure_service_running(service, plan):
         print(i18n.t("err.service_not_running", i18n.lang()), file=sys.stderr)
         return 1
-    base_url = _service_base_url(service)
+    base_url = service_base_url(service)
     if service.roles == ["embed"]:
         return _bench_embed(args, plan, service, base_url)
     if not _decode_capable(service):
@@ -2856,7 +2857,7 @@ def _eval(args: argparse.Namespace) -> int:
     if not tasks:
         print(i18n.t("err.eval_categories", i18n.lang()), file=sys.stderr)
         return 1
-    base_url = _service_base_url(service)
+    base_url = service_base_url(service)
     allowance = max(0, getattr(args, "reasoning_allowance", 0) or 0)
     timeout = getattr(args, "timeout", None)
     depth = max(0, getattr(args, "depth", 0) or 0)
@@ -3290,16 +3291,8 @@ def _orchestration_generative(service: PlannedService) -> bool:
     return bool(set(service.roles) & {"chat", "code", "worker"})
 
 
-def _service_base_url(service: PlannedService) -> str:
-    if service.backend == "magnitude":
-        return "http://127.0.0.1:10100/inference"
-    return "http://127.0.0.1:11434" if service.backend == "ollama" else (
-        f"http://127.0.0.1:{service.port}"
-    )
-
-
 def _orchestration_url(service: PlannedService) -> str:
-    return _service_base_url(service)
+    return service_base_url(service)
 
 
 def _orchestrate_measure_command(args: argparse.Namespace) -> int:
@@ -4495,7 +4488,7 @@ def _autotune(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
-    base_url = _service_base_url(service)
+    base_url = service_base_url(service)
     best: tuple[int, int, float] | None = None
     best_plan = None
     for context in context_values:

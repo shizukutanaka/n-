@@ -27,6 +27,7 @@
 
 ### Changed
 - cli: `plan`／`up` の計画作成で bench.json と embed.json をそれぞれ 2 回読み直していたのを 1 回に（同一実行内で異なるスナップショットが混ざる余地も解消、計画結果は不変）
+- planner: サービスの接続先 URL の組み立て（cli の `_service_base_url` と gateway の `_base_url` に同じ本体で 2 つ、ollama 11434／magnitude 10100/inference の対応表）を `planner.service_base_url` 1 つに統合（URL は不変）
 - net: `--port` の検証（cli の `_port_int` と gateway/server の `_port` に同じ本体で 2 つ）を `net.port_arg` 1 つに統合（受理範囲・エラー文は不変）
 - planner: 候補のスコア計算（品質事前値×重み＋速度項、言語カバー割引）が `_candidate_for` の通常候補と MoE オフロード候補に同じ式で 2 回あったのを純粋関数 `_candidate_score` 1 つに統合（スコア・順位は不変）
 - bench／spec／eval／orchestrate／probe の各パッケージ `__init__` で、パッケージ外のどこからも参照されていない再公開名 20 件（`__all__` と再 import）を削除（各モジュールからの直接 import は不変）
