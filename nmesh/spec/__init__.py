@@ -11,14 +11,11 @@ from .engine import engine_identity
 from .measure import (
     KIND_DRAFT,
     KIND_NGRAM,
-    KIND_NONE,
     KINDS,
     SPEC_HARNESS_VERSION,
     WORKLOADS,
     ArmRun,
-    ClassComparison,
     ClassResult,
-    ControlCheck,
     SpecConfig,
     Workload,
     compare,
@@ -45,7 +42,6 @@ from .record import (
     load_cache,
     save,
     save_all,
-    spec_key,
 )
 
 __all__ = [
@@ -53,7 +49,6 @@ __all__ = [
     "KINDS",
     "KIND_DRAFT",
     "KIND_NGRAM",
-    "KIND_NONE",
     "MIN_CONTROL_RATIO",
     "MIXED",
     "NOT_FASTER",
@@ -64,10 +59,8 @@ __all__ = [
     "UNSTABLE",
     "WORKLOADS",
     "ArmRun",
-    "ClassComparison",
     "ClassEvidence",
     "ClassResult",
-    "ControlCheck",
     "ControlEvidence",
     "SpecConfig",
     "SpecRecord",
@@ -84,5 +77,4 @@ __all__ = [
     "run_arm",
     "save",
     "save_all",
-    "spec_key",
 ]
