@@ -1,13 +1,12 @@
 """Hardware detection and tier classification."""
 
-from .caps import BackendCaps, llamacpp_caps, parse_devices, parse_help
+from .caps import llamacpp_caps, parse_devices, parse_help
 from .detector import detect_hardware, parse_nvidia_smi, parse_rocm_smi
 from .generic_gpu import detect_generic, detect_linux_sysfs, parse_windows_adapters
 from .models import GPUInfo, HardwareProfile, Tier, classify_tier
 from .serialize import profile_from_dict
 
 __all__ = [
-    "BackendCaps",
     "GPUInfo",
     "HardwareProfile",
     "Tier",
