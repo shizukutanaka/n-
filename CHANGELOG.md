@@ -26,6 +26,7 @@
 - **vLLM スリープモードによるスワップ切替の高速化**: スワップグループの非 resident メンバーは切替のたびにプロセスを kill→モデル再ロードで復帰に数分かかっていましたが、vLLM ≥0.9 の sleep mode（vLLM docs features/sleep_mode:`--enable-sleep-mode` + `VLLM_SERVER_DEV_MODE=1`）を使い、切替時に `POST /sleep?level=1` で重みを CPU RAM へ退避（VRAM を開放・KV キャッシュは破棄）、次のリクエストで `POST /wake_up` により秒速復帰するようになりました。退避する重みは CPU RAM を消費するため、空きメモリがプランの `weight_bytes` を下回る場合はスリープを拒否して従来どおり kill にフォールバック（予算を静かに超過させません）。vLLM が古い・バージョン検出不可の場合は警告を出して従来の再起動パスを維持し、プランナが常駐サービスにはこの機能を発行しないため dev-mode エンドポイントの露出面は最小です。supervisor 再起動後は `/is_sleeping` でパーク状態を検出し、adopted/orphan エンジンも同じ wake 経路で復帰します。`nmesh status` はスリープ中のサービスを `sleeping` で表示します。LAUNCH_REVISION 5
 
 ### Changed
+- ci: ruff に W（行末の空白、手元の `git diff --check` でだけ検出していた、watch/sources.py の 5 行を修正）と違反 0 件の I・UP・PIE・T10・FLY・PGH 規則群を追加し、CI で検出するように
 - planner: `_launch` の Ollama 分岐（環境変数 OLLAMA_NUM_PARALLEL／KV 量子化の組み立て、41 行）を純粋関数 `_ollama_launch` に切り出し（起動仕様・警告は不変）
 - planner: サービスの接続先 URL の組み立て（cli の `_service_base_url` と gateway の `_base_url` に同じ本体で 2 つ、ollama 11434／magnitude 10100/inference の対応表）を `planner.service_base_url` 1 つに統合（URL は不変）
 - net: `--port` の検証（cli の `_port_int` と gateway/server の `_port` に同じ本体で 2 つ）を `net.port_arg` 1 つに統合（受理範囲・エラー文は不変）
