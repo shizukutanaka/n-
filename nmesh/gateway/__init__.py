@@ -1486,6 +1486,26 @@ def _reflect_origin(response: Response, origin: str | None, path: str) -> None:
         response.headers["Vary"] = "Origin"
 
 
+def _error_response(
+    status_code: int, message: str, headers: Mapping[str, str] | None = None
+) -> Response:
+    """The OpenAI-style error envelope every gateway failure path answers
+    with, so API clients can parse any failure the same way."""
+    payload = {
+        "error": {
+            "message": message,
+            "type": "invalid_request_error" if status_code < 500 else "server_error",
+            "code": status_code,
+        }
+    }
+    return Response(
+        content=json.dumps(payload),
+        status_code=status_code,
+        media_type="application/json",
+        headers=headers,
+    )
+
+
 def create_app(
     plan: Plan | None = None,
     watchdog: bool = False,
@@ -1537,22 +1557,8 @@ def create_app(
     async def http_exception_handler(
         _request: Request, error: HTTPException
     ) -> Response:
-        status_code = error.status_code
-        error_type = (
-            "invalid_request_error" if status_code < 500 else "server_error"
-        )
-        payload = {
-            "error": {
-                "message": str(error.detail),
-                "type": error_type,
-                "code": status_code,
-            }
-        }
-        return Response(
-            content=json.dumps(payload),
-            status_code=status_code,
-            media_type="application/json",
-            headers=dict(error.headers or {}),
+        return _error_response(
+            error.status_code, str(error.detail), headers=error.headers
         )
 
     @app.exception_handler(Exception)
@@ -1565,18 +1571,7 @@ def create_app(
         # traceback on stderr (the handler consumes the exception) but the
         # body generic.
         traceback.print_exc()
-        payload = {
-            "error": {
-                "message": "Internal server error",
-                "type": "server_error",
-                "code": 500,
-            }
-        }
-        response = Response(
-            content=json.dumps(payload),
-            status_code=500,
-            media_type="application/json",
-        )
+        response = _error_response(500, "Internal server error")
         # This handler runs above the http middleware, so the middleware's
         # post-block CORS headers never reach its response — attach them here.
         _reflect_origin(response, _request.headers.get("origin"), _request.url.path)
@@ -1625,16 +1620,8 @@ def create_app(
         # page could still drive it and read the replies, so refuse it
         # outright (CORS headers alone would not stop simple requests).
         if origin and not _origin_allowed(origin):
-            return Response(
-                content=json.dumps({
-                    "error": {
-                        "message": "Origin not allowed; set NMESH_GATEWAY_ORIGINS to opt in",
-                        "type": "invalid_request_error",
-                        "code": 403,
-                    }
-                }),
-                status_code=403,
-                media_type="application/json",
+            return _error_response(
+                403, "Origin not allowed; set NMESH_GATEWAY_ORIGINS to opt in"
             )
         # Browser frontends (Open WebUI-style) preflight with OPTIONS before
         # sending Authorization; answer CORS before the key check, which would
@@ -1665,30 +1652,12 @@ def create_app(
             prefix = "Bearer "
             presented = authorization[len(prefix):] if authorization.startswith(prefix) else ""
             if not secrets.compare_digest(presented.encode("latin-1"), api_key_bytes):
-                return Response(
-                    content=json.dumps({
-                        "error": {
-                            "message": "Invalid or missing API key",
-                            "type": "invalid_request_error",
-                            "code": 401,
-                        }
-                    }),
-                    status_code=401,
-                    media_type="application/json",
+                return _error_response(
+                    401, "Invalid or missing API key",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
         def body_too_large() -> Response:
-            response = Response(
-                content=json.dumps({
-                    "error": {
-                        "message": "Request body too large",
-                        "type": "invalid_request_error",
-                        "code": 413,
-                    }
-                }),
-                status_code=413,
-                media_type="application/json",
-            )
+            response = _error_response(413, "Request body too large")
             _reflect_origin(response, origin, path)
             return response
 
