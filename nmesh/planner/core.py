@@ -3730,6 +3730,17 @@ def _plan_from_dict(data: dict[str, object]) -> Plan:
     )
 
 
+def plan_stamp() -> tuple[float, int] | None:
+    """mtime of the plan.json that ``load_plan()`` reads, or None when absent.
+
+    Resolved per call so a NMESH_HOME set after import is honored."""
+    try:
+        stat = (nmesh_home() / "plan.json").stat()
+        return stat.st_mtime, stat.st_mtime_ns
+    except OSError:
+        return None
+
+
 def save_plan(plan: Plan, path: Path | None = None) -> Path:
     target = path or (nmesh_home() / "plan.json")
     target.parent.mkdir(parents=True, exist_ok=True)
