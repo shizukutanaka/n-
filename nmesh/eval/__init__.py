@@ -4,7 +4,6 @@ from .cache import EvalRecord, EvalSummary, load_eval_cache, save_eval
 from .context import (
     ContextRecord,
     FamilyResult,
-    context_key,
     load_context_cache,
     save_context,
 )
@@ -35,7 +34,6 @@ __all__ = [
     "FamilyResult",
     "Task",
     "TaskOutcome",
-    "context_key",
     "load_context_cache",
     "load_eval_cache",
     "needle_tasks",
