@@ -1731,6 +1731,20 @@ def create_app(
             response.headers["Vary"] = "Origin"
         return response
 
+    async def revive_if_idle(service: PlannedService, plan_snapshot: Plan) -> None:
+        """Bring an idle-unloaded service back before forwarding to it. The
+        per-service lock keeps concurrent requests from launching it twice;
+        a launch failure surfaces as 503 with the engine's own message."""
+        if service.name not in await asyncio.to_thread(idle_services):
+            return
+        revive_lock = revive_locks.setdefault(service.name, asyncio.Lock())
+        async with revive_lock:
+            if service.name in await asyncio.to_thread(idle_services):
+                try:
+                    await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
+                except Exception as error:
+                    raise HTTPException(status_code=503, detail=str(error)) from error
+
     async def proxy(request: dict[str, object], service: PlannedService,
                     plan_snapshot: Plan, telemetry_keys: Mapping[str, str],
                     path: str, instrument: bool = True,
@@ -1818,15 +1832,12 @@ def create_app(
                     jobs.finish(job, ok=False, detail="ensure_failed")
                     raise HTTPException(status_code=503, detail=str(error)) from error
                 gate_held = True
-            if not locked and service.name in await asyncio.to_thread(idle_services):
-                revive_lock = revive_locks.setdefault(service.name, asyncio.Lock())
-                async with revive_lock:
-                    if service.name in await asyncio.to_thread(idle_services):
-                        try:
-                            await asyncio.to_thread(ensure_running, service.name, plan_snapshot)
-                        except Exception as error:
-                            jobs.finish(job, ok=False, detail="ensure_failed")
-                            raise HTTPException(status_code=503, detail=str(error)) from error
+            if not locked:
+                try:
+                    await revive_if_idle(service, plan_snapshot)
+                except HTTPException:
+                    jobs.finish(job, ok=False, detail="ensure_failed")
+                    raise
             body = _upstream_body(request, service)
             url = f"{_base_url(service)}{path}"
             embedding_cap = (
@@ -2279,20 +2290,7 @@ def create_app(
         try:
             for service in (lead, worker):
                 last_use.touch(service.name)
-                if service.name in await asyncio.to_thread(idle_services):
-                    revive_lock = revive_locks.setdefault(
-                        service.name, asyncio.Lock()
-                    )
-                    async with revive_lock:
-                        if service.name in await asyncio.to_thread(idle_services):
-                            try:
-                                await asyncio.to_thread(
-                                    ensure_running, service.name, plan_snapshot
-                                )
-                            except Exception as error:
-                                raise HTTPException(
-                                    status_code=503, detail=str(error)
-                                ) from error
+                await revive_if_idle(service, plan_snapshot)
                 slot = await limiter.acquire(service, QUEUE_TIMEOUT)
                 if slot is None:
                     raise concurrency_error(service)
