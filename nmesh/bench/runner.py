@@ -89,64 +89,18 @@ def _float_value(value: object) -> float | None:
     return float(value)
 
 
-def _measure_once(
-    service: PlannedService,
-    base_url: str,
+def _bench_result(
+    started: float,
+    first_time: float | None,
+    last_time: float | None,
+    chunks: int,
+    usage: dict[str, object] | None,
+    timings: dict[str, object] | None,
     prefill_tokens: int,
-    decode_tokens: int,
-    *,
-    cache_prompt: bool | None = None,
 ) -> BenchResult:
-    request: dict[str, object] = {
-        "model": service.model_ref,
-        "messages": [{
-            "role": "user",
-            "content": _prompt(prefill_tokens, uuid.uuid4().hex),
-        }],
-        "max_tokens": decode_tokens,
-        "temperature": 0,
-        "stream": True,
-        "stream_options": {"include_usage": True},
-    }
-    if cache_prompt is not None:
-        request["cache_prompt"] = cache_prompt
-    first_time: float | None = None
-    last_time: float | None = None
-    chunks = 0
-    usage: dict[str, object] | None = None
-    timings: dict[str, object] | None = None
-    started = time.perf_counter()
-    with local_client(timeout=_bench_timeout(prefill_tokens)) as client, \
-            client.stream(
-                "POST", f"{base_url}/v1/chat/completions", json=request,
-            ) as response:
-        response.raise_for_status()
-        for line in response.iter_lines():
-            if not line or not line.startswith("data:") or line[5:].strip() == "[DONE]":
-                continue
-            try:
-                chunk = json.loads(line[5:].strip())
-            except json.JSONDecodeError:
-                chunk = {}
-            candidate_usage = chunk.get("usage") if isinstance(chunk, dict) else None
-            candidate_timings = chunk.get("timings") if isinstance(chunk, dict) else None
-            choices = chunk.get("choices") if isinstance(chunk, dict) else None
-            if isinstance(candidate_usage, dict):
-                usage = candidate_usage
-            if isinstance(candidate_timings, dict):
-                timings = candidate_timings
-            if (
-                (isinstance(candidate_usage, dict) or isinstance(candidate_timings, dict))
-                and (
-                    not isinstance(choices, list)
-                    or not choices
-                )
-            ):
-                continue
-            now = time.perf_counter()
-            chunks += 1
-            first_time = now if first_time is None else first_time
-            last_time = now
+    """Derive the measurement from one streamed completion: prefill and
+    decode rates from the server's usage/timings when present, else from
+    wall-clock chunk timing (marked approximate)."""
     if first_time is None or last_time is None:
         raise RuntimeError("upstream returned no SSE chunks")
     ttft = max(first_time - started, 0.000001)
@@ -224,6 +178,69 @@ def _measure_once(
         decode_tps_max=decode_tps,
         runs=1,
         decode_tokens_served=decode_tokens_served,
+    )
+
+
+def _measure_once(
+    service: PlannedService,
+    base_url: str,
+    prefill_tokens: int,
+    decode_tokens: int,
+    *,
+    cache_prompt: bool | None = None,
+) -> BenchResult:
+    request: dict[str, object] = {
+        "model": service.model_ref,
+        "messages": [{
+            "role": "user",
+            "content": _prompt(prefill_tokens, uuid.uuid4().hex),
+        }],
+        "max_tokens": decode_tokens,
+        "temperature": 0,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if cache_prompt is not None:
+        request["cache_prompt"] = cache_prompt
+    first_time: float | None = None
+    last_time: float | None = None
+    chunks = 0
+    usage: dict[str, object] | None = None
+    timings: dict[str, object] | None = None
+    started = time.perf_counter()
+    with local_client(timeout=_bench_timeout(prefill_tokens)) as client, \
+            client.stream(
+                "POST", f"{base_url}/v1/chat/completions", json=request,
+            ) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if not line or not line.startswith("data:") or line[5:].strip() == "[DONE]":
+                continue
+            try:
+                chunk = json.loads(line[5:].strip())
+            except json.JSONDecodeError:
+                chunk = {}
+            candidate_usage = chunk.get("usage") if isinstance(chunk, dict) else None
+            candidate_timings = chunk.get("timings") if isinstance(chunk, dict) else None
+            choices = chunk.get("choices") if isinstance(chunk, dict) else None
+            if isinstance(candidate_usage, dict):
+                usage = candidate_usage
+            if isinstance(candidate_timings, dict):
+                timings = candidate_timings
+            if (
+                (isinstance(candidate_usage, dict) or isinstance(candidate_timings, dict))
+                and (
+                    not isinstance(choices, list)
+                    or not choices
+                )
+            ):
+                continue
+            now = time.perf_counter()
+            chunks += 1
+            first_time = now if first_time is None else first_time
+            last_time = now
+    return _bench_result(
+        started, first_time, last_time, chunks, usage, timings, prefill_tokens,
     )
 
 

@@ -38,8 +38,7 @@ from nmesh.orchestrate import (
     delegate,
     load_cache,
 )
-from nmesh.paths import nmesh_home
-from nmesh.planner import Plan, PlannedService, load_plan
+from nmesh.planner import Plan, PlannedService, load_plan, plan_stamp
 from nmesh.planner import service_base_url as _base_url
 from nmesh.runtime import ensure_running, heartbeat, idle_services, unload
 from nmesh.runtime import status as runtime_status
@@ -1360,11 +1359,7 @@ class _PlanState:
         self._gate.invalidate()
 
     def _plan_stamp(self) -> tuple[float, int] | None:
-        try:
-            stat = (nmesh_home() / "plan.json").stat()
-            return stat.st_mtime, stat.st_mtime_ns
-        except OSError:
-            return None
+        return plan_stamp()
 
     def _reload_from_disk(self, force: bool = False) -> bool | None:
         stamp = self._plan_stamp()
