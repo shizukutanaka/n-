@@ -21,14 +21,18 @@ class SlotLimiter:
         self._entries: dict[str, _Entry] = {}
 
     def size(self, plan: Plan) -> None:
-        self._entries = {
-            service.name: _Entry(
-                asyncio.Semaphore(max(1, service.memory.parallel_slots)),
-                max(1, service.memory.parallel_slots),
+        entries: dict[str, _Entry] = {}
+        for service in plan.services:
+            if service.backend not in {"llamacpp", "vllm"}:
+                continue
+            limit = max(1, service.memory.parallel_slots)
+            previous = self._entries.get(service.name)
+            entries[service.name] = (
+                previous
+                if previous is not None and previous.limit == limit
+                else _Entry(asyncio.Semaphore(limit), limit)
             )
-            for service in plan.services
-            if service.backend in {"llamacpp", "vllm"}
-        }
+        self._entries = entries
 
     async def acquire(
         self, service: PlannedService, timeout: float

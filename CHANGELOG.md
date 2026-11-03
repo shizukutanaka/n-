@@ -112,6 +112,7 @@
 - eval: runner の TaskOutcome/EvalRun 生成（位置引数）をキーワード引数に置換（挙動不変）
 
 ### Fixed
+- gateway: 同じ並列スロット数のプランを再読込しても、実行中リクエストの limiter token を失わず、設定上限を一時的に超えないように修正
 - gateway: ストリーミング上流の `aread()`／`aclose()` がキャンセルされても、実行数・スワップゲート・スロットの解放が漏れないように修正
 - gateway: 委譲経路でも proxy と同じサービス単位の直列化を行い、実行数登録と `admin/unload`／keep-alive 回収の間に停止される競合を防止
 - gateway: リクエストキャンセルが HTTP クライアントの close 中に起きても、実行数・スワップゲート・スロットの解放が漏れないように修正
