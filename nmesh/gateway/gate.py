@@ -14,6 +14,8 @@ class SwapGate:
         self._swapping = False
         self._ensure_task: asyncio.Task[None] | None = None
         self._ensure_name: str | None = None
+        self._generation = 0
+        self._ensure_generation = 0
 
     async def acquire(self, name: str, ensure: Callable[[], None]) -> None:
         while True:
@@ -36,6 +38,7 @@ class SwapGate:
                         ensure_task = asyncio.create_task(asyncio.to_thread(ensure))
                         self._ensure_task = ensure_task
                         self._ensure_name = name
+                        self._ensure_generation = self._generation
                         ensure_task.add_done_callback(self._finish_ensure)
                     except BaseException:
                         self._current = None
@@ -56,11 +59,14 @@ class SwapGate:
         self._ensure_task = None
         name = self._ensure_name
         self._ensure_name = None
+        generation = self._ensure_generation
         try:
             error = task.exception()
         except asyncio.CancelledError:
             error = asyncio.CancelledError()
-        self._current = name if error is None else None
+        self._current = (
+            name if error is None and generation == self._generation else None
+        )
         self._swapping = False
 
     def release(self) -> None:
@@ -69,4 +75,5 @@ class SwapGate:
             self._drained.set()
 
     def invalidate(self) -> None:
+        self._generation += 1
         self._current = None
