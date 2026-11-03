@@ -182,3 +182,28 @@ def test_cancelled_ensure_is_shared_until_the_worker_finishes() -> None:
         assert calls == ["code", "chat"]
 
     asyncio.run(scenario())
+
+
+def test_invalidate_during_ensure_forces_a_fresh_ensure() -> None:
+    async def scenario() -> None:
+        gate = SwapGate()
+        calls = 0
+        started = threading.Event()
+        finish = threading.Event()
+
+        def ensure() -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                started.set()
+                assert finish.wait(1)
+
+        task = asyncio.create_task(gate.acquire("chat", ensure))
+        await asyncio.wait_for(asyncio.to_thread(started.wait, 1), 1)
+        gate.invalidate()
+        finish.set()
+        await task
+        gate.release()
+        assert calls == 2
+
+    asyncio.run(scenario())

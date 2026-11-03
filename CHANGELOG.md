@@ -26,6 +26,7 @@
 - **vLLM スリープモードによるスワップ切替の高速化**: スワップグループの非 resident メンバーは切替のたびにプロセスを kill→モデル再ロードで復帰に数分かかっていましたが、vLLM ≥0.9 の sleep mode（vLLM docs features/sleep_mode:`--enable-sleep-mode` + `VLLM_SERVER_DEV_MODE=1`）を使い、切替時に `POST /sleep?level=1` で重みを CPU RAM へ退避（VRAM を開放・KV キャッシュは破棄）、次のリクエストで `POST /wake_up` により秒速復帰するようになりました。退避する重みは CPU RAM を消費するため、空きメモリがプランの `weight_bytes` を下回る場合はスリープを拒否して従来どおり kill にフォールバック（予算を静かに超過させません）。vLLM が古い・バージョン検出不可の場合は警告を出して従来の再起動パスを維持し、プランナが常駐サービスにはこの機能を発行しないため dev-mode エンドポイントの露出面は最小です。supervisor 再起動後は `/is_sleeping` でパーク状態を検出し、adopted/orphan エンジンも同じ wake 経路で復帰します。`nmesh status` はスリープ中のサービスを `sleeping` で表示します。LAUNCH_REVISION 5
 
 ### Changed
+- gateway: プラン再読込でスワップ中のサービスを無効化した場合、進行中の起動完了が古いサービスを現行扱いに戻さず、最新プランで再確認するように修正
 - gateway: スワップ中のリクエストがキャンセルされても、バックグラウンドの起動処理が完了するまで次の切替を開始しないようにし、エンジン起動の競合を防止
 - cli: どこからも参照されていない別名 `_context_records`（`effective_context_records` の再束縛）とその import を削除
 - cli: `plan`／`up` の計画作成で bench.json と embed.json をそれぞれ 2 回読み直していたのを 1 回に（同一実行内で異なるスナップショットが混ざる余地も解消、計画結果は不変）
