@@ -1871,13 +1871,15 @@ def create_app(
             raise
 
         async def release_upstream() -> int:
-            await client.aclose()
-            peak = in_flight.leave(service.name, ticket)
-            last_use.touch(service.name)
-            if locked:
-                gate.release()
-            if limit_slots:
-                limiter.release(slot_token)
+            try:
+                await asyncio.shield(client.aclose())
+            finally:
+                peak = in_flight.leave(service.name, ticket)
+                last_use.touch(service.name)
+                if locked:
+                    gate.release()
+                if limit_slots:
+                    limiter.release(slot_token)
             return peak
 
         if request.get("stream"):
