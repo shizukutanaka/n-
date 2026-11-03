@@ -1495,6 +1495,42 @@ def test_gateway_cancelled_close_releases_resources(monkeypatch) -> None:
     assert metrics["in_flight"] == 0
 
 
+def test_gateway_cancelled_stream_close_releases_resources(monkeypatch) -> None:
+    """An interrupted upstream response close must not leak the request."""
+    model = ModelSpec("stream-close-model", "test", 500_000_000, 24, 16, 2, 64,
+                      1024, 4096, ["chat"], 80.0, "test",
+                      {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        memory=replace(plan.services[0].memory, parallel_slots=1),
+    )
+    plan = replace(plan, services=[service])
+
+    class Upstream:
+        status_code = 200
+        headers: ClassVar[dict[str, str]] = {}
+
+        async def aiter_bytes(self):
+            yield b"data: [DONE]\n\n"
+
+        async def aclose(self) -> None:
+            raise asyncio.CancelledError()
+
+    async def send(*args: object, **kwargs: object) -> Upstream:
+        return Upstream()
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    client = TestClient(create_app(plan))
+    client.post("/v1/chat/completions", json={
+        "model": "nmesh-auto",
+        "stream": True,
+        "messages": [{"role": "user", "content": "hello"}],
+    })
+    metrics = client.get("/metrics").json()["concurrency"][service.name]
+    assert metrics["in_flight"] == 0
+
+
 def test_gateway_injects_usage_for_vllm_and_ollama_streams(monkeypatch) -> None:
     """vllm/ollama support stream_options.include_usage (OpenAI spec), so the
     gateway injects it like llamacpp and records exact decode telemetry."""

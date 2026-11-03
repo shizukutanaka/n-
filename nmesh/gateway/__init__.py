@@ -1930,9 +1930,13 @@ def create_app(
                 jobs.finish(job, ok=False, detail=str(error) or "aborted")
                 raise
             if upstream.status_code >= 400:
-                content = await upstream.aread()
-                await upstream.aclose()
-                await release_upstream()
+                try:
+                    content = await upstream.aread()
+                finally:
+                    try:
+                        await asyncio.shield(upstream.aclose())
+                    finally:
+                        await release_upstream()
                 return upstream_error(
                     upstream.status_code, content,
                     upstream.headers.get("content-type"),
@@ -1971,8 +1975,10 @@ def create_app(
                 except httpx.HTTPError as error:
                     raise HTTPException(status_code=502, detail=str(error)) from error
                 finally:
-                    await upstream.aclose()
-                    in_flight_peak = await release_upstream()
+                    try:
+                        await asyncio.shield(upstream.aclose())
+                    finally:
+                        in_flight_peak = await release_upstream()
                     jobs.finish(
                         job,
                         ok=stream_completed,

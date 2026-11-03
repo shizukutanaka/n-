@@ -112,6 +112,7 @@
 - eval: runner の TaskOutcome/EvalRun 生成（位置引数）をキーワード引数に置換（挙動不変）
 
 ### Fixed
+- gateway: ストリーミング上流の `aread()`／`aclose()` がキャンセルされても、実行数・スワップゲート・スロットの解放が漏れないように修正
 - gateway: 委譲経路でも proxy と同じサービス単位の直列化を行い、実行数登録と `admin/unload`／keep-alive 回収の間に停止される競合を防止
 - gateway: リクエストキャンセルが HTTP クライアントの close 中に起きても、実行数・スワップゲート・スロットの解放が漏れないように修正
 - evidence: `nmesh evidence` の理由凡例で、検索証拠の `stale_digest`（古いラダー規則）と `unmeasured`（劣化段なし）に翻訳がなく `evidence.reason.stale_digest` のようなキー名がそのまま表示されていた問題を修正（英日を追加し、棚卸しが出す全理由に両言語の訳があることをテストで固定）
