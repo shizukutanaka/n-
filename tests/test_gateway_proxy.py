@@ -1462,6 +1462,39 @@ def test_gateway_stream_send_aborted_releases_resources(monkeypatch) -> None:
     assert metrics["in_flight"] == 0
 
 
+def test_gateway_cancelled_close_releases_resources(monkeypatch) -> None:
+    """Cleanup must release bookkeeping even when client.close is cancelled."""
+    model = ModelSpec("close-model", "test", 500_000_000, 24, 16, 2, 64, 1024,
+                      4096, ["chat"], 80.0, "test", {"hf_gguf": "test/repo"})
+    plan = build_plan(profile(64, (24,)), [model], Policy(roles=["chat"]))
+    service = replace(
+        plan.services[0],
+        memory=replace(plan.services[0].memory, parallel_slots=1),
+    )
+    plan = replace(plan, services=[service])
+
+    async def response(*args: object, **kwargs: object) -> httpx.Response:
+        return httpx.Response(200, json={
+            "model": "close-model",
+            "choices": [],
+            "usage": {"completion_tokens": 1},
+        })
+
+    async def cancelled_close(self: object) -> None:
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", response)
+    monkeypatch.setattr(httpx.AsyncClient, "aclose", cancelled_close)
+    client = TestClient(create_app(plan))
+    with pytest.raises((asyncio.CancelledError, RuntimeError)):
+        client.post("/v1/chat/completions", json={
+            "model": "nmesh-auto",
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+    metrics = client.get("/metrics").json()["concurrency"][service.name]
+    assert metrics["in_flight"] == 0
+
+
 def test_gateway_injects_usage_for_vllm_and_ollama_streams(monkeypatch) -> None:
     """vllm/ollama support stream_options.include_usage (OpenAI spec), so the
     gateway injects it like llamacpp and records exact decode telemetry."""
