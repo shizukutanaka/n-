@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 from nmesh.gateway.gate import SwapGate
 
@@ -141,5 +142,43 @@ def test_cancelled_acquire_drops_current() -> None:
         await gate.acquire("chat", lambda: calls.append("ensure:chat"))
         gate.release()
         assert calls == ["ensure:chat", "ensure:chat"]
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_ensure_is_shared_until_the_worker_finishes() -> None:
+    """Cancellation must not let a second swap start while ensure is running."""
+    async def scenario() -> None:
+        gate = SwapGate()
+        await gate.acquire("chat", lambda: None)
+        gate.release()
+
+        started = threading.Event()
+        finish = threading.Event()
+        calls: list[str] = []
+
+        def slow_ensure() -> None:
+            calls.append("code")
+            started.set()
+            assert finish.wait(1)
+
+        task = asyncio.create_task(gate.acquire("code", slow_ensure))
+        await asyncio.wait_for(asyncio.to_thread(started.wait, 1), 1)
+        task.cancel()
+
+        replacement = asyncio.create_task(
+            gate.acquire("chat", lambda: calls.append("chat"))
+        )
+        await asyncio.sleep(0)
+        assert not replacement.done()
+
+        finish.set()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await replacement
+        gate.release()
+        assert calls == ["code", "chat"]
 
     asyncio.run(scenario())
