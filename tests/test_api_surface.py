@@ -349,6 +349,41 @@ def test_gateway_admin_unload_and_running(monkeypatch) -> None:
     assert running.json()["services"][0]["in_flight"] == 0
 
 
+def test_gateway_admin_unload_refuses_in_flight_service(monkeypatch) -> None:
+    plan = _completion_plan(1)
+    service = plan.services[0].name
+    monkeypatch.setattr(
+        gateway_module,
+        "runtime_status",
+        lambda: SimpleNamespace(services=[{
+            "service": service,
+            "running": True,
+        }]),
+    )
+    monkeypatch.setattr(gateway_module, "idle_services", lambda: set())
+    def fail_unload(_name: str) -> bool:
+        raise AssertionError("unload must not stop an active service")
+
+    monkeypatch.setattr(gateway_module, "unload", fail_unload)
+    app = create_app(plan)
+    ticket = app.state.in_flight.enter(service)
+    try:
+        with TestClient(app) as client:
+            response = client.post(f"/admin/unload/{service}")
+    finally:
+        app.state.in_flight.leave(service, ticket)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "unloaded": [],
+        "results": [{
+            "service": service,
+            "unloaded": False,
+            "reason": "in_flight",
+        }],
+    }
+
+
 def test_gateway_admin_unload_reports_not_running(monkeypatch) -> None:
     plan = _completion_plan(1)
     monkeypatch.setattr(

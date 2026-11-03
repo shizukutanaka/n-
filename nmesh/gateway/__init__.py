@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import time
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
@@ -185,6 +186,20 @@ class _InFlight:
 
     def count(self, service: str) -> int:
         return len(self._active.get(service, ()))
+
+
+class _ServiceLock:
+    """An async-friendly lock that also works across TestClient event loops."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    async def acquire(self) -> None:
+        while not self._lock.acquire(blocking=False):
+            await asyncio.sleep(0.001)
+
+    def release(self) -> None:
+        self._lock.release()
 
 
 class _LastUse:
@@ -1577,6 +1592,7 @@ def create_app(
     in_flight = _InFlight()
     plan_state = _PlanState(selected, explicit, gate, limiter)
     revive_locks: dict[str, asyncio.Lock] = {}
+    service_locks: dict[str, _ServiceLock] = {}
 
     async def _reap() -> None:
         plan_state.maybe_reload()
@@ -1594,9 +1610,16 @@ def create_app(
             if (
                 idle_for is not None
                 and idle_for > KEEP_ALIVE
-                and await asyncio.to_thread(unload, name)
             ):
-                gate.invalidate()
+                service_lock = service_locks.setdefault(name, _ServiceLock())
+                await service_lock.acquire()
+                try:
+                    if in_flight.count(name):
+                        continue
+                    if await asyncio.to_thread(unload, name):
+                        gate.invalidate()
+                finally:
+                    service_lock.release()
 
     app.state.reap = _reap
     app.state.in_flight = in_flight
@@ -1700,6 +1723,24 @@ def create_app(
                 except Exception as error:
                     raise HTTPException(status_code=503, detail=str(error)) from error
 
+    async def unload_guarded(
+        service: str,
+        item: Mapping[str, object] | None,
+        idle: set[str],
+    ) -> dict[str, object]:
+        service_lock = service_locks.setdefault(service, _ServiceLock())
+        await service_lock.acquire()
+        try:
+            if in_flight.count(service):
+                return {
+                    "service": service,
+                    "unloaded": False,
+                    "reason": "in_flight",
+                }
+            return await _unload_service(service, item, idle)
+        finally:
+            service_lock.release()
+
     async def proxy(request: dict[str, object], service: PlannedService,
                     plan_snapshot: Plan, telemetry_keys: Mapping[str, str],
                     path: str, instrument: bool = True,
@@ -1769,6 +1810,10 @@ def create_app(
             )
         locked = service.name in plan_snapshot.swap_group
         gate_held = False
+        service_lock = service_locks.setdefault(service.name, _ServiceLock())
+        service_lock_held = False
+        await service_lock.acquire()
+        service_lock_held = True
         try:
             if locked:
 
@@ -1810,10 +1855,14 @@ def create_app(
                 )
             )
             ticket = in_flight.enter(service.name)
+            service_lock.release()
+            service_lock_held = False
         except BaseException as error:
             # A failed acquire/revive must not keep the slot (or a held swap
             # gate): each leaked slot permanently shrinks the concurrency
             # budget until every request queues out at 503.
+            if service_lock_held:
+                service_lock.release()
             if gate_held:
                 gate.release()
             if limit_slots:
@@ -2371,7 +2420,7 @@ def create_app(
             if isinstance(item.get("service"), str)
         }
         results = [
-            await _unload_service(service.name, by_name.get(service.name), idle)
+            await unload_guarded(service.name, by_name.get(service.name), idle)
             for service in selected.services
         ]
         if any(result["unloaded"] for result in results):
@@ -2398,7 +2447,7 @@ def create_app(
             ),
             None,
         )
-        result = await _unload_service(service, item, idle)
+        result = await unload_guarded(service, item, idle)
         if result["unloaded"]:
             gate.invalidate()
         return {
