@@ -127,6 +127,22 @@ def test_slot_limiter_enforces_limits_and_releases() -> None:
     asyncio.run(scenario())
 
 
+def test_slot_limiter_resize_with_same_limit_keeps_active_tokens() -> None:
+    plan = _llama_plan(1)
+    service = plan.services[0]
+
+    async def scenario() -> None:
+        limiter = SlotLimiter()
+        limiter.size(plan)
+        token = await limiter.acquire(service, 1.0)
+        assert token is not None
+        limiter.size(_llama_plan(1))
+        assert await limiter.acquire(service, 0.01) is None
+        limiter.release(token)
+
+    asyncio.run(scenario())
+
+
 def test_slot_limiter_releases_tokens_from_old_plan_after_resize() -> None:
     old = _llama_plan(1)
     new = _llama_plan(2)
