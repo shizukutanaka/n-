@@ -2280,12 +2280,19 @@ def create_app(
         try:
             for service in (lead, worker):
                 last_use.touch(service.name)
-                await revive_if_idle(service, plan_snapshot)
-                slot = await limiter.acquire(service, QUEUE_TIMEOUT)
-                if slot is None:
-                    raise concurrency_error(service)
-                ticket = in_flight.enter(service.name)
-                managed.append((service, slot, ticket))
+                service_lock = service_locks.setdefault(
+                    service.name, _ServiceLock()
+                )
+                await service_lock.acquire()
+                try:
+                    await revive_if_idle(service, plan_snapshot)
+                    slot = await limiter.acquire(service, QUEUE_TIMEOUT)
+                    if slot is None:
+                        raise concurrency_error(service)
+                    ticket = in_flight.enter(service.name)
+                    managed.append((service, slot, ticket))
+                finally:
+                    service_lock.release()
 
             def run() -> Delegation:
                 assert httpx is not None
