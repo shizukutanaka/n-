@@ -4038,7 +4038,7 @@ def _watch(args: argparse.Namespace) -> int:
             )
         return 0
     try:
-        with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+        with local_client(timeout=10.0, follow_redirects=True) as client:
             if args.offline:
                 statuses, items = _offline_items(args.offline, requested)
             else:

@@ -152,10 +152,18 @@ def _loopback(url: str) -> bool:
 def _endpoint_client(endpoint: Endpoint, timeout: float) -> httpx.Client:
     """Client for one endpoint. Env proxies can never serve a loopback
     address — the proxy lives on another host — but a remote worker endpoint
-    may need them, so ``trust_env`` follows the endpoint's own address."""
-    return httpx.Client(
-        timeout=timeout, trust_env=not _loopback(endpoint.base_url)
-    )
+    may need them, so ``trust_env`` follows the endpoint's own address.
+
+    A proxy env httpx cannot parse at all (e.g. a NO_PROXY list carrying
+    bare IPv6 literals) must not kill the run before it starts: fall back
+    to a direct connection, which is also what such an env usually means
+    for the local engines this measures."""
+    try:
+        return httpx.Client(
+            timeout=timeout, trust_env=not _loopback(endpoint.base_url)
+        )
+    except httpx.InvalidURL:
+        return httpx.Client(timeout=timeout, trust_env=False)
 
 
 def _comparison(rows: Sequence[TaskRow]) -> Comparison:
