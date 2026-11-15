@@ -1,5 +1,22 @@
 # nmesh
 
+## これは何か（要約）
+
+nmesh は、ローカル LLM のためのハードウェア自動検出・モデル選択・メモリ見積もり・
+実行管理ツールです。その機械で動くモデルを証拠付きで選び、OpenAI 互換 API として
+起動します。最短手順は次の4つだけです。
+
+```text
+curl -fsSL https://raw.githubusercontent.com/shizukutanaka/n-/main/install.sh | bash
+export PATH="$HOME/.nmesh/venv/bin:$PATH"   # install.sh が案内する PATH 追加
+nmesh doctor            # ハードウェアと使えるバックエンドを表示
+nmesh up --detach       # 機械に合うモデルを選んで起動
+# → http://127.0.0.1:18000/v1 が OpenAI 互換で使えます
+```
+
+詳細はこの下の本文（Quickstart、類似ツールとの比較、バックエンドとモデル、
+Gateway の仕様ほか）にあります。
+
 ## Quickstart（3 コマンド）
 
 ```text
