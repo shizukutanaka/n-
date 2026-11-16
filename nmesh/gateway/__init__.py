@@ -41,7 +41,7 @@ from nmesh.orchestrate import (
 )
 from nmesh.planner import Plan, PlannedService, load_plan, plan_stamp
 from nmesh.planner import service_base_url as _base_url
-from nmesh.runtime import ensure_running, heartbeat, idle_services, unload
+from nmesh.runtime import RuntimeStatus, ensure_running, heartbeat, idle_services, unload
 from nmesh.runtime import status as runtime_status
 from nmesh.runtime.logs import log_path
 from nmesh.runtime.logs import tail as tail_log
@@ -64,6 +64,7 @@ from .tokens import (
 from .tokens import (
     record as record_token_calibration,
 )
+from .ui import INDEX_HTML, UI_HEADERS, build_overview
 
 
 def _env_timeout(name: str, default: float, *, allow_zero: bool = True) -> float:
@@ -1663,7 +1664,7 @@ def create_app(
                 },
             )
         if api_key_bytes is not None and path.startswith(
-            ("/v1/", "/infill", "/metrics", "/admin/", "/logs", "/status")
+            ("/v1/", "/infill", "/metrics", "/admin/", "/logs", "/status", "/ui/api/")
         ):
             authorization = request.headers.get("authorization", "")
             prefix = "Bearer "
@@ -2470,12 +2471,10 @@ def create_app(
             "results": [result],
         }
 
-    @app.get("/admin/running")
-    async def running() -> dict[str, object]:
-        plan_state.maybe_reload()
-        selected, _ = plan_state.snapshot()
+    def _running_services(
+        selected: Plan, runtime: RuntimeStatus
+    ) -> list[dict[str, object]]:
         last_use.ensure(selected.services)
-        runtime = await asyncio.to_thread(runtime_status)
         now = time.monotonic()
         by_name = {
             item.get("service"): item
@@ -2485,15 +2484,53 @@ def create_app(
         services = []
         for service in selected.services:
             item = by_name.get(service.name, {})
-            idle = bool(item.get("idle", False))
             services.append({
                 "service": service.name,
                 "running": bool(item.get("running", False)),
-                "idle": idle,
+                "idle": bool(item.get("idle", False)),
                 "idle_seconds": last_use.age(service.name, now),
                 "in_flight": in_flight.count(service.name),
             })
-        return {"keep_alive": KEEP_ALIVE, "services": services}
+        return services
+
+    @app.get("/admin/running")
+    async def running() -> dict[str, object]:
+        plan_state.maybe_reload()
+        selected, _ = plan_state.snapshot()
+        runtime = await asyncio.to_thread(runtime_status)
+        return {
+            "keep_alive": KEEP_ALIVE,
+            "services": _running_services(selected, runtime),
+        }
+
+    @app.get("/ui")
+    async def ui_page() -> Response:
+        return Response(
+            INDEX_HTML, media_type="text/html; charset=utf-8", headers=UI_HEADERS
+        )
+
+    @app.get("/ui/api/overview")
+    async def ui_overview() -> dict[str, object]:
+        plan_state.maybe_reload()
+        selected, _ = plan_state.snapshot()
+        runtime = await asyncio.to_thread(runtime_status)
+        planned = [
+            {
+                "name": service.name,
+                "model": service.model_id,
+                "backend": service.backend,
+                "port": service.port,
+                "roles": list(service.roles),
+            }
+            for service in selected.services
+        ]
+        return build_overview(
+            planned=planned,
+            runtime=asdict(runtime),
+            running=_running_services(selected, runtime),
+            telemetry=telemetry_summary(),
+            keep_alive=KEEP_ALIVE,
+        )
 
     @app.get("/metrics")
     async def metrics() -> dict[str, object]:

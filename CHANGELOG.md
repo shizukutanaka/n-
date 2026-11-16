@@ -4,7 +4,7 @@
 ## 未リリース
 ### Added
 
-- gateway: llama.cpp の FIM 補完用ネイティブ `POST /infill` パススルーを追加（他バックエンドは501）
+- gateway: ローカル Web UI を追加 — `GET /ui` に自己完結型の単一ページ（外部アセットなし）を配信し、プランのサービス一覧・稼働状態・telemetry を表示。操作は既存の非破壊的な `POST /admin/reload` と `POST /admin/unload/{service}` のみで、設定変更や削除はできない。状態データは `GET /ui/api/overview` が集約して返し、`NMESH_API_KEY` 設定時は `/status` 等と同様に認証必須（ページのシェル自体は `/health` と同じくデータを含まないため公開）。`nmesh ui [--port] [--no-open]` でブラウザを開く入口も追加（gateway 未起動時は起動方法を案内して終了）
 - gateway: llama.cpp/vLLM/Ollama の Responses API `POST /v1/responses` パススルーを追加（ステートレス。上流未対応時は上流エラー、他バックエンドは501。decode telemetry対象外）
 - GitHub Sponsors の `.github/FUNDING.yml` と README の「支援・商用利用」節を追加 — 開発支援と商用サポート相談の窓口を明示
 - Magnitude をユーザー定義 `sources` から選択できる共有デーモンバックエンドとして追加。モデルの取得は `magnitude catalog pull <id>` で行い、ポート 10100・単一モデル制約・推定メモリを明示。macOS では Desktop 同梱 CLI も検出

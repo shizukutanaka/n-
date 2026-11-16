@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 import time
 import urllib.request
+import webbrowser
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
@@ -1675,6 +1676,20 @@ def _wait_gateway(port: int, process: _GatewayProcess, timeout: float = 60.0) ->
         except OSError:
             time.sleep(0.2)
     return False
+
+
+def _ui(args: argparse.Namespace) -> int:
+    url = f"http://127.0.0.1:{args.port}/ui"
+    if not gateway_health(args.port):
+        print(
+            i18n.t("err.ui_no_gateway", i18n.lang(), port=args.port),
+            file=sys.stderr,
+        )
+        return 1
+    print(i18n.t("label.ui_url", i18n.lang(), url=url))
+    if not args.no_open:
+        webbrowser.open(url)
+    return 0
 
 
 def _reload(args: argparse.Namespace) -> int:
@@ -4649,6 +4664,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     serve_parser = sub.add_parser("serve")
     serve_parser.add_argument("--port", type=port_arg, default=18000)
     serve_parser.add_argument("--roles", default=None)
+    ui_parser = sub.add_parser(
+        "ui", help="open the gateway's local web UI in a browser"
+    )
+    ui_parser.add_argument("--port", type=port_arg, default=18000)
+    ui_parser.add_argument(
+        "--no-open", action="store_true",
+        help="print the UI URL without opening a browser",
+    )
     reload_parser = sub.add_parser("reload")
     reload_parser.add_argument("--port", type=port_arg, default=18000)
     reload_parser.add_argument("--json", action="store_true")
@@ -4824,6 +4847,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _plan(args)
     if args.command == "reload":
         return _reload(args)
+    if args.command == "ui":
+        return _ui(args)
     if args.command == "unload":
         return _unload(args)
     if args.command in {"up", "down", "status", "serve"}:
