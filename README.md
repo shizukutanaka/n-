@@ -103,6 +103,13 @@ pytest -q
 foreground when backend services are already running. The gateway exposes
 `GET http://127.0.0.1:18000/metrics`, which returns per-service live telemetry
 including sample count, median decode throughput, TTFT, and total latency.
+A minimal local web UI is served at `http://127.0.0.1:18000/ui` (open it with
+`nmesh ui`): it lists the plan's services with their running state and
+telemetry, and offers only the non-destructive actions reload-plan and
+unload-service — configuration cannot be changed from the browser. The page
+is self-contained and loopback-only like the gateway itself; when
+`NMESH_API_KEY` is set, the status data behind it requires the key just like
+`/status`.
 `nmesh reload --port 18000` asks a running gateway to reload the latest
 `~/.nmesh/plan.json` without restarting it.
 The gateway server enables a 15-second watchdog that revives failed services —
