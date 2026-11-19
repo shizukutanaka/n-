@@ -4,6 +4,7 @@
 ## 未リリース
 ### Added
 
+- cli: `nmesh connect [pasture|rekai|sdk] [--port]` を追加 — ゲートウェイのベース URL、保存済みプランのモデル ID、`NMESH_API_KEY` の要否と、アプリごとの接続設定を表示する（読み取りのみ、設定ファイルは書かない）。Pasture は汎用 OpenAI 互換ローカルバックエンド（`PASTURE_LOCAL_BACKEND=lmstudio`）で nmesh をローカルエンジンにでき、Authorization を送らないため `NMESH_API_KEY` 設定時は警告する。RekAI はデスクトップ版が `Origin: null` を送り既定で 403 になるため `NMESH_GATEWAY_ORIGINS=null` を案内し、画像入力（mmproj）未対応であることを明示する。README 冒頭に Pasture（振り分け層）・RekAI（画面層）との役割分担を追加し、比較表の Ollama 欄（GPU 自動検出と層数自動決定は持つ）を実態に合わせて修正
 - gateway: ローカル Web UI を追加 — `GET /ui` に自己完結型の単一ページ（外部アセットなし）を配信し、プランのサービス一覧・稼働状態・telemetry を表示。操作は既存の非破壊的な `POST /admin/reload` と `POST /admin/unload/{service}` のみで、設定変更や削除はできない。状態データは `GET /ui/api/overview` が集約して返し、`NMESH_API_KEY` 設定時は `/status` 等と同様に認証必須（ページのシェル自体は `/health` と同じくデータを含まないため公開）。`nmesh ui [--port] [--no-open]` でブラウザを開く入口も追加（gateway 未起動時は起動方法を案内して終了）
 - gateway: llama.cpp/vLLM/Ollama の Responses API `POST /v1/responses` パススルーを追加（ステートレス。上流未対応時は上流エラー、他バックエンドは501。decode telemetry対象外）
 - GitHub Sponsors の `.github/FUNDING.yml` と README の「支援・商用利用」節を追加 — 開発支援と商用サポート相談の窓口を明示
