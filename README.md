@@ -17,6 +17,21 @@ nmesh up --detach       # 機械に合うモデルを選んで起動
 詳細はこの下の本文（Quickstart、類似ツールとの比較、バックエンドとモデル、
 Gateway の仕様ほか）にあります。
 
+## 同じ作者の Pasture・RekAI との役割分担
+
+3つとも OpenAI 互換で、利用者の端末の中で完結し、作成者は利用者のデータを
+受け取りません。担う層が違います。
+
+| | 担う層 | 答える問い |
+|---|---|---|
+| **nmesh**（これ） | エンジン層: この機械でモデルを選び・見積もり・起動し・動かし続ける | 「この機械で何が、どれだけの速さで動くか」 |
+| [Pasture](https://github.com/shizukutanaka/Pasture) | 振り分け層: リクエストごとにローカルかクラウドかを決める | 「この質問は手元で答えるべきか」 |
+| [RekAI](https://github.com/shizukutanaka/RekAI) | 画面層: 画面や写真を見せて質問する UI | 「今見ているものは何か」 |
+
+nmesh はクラウドへの振り分けも、エンドユーザー向けの質問画面も持ちません。
+つなぎ方は `nmesh connect pasture` / `nmesh connect rekai` が、この機械の
+ポート・モデル ID・API キーの要否に合わせて表示します（設定は書き換えません）。
+
 ## Quickstart（3 コマンド）
 
 ```text
@@ -42,8 +57,8 @@ OpenAI 互換 API を提供します。
 | | nmesh | ollama | llama-swap | vLLM | LiteLLM |
 |---|---|---|---|---|---|
 | 役割 | HW→計画→実行管理 | モデル管理+実行 | ホットスワップのみ | 推論サーバ | リモートプロバイダのルーティング |
-| メモリ見積もり | 実測ベース（パラメータ×bpw+KV+overhead） | なし | なし（手動YAML） | なし | なし |
-| ハードウェア自動検出 | probe→tier→配置計画 | なし | なし | なし | なし |
+| メモリ見積もり | 実測ベース（パラメータ×bpw+KV+overhead） | 内部で GPU 層数を自動決定（見積もりの提示・計画なし） | なし（手動YAML） | なし | なし |
+| ハードウェア自動検出 | probe→tier→配置計画 | GPU を自動検出（tier・配置計画なし） | なし | なし | なし |
 | 証拠ゲート | 推定値に estimated 表示・eval/spec 証拠で機能ON/OFF | なし | なし | なし | なし |
 | オフライン動作 | 完全対応（取得系のみネット要） | モデルDL要 | DLなし | DL要 | リモート前提 |
 | スワップ | メモリ admission 付き計画駆動 | なし | TTLベース | なし | なし |
@@ -110,6 +125,13 @@ unload-service — configuration cannot be changed from the browser. The page
 is self-contained and loopback-only like the gateway itself; when
 `NMESH_API_KEY` is set, the status data behind it requires the key just like
 `/status`.
+`nmesh connect [pasture|rekai|sdk] [--port]` prints how a client reaches the
+gateway: the base URL, the model IDs from the saved plan, whether
+`NMESH_API_KEY` is required, and per-app settings — Pasture's
+OpenAI-compatible local backend (`PASTURE_LOCAL_BACKEND=lmstudio`), RekAI's
+custom endpoint (its desktop app sends `Origin: null`, which needs
+`NMESH_GATEWAY_ORIGINS=null`; nmesh does not launch vision models yet), and
+the OpenAI SDK environment variables. It is read-only and writes no files.
 `nmesh reload --port 18000` asks a running gateway to reload the latest
 `~/.nmesh/plan.json` without restarting it.
 The gateway server enables a 15-second watchdog that revives failed services —

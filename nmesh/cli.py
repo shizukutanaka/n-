@@ -1692,6 +1692,38 @@ def _ui(args: argparse.Namespace) -> int:
     return 0
 
 
+_CONNECT_APPS = ("pasture", "rekai", "sdk")
+
+
+def _connect(args: argparse.Namespace) -> int:
+    """Print how a client app reaches this machine's gateway. Read-only: it
+    neither starts the gateway nor writes any configuration."""
+    language = i18n.lang()
+    port = args.port
+    base = f"http://127.0.0.1:{port}/v1"
+    plan = load_plan()
+    models = ["nmesh-auto"] + (
+        [f"nmesh-{service.name}" for service in plan.services] if plan else []
+    )
+    if not gateway_health(port):
+        print(i18n.t("warn.connect_no_gateway", language, port=port), file=sys.stderr)
+    if plan is None:
+        print(i18n.t("warn.connect_no_plan", language), file=sys.stderr)
+    keyed = bool(os.environ.get("NMESH_API_KEY"))
+    print(i18n.t("label.connect_base", language, url=base))
+    print(i18n.t("label.connect_models", language, models=", ".join(models)))
+    print(i18n.t("label.connect_key_on" if keyed else "label.connect_key_off", language))
+    app = args.app
+    if app is None:
+        print(i18n.t("label.connect_apps", language, apps=", ".join(_CONNECT_APPS)))
+        return 0
+    print()
+    print(i18n.t(f"connect.{app}", language, base=base, model="nmesh-auto"))
+    if app == "pasture" and keyed:
+        print(i18n.t("warn.connect_pasture_key", language), file=sys.stderr)
+    return 0
+
+
 def _reload(args: argparse.Namespace) -> int:
     request = urllib.request.Request(
         f"http://127.0.0.1:{args.port}/admin/reload",
@@ -4672,6 +4704,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--no-open", action="store_true",
         help="print the UI URL without opening a browser",
     )
+    connect_parser = sub.add_parser(
+        "connect", help="show how a client app (Pasture, RekAI, SDK) reaches the gateway"
+    )
+    connect_parser.add_argument("app", nargs="?", choices=_CONNECT_APPS)
+    connect_parser.add_argument("--port", type=port_arg, default=18000)
     reload_parser = sub.add_parser("reload")
     reload_parser.add_argument("--port", type=port_arg, default=18000)
     reload_parser.add_argument("--json", action="store_true")
@@ -4849,6 +4886,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _reload(args)
     if args.command == "ui":
         return _ui(args)
+    if args.command == "connect":
+        return _connect(args)
     if args.command == "unload":
         return _unload(args)
     if args.command in {"up", "down", "status", "serve"}:
